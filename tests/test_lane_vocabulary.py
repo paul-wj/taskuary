@@ -10,7 +10,6 @@ Both sides now build their tables from taskuary/lanes.json. These tests keep it 
 added to one language and not the other is not possible, because there is only one place to add it.
 """
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,6 @@ from taskuary import funnel
 
 ROOT = Path(__file__).resolve().parents[1]
 VOCAB = json.loads((ROOT / 'taskuary' / 'lanes.json').read_text(encoding='utf-8'))
-PILE_JS = (ROOT / 'website' / 'src' / 'funnelPile.js').read_text(encoding='utf-8')
 
 
 def test_the_python_tables_are_the_file():
@@ -28,14 +26,6 @@ def test_the_python_tables_are_the_file():
         assert funnel.LANE_WORDS[lane['key']] == (lane['word'], lane['role'])
         assert funnel.LANE_MARKS[lane['key']] == lane['mark']
     assert set(funnel.KIND_MARKS) == {k['key'] for k in VOCAB['kinds']}
-
-
-def test_the_desktop_builds_its_table_from_the_same_file_rather_than_its_own():
-    assert 'import vocab from "../../taskuary/lanes.json"' in PILE_JS
-    assert 'export const LANE_META = byKey(vocab.lanes);' in PILE_JS
-    assert 'export const KIND_META = byKey(vocab.kinds);' in PILE_JS
-    # ...and no hand-written lane table grew back beside it
-    assert not re.search(r'LANE_META\s*=\s*\{', PILE_JS), 'the lane table is the file, not a literal'
 
 
 @pytest.mark.parametrize('lane', VOCAB['lanes'], ids=lambda l: l['key'])

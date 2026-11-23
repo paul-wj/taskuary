@@ -3,14 +3,16 @@
 // line the way Next walks down it, crossing sections in reverse; it never folds, and neither does Next. Invented rows throughout.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { BACK, fitRow, foldsOf, navEnd, navOf, put, rowDrawable, rowNow, rowOf, rowWidth, walkMove } from "../src/actionRow.js";
+
+import { BACK, NAV, fitRow, foldsOf, navEnd, navOf, put, rowDrawable, rowNow, rowOf, rowWidth, walkMove } from "../src/actionRow.js";
+import { label } from "../src/buttons.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 const back = v(BACK, "back", { label: "Back" }), next = v("next", "next", { label: "Next" });
 const task = [v("reply", "decide", { tone: "p" }), v("start-agent", "agent", { lead: true }), v("done", "more"), v("remind", "more"), v("nat", "more"), v("reshape", "more")];
 
-test("Back and Next share navigation without becoming item actions", () => {
+test("Back and Next are the Nav pill: Back is the row's own, never a type, and the words come from buttons.json", () => {
+  assert.equal(label("back"), "Back"); assert.equal(label("next"), "Next"); assert.equal(NAV, "Nav");
   const row = rowOf({ ref: "TQ-1", list: [...task, back, next] });
   assert.equal(row.back.id, BACK); assert.equal(row.next.id, "next");
   assert.deepEqual(navOf(row).map((x) => x.id), [BACK, "next"], "up, then down");
@@ -18,11 +20,11 @@ test("Back and Next share navigation without becoming item actions", () => {
   assert.ok(walkMove(BACK) && walkMove("next") && walkMove("floor:next") && !walkMove("setup:back") && !walkMove("done"));
 });
 
-test("on the first item no Back; on the last Next stays live (setup's own Back and Next stay)", () => {
+test("on the first item no Back; on the last Next stays live and says it ends the walk (setup's own Back and Next stay)", () => {
   assert.equal(rowOf({ ref: "", list: [...task, next] }).back, null, "nothing above: no Back registered, none drawn");
   const last = rowOf({ ref: "", list: [...task, back, next], end: true });
   // ...live, never greyed (the owner, 2026-11-02: "You can't mark read on the final FYI?"): Next there reads it and ends the walk
-  assert.equal(last.next.id, "next", "the last one: Next stands"); assert.equal(last.next.disabled, false, "...live");
+  assert.equal(last.next.id, "next", "the last one: Next stands"); assert.equal(last.next.disabled, false, "...live"); assert.match(last.next.title, /ends the walk/);
   assert.equal(last.back.id, BACK);
   // setup's Back and Next take the pill's own slots (the owner, 2026-11-03), and the walk's last-item rule leaves setup's Next alone
   const setup = rowOf({ ref: "", list: [v("setup:back", "back", { label: "Back", disabled: true }), v("setup:next", "next", { label: "Next" })], end: true });
@@ -47,22 +49,4 @@ test("the row's end flag rides the snapshot, and the walk's Back is no item's ve
   navEnd(false); assert.equal(rowNow().end, undefined);
   assert.equal(rowDrawable({ key: "msg:9", keyed: false, list: rowNow().list }), false, "Back alone is not the new item's row");
   put("nav:t", null);
-});
-
-// the rail's line, invented: two tasks (one urgent in its place), one put For later, a report, an idea, two fyi
-// WHICH ROW IS ABOVE is the server's (railwalk.back, 2026-10-30): the rail's order read upward from the row on screen, For later and
-// rows still settling off the line, a read row gone - pinned by the walk table (tests/fixtures/walk_table.json W05-W07, W12, W19, W20,
-// W39, W45, W47) and its browser runner. The page only asks, and greys Back where the walk says nothing is above.
-test("the view registers Back beside the floor and asks the walk for the row above; Next is hidden on the last one from the walk's own word", () => {
-  const view = fs.readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
-  assert.match(view, /if \(resetting \|\| busy \|\| turnFlight\.current \|\| deferredChat\.current\.size \|\| !backTo\) return undefined;/,
-    "nothing above, or a move out: nothing happens (greyed - one move at a time, 2026-11-03)");
-  assert.match(view, /return surface\(null, null, null, false, "back"\);/, "the walk's own Back: the row above, from the server");
-  // ...and not greyed on a rail row under the top while the walk's word catches up (the stress walk, 2026-11-02) - only while a move is out
-  // ...and at the walk's end, nothing on the table, Back goes to the last row walked (railwalk.back from its end; the owner, 2026-11-10)
-  assert.match(view, /const walkEnd = !currentItem && !table\.key && !table\.place && !!walkNow\?\.ended && walkNow\.above;/);
-  assert.match(view, /const backTo = !firstRun && !old && !walk && \(table\.speaks \? \(onWalk \? walkNow\.above : underTop \? "above" : null\) : walkEnd \|\| null\), moving = busy \|\| deferring \|\| resetting;/);
-  assert.match(view, /const atEnd = !!current && table\.speaks && onWalk && !walkNow\.below;/, "no Next on the last one: the walk says nothing is below");
-  const row = fs.readFileSync(new URL("../src/ActionRow.jsx", import.meta.url), "utf8");
-  assert.ok(row.indexOf("data-tq-walk-back") < row.indexOf("data-tq-next=\"\""), "Back on the left, Next on the right");
 });

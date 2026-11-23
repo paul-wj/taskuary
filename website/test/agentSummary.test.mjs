@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps, oneLine, turnOnYou } from "../src/agentSummary.js";
+import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps, oneLine } from "../src/agentSummary.js";
 import { onYouTurn } from "../src/chatStream.js";
 
 const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
@@ -94,12 +94,6 @@ test("the chat's Suggested reply stands only once a reply is in it, never over a
   assert.equal(chatReplyShown({ pendingReview: { ReviewId: 3 } }), false);
 });
 
-test("a chat task's chat keeps its height while its agent starts: the box sits at the card's foot", () => {
-  // the stress run (2026-11-05): while the agent started, the chat shrank to its content and left ~485px of empty card under the box
-  const page = read("TaskPage.jsx"), at = page.indexOf('"&:has([data-tq-starting])"');
-  assert.ok(at > 0);
-  assert.match(page.slice(at - 80, at), /!chatPane/, "the one-line starting room is for a pane that is not the task's chat");
-});
 
 test("Suggested reply heads only a reply, never a closed task's Mark done line or a proposal", () => {
   assert.equal(hasReply([]), false);
@@ -124,39 +118,13 @@ test("the agent's answer_is_result decides whether its prose shows beside the su
 });
 
 
-// THE TO DO HOLDS ONLY WORK (the owner, 2026-11-09: one task reached 11 lines for 4 pieces of work): an email owed is its Send card, and the
-// steps left on the owner are one quiet "On you:" line under the list - never boxes
-test("the To do is the work alone, and what is left on the owner is one On you line", async () => {
-  const { onYouLine } = await import("../src/checklist.js");
-  const items = [{ id: "1", text: "Fix the export column order", done: false }, { id: "2", text: "Email Erin Blake - the new file", done: false, out: { to: "erin@vendor.example" } },
-    { id: "3", text: "Press Send on the draft.", done: false, on_you: true }, { id: "4", text: "Connect a calendar", done: false, on_you: true },
-    { id: "5", text: "Ticked already", done: true, on_you: true }];
-  assert.equal(onYouLine(items), "On you: Press Send on the draft; Connect a calendar.");
-  assert.equal(onYouLine(items.slice(0, 2)), "");
-  const page = (await import("node:fs")).readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
-  assert.match(page, /const todo = checklist\.filter\(\(i\) => !i\.out && !i\.on_you\);/);
-  assert.match(page, /\{onYouLeft && <Typography data-tq-on-you-line="" sx=\{\{ \.\.\.ON_YOU_SX, mt: 0\.6 \}\}>\{onYouLeft\}<\/Typography>\}/);
-});
-
 // THE CHAT SAYS WHAT A TURN LEFT ON HIM (the demo's research turn, 2026-11-13): a turn that was only its summary block is drawn as its `did`, and
 // the decision it left him - the summary's `on_you` - was drawn nowhere: "agent finished" over a list of options, his choice unsaid
-test("a turn's On you steps are said under its words, never twice", () => {
-  const sum = { did: "Compared three providers.", on_you: ["Decide whether to offer same-day pay.", "Say if I should ask Payworth for terms"] };
-  assert.equal(turnOnYou(sum), "For you to do: Decide whether to offer same-day pay; Say if I should ask Payworth for terms.");
-  assert.equal(turnOnYou({ did: "x" }), "");
-  // ...a step ending on its own question or ellipsis keeps it, never "?." (the live chat, 2026-11-16)
-  assert.equal(turnOnYou({ on_you: ["Pick a date", "Should I ask Payworth for terms?"] }), "For you to do: Pick a date; Should I ask Payworth for terms?");
-  assert.equal(turnOnYou(null), "");
-  // ...and nothing is left to him where the turn said nothing is left (the walk, 2026-11-17: a to-do under "nothing else is pending")
-  assert.equal(turnOnYou({ did: "Sent.", on_you: ["Watch for a reply"], nothing_left: true }), "");
-  assert.match(read("GeneralWorkspace.jsx"), /const onYou = owes && !live && sum \? turnOnYou\(sum\) : ""/);
-  assert.match(read("GeneralWorkspace.jsx"), /\{!!onYou && <div className="tq-aui-summary" data-tq-on-you="" style={{ marginTop: 10 }}>/);
-});
-
 // FOR YOU TO DO IS WHAT IS LEFT, NOT A RECORD OF EACH TURN (the walk, 2026-11-17): a turn asked for the agenda, the ask was withdrawn as he
 // answered, and the old turn grew "For you to do: Give the three agenda topics" above his own reply and the turn that used it. Only the newest
 // turn at rest, nothing of his under it, says what is left - and never one whose own ask or card is the step
-test("only the newest turn at rest with no ask or card of its own says what is left to him", () => {
+// ...THAT IS NOW ITS TRY AGAIN ONLY (design round 5, I3): what each turn left on him is its own, settled once by the list (left_on_him)
+test("only the newest turn at rest with no ask or card of its own offers its try again", () => {
   const A = { kind: "turn", id: "a", state: "done", summary: { did: "Asked for the agenda.", on_you: ["Give the three agenda topics"] } };
   const items = [A, { kind: "line", id: "l1", text: "Budget, hiring, offsite" }, { kind: "turn", id: "b", state: "done", summary: { did: "Drafted the agenda." } }];
   assert.equal(onYouTurn(items), "b");
@@ -171,13 +139,4 @@ test("only the newest turn at rest with no ask or card of its own says what is l
   assert.equal(onYouTurn([...items, { kind: "turn", id: "c", state: "working" }]), "");
   assert.equal(onYouTurn([]), "");
   assert.match(read("GeneralWorkspace.jsx"), /owes=\{x\.id === owes\}/);
-});
-
-// the phone audit (2026-11-13): New's box was one fixed row - its example wrapped to a row and a half under a scrollbar at 390px, and long
-// typing scrolled out of sight. A PromptBox's words size it, up to the box's own max-height
-test("a PromptBox grows with its words and its example, up to its cap", () => {
-  const css = read("generalWorkspace.css"), box = read("AgentSummary.jsx");
-  assert.match(box, /"data-tq-prompt-box": ""/, "the box carries its mark");
-  assert.match(css, /\[data-tq-prompt-box\] \.tq-aui-input \{ field-sizing: content; \}/);
-  assert.match(css.split("\n").find((l) => l.startsWith(".tq-aui-input {")), /max-height: \d+px/, "and stops at its cap, scrolling after");
 });

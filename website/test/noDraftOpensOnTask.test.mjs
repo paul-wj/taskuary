@@ -33,5 +33,3 @@ test("a drafted email waiting for Send, a reply draft or something that went ope
   assert.equal(homeSection("reply", "to_reply"), "agent");
   assert.equal(homeSection("coding", "to_start"), "agent");
 });
-
-

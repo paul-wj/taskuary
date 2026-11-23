@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { VERDICTS, roadOf, roadOfCard, verdictOf } from "../src/timelineState.js";
 
 // The tag on a Timeline row is TRIAGE's word - the one the row's own Triage tab highlights - and
@@ -70,5 +71,7 @@ test("both verdicts carry a word and a hint", () => {
     const v = VERDICTS.find((x) => x.key === key);
     assert.ok(v && v.label && v.hint, `${key} needs a word and a hint`);
   }
+  assert.equal(VERDICTS.find((v) => v.key === "ignored").label, "ignored");
+  assert.equal(VERDICTS.find((v) => v.key === "error").label, "couldn't sort this");
 });
-
+

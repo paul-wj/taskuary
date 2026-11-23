@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { lightOf, litAfter, litOn, litPick, litPull } from "../src/assistantLight.js";
 import { rowOf } from "../src/actionRow.js";
 import { label } from "../src/buttons.js";
-const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 
+const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 
 test("\"mark this done\" fills the row's own Mark done and adds no button", () => {
   const lit = lightOf({ verb: "close", label: label("close"), key: "msg:4", tid: 7 });
@@ -35,19 +35,6 @@ test("the light lands on its item - by key, or by its task - and goes out when t
   assert.equal(litPick(lightOf({ verb: "", key: "task:12", tid: 12 }), up), null, "brought up with nothing to light");
 });
 
-test("a typed turn draws no proposal card and runs nothing: it lights, opens a page, or fills New", () => {
-  const view = src("AssistantView.jsx");
-  const at = view.indexOf("const send = async"), body = view.slice(at, view.indexOf("const sendEmoji", at));
-  assert.doesNotMatch(body, /proposalOf|runProposal|prop\?\.auto|kind: "proposal"/);
-  assert.match(body, /const l = lightOf\(data\.light\);/);
-  assert.match(body, /if \(data\.new && !goStraight\(data\.new\)\) browseRef\.current\?\.\("new", data\.new\);/);
-  assert.match(body, /const page = "open" in data \? data\.open : firstAppLink\(data\.say\);/);
-  // the lit act outranks the Advisor's line, which would name another button; any press puts it out
-  assert.match(view, /<ActionRow advised=\{stripPick \|\| setupLit\}( hold=\{[^}]*\})?( early=\{[^}]*\})?( says=\{.*?\})? \/>/);
-  assert.match(view, /const shownAdvice = table\.speaks && !litNow \?/);
-  assert.match(src("advice.js"), /return \{ pick: lit \|\| shown \|\| quiet \};/, "the light first, then the decision, then Next (advice.stripWord)");
-  assert.match(view, /useEffect\(\(\) => onPressed\(\(\) => setLit\(null\)\), \[\]\);/);
-});
 
 // THE LIT BUTTON IS THE WHOLE ANSWER (the owner, 2026-10-23: "what the heck is Lit"): no "Lit Mark done on TQ-0026." line in the chat and
 // no "Press Mark done when you're sure." over the row - the filled button says it. A strip line is drawn only when a light carries one
@@ -75,6 +62,7 @@ test("the setting the Assistant names opens with its knob outlined", async () =>
   const { canvasRequestFromHash } = await import("../src/canvasLinks.js");
   assert.deepEqual(canvasRequestFromHash("#settings=config&group=Sync%20%26%20startup&key=poll_minutes").state,
     { section: "config", open: "Sync & startup", knob: "poll_minutes" });
+  assert.match(src("SettingsView.jsx"), /const asked = only\?\.knob === s\.Name;/);
 });
 
 // REMIND ME'S SAID DAY (the owner, 2026-10-27): "remind me Monday" lit Remind me and its picker had no Monday, while the phone kept it.
@@ -103,4 +91,12 @@ test("the person and note typed with Hand it to a person ride the light into its
   assert.deepEqual(litPick(l, { key: "msg:5", tid: 31 }).hand, hand, "the row's pick carries it");
   assert.equal(lightOf({ verb: "close", key: "msg:5", tid: 31, hand }).hand, undefined, "only Hand it to a person carries one");
   assert.equal(lightOf({ verb: "forward", key: "msg:5", tid: 31, hand: { note: "x" } }).hand, undefined, "no person, nothing to fill");
+  assert.match(src("CanvasItem.jsx"), /saidHand=\{lit\?\.verb === "forward" \? lit\.hand \|\| null : null\}/);
+  assert.match(src("TaskPage.jsx"), /if \(saidHand\?\.to\) \{ setHandSaid\(\{ to: saidHand\.to, note: saidHand\.note \|\| "" \}\); setHandoff\(true\); \}/);
+  assert.equal((src("TaskPage.jsx").match(/<Handoff key=\{handSaid \? [^\n]+? taskId=\{selected\} said=\{handSaid\} /g) || []).length, 2, "both of its places");
+  const form = src("Handoff.jsx");
+  assert.match(form, /useState\(said\?\.to \|\| ""\)/);
+  assert.match(form, /useEffect\(\(\) => \{ if \(said\?\.to\) draft\(said\.to\); \}, \[\]\);/, "drafted when it opens");
+  const opens = form.slice(form.indexOf("const draft = async"), form.indexOf("const send = async"));
+  assert.match(opens, /draft_only: true/); assert.doesNotMatch(opens, /send\(/, "never sent by itself");
 });

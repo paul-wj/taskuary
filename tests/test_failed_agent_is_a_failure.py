@@ -55,7 +55,8 @@ class FailedAgent(unittest.TestCase):
 
     def test_an_ai_that_never_answered_is_said_in_words_and_in_the_chat(self):
         """2026-11-09: a gateway that took the call and never answered reached the rail as "Failed - HTTPSConnectionPool(host=...): Read
-        timed out. (read timeout=180)", and the chat under the owner's ask was empty."""
+        timed out. (read timeout=180)", and the chat under the owner's ask was empty. Design round 4 (H3): an AI that never answered is one
+        queued state - its one plain line says when it is tried again (general.queue_retry), on the rail and in the chat alike."""
         import requests
         def brain(system, user, **kw): raise requests.ReadTimeout("HTTPSConnectionPool(host='ai.northwind.example', port=443): Read timed out.")
         with mock.patch.object(general, '_selected', return_value=('connector:9', 'Gateway (API)', 'm')):
@@ -66,11 +67,17 @@ class FailedAgent(unittest.TestCase):
             if not sess.alive: break
             time.sleep(0.05)
         line = funnel.agent_story(self.s, self.tid)['line']
-        self.assertTrue(line.startswith("Failed - Gateway didn't answer in time"), line)
+        self.assertTrue(line.startswith("The AI didn't answer - trying again at "), line)
         self.assertNotRegex(line, r'ConnectionPool|northwind|443|\(API\)')
         last = general.with_failure(self.s, self.tid, general.shown_history(self.s, self.tid))[-1]
         self.assertEqual((last['role'], last.get('failed')), ('assistant', True))
-        self.assertTrue(last['content'][0]['text'].startswith("⚠ Gateway didn't answer in time"), last)
+        self.assertTrue(last['content'][0]['text'].startswith("⚠ The AI didn't answer - trying again at "), last)
+        # ...and the rail's row says the same, never "Failed" or a hand that waits on him (the walk, 2026-11-22): the try is the app's move
+        from taskuary import taskstate
+        row = funnel.paused_conversation(self.s, {'tid': self.tid, 'lane': 'yours', 'key': f'task:{self.tid}'})
+        self.assertTrue(taskstate.retrying(self.s, self.tid))
+        self.assertEqual((row['lane'], row.get('failed'), row.get('asking')), ('queued', None, None))
+        self.assertTrue(row['why'].startswith("The AI didn't answer - trying again at "), row['why'])
 
     def test_a_run_that_broke_is_tried_again_not_made_a_new_task(self):
         def brain(system, user, **kw): raise RuntimeError('the test database was not reachable')
@@ -106,3 +113,28 @@ def test_an_agents_failed_run_is_what_failed_and_offers_the_task_to_fix_it():
     assert 'new_task' in [v['verb'] for v in rulebook.offered(s, item)]
     ws.record(s, t, 'r2', 'working'); ws.record(s, t, 'r2', 'finished', text='done')
     assert rulebook.failure(s, item) is None, 'a run that finished since is no failure'
+
+
+class AnActThatFailsKeepsTheAnswerTests(unittest.TestCase):
+    def test_a_reply_step_that_raises_never_loses_the_answer(self):
+        """The agent audit, 2026-11-22: one act of the answer (a draft, a withdraw, the Hub) that raised threw the whole answer away and filed
+        the turn as failed - Try again ran the job again. The answer is filed; the act that failed is said on the task in its own line."""
+        import time as _t
+        s = MemoryStore(); tid = Factory(s).task(title='Answer Ray about the rota', kind='general', status='in_progress')
+        with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')): sess = general.GeneralSession(s, tid)
+        try:
+            with mock.patch('taskuary.wrapup.agent_reply', side_effect=RuntimeError('database is locked')), mock.patch('taskuary.hooks.judge_ended'):
+                sess._file('I checked the rota - Friday is free.\n[[TASKUARY-REPLY]]Hi Ray - Friday works.[[/TASKUARY-REPLY]]', [], _t.time())
+            said = [c['Body'] for c in s.list_comments(tid)]
+            self.assertTrue(any('Friday is free' in b for b in said), said)
+            self.assertTrue(any(b.startswith('Saving the reply it wrote did not work') for b in said), said)
+        finally: terminal.SESSIONS.pop(sess.sid, None)
+
+
+def test_a_spent_monthly_budget_is_said_as_itself_and_not_tried_again_by_the_clock():
+    """The HIPAA walk, 2026-11-22: the card's monthly budget ran out and the task read "The AI is over its limit - trying again at 9:34 PM" under
+    a rail that said the budget is used up - a try each hour that could not answer, said as if it would. A budget is his to raise."""
+    from taskuary import agents, general, llm
+    spent = llm.BudgetSpent(llm.BUDGET_LINE.format(name='HIPAA AI'))
+    assert general.provider_down(spent) == ''
+    assert general.provider_down(agents.RateLimited('slow down')) == general.DOWN[0]      # ...a limit that resets is still waited out

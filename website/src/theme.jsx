@@ -155,6 +155,9 @@ export const createAppTheme = (mode = "light") => createTheme({
     body2: { fontSize: 12.5 },
     caption: { fontSize: 11 },
     subtitle2: { fontSize: 12.5 },
+    // ...AND NO SHOUTING (the design walk, 2026-11-20: all-caps headings - "PLAYBOOKS - WHAT THIS CONNECTION DOES FOR US"): an overline is a
+    // small heading in the app's own words and case, never capitals spaced out
+    overline: { textTransform: "none", letterSpacing: 0, fontWeight: 600, fontSize: 12, lineHeight: 1.6 },
   },
   shape: { borderRadius: 8 },
   components: {
@@ -220,6 +223,8 @@ export const createAppTheme = (mode = "light") => createTheme({
 export const theme = createAppTheme();
 
 export const mono = { fontFamily: "'IBM Plex Mono', 'Cascadia Code', Consolas, monospace" };
+// ...and the app's own face, for words to the owner set inside a mono surface (the browser pane's hand-over - design round 5, 2026-11-19)
+export const sans = { fontFamily: "'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif" };
 // Compact modern select styling, shared by the detail-header dropdowns and the hand-off form.
 export const selSx = { fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)", borderRadius: 2,
   "& .MuiOutlinedInput-notchedOutline": { borderColor: BORDER },

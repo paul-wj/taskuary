@@ -200,23 +200,34 @@ class Holding(unittest.TestCase):
         run.assert_not_called()
         self.assertIn('did not approve it', self.heard()[0])
 
+    def test_his_yes_to_a_press_in_an_app_stands_for_the_task_and_his_no_is_told_not_asked_again(self):
+        # the roads audit, 2026-11-19 (#7): the desktop gate asks the one rule the browser's and the shell's do (actrule.decide)
+        self.check(); [rv] = self.pending()
+        with installed(), mock.patch('taskuary.workerstate._live', return_value=self.sess),                 mock.patch.object(ad, '_run', return_value=(0, '{"ok":true,"command":"click","data":{}}')):
+            self.assertTrue(verdicts.decide(self.s, rv, 'approve')['ok'])
+        self.assertEqual(self.check(), {}, 'the same press on the same control of the same app runs')
+        self.assertEqual(self.pending(), [])
+        self.s = MemoryStore(); self.tid = Factory(self.s).task('Reply to Gail about the Trainly renewal', Tags=ad.WANTS); turn_on(self.s)
+        self.check(); [rv] = self.pending()
+        with mock.patch('taskuary.workerstate._live', return_value=self.sess), mock.patch.object(ad, '_run'):
+            self.assertTrue(verdicts.decide(self.s, rv, 'reject')['ok'])
+        out = self.check()
+        self.assertIn('The owner dismissed this same step', out['hookSpecificOutput']['permissionDecisionReason'])
+        self.assertEqual(self.pending(), [])
+
 
 class Hook(unittest.TestCase):
-    def test_the_shell_hook_routes_desktop_acts_of_our_panes(self):
+    def test_a_desktop_act_is_held_where_it_runs(self):
+        from taskuary import gatecmd
         s = MemoryStore(); tid = Factory(s).task('Reply to Erin', Tags=ad.WANTS); turn_on(s)
-        pane = SimpleNamespace(sid='run1', alive=True, task_id=tid, cwd=r'C:\work', argv=['claude'], ext_id='c-1', resumed_from='', store=s)
-        send = {'tool_name': 'PowerShell', 'tool_input': {'command': SEND}, 'session_id': 'c-1', 'cwd': r'C:\work'}
-        with mock.patch.dict('taskuary.terminal.SESSIONS', {'run1': pane}, clear=True), installed(), names(), \
-                verdict({'irreversible': True, 'sure': True, 'what': 'sends'}):
-            self.assertEqual(hooks.browser({**send, 'tool_input': {'command': 'agent-desktop list-apps'}}, Brain(None)), {})
-            self.assertEqual(hooks.browser({**send, 'session_id': 'someone-else'}, Brain(None)), {})       # not our pane
-            self.assertEqual(hooks.browser(send, Brain(None))['hookSpecificOutput']['permissionDecision'], 'deny')
+        with installed(), names(), verdict({'irreversible': True, 'sure': True, 'what': 'sends'}):
+            self.assertEqual(gatecmd.judge(s, tid, 'run1', 'agent-desktop list-apps'), '')
+            self.assertIn(ad.HELD, gatecmd.judge(s, tid, 'run1', SEND))
 
 
 class Brief(unittest.TestCase):
     def test_the_hold_is_promised_only_where_there_is_one(self):
-        self.assertIn('HELD for the owner', ad.brief(held=True)); self.assertNotIn('CANNOT HOLD', ad.brief(held=True))
-        self.assertIn('CANNOT HOLD', ad.brief(held=False)); self.assertNotIn('HELD for the owner', ad.brief(held=False))
+        self.assertIn('HELD for the owner', ad.brief())
         self.assertIn('never pass --headed', ad.brief().replace('NEVER', 'never'))
 
     def test_offered_only_with_the_card_on_and_the_task_marked(self):
@@ -273,7 +284,7 @@ class TheMark(unittest.TestCase):
             self.assertNotIn('agent-desktop', terminal.seed_text(self.s, self.tid, cli='claude'))
             ad.mark(self.s, self.tid)
             self.assertIn('HELD for the owner', terminal.seed_text(self.s, self.tid, cli='claude').split('agent-desktop', 1)[1])
-            self.assertIn('CANNOT HOLD YOUR DESKTOP', terminal.seed_text(self.s, self.tid, cli='codex'))
+            self.assertIn('HELD for the owner', terminal.seed_text(self.s, self.tid, cli='codex').split('agent-desktop', 1)[1])
 
     def test_the_owner_marks_it_and_an_agent_cannot(self):
         from taskuary import guard

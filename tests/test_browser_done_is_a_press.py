@@ -1,5 +1,5 @@
-"""THE VIEW'S DONE IS A PRESS (the spine audit, 2026-11-09). A step handed to the owner on the agent's page - a captcha, the last button of
-a checkout - has a Done on the view. It went to a chat as words typed in the owner's name: a bubble they never wrote, a turn of its own, and
+"""THE VIEW'S DONE IS A PRESS (the spine audit, 2026-11-09). A step handed to the owner on the agent's page - a captcha, a code only he
+has - has a Done on the view (a held press is a card in the chat since 2026-11-18, never handed over on the page). It went to a chat as words typed in the owner's name: a bubble they never wrote, a turn of its own, and
 known to the server only by matching those words. It is their press now, by the road every other press takes: the hand-over closes, the
 agent is told by Taskuary that they SAY it is done (nothing saw the page move, so it looks first), and the page reads one quiet line.
 And the press the page itself saw read "You browser act pressed." under Taskuary's own line saying the same. Invented people."""
@@ -11,7 +11,7 @@ from taskuary import browsergate as bg, browserview, general, workerstate as ws
 from taskuary.store import MemoryStore
 from taskuary.testing import Factory
 
-PAY, SITE, BTN = 'https://pay.vendor.example/checkout', 'pay.vendor.example', '"Pay $42.00"'
+PAY, SITE = 'https://pay.vendor.example/checkout', 'vendor.example'      # the one name of a site (signin.site_name)
 
 
 class DoneIsAPress(unittest.TestCase):
@@ -27,12 +27,6 @@ class DoneIsAPress(unittest.TestCase):
         "The agent handed the page over for a step only a person can do."
         with mock.patch.object(browserview, 'state', return_value={'open': True, 'url': PAY}):
             return browserview.your_turn(self.s, self.tid, 'run1', 'tick the "I\'m not a robot" box', watch=None)
-    def press(self):
-        "The agent's last button was held and handed to the owner to press on the page."
-        rid = bg.PRESS + 'abc'
-        bg.HANDS[rid] = {'tid': self.tid, 'sid': 'run1', 'btn': BTN, 'name': 'Pay $42.00', 'site': SITE}
-        ws.record(self.s, self.tid, 'run1', 'input_needed', request_id=rid, text=bg.PRESS_LINE.format(btn=BTN), choices=[browserview.TURN_DONE], source='api')
-        return rid
     def heard(self):
         end = time.time() + 5
         while not self.told and time.time() < end: time.sleep(.01)
@@ -51,7 +45,7 @@ class DoneIsAPress(unittest.TestCase):
         self.assertIn('did not see the page move', words); self.assertIn('look at it as it is now', words)
         self.assertEqual(self.said(), [], 'no bubble, and no line by Taskuary either')
         # ...in the words of the button he pressed: the view's "I'm done" left "You pressed Done" (the overnight walk, 2026-11-11)
-        self.assertEqual(self.lines(), [f"You pressed I'm done: the step on {SITE} is finished."])
+        self.assertEqual(self.lines(), [f"You pressed I'm done on {SITE}."])          # ...a press, never "the step is finished" (the walk, 2026-11-22)
         self.assertEqual(self.open(), []); self.assertEqual(bg.HANDS, {})
         again = ws.answer(self.s, self.tid, rid, '', press=True)                  # a second press, or the watch got there first
         self.assertEqual((again['delivered'], again['state']), (False, 'resolved')); self.assertEqual(len(self.told), 1)
@@ -89,54 +83,58 @@ class DoneIsAPress(unittest.TestCase):
         while general.starting(self.tid) and time.time() < end: time.sleep(.01)
         self.assertFalse(general.starting(self.tid), 'and no longer once it has handed on')
 
-    def test_done_on_a_button_handed_over_names_the_button(self):
-        rid = self.press()
-        self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
-        self.assertIn(f'pressing {BTN}', self.heard()[0][0])
-        self.assertEqual(self.lines(), [f"You pressed I'm done: {BTN} on {SITE} is pressed."])
-
-    def test_the_press_the_page_saw_is_one_line_in_plain_words(self):
-        rid = self.press()
-        self.assertTrue(bg.pressed(self.s, self.tid, rid, {'href': PAY + '/thanks', 'title': 'Thank you'}))
-        self.assertIn('The page moved on from "Pay $42.00"', self.heard()[0][0])
-        self.assertEqual(self.lines(), [f'You pressed {BTN} on {SITE}.'])
-        self.assertEqual(self.said(), [], 'said once: no second line by Taskuary above it')
+    def test_the_step_the_page_saw_done_is_one_line_in_plain_words(self):
         rid = self.turn()
         self.assertTrue(bg.pressed(self.s, self.tid, rid, {'href': PAY + '/next', 'title': 'Next'}))
-        self.assertEqual(self.lines()[-1], f'You did the step on {SITE}.')
+        self.assertIn('the page moved on', self.heard()[0][0])
+        self.assertEqual(self.lines(), [f'You did the step on {SITE}.'])
+        self.assertEqual(self.said(), [], 'said once: no second line by Taskuary above it')
         self.assertFalse(any('browser act' in x for x in self.lines()))
 
+    def test_a_page_the_agent_moved_on_is_never_said_as_his(self):
+        # the owner's rule, tell the truth (2026-11-19): the agent opened another page while a human check waited on him, and the chat read
+        # "You did the step on nowsecure.nl - the agent goes on" - he had done nothing
+        rid = self.turn()
+        browserview._BEGAN['run1'] = time.time() + 1                  # the agent's own command, after the hand-over
+        self.addCleanup(browserview._BEGAN.pop, 'run1', None)
+        self.assertTrue(bg.agent_moved('run1', rid))
+        self.assertTrue(bg.left_by_agent(self.s, self.tid, rid))
+        self.assertEqual(self.lines(), [], 'no press of his')
+        self.assertEqual(self.said(), [])
+        self.assertNotIn(rid, self.open())
+        notes = [c['Body'] for c in self.s.list_comments(self.tid, internal=True)]
+        self.assertTrue(any(n.startswith(bg.NOT_NEEDED_ANY_MORE) for n in notes)) and self.assertFalse(any('You did the step' in n for n in notes))
+        self.assertIn('they did nothing there', self.heard()[0][0])
+
     def test_a_step_that_was_not_done_draws_no_press(self):
-        rid = self.press()
-        self.assertTrue(bg.not_pressed(self.s, self.tid, rid, 'the browser was closed before it was pressed'))
+        rid = self.turn()
+        self.assertTrue(bg.not_pressed(self.s, self.tid, rid, 'the browser was closed before it was done'))
         self.assertIn('NOT done', self.heard()[0][0]); self.assertEqual(self.lines(), [])
-        self.press(); bg.owner_said(self.s, self.tid, 'run1', "don't - wrong card")
-        self.assertEqual(self.lines(), [])
 
     def test_a_terminal_agent_is_told_the_same_way(self):
-        typed, pane = [], SimpleNamespace(sid='run1', alive=True, task_id=self.tid, cli='claude')
-        with mock.patch.dict('taskuary.terminal.SESSIONS', {'run1': pane}, clear=True), \
-                mock.patch('taskuary.terminal.type_into', lambda s, t, **k: typed.append((t, k))):
+        # ...by the one road into the agent (general.to_agent): a terminal's is the waiting room, Taskuary's note typed in at its stop -
+        # never keys over a turn at work
+        pane = SimpleNamespace(sid='run1', alive=True, task_id=self.tid, cli='claude')
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {'run1': pane}, clear=True), mock.patch('taskuary.waitroom.deliver', return_value={}):
             rid = self.turn()
             self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
-            end = time.time() + 5
-            while not typed and time.time() < end: time.sleep(.01)
-        self.assertIn("The owner pressed I'm done", typed[0][0]); self.assertEqual(typed[0][1], {'brief': True})
+        [n] = self.s.waiting_notes(self.tid)
+        self.assertIn("The owner pressed I'm done", n['Note']); self.assertEqual(n['CreatedBy'], 'router', "Taskuary's, never the owner's line")
 
     def test_a_resting_agent_is_started_on_it(self):
         rid, woke = self.turn(), []
-        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(general, 'tell', lambda s, t, w, *a: woke.append(w) or 'woke'):
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(general, 'to_agent', lambda s, t, w, *a: woke.append(w) or 'woke'):
             self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
         self.assertIn('open it again', woke[0]); self.assertEqual(self.open(), [])
 
     def test_a_step_whose_page_closed_says_so_and_its_press_brings_it_back(self):
-        # the owner, 2026-11-10 ("i cant see the screen"): a record's Save handed over on portal.vendor.example, then the session gone (a
-        # restart, a stop) and its browser with it. The card still read "press Save on the page" with Done over no page, and Done told the
-        # agent he had finished. It says the page closed, and its one press has the agent open it again and hand the step back
+        # the owner, 2026-11-10 ("i cant see the screen"): a step handed over on portal.vendor.example, then the session gone (a restart, a
+        # stop) and its browser with it. The card still read "on the page" with Done over no page, and Done told the agent he had finished.
+        # It says the page closed, and its one press has the agent open it again and hand the step back
         from taskuary import taskstate
-        rid, woke = self.press(), []
+        rid, woke = self.turn(), []
         bg.HANDS.clear()
-        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(browserview, 'state', return_value={'open': False}),                 mock.patch.object(general, 'tell', lambda s, t, w, *a: woke.append(w) or 'woke'):
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(browserview, 'state', return_value={'open': False}),                 mock.patch.object(general, 'to_agent', lambda s, t, w, *a: woke.append(w) or 'woke'):
             ask = bg.shown_ask({**taskstate.open_question(self.s, self.tid), 'resting': True})
             self.assertIn('has closed', ask['text']); self.assertNotIn('on the page. I', ask['text'])
             self.assertEqual(ask['choices'], ['Try again']); self.assertEqual(ask['request_id'], rid)

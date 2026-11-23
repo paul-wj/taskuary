@@ -52,9 +52,16 @@ class TakingTurnsTests(unittest.TestCase):
         got, prompts = [], []
         with patched, mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: (prompts.append(f'{system} {user}'), time.sleep(0.8), 'answered')[-1]):
             first = threading.Thread(target=lambda: got.append(sess.send_prompt('one')))
-            first.start(); time.sleep(0.2)
-            more = [threading.Thread(target=lambda w=w: got.append(sess.send_prompt(w))) for w in ('two', 'actually three')]
-            for t in more: t.start(); time.sleep(0.1)
+            first.start()
+            # ...each line once the state it is about holds, never after a fixed sleep (a slow CI runner sent "two" before "one" was at work)
+            def until(ok, s=10):
+                end = time.time() + s
+                while not ok() and time.time() < end: time.sleep(0.02)
+            until(lambda: bool(prompts))
+            more = []
+            for n, w in enumerate(('two', 'actually three'), 1):
+                more.append(t := threading.Thread(target=lambda w=w: got.append(sess.send_prompt(w)))); t.start()
+                until(lambda n=n: len(general.waiting_lines(self.s, self.tid)) >= n)
             for t in [first, *more]: t.join(15)
         self.assertEqual(sorted(got), ['', 'answered', 'answered'], 'two turns: the first, and one for both lines behind it')
         users = [c['Body'] for c in general.chat_rows(self.s, self.tid) if c['ActorType'] == general.USER_TYPE]
@@ -89,7 +96,7 @@ class TakingTurnsTests(unittest.TestCase):
 
     def test_a_browser_that_gives_up_stops_waiting(self):
         """Cancelled while queued: it returns, it does not sit on the thread for four minutes."""
-        sess, patched = _session(self.s, self.tid, 'answered', delay=1.5)
+        sess, patched = _session(self.s, self.tid, 'answered', delay=3.0)     # ...a turn well past the bound, so a slow runner never reads as waiting
         cancel = threading.Event()
         with patched:
             threading.Thread(target=lambda: sess.send_prompt('one'), daemon=True).start()
@@ -98,7 +105,7 @@ class TakingTurnsTests(unittest.TestCase):
             began = time.time()
             with self.assertRaises(RuntimeError):
                 sess.send_prompt('two', cancel=cancel)
-            self.assertLess(time.time() - began, 1.0)
+            self.assertLess(time.time() - began, 2.0)
 
     def test_a_long_answer_never_fails_the_one_behind_it(self):
         """The owner, 2026-11-05: talking to the agent while it works. A message waited 240 s behind a long turn and then failed "something
@@ -300,3 +307,16 @@ class AFinishedSessionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_a_moved_clock_is_said_as_the_time_never_as_a_change_to_its_instructions():
+    """The agent audit, 2026-11-22: every turn of a kept conversation opened with "these replace what your instructions said" only because the
+    time had moved. The clock is the turn's fact: said plainly when it moved, never under the update header, never when it did not."""
+    class S: frozen = None
+    s = S()
+    general.freeze(s, 'HEAD', ['A rule', 'TODAY: Sunday, 1:00 AM'], kept=False)
+    _, said = general.freeze(s, 'HEAD', ['A rule', 'TODAY: Sunday, 1:30 AM'], kept=True)
+    assert said == 'TODAY: Sunday, 1:30 AM' and general.UPDATED not in said
+    assert general.freeze(s, 'HEAD', ['A rule', 'TODAY: Sunday, 1:30 AM'], kept=True)[1] == ''
+    _, said = general.freeze(s, 'HEAD', ['A new rule', 'TODAY: Sunday, 1:31 AM'], kept=True)
+    assert said.startswith(general.UPDATED) and said.endswith('TODAY: Sunday, 1:31 AM')

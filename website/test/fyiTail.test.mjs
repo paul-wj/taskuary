@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { bandsOf, fyiTail, pileRows } from "../src/funnelPile.js";
 import { summarize, gistOf } from "../src/walkSummary.js";
 
-// A compact tail carries its field names alongside the rows.
-const FIELDS = ["key", "kind", "title", "who", "agent", "shows_who", "ref", "tid", "when", "category", "status", "channel"];
+// the fields the server folds a held-back FYI row into (taskuary/funnel.py TAIL_FIELDS), read from the server's own file
+const FIELDS = JSON.parse(readFileSync(fileURLToPath(new URL("../../taskuary/funnel.py", import.meta.url)), "utf8")
+  .match(/^TAIL_FIELDS = \(([^)]*)\)/m)[1].replace(/'/g, '"').replace(/,\s*$/, "").replace(/^/, "[").concat("]"));
 const people = ["Erin Blake", "Gail Moreno", "Paula Vance", "Ray Colton", "Marcus Reed", "Omar Keller"];
 const fyi = (n) => ({ key: `msg:${n}`, lane: "fyi", order_band: 4, kind: "email", title: n % 7 ? `Status note ${n}` : "Weekly digest",
   who: people[n % people.length], shows: { who: people[n % people.length], state: "fyi" }, ref: "", tid: null,
@@ -29,4 +32,3 @@ test("a rail with no tail is its rows, and the same rows every time", () => {
   assert.deepEqual(pileRows(null), []);
   assert.equal(fyiTail(paged), fyiTail(paged));                  // expanded once per answer, not on every render
 });
-

@@ -4,6 +4,7 @@ frame on the task. A fake screencast server stands in for agent-browser - no Chr
 import pytest
 import asyncio, base64, json, os, socket, sys, threading, time, unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 from fastapi.testclient import TestClient
 from taskuary import browserview as bv, server, terminal
@@ -96,6 +97,8 @@ class StateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {'AGENT_BROWSER_HOME': d}):
             (Path(d) / 'browsers' / 'chrome-152.0.7977.64').mkdir(parents=True); exe = Path(d) / 'browsers' / 'chrome-152.0.7977.64' / 'chrome.exe'
             exe.write_text('')
+            # ...on a computer with no Chrome installed: the installed one comes first (chrome_exe), so it is out of the way for the whole launch
+            no_chrome = mock.patch.object(bv, 'installed_chrome', return_value=''); no_chrome.start(); self.addCleanup(no_chrome.stop)
             self.assertEqual(bv.chrome_exe(), str(exe))
             e = bv.env('rc1'); port = bv.cdp_port('rc1')
             self.assertEqual(e['AGENT_BROWSER_CDP'], str(port)); self.assertNotIn('AGENT_BROWSER_USER_AGENT', e)
@@ -113,7 +116,7 @@ class StateTests(unittest.TestCase):
             # and reading it back was a read outside the task, held. Chrome takes the folder from its profile's preferences at launch
             prof = Path(next(a for a in argv if a.startswith('--user-data-dir=')).split('=', 1)[1])
             prefs = json.loads((prof / 'Default' / 'Preferences').read_text(encoding='utf-8'))
-            self.assertEqual(prefs['download']['default_directory'], str(bv.downloads()))
+            self.assertEqual(Path(prefs['download']['default_directory']).resolve(), bv.downloads('rc1').resolve())     # ...the session's own, however spelled (/var is /private/var on macOS)
             self.assertFalse(prefs['download']['prompt_for_download'])
             self.assertTrue(bv.downloads().is_dir()); self.assertIn(str(bv.downloads()), bv.brief())
             from taskuary import readgate
@@ -365,8 +368,11 @@ class NavigateTests(unittest.TestCase):
             self.calls.append((argv, kw))
             return mock.Mock(wait=mock.Mock(return_value=0), kill=mock.Mock())
         self.popen = mock.patch.object(bv.spawn, 'popen', side_effect=popen); self.popen.start()
+        # ...and the session's own Chrome, which a command first asks over its DevTools port whether a load is stuck (browserview.unstick):
+        # none answers here - left real, it reached for a port on this machine, and macOS CI's guard refused it (2026-11-18)
+        self.cdp = mock.patch.object(bv, '_devtools', return_value=None); self.cdp.start()
     def tearDown(self):
-        for p in (self.open, self.which, self.popen): p.stop()
+        for p in (self.open, self.which, self.popen, self.cdp): p.stop()
 
     def test_a_bare_host_is_https_and_the_argv_is_a_list(self):
         self.assertEqual(bv.navigate('s', ' adp.com/login '), 'https://adp.com/login')
@@ -495,10 +501,10 @@ class StuckLoadTests(unittest.TestCase):
         self.assertTrue(str(e.exception).startswith('It had not finished loading')); self.assertIn('Taskuary stopped it', str(e.exception))
 
     def test_the_agents_next_browser_line_stops_it_first(self):
-        from taskuary import browsergate, hooks
+        from taskuary import browsergate, gatecmd
         bv._BEGAN['st'] = time.time() - bv.STUCK - 5
         with mock.patch.object(bv, 'on_demand'), mock.patch.object(browsergate, 'check', return_value={}):
-            hooks.command_gate(MemoryStore(), 1, 'st', 'agent-browser get url')
+            gatecmd.judge(MemoryStore(), 1, 'st', 'agent-browser get url')
         self.assertEqual(self.stopped, ['A'])
 
     def test_the_sign_in_reaches_chrome_on_its_own_port_not_through_agent_browser(self):
@@ -530,3 +536,41 @@ class TheAddressIsTheTabsOwnTests(unittest.TestCase):
     def test_a_chrome_that_does_not_answer_leaves_the_file_as_before(self):
         self.tabs = None
         self.assertEqual(bv.state('t1', fresh=True)['url'], 'https://portal.example/runs')
+
+
+# A WINDOW THE PAGE OPENS IS FOLLOWED (the owner, live 2026-11-19: "Continue with Google" on a site's sign-in did nothing he could see)
+
+
+def test_google_s_own_refusal_page_is_said_with_the_way_past_it():
+    told = []
+    with mock.patch('taskuary.terminal.get', return_value=SimpleNamespace(task_id=7)),             mock.patch.object(bv, 'your_turn', side_effect=lambda st, tid, sid, what='': told.append(what)), mock.patch('taskuary.browsergate._tell'):
+        assert bv.refused('fw2', 'https://accounts.google.com/v3/signin/rejected?continue=x')
+        assert not bv.refused('fw2', 'https://accounts.google.com/v3/signin/rejected')          # once a session
+        assert not bv.refused('fw3', 'https://accounts.google.com/v3/signin/identifier')
+    assert told == [bv.REFUSED_WHAT] and 'email and password' in told[0]
+
+
+# A HUMAN CHECK IS HIS, AT ONCE, and A DOWNLOAD IS TOLD BY ITS PATH (the owner, 2026-11-19: "the browser must work like a regular user's; no dead ends")
+def test_a_human_check_that_stands_is_handed_to_him_once_and_one_that_clears_is_nobodys():
+    tl = [{'type': 'page', 'id': 'P', 'url': 'https://portal.vendor.example/login'},
+          {'type': 'iframe', 'id': 'F', 'url': 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile'}]
+    handed, told, seen = [], [], {}
+    with mock.patch.object(bv, '_devtools', return_value=tl), mock.patch.object(bv, 'active_tab', return_value='P'), \
+            mock.patch.object(bv, 'HUMAN_AFTER', 0), mock.patch('taskuary.terminal.get', return_value=SimpleNamespace(task_id=7)), \
+            mock.patch.object(bv, 'your_turn', side_effect=lambda st, tid, sid, what='': handed.append(what)), \
+            mock.patch('taskuary.browsergate._tell', side_effect=lambda st, tid, text, **k: told.append(text)):
+        assert bv.human('hc1', seen) and not bv.human('hc1', seen)                       # once a page
+    assert handed == [bv.HUMAN_WHAT] and "I'm done" in handed[0] and 'wait' in told[0]
+    with mock.patch.object(bv, '_devtools', return_value=tl[:1]), mock.patch.object(bv, 'active_tab', return_value='P'):
+        assert not bv.human('hc2', {})                                                    # no check on the page: nothing
+
+
+def test_a_finished_download_is_told_by_its_path(tmp_path):
+    told = []
+    with mock.patch.object(bv, 'downloads', return_value=tmp_path), mock.patch('taskuary.terminal.get', return_value=SimpleNamespace(task_id=7)), \
+            mock.patch('taskuary.browsergate._tell', side_effect=lambda st, tid, text, **k: told.append(text)):
+        had = bv.arrived('dl1', set())
+        (tmp_path / 'statement.pdf.crdownload').write_text('x'); had = bv.arrived('dl1', had)
+        assert told == []                                                                 # still coming
+        (tmp_path / 'statement.pdf').write_text('x'); bv.arrived('dl1', had)
+    assert len(told) == 1 and str(tmp_path / 'statement.pdf') in told[0] and 'outputs folder' in told[0]

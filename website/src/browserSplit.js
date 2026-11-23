@@ -6,18 +6,10 @@ import { t } from "./i18n.js";
 
 export const DEFAULT_RATIO = 0.58;          // the browser's share of the width
 export const MIN_RATIO = 0.3, MAX_RATIO = 0.8;
-export const CHIP_BELOW = 700;              // a slot narrower than this (a Wall tile) gets a chip, not a split
 const KEY_RATIO = "tq-browser-ratio", KEY_FOLD = "tq-browser-folded";
 const foldKey = (sid) => sid ? `${KEY_FOLD}.${sid}` : KEY_FOLD;
 
 export const clampRatio = (r) => (Number.isFinite(r) ? Math.min(MAX_RATIO, Math.max(MIN_RATIO, r)) : DEFAULT_RATIO);
-// ...AND THE CHAT KEEPS A READABLE WIDTH. Four fifths of a 1000px slot left the conversation ~200px - a
-// column of two-word lines beside a browser nobody needed that wide (the 2026-10-02 pane pass). The ratio
-// is still the owner's; it just never takes the chat below this many pixels (plus the 8px handle).
-export const MIN_CHAT_PX = 360;
-export const splitRatio = (r, width) =>
-  (width > 0 ? Math.max(MIN_RATIO, Math.min(clampRatio(r), (width - MIN_CHAT_PX - 8) / width)) : clampRatio(r));
-
 // the pointer's position across the whole split, as the browser's share (it sits on the right)
 export const ratioFromPointer = (x, left, width) => (width > 0 ? clampRatio(1 - (x - left) / width) : DEFAULT_RATIO);
 
@@ -150,11 +142,18 @@ export const activeTab = (m) => String((m?.tabs || []).find((t) => t?.active)?.u
 // from the browser's `tabs` message - named by the page's title, or its host where the title is only its address. [] for a tabs message
 // with none, and the strip draws only for two or more: a one-site task looks as it always did
 export const TAB_ID = /^t\d{1,4}$/;
+// ...AND A PAGE KEEPS THE TITLE IT ONCE SHOWED (design round 5, 2026-11-19: thirteen vendor tabs read "127.0.0.1:18791", "127.0.0.2:18791" ... - the
+// browser names a tab in the background by its address alone): the title seen for an address names its tab until another title comes
+const TITLES = new Map();
 export const tabList = (m) => (Array.isArray(m?.tabs) ? m.tabs : []).filter((t) => t && TAB_ID.test(String(t.tabId || ""))).map((t) => {
-  const url = String(t.url || ""), title = String(t.title || "").trim();
+  const url = String(t.url || ""), at = url.split("#")[0], now = String(t.title || "").trim();
   let host = ""; try { host = new URL(url).host; } catch { /* not an address */ }
-  const bare = !title || title === host || url.includes(title);
-  return { id: String(t.tabId), name: (bare ? host || title || url : title) || "new tab", url, active: !!t.active };
+  const bare = (x) => !x || x === host || url.includes(x);
+  if (!bare(now)) TITLES.set(at, now);
+  const title = bare(now) ? TITLES.get(at) || "" : now;
+  // ...a page reached by a bare address with no title of its own reads by its address without the port (never "127.0.0.4:18811")
+  const where = /^\d+\.\d+\.\d+\.\d+(:\d+)?$|^\[/.test(host) ? host.replace(/:\d+$/, "") : host;
+  return { id: String(t.tabId), name: (title || where || now || url) || "new tab", url, active: !!t.active };
 });
 
 // Dragging the splitter fires a resize every frame; Chrome should not be re-laid-out for six pixels.
@@ -196,33 +195,30 @@ export const isLocalPage = (url) => /^file:/i.test(String(url || "").trim());
 export const isBlankPage = (url) => { const u = String(url || "").trim(); return !u || /^about:/i.test(u); };
 // ...and "your turn - click the page and type" is for a wait ON the page: the agent's hand-over (isTurn) or a sign-in (signin.PREFIX) -
 // never a question it asked in words, which is answered in the chat's box
-export const waitsOnPage = (asking) => isTurn(asking) || String(asking?.request_id || "").startsWith("signin:");
+export const waitsOnPage = (asking) => isTurn(asking) || isSignin(asking);
 
-// Should this slot hold the split, or just a chip? The Wall tiles three or four sessions across.
-// `stack`: an agent's conversation on its task (GeneralWorkspace) - too narrow to split, the browser goes ABOVE the chat instead of
-// into a chip, so the page the agent is on is in its canvas (the owner, 2026-10-28: "it should show up as a BROWSER inside the agent
-// canvas"). Only a phone's width still gets the chip - the view as a link.
-export const PHONE_BELOW = 560;
-export const layoutFor = (width, open, folded, stack = false) => (!open ? "none"
-  : width < CHIP_BELOW ? (!stack || width < PHONE_BELOW ? "chip" : folded ? "folded" : "stack")
-  : folded ? "folded" : "split");
+// THE ONE LAYOUT OF THE BROWSER PANE, for every slot it is drawn in - a chat task, a coding task, a Wall tile, a setup's terminal (the design
+// loop, 2026-11-20: three rules - layoutFor's chip under 700/560 with a view stacked over the chat, quietLayout's chip under 420 - drew the same
+// hand-over as a chip on a coding task and a split on a chat task). The view sits BESIDE the chat, never above it and never over the task list;
+// only a phone's width gets the chip, the view as a link. `folded`: the owner's own Fold (or an agent's own file it opened, isLocalPage)
+export const CHIP_BELOW = 420;
+export const paneLayout = (width, open, folded = false) => (!open ? "none" : width > 0 && width < CHIP_BELOW ? "chip" : folded ? "folded" : "split");
 // the layouts where the view itself is on screen, so what waits on it (a held act, the owner's turn) is drawn on it
-export const viewOnScreen = (layout) => layout === "split" || layout === "stack";
+export const viewOnScreen = (layout) => layout === "split";
+// ...and the chat keeps CHAT_SHARE of the width whatever the ratio dragged: at a laptop's ~555px slot a pixel floor for the chat left the page
+// ~190px, too small to sign in on - and four fifths of a wide slot left the chat a column of two-word lines
+export const CHAT_SHARE = 0.45;
+export const paneShare = (r) => Math.min(1 - CHAT_SHARE, clampRatio(r));
 
-// A STEP ONLY THE OWNER CAN DO ON THE PAGE (browserview.TURN_PREFIX): the agent handed the page over - drawn on the view as "Your turn"
-export const TURN_PREFIX = "yourturn:";
-export const isTurn = (asking) => String(asking?.request_id || "").startsWith(TURN_PREFIX);
-// ...and A PRESS HANDED OVER (browsergate.hand_over, the owner 2026-11-05: "you hit pay in the browser instead of a generated ui"): the agent
-// filled the page and stopped on its last button, which is the owner's to press on the page itself. Its line says all of it; the page's own
-// press is the approval, and Taskuary sees it land
-export const PRESS_PREFIX = "yourturn:press:";
-export const isPress = (asking) => String(asking?.request_id || "").startsWith(PRESS_PREFIX);
+// WHICH KIND OF ASK IT IS, as the server says it (workerstate.ask_of: 'signin' | 'turn' | 'question') - the page never reads a request id's marker.
+// A STEP ONLY THE OWNER CAN DO ON THE PAGE: the agent handed the page over - drawn on the view as "Your turn"
+export const isTurn = (asking) => asking?.ask === "turn";
+export const isSignin = (asking) => asking?.ask === "signin";
 // WHAT THE CHAT'S BOX SAYS WHILE THE AGENT WAITS ON HIM - one function for every ask: a sign-in is typed on the page (never a password here), a
 // step handed over is done on the page (the browser audit, 2026-11-15: "Answer the agent's question..." stood under a step that was no question),
 // and only a question is answered in the box
-export const SIGNIN_PREFIX = "signin:";
-export const askPlaceholder = (asking) => (!asking ? "" : String(asking.request_id || "").startsWith(SIGNIN_PREFIX) ? "Message the agent - never your password"
-  : isTurn(asking) ? (isPress(asking) ? "Press it on the page - or tell the agent here…" : "Your step is on the page - or tell the agent here…")
+export const askPlaceholder = (asking) => (!asking ? "" : isSignin(asking) ? "Message the agent - never your password"
+  : isTurn(asking) ? "Your step is on the page - or tell the agent here…"
   : "Answer the agent's question…");
 
 // A HELD BROWSER ACT of THIS session's browser (browsergate.py), as the view draws it - null for anything else (a shell step, another
@@ -240,25 +236,4 @@ export const heldOn = (review, sid) => {
 // unless they need login ... Browser should open side by side not top/bottom"). The agent browsing is a "Working on this…" line in the
 // chat and nothing more; the page is drawn for a sign-in or a code the vault does not keep (a `signin:` ask), a hand-over - a captcha,
 // a step only a person may do (isTurn) - or a step it held for Approve (heldOn). A saved sign-in raises no ask (signin.needs), so it
-// is never drawn. Then it sits BESIDE the chat, never over it: the chat keeps CHAT_SHARE of the width, a phone's width gets the chip.
-export const CHAT_SHARE = 0.45;
-export const needsOwner = (asking, held = []) => waitsOnPage(asking) || !!held?.length;
-// ...folded by the owner's own Fold, it is the chip that says "your turn - open it". A 1024px laptop's chat slot is ~555px - under
-// PHONE_BELOW, where the other layouts chip it - and still split here: hiding the page the owner was asked to sign in on is worse than a
-// small one. Only a phone's slot gets the chip.
-export const QUIET_CHIP_BELOW = 420;
-export const quietLayout = (width, open, folded = false) => (!open ? "none" : width > 0 && width < QUIET_CHIP_BELOW ? "chip" : folded ? "folded" : "split");
-// ...the chat's floor here is its share, not MIN_CHAT_PX: at a laptop's ~555px slot that floor left the page ~190px, too small to sign in on
-export const quietRatio = (r) => Math.min(1 - CHAT_SHARE, clampRatio(r));
-
-// THE TASK LIST FOLDS WHILE A CHAT'S BROWSER NEEDS THE OWNER (the owner, 2026-11-05: on a 1024px laptop the page to sign in on was ~300px wide):
-// a quiet pane showing its page beside the chat asks for the room (SessionPane), and the rail (FeedView) folds the way set-up folds it, coming
-// back when no pane asks any more. One flag for the window, held by whoever asks - two panes asking is still one fold
-const wants = new Set(), heard = new Set();
-export const roomWanted = () => wants.size > 0;
-export const wantRoom = (who, on) => {
-  const was = roomWanted();
-  if (on) wants.add(who); else wants.delete(who);
-  if (was !== roomWanted()) heard.forEach((f) => f(roomWanted()));
-};
-export const onRoom = (f) => { heard.add(f); return () => heard.delete(f); };
+// is never drawn. Then it is laid out as every pane is (paneLayout).

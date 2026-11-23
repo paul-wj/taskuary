@@ -123,11 +123,23 @@ def flags(**kw) -> dict:
     return {**kw, 'creationflags': kw.get('creationflags', 0) | CREATE_NO_WINDOW}
 
 
-def run(*args, **kw):
-    with clean_dll_dir(): return subprocess.run(*args, **flags(**guard(**kw)))
-def popen(*args, **kw):
-    with clean_dll_dir(): return subprocess.Popen(*args, **flags(**guard(**kw)))
+# A PROGRAM BEING REPLACED UNDER US (walk 2, 2026-11-19): the claude CLI updated itself while two tasks started - for eight seconds its exe was
+# a half-written file, Windows answered "[WinError 216] This version of %1 is not compatible...", and both starts failed for good. The image
+# Windows cannot load (193, 216) or cannot open while it is being written (32) is tried again for a few seconds before it counts as a failure
+SWAPPING, SWAP_WAIT = (32, 193, 216), 12.0
+def _started(f, *args, **kw):
+    import time
+    end = time.monotonic() + SWAP_WAIT
+    while True:
+        try:
+            with clean_dll_dir(): return f(*args, **kw)
+        except OSError as e:
+            if getattr(e, 'winerror', None) not in SWAPPING or time.monotonic() > end: raise
+            time.sleep(1)
 
+
+def run(*args, **kw): return _started(subprocess.run, *args, **flags(**guard(**kw)))
+def popen(*args, **kw): return _started(subprocess.Popen, *args, **flags(**guard(**kw)))
 _TREE_STATE_LOCK = threading.Lock()
 
 
@@ -183,11 +195,11 @@ def _stop_posix_tree(process):
                 if error is None: error = exc
     if error is not None: raise error
 
+
 def _process_alive(process):
     poll = getattr(process, 'poll', None)
     if callable(poll): return poll() is None
     return bool(process.isalive())
-
 
 
 def stop_tree(process):
@@ -203,7 +215,6 @@ def stop_tree(process):
             failure = str(exc)
         try:
             if _process_alive(process):
-                # Popen.kill() takes no signal; winpty.kill(sig) does. Match the liveness API above.
                 if callable(getattr(process, 'poll', None)): process.kill()
                 else: process.terminate(force=True)
         except (OSError, AttributeError) as exc:
@@ -214,6 +225,8 @@ def stop_tree(process):
         if getattr(process, '_taskuary_tree_stopped', False): return
         _stop_posix_tree(process)
         process._taskuary_tree_stopped = True
+
+
 def bare(*args, **kw):
     """A child that sets its own creation flags (the WhatsApp bridge, the update helper, a browser): guarded, no console flag."""
     with clean_dll_dir(): return subprocess.Popen(*args, **guard(**kw))

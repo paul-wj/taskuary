@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/ldbumble/taskuary/actions/workflows/ci.yml/badge.svg)](https://github.com/ldbumble/taskuary/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ldbumble/taskuary/badge)](https://scorecard.dev/viewer/?uri=github.com/ldbumble/taskuary)
-[![PyPI](https://img.shields.io/pypi/v/taskuary.svg?cacheSeconds=300&release=0.4.0.23&asof=0.4.0.23-live)](https://pypi.org/project/taskuary/)
+[![PyPI](https://img.shields.io/pypi/v/taskuary.svg?cacheSeconds=300&release=0.4.1.9&asof=0.4.1.9-live)](https://pypi.org/project/taskuary/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](https://github.com/ldbumble/taskuary)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -15,7 +15,7 @@ reply, builds the spreadsheet, fills the form - and hands you one button: **Send
 out until you press it.
 
 Runs on your computer. Free, open source, bring your own AI (Claude Code, Codex, Gemini, an API key, or a local
-model). Early: **v0.4.0.23**, breaking changes possible before 1.0.
+model). Early: **v0.4.1.9**, breaking changes possible before 1.0.
 
 This branch also includes English/Chinese interface switching, native Oh My Pi support, read-only Jira Data Center feeds, and [reviewed Skills extracted from completed work](docs/site/skills.md). Windows source users can use the launcher with LAN controls.
 
@@ -118,4 +118,14 @@ nothing leaves. Details: [Privacy](docs/PRIVACY.md).
 
 ![Daily installs of taskuary from PyPI, mirror traffic excluded](https://raw.githubusercontent.com/ldbumble/taskuary/stats/downloads.svg)
 
-MIT licensed. Issues and pull requests welcome; security reports go to [SECURITY.md](SECURITY.md).
+## Help build it
+
+**⭐ If Taskuary helps you, please [star the repo](https://github.com/ldbumble/taskuary/stargazers).** Stars are how
+other people find it, and the clearest signal of what to keep building.
+
+Contributors are welcome. A good first PR is a report connector: about 15 lines turns any system (Postgres, Google
+Sheets, Jira...) into a report an agent reads. [CONTRIBUTING.md](CONTRIBUTING.md) has the recipe, the repo map and
+the dev setup, and the [good first issues](https://github.com/ldbumble/taskuary/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+are waiting. Tests run offline, with no credentials. Please read the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+MIT licensed. Security reports go to [SECURITY.md](SECURITY.md).

@@ -17,16 +17,17 @@ import {
 import { ButtonBar } from "./ButtonBar.jsx";
 import CloseIcon from "@mui/icons-material/Close";
 import api from "./api";
+import { prefetchTask } from "./taskDetail.js";
 import { ACCENT, ACCENT2, BORDER, DIM, FAINT, INK, PANEL, ROLES, mono } from "./theme.jsx";
 import { ChannelIcon, MicButton, useAgents, usePeopleSearch } from "./ui.jsx";
 import { withFound } from "./peopleSearch.js";
 import { outcomeOf } from "./dispatchOutcome.js";
 import { NO_REPO, REPEATS, hasWords, planTask, withDesktop } from "./newTask.js";
-import { AttachImage, ImageTray, usePromptImages, withImages } from "./promptImages.jsx";
+import { AttachImage, ImageTray, usePromptImages } from "./promptImages.jsx";
 import { emailRecipientOptions, normalizeEmails, recipientId, recipientLabel, recipientOptions, sendPrefill, validEmail } from "./recipientOptions.js";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Checkbox from "@mui/material/Checkbox";
-import SetupWithAi, { NEW_HASH, goStraight } from "./SetupWithAi.jsx";
+import SetupWithAi, { NEW_HASH } from "./SetupWithAi.jsx";
 import { useVerbs } from "./actionRow.js";
 import ConnectAi from "./ConnectAi.jsx";
 import NewMeeting from "./NewMeeting.jsx";
@@ -41,9 +42,8 @@ import { openAppLink } from "./appLinks.js";
 import { NEW_PB, askPlaybook } from "./playbookOpen.js";
 import { place } from "./words.js";
 import { label as btn } from "./buttons.js";
-import { capabilities, useCapabilities } from "./capabilities.js";
+import { aiFor, capabilities, useCapabilities } from "./capabilities.js";
 import { PromptBox } from "./AgentSummary.jsx";
-import { MdLine } from "./md.jsx";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { madeRow } from "./funnelPile.js";
 
@@ -189,11 +189,13 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
 // `line`: the Assistant's line that wrote this card (concierge._new)
 // `initialChannel` / `initialTo`: Send something already addressed - a People hit's Message them (SearchEverything, trust audit F6)
 export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = false, initialKind = "chat", initialHow = "", initialText = "", line = null,
-  initialChannel = "", initialTo = "", initialMeeting = null, initialRoutine = null, madeOf = "", initialFiles = null }) {
-  useLocale();
+  initialChannel = "", initialTo = "", initialMeeting = null }) {
   const [kind, setKind] = useState(initialKind);
   const said = useRef(null);      // the words, as the field debounces them
   const [busy, setBusy] = useState(false);
+  // ...HIS LINE, AT WORK FROM THE PRESS (the owner's rule, walk 4 2026-11-19): while the start reads whether an open task is already this work,
+  // his words stand under the box with the working dots - never a second task's row, never a blank beat - until the task it went to opens
+  const [sentLine, setSentLine] = useState("");
   const [err, setErr] = useState("");
   const [errAi, setErrAi] = useState(false);      // the error is "no AI is connected": it carries Connect an AI
   const [ok, setOk] = useState("");
@@ -209,9 +211,6 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   const aboutRef = useRef(null);
   const [mode, setMode] = useState("draft");
   const pics = usePromptImages({ files: true });          // ...a pasted, dropped or picked file of any kind, as every box takes (2026-11-16)
-  // ...and the files the box held when the Assistant wrote this card from its words: they stay on the card (the stress round of New's attachments
-  // - a goal written from "track this, attached" came up with an empty tray, and its press filed the goal without the file)
-  useEffect(() => { if (initialFiles?.length) pics.put(initialFiles); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   // agent
   // NOTHING TO PICK (the owner, TQ-1397: "you ask the agent what you need and it should do it ... never, ever be stuck on a repo thing"): no
   // agent, AI, model or repository picker - Settings names the AI, and a live session opens in its task's own folder and picks its repository
@@ -228,13 +227,13 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   // note
   const [when, setWhen] = useState("");
   // a goal (spec 2026-10-12): what done looks like is the words above; by when, who is involved, and whether the AI plans the steps
-  const noAi = useCapabilities().ai === false;
+  // ONE ANSWER PER JOB (capabilities.aiFor): the box starts a general agent; Plan it asks the Assistant, which writes the steps (goals.plan).
+  // Plan it read triage's AI while its press read the general agents' list - one sheet, two answers (2026-11-19)
+  const caps = useCapabilities(), noAi = !aiFor(caps, "general"), noPlanner = !aiFor(caps, "assistant");
   // ...Plan it only with an AI to plan: pre-selected with none, the goal's first press failed into NO_AI_PLAN (2026-10-22 walk). The
   // capability lands after the first draw, so it is followed until the owner picks a side
-  const [by, setBy] = useState(""); const [who, setWho] = useState(""); const [plan, setPlan] = useState(!noAi), planPicked = useRef(false);
-  useEffect(() => { if (!planPicked.current) setPlan(!noAi); }, [noAi]);
-  const [made, setMade] = useState(null);   // the card the Assistant wrote from New's one box - drawn in New's place
-  const [saidBack, setSaid] = useState(madeOf);  // ...or its answer, said under the box (and on the card it wrote, what it made of the words)
+  const [by, setBy] = useState(""); const [who, setWho] = useState(""); const [plan, setPlan] = useState(!noPlanner), planPicked = useRef(false);
+  useEffect(() => { if (!planPicked.current) setPlan(!noPlanner); }, [noPlanner]);
   const filed = useRef(null);      // a task this sheet filed whose start was refused: {taskId, ref, about, how}
 
   useEffect(() => { if (!open) return; setErr(""); setOk(""); setKind(initialKind); }, [open, initialKind]);
@@ -280,19 +279,21 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   const close = () => { if (!busy) onClose?.(); };
 
   const submit = useCallback(async () => {
-    setBusy(true); setErr(""); setErrAi(false); setOk(""); setSaid("");
+    setBusy(true); setErr(""); setErrAi(false); setOk("");
     const about = String((agentBoxRef.current ? wordsRef.current : aboutRef.current?.value) || "").trim();
     // THE BUTTON SPINS UNTIL WHAT IT MADE IS UP (the owner, 2026-11-09: "it should open new task right away or if it needs a second the create
     // new agent button should spin"): the card in the conversation is put down by the task landing on the table (AssistantView pull, holdsNew),
     // so its press stays busy until then - free again, it could be pressed twice and file the task twice. A dialog's host closes it itself
     let opened = false;
     // ...drawn at the press as its row (funnelPile.madeRow): the task, his words and its agent starting, never New's card over a "…"
-    const openIt = (tid) => { opened = !!tid && !!onOpenTask; onOpenTask?.(tid, { row: madeRow(tid, about) }); };
+    // ...its read asked with its chat as it opens, as a rail row's press asks it (taskDetail.prefetchTask): read only once its view had mounted,
+    // New's task drew its head over the chat's own spinner for that read (the nothing-above run, 2026-11-18)
+    const openIt = (tid) => { opened = !!tid && !!onOpenTask; if (tid) prefetchTask(api, tid); onOpenTask?.(tid, { row: madeRow(tid, about) }); };
     try {
       if (kind === "send") {
         const { data } = await api.post("/api/outbox", {
           channel, to: channel === "email" ? emailTo : to.trim(),
-          cc: channel === "email" ? cc : [], about: withImages(about, pics.paths), mode,
+          cc: channel === "email" ? cc : [], about, files: pics.paths, mode,
         });
         setOk({ key: mode === "task"
           ? "{ref} — an agent is finding out first; the message is drafted when it is done."
@@ -305,7 +306,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // NOTHING TO RUN IT ON, SAID HERE AND THE SHEET STAYS OPEN (owner-approved, 2026-10-21): the task was made, its agent failed a
         // second later, and it sat on the rail under "waiting on you". Read fresh - the list loaded with the sheet may be from before
         // ...read off the one capability (capabilities.has_ai): the demo's agents work with no AI connected, and its box said "No AI connected"
-        if (general && (await capabilities()).ai === false) { setErr({ key: NO_AI_LINE }); setErrAi(true); setBusy(false); return; }
+        if (general && !aiFor(await capabilities(), "general")) { setErr(NO_AI_LINE); setBusy(false); return; }
         // a session opens where the picker says (auto = the repository the words name, else the server guesses as ever);
         // the choice is the task's `repo:` tag, the override that always wins
 
@@ -315,7 +316,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // A START REFUSED FILES ONE TASK, NOT ONE PER PRESS (the UI audit, 2026-10-21): the task was made before the start was asked
         // for, so each retry of a refused start filed another copy nobody worked on. The same words pressed again start the one filed.
         const again = filed.current?.about === about && filed.current.how === how ? filed.current : null;
-        const data = again || (await api.post("/api/tasks", { Title: about.slice(0, 300), Summary: withImages(about, pics.paths),
+        const data = again || (await api.post("/api/tasks", { Title: about.slice(0, 300), Summary: about, Files: pics.paths,
           Kind: plan.kind, Tags: withDesktop(plan.tags, deskOn && desk) })).data;
         if (!again) {
           filed.current = { ...data, about, how };
@@ -337,34 +338,30 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         setOk(`${data.ref} — ${outcomeOf({ ...out, ref: "" }).text}.`);      // the line leads with the ref: said once, not twice
         aboutRef.current?.clear(); setText(""); setHasAbout(false); pics.clear(); onDone?.(); openIt(data.taskId);
       } else if (kind === "chat") {
-        // THE ASSISTANT'S OWN ROAD, NEW'S OWN PAGE (the owner, TQ-1397: "the back end should be the same code ... but the UI should look normal"):
-        // the words are one Assistant turn (concierge.say), and what it made comes up HERE - the card it wrote, filled in (an agent's job
-        // pressed), or its answer as a line under the box - never a jump into the chat
-        const { data } = await api.post("/api/concierge/say", { text: about, images: pics.paths || [] });
-        const files = pics.imgs;
-        setText(""); pics.clear();
-        // ...a report, dashboard or routine goes straight into its builder, the setup asked there (goStraight) - no card on the way
-        if (data?.new) { if (!goStraight(data.new, onClose)) setMade({ ...data.new, said: data.say || "", files }); setBusy(false); return; }
-        // ...an agent's job or a message it could address was MADE (concierge._made_now - the owner, 2026-11-12: "open task directly"): its task opens
-        const made = /^#?task=(\d+)$/.exec(data?.open || "");
-        if (made) { setOk(String(data.say || "")); onDone?.(); openIt(Number(made[1])); if (!(inline && opened)) setBusy(false); return; }
-        setSaid(String(data?.say || "").trim() || "Done.");
+        // NEW'S BOX IS THE ONE START (F1, the walks 2026-11-18): his words and files go to the server's one start (/api/start ->
+        // concierge.handoff_task), its task opens with its agent at work. They went through the Assistant's model, which picked a form - "send
+        // me this every Monday" with a CSV landed on an empty SQL report, his words and file gone. What the work is is the agent's to do
+        setSentLine(about); setText("");          // ...his words move from the box to his line; a start that fails puts them back
+        const { data } = await api.post("/api/start", { text: about, images: pics.paths || [] })
+          .catch((e) => { setText(about); throw e; }).finally(() => setSentLine(""));
+        setText(""); pics.clear(); setOk(`${data.ref} — ${data.joined ? "already that work: its agent was told." : "an agent is on it."}`);
+        onDone?.(); openIt(data.taskId);
       } else if (kind === "playbook") {
         // the one road to a playbook is the shelf's New playbook: this press is its Set up with AI, made there once with these words
         askPlaybook(about, true); onClose?.(); openAppLink(`report=${NEW_PB}`);
       } else if (kind === "goal") {
         // PLAN IT WITH NO AI SAYS SO (owner-approved, 2026-10-21): it promised "planning the steps; they land in a moment" and none came
-        if (plan && !((await api.get("/api/agents")).data?.general_brains || []).length) {
-          setErr({ key: NO_AI_PLAN }); setErrAi(true); setBusy(false); return;
+        if (plan && !aiFor(await capabilities(), "assistant")) {
+          setErr(NO_AI_PLAN); setErrAi(true); setBusy(false); return;
         }
         const title = about.split(/[.\n]/)[0].trim().slice(0, 120) || about.slice(0, 120);
-        const { data } = await api.post("/api/tasks", { Title: title, Summary: withImages(who ? `${about}\nInvolved: ${who}` : about, pics.paths),
+        const { data } = await api.post("/api/tasks", { Title: title, Summary: who ? `${about}\nInvolved: ${who}` : about, Files: pics.paths,
           DoneWhen: about.slice(0, 1000), DueAt: by || null, Kind: "task", Tags: "goal" });
         // the model writes the steps (server.plan_goal); "Track it" leaves the boxes to you
-        if (plan && !noAi) api.post(`/api/tasks/${data.taskId}/read-ask`, { goal: true }).catch(() => null);
+        if (plan && !noPlanner) api.post(`/api/tasks/${data.taskId}/read-ask`, { goal: true }).catch(() => null);
         // ...and with no AI nothing plans them: it promised steps that never came (the UI audit, 2026-10-21)
-        setOk({ key: !plan ? "{ref} — on your rail; add the steps on the task." : noAi ? "{ref} — on your rail. No AI is connected, so nothing can plan the steps - add them on the task."
-          : "{ref} — planning the steps; they land on the task in a moment.", values: { ref: data.ref } });
+        setOk(`${data.ref} — ${!plan ? "on your rail; add the steps on the task." : noPlanner ? "on your rail. No AI is connected, so nothing can plan the steps - add them on the task."
+          : "planning the steps; they land on the task in a moment."}`);
         aboutRef.current?.clear(); setHasAbout(false); setBy(""); setWho(""); pics.clear(); onDone?.(); openIt(data.taskId);
       } else {
         const { data } = await api.post("/api/notes", { title: about.slice(0, 300), body: "", when: when || null });
@@ -373,7 +370,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
       }
     } catch (e) { setErr(e?.display || (e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "That did not go through" })); }
     if (!(inline && opened)) setBusy(false);
-  }, [kind, channel, to, emailTo, cc, mode, how, role, when, by, who, plan, noAi, onDone, onOpenTask, onClose, pics, line, inline]);
+  }, [kind, channel, to, emailTo, cc, mode, how, role, when, by, who, plan, noAi, noPlanner, onDone, onOpenTask, onClose, pics, line, inline]);
 
   // ...and no live session without a coding tool the owner chose (owner-approved, 2026-10-21): Send to coding agent stays disabled
   const noCodingTool = kind === "agent" && how === "terminal" && (!agentsRead || !codingReady);
@@ -394,9 +391,6 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         sx: { border: `1px solid ${BORDER}`, borderRadius: "12px", bgcolor: PANEL, overflow: "hidden", scrollMarginTop: "8px" } }
     : { open: !!open, onClose: close, fullWidth: true, maxWidth: "md", "data-tq-keep": true };   // md: the tabs fit on one line, and scroll sideways when they do not
   if (inline && !open) return null;
-  if (made) return <NewSheet key={made.line || made.text} open={open} onClose={onClose} onDone={onDone} onOpenTask={onOpenTask} inline={inline}
-    initialKind={made.kind} initialHow={made.how || ""} initialText={made.text || ""} initialChannel={made.channel || ""} initialTo={made.to || ""}
-    initialMeeting={made.meeting || null} initialRoutine={made.routine || null} line={made.line} madeOf={made.said} initialFiles={made.files} />;
   return (
     <Shell {...shell}>
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 0.5 }}>
@@ -481,6 +475,12 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           <PromptBox text={words} setText={setText} pics={pics} busy={busy} onSend={submit} label={t(aboutLabel)} title={verb} autoFocus
             placeholder={t(kind === "chat" ? "build me a website · a report on overdue invoices every Monday · draft a reply to Erin" : "why did Site 3's census move four points in July?")}
             sendOff={noAi} />
+          {!!sentLine && <Box data-tq-new-sent="" sx={{ mt: 1.25 }}>
+            {/* ...as the chat draws his line - its own bubble, in the chat's one column (walk 8, 2026-11-20: outside the chat the message grid's 66 px
+                gutter took it, and his ask stood one word wide down the page) */}
+            <div className="tq-aui-chat"><div className="tq-aui-message tq-aui-user" data-tq-chat-line="new"><div className="tq-aui-user-bubble" dir="auto">{sentLine}</div></div></div>
+            <Box data-tq-working="" sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.75, color: DIM, fontSize: 13 }}>
+              <CircularProgress size={12} sx={{ color: "inherit" }} />Working…</Box></Box>}
           {noAi && <Typography data-tq-new-no-ai="" variant="caption" sx={{ color: DIM, display: "block", mt: 0.75 }}>
             {t("No AI is connected, so an agent can't run this yet -")} <Box component="a" href={place("ai").href}
               onClick={(e) => { e.preventDefault(); onClose?.(); openAppLink(place("ai").href); }} sx={{ color: "inherit", fontWeight: 600 }}>{t("connect one")}</Box>.</Typography>}
@@ -554,18 +554,17 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         )}
 
         {err && <Alert severity="error" sx={{ py: 0.25, fontSize: 12.5, alignItems: "center" }}
-          action={errAi ? <ConnectAi onGo={() => onClose?.()} /> : null}>{typeof err === "string" ? err : err.text || t(err.key, err.values?.verb ? { ...err.values, verb: t(err.values.verb), reason: err.values.reason || t("the start was refused") } : err.values)}</Alert>}
-        {ok && <Alert severity="success" sx={{ py: 0.25, fontSize: 12.5 }}>{typeof ok === "string" ? ok : t(ok.key, { ...ok.values, ...(Object.hasOwn(ok, "outcome") ? { outcome: outcomeOf(ok.outcome).text } : {}), ...(ok.approve ? { approve: t(btn("approve")) } : {}) })}</Alert>}
-        {saidBack && <Alert data-tq-new-said="" severity="info" icon={false} sx={{ py: 0.25, fontSize: 12.5, whiteSpace: "pre-wrap" }}><MdLine text={saidBack} /></Alert>}
+          action={errAi ? <ConnectAi onGo={() => onClose?.()} /> : null}>{err}</Alert>}
+        {ok && <Alert severity="success" sx={{ py: 0.25, fontSize: 12.5 }}>{ok}</Alert>}
       </DialogContent>
 
-      <ButtonBar>
+      {/* ...NO CANCEL BESIDE THE × (the design walk, 2026-11-20: two ways to close one card) - the × at its top and Esc close it */}
+      {!REPEATS.includes(kind) && kind !== "meeting" && !agentBox && <ButtonBar>
         {/* ...a playbook's Set up with AI opens the build in the chat: a door, out of the Assistant's view (the owner, 2026-11-02) */}
-        {!REPEATS.includes(kind) && kind !== "meeting" && !agentBox && <Button size="small" variant="contained" disableElevation disabled={!canGo || busy} onClick={submit}
+        <Button size="small" variant="contained" disableElevation disabled={!canGo || busy} onClick={submit}
           {...(kind === "playbook" ? { "data-tq-view-skip": "" } : {})}
-          startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}>{busy ? t("Working…") : verb}</Button>}
-        <Button size="small" onClick={close}>{t("Cancel")}</Button>
-      </ButtonBar>
+          startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}>{busy ? "Working…" : verb}</Button>
+      </ButtonBar>}
     </Shell>
   );
 }

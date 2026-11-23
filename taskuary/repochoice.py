@@ -15,7 +15,6 @@ import os, re, time
 from pathlib import Path
 from loguru import logger
 
-from . import words
 
 AGENT_TAG = 'agent-repo:'                    # the agent's pick; the owner's `repo:` (Change) outranks it, and a structural fact does too
 FOLDERS_KEY = 'code_folders'                 # Settings -> Agents: "Folders agents may look in for code", one a line; blank = HOMES that exist
@@ -134,7 +133,9 @@ def find(store, query: str = '') -> list:
 
 
 def says_found(rows: list, roots: list) -> str:
-    if not rows: return f"no git checkout under {', '.join(roots) or 'any folder'} matches - the owner adds folders under {words.name('agents')}"
+    if not rows:
+        from .settings_schema import link
+        return f"no git checkout under {', '.join(roots) or 'any folder'} matches - the owner names his on the task, or adds folders under {link(FOLDERS_KEY)}"
     return '\n'.join(f"- {r['repo']}: {r['path']}" + (f" (last commit {r['last']})" if r['last'] else '') + (f" - {r['remote']}" if r['remote'] else '')
                      for r in rows[:60]) + (f'\n…and {len(rows) - 60} more - narrow the query' if len(rows) > 60 else '')
 
@@ -178,15 +179,20 @@ def resolve(store, target: str) -> tuple:
         from .terminal import find_checkout
         found = find_checkout(r['repo'], {'cwd_map': {}})
         if found: return found, r['repo']
-        raise ValueError(f"no local checkout of {r['repo']} is known - find_repos lists the checkouts here; give its folder")
+        from .agenttools import refusal
+        raise ValueError(refusal(f"no local checkout of {r['repo']} is known", 'give its folder', see=('find_repos', 'lists the checkouts here')))
     p = os.path.abspath(os.path.expanduser(want))
     if os.path.isdir(p): return p, next((r['repo'] for r in rows if r['path'] and norm(r['path']) == norm(p)), '')
-    raise ValueError(f'{want} is neither a repository Taskuary knows nor a folder - find_repos lists the checkouts you may use')
+    from .agenttools import echo, refusal
+    raise ValueError(refusal(f'{echo(want)} is neither a repository Taskuary knows nor a folder', 'name a repository Taskuary knows, or the folder of a checkout',
+                             see=('find_repos', 'lists the checkouts you may use')))
 
 
-def allowed(store, path: str) -> bool:
-    "A known repository's own checkout, or anywhere under the folders the owner lets agents look in."
-    return any(inside(path, r['path']) for r in known(store) if r['path']) or any(inside(path, f) for f in folders(store))
+def allowed(store, path: str, tid=None) -> bool:
+    "A known repository's own checkout, anywhere under the folders the owner lets agents look in, or a checkout he named on task `tid`."
+    from .landing import named
+    return (any(inside(path, r['path']) for r in known(store) if r['path']) or any(inside(path, f) for f in folders(store))
+            or bool(tid) and any(inside(path, n) for n in named(store, int(tid))))
 
 
 def use(store, tid: int, target: str, why: str = '', actor: str = 'agent') -> dict:
@@ -205,10 +211,13 @@ def use(store, tid: int, target: str, why: str = '', actor: str = 'agent') -> di
     if pinned == term.NO_REPO: raise PermissionError('the owner marked this task as not code work - do it from your folder, or ask them')
     if pinned: raise PermissionError(f'the owner set this task\'s code to {pinned} - work there; to move it, ask them (Change where the code is)')
     path, name = resolve(store, target)
-    if not is_checkout(path): raise ValueError(f'{path} is not a git checkout - pick the folder that holds .git (find_repos lists them)')
-    if not allowed(store, path):
-        raise PermissionError(f"{path} is outside the folders agents may look in for code ({', '.join(folders(store)) or 'none set'}) - "
-                              f"the owner adds a folder under {words.name('agents')}")
+    if not is_checkout(path):
+        from .agenttools import echo, refusal
+        raise ValueError(refusal(f'{echo(path)} is not a git checkout', 'pick the folder that holds .git', see=('find_repos', 'lists them')))
+    if not allowed(store, path, tid):
+        from .settings_schema import link
+        raise PermissionError(f"{path} is outside the folders agents may look in for code ({', '.join(folders(store)) or 'none set'}) and not one "
+                              f"the owner named on this task - he names it here, or adds it under {link(FOLDERS_KEY)}")
     added = ''
     if not name:
         name = remote_of(path)[0] or os.path.basename(os.path.normpath(path))

@@ -16,6 +16,8 @@ import { plural } from "./timeWords.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { outputRefs } from "./taskOutputs.js";
+import { ownTool } from "./agentSteps.js";
+import { forOwner } from "./stepWhy.js";
 import BriefLine from "./BriefLine.jsx";
 
 const head = { fontSize: 11, fontWeight: 600, color: FAINT, letterSpacing: ".04em", textTransform: "uppercase", mb: 0.35 };
@@ -40,8 +42,8 @@ const Step = ({ s }) => {
       <Box component="span" sx={{ fontWeight: 600 }}>{t("Plan")}</Box>
       {s.items.map((i, n) => <Box key={n} sx={{ pl: 1 }}>{i.status === "completed" ? "✓" : i.status === "in_progress" ? "▸" : "○"} {i.text}</Box>)}
     </Box>);
-  if (s.k === "result") return <Typography sx={{ fontSize: 12, color: FAINT, fontStyle: "italic" }}>{t("Its answer — shown above.")}</Typography>;
-  if (s.k === "error") return <Typography sx={{ fontSize: 12, color: "var(--tq-danger, #8a3646)" }}>⚠ {s.text}</Typography>;
+  if (s.k === "result") return <Typography sx={{ fontSize: 12, color: FAINT, fontStyle: "italic" }}>Its answer — shown above.</Typography>;
+  if (s.k === "error") return <Typography sx={{ fontSize: 12, color: "var(--tq-danger, #8a3646)" }}>⚠ {forOwner(s.text, ownTool(s.name))}</Typography>;
   if (s.k === "brief") return <BriefLine text={s.text} />;
   if (s.k === "compact") return <Typography sx={{ fontSize: 11.5, color: FAINT }}>{s.text || "Conversation compacted"}</Typography>;
   if (s.k === "gap") return <Typography sx={{ fontSize: 11.5, color: FAINT }}>… {s.text}</Typography>;

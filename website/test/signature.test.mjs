@@ -2,6 +2,7 @@
 // signature always"): an empty box opens on it, a draft gets it once, a signed draft is left alone, chat has none.
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { withSignature, withoutSignature } from "../src/signature.js";
 
 const SIG = "Alex Doyle\nOperations | Northwind";

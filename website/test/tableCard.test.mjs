@@ -2,6 +2,7 @@
 // the linked item's durable line back above the one Next had drawn - the rail ringed TQ-0005 over TQ-0001's live card.
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { tableCardIndex } from "../src/funnelPile.js";
 
 const item = (id, key, extra = {}) => ({ id, role: "assistant", text: id, card: { kind: "todo", key, ...extra } });
@@ -22,4 +23,3 @@ test("otherwise the newest card leads, as before", () => {
   const prop = { id: 3, role: "assistant", text: "?", proposal: { kind: "x" }, card: { kind: "proposal", key: "op:1" } };
   assert.equal(tableCardIndex([item(1, "p:5"), prop], "p:5"), 1, "a proposal after the item still leads");
 });
-

@@ -2,7 +2,7 @@
 typed request we can see and refuse").
 
 On the argv road a headless run carries the CLI's bypass flag, and the only fences are the ones the CLI enforces for us - Claude's
---disallowedTools, a PreToolUse hook that can refuse (shellgate, browsergate), and on Codex nothing that can refuse at all. Over ACP
+--disallowedTools, a PreToolUse hook that can refuse (shellgate), and on Codex nothing that can refuse at all. Over ACP
 the agent ASKS (clis.ADAPTERS sets the mode that makes it ask) and the answer is ours, given here, in code, before the call runs:
 
   - Taskuary's own tools (agenttools, the `taskuary` MCP server) are allowed: none of them sends - a propose tool lights a button.
@@ -42,8 +42,17 @@ def tool_of(tc: dict) -> dict:
     elif raw.get('server') and raw.get('tool'): server, tool = str(raw['server']), str(raw['tool'])
     elif (m := re.match(r'^mcp\.([^.]+)\.(.+)$', str(tc.get('title') or ''))): server, tool = m.groups()
     cmd = raw.get('command') or raw.get('cmd') or ''
-    if isinstance(cmd, list): cmd = ' '.join(map(str, cmd))
-    return {'name': name or str(tc.get('title') or ''), 'server': server, 'tool': tool, 'command': str(cmd), 'kind': str(tc.get('kind') or '')}
+    argv = [str(x) for x in cmd] if isinstance(cmd, list) else None        # the call as its brain made it: replayed as it is (shellgate.replay)
+    from .shellgate import unwrap, _name
+    # ...and a line that is a shell started on a script (Codex's every call, its argv joined) is that argv, and that script in that shell: what
+    # the readers read, the card shows and an Approve runs
+    if argv is None: argv, cmd = unwrap(cmd)
+    elif len(argv) > 2 and _name(argv[0]) in ('bash', 'sh', 'zsh', 'powershell', 'pwsh', 'cmd') and argv[-2].lower() in ('-c', '-lc', '-command', '/c'): cmd = argv[-1]
+    else: cmd = ' '.join(argv)
+    sh = _name(argv[0]) if argv else ''
+    shell = 'PowerShell' if sh in ('powershell', 'pwsh') or (not sh and re.search(r'powershell|pwsh', name + str(cmd), re.I)) else 'Bash'
+    return {'name': name or str(tc.get('title') or ''), 'server': server, 'tool': tool, 'command': str(cmd), 'kind': str(tc.get('kind') or ''), 'argv': argv,
+            'shell': shell}
 
 
 def _mcp(store, cli: str, server: str, tool: str) -> tuple:
@@ -64,31 +73,27 @@ def decide(tc: dict, ctx: dict) -> tuple:
     """(answer, why) for one toolCall. ctx: store, task_id, cli, cwd, sid."""
     t, store = tool_of(tc), ctx.get('store')
     if t['server']: return _mcp(store, ctx.get('cli') or '', t['server'], t['tool'])
-    from . import readgate, shellgate
+    from . import shellgate
     raw = tc.get('rawInput') if isinstance(tc.get('rawInput'), dict) else {}
     cwd, tid = str(raw.get('cwd') or ctx.get('cwd') or ''), ctx.get('task_id')
     reads, never = reads_of(tc, ctx)
     if never: return REFUSED, never
     todo = (shellgate.acts(t['command'], cwd) if t['command'] else []) + reads
-    shell = 'PowerShell' if re.search(r'powershell|pwsh', t['name'] + t['command'], re.I) else 'Bash'
-    if not todo:
-        # ...A PRESS IN THE BROWSER OR ON THE DESKTOP is judged as the hook judges it (hooks.command_gate - its one road): over ACP this answer is
-        # the only gate a Codex session has, and `agent-browser click` on a "Pay now" was allowed here as a plain shell line
-        from . import agentdesktop, browsergate
-        if not (browsergate.acts(t['command']) or agentdesktop.acts(t['command'])): return ALLOWED, ''
-        if store is None or not str(tid or '').isdigit(): return REFUSED, 'a browser or desktop act waits for the owner, and this run has no task to hold it on'
-        from . import hooks
-        said = hooks.command_gate(store, int(tid), str(ctx.get('sid') or ''), t['command'], shell, cwd, False, str(raw.get('description') or ''))
-        return (ALLOWED, '') if not said else (HELD, said['hookSpecificOutput']['permissionDecisionReason'])
+    shell = t['shell']
+    if not todo: return ALLOWED, ''        # ...a press in the browser or on the desktop is held where it runs (gatecmd)
     if store is None or not str(tid or '').isdigit(): return REFUSED, '; '.join(dict.fromkeys(a['what'] for a in todo)) + ' - it waits for the owner'
-    if not shellgate.trusted(store, cwd, todo):
+    from . import actrule
+    how, said = actrule.decide(store, int(tid), todo, cwd)              # the one rule: trusted, or decided by him already on this task
+    if how == 'dismissed': return REFUSED, said
+    if not how:
         from . import landing
         # a push of the task's own work is the landing card's Push (landing.push_asked) - before any other button is drawn for it
         if t['command'] and (lands := landing.push_asked(store, int(tid), t['command'], cwd, str(raw.get('description') or ''))): return (CARD if lands[0] else REFUSED), lands[1]
         # ...put to the owner as buttons (answerer): the Approve card is filed only if they do not answer, so nothing waits twice
         if ctx.get('owner_asks'): return HELD, '; '.join(dict.fromkeys(a['what'] for a in todo)) + ' - it waits for your answer'
-    said = shellgate.check(store, int(tid), str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False, about=str(raw.get('description') or ''), reads=reads)
-    if not said: return ALLOWED, 'a repo the owner trusts to act on its own'
+    said = shellgate.check(store, int(tid), str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False, about=str(raw.get('description') or ''),
+                           reads=reads, argv=t['argv'])
+    if not said: return ALLOWED, 'a repo the owner trusts to act on its own' if how == 'trusted' else 'the owner approved the same earlier in this task'
     return HELD, said['hookSpecificOutput']['permissionDecisionReason']
 
 
@@ -133,6 +138,10 @@ def put_to_owner(ctx: dict, params: dict, why: str) -> tuple:
     if past: return REFUSED, YOU_STOPPED if past[0] == permissions.STOPPED_SAID else STILL_WAITING
     tc = (params or {}).get('toolCall') or {}
     reads = reads_of(tc, ctx)[0]
+    from . import actrule
+    t, cwd_ = tool_of(tc), str(((tc.get('rawInput') or {}) if isinstance(tc.get('rawInput'), dict) else {}).get('cwd') or ctx.get('cwd') or '')
+    ks = actrule.keys(shellgate.acts(t['command'], cwd_), cwd_) if t['command'] else []
+    if not late: actrule.remember(store, tid, ks, 'approved' if got.startswith('allow') else 'dismissed')     # his answer stands for the task
     if got.startswith('allow'):
         from . import readgate
         readgate.grant(store, tid, [a['folder'] for a in reads if a.get('folder')])      # ...a folder he let it read stays the task's
@@ -146,16 +155,19 @@ def put_to_owner(ctx: dict, params: dict, why: str) -> tuple:
         return REFUSED, YOU_REJECTED
     raw = tc.get('rawInput') if isinstance(tc.get('rawInput'), dict) else {}
     t, cwd = tool_of(tc), str(raw.get('cwd') or ctx.get('cwd') or '')
-    shell = 'PowerShell' if re.search(r'powershell|pwsh', t['name'] + t['command'], re.I) else 'Bash'
+    shell = t['shell']
     said = shellgate.check(store, tid, str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False, about=str(raw.get('description') or ''),
-                           reads=reads) if t['command'] or reads else {}
+                           reads=reads, argv=t['argv']) if t['command'] or reads else {}
     return HELD, (said.get('hookSpecificOutput') or {}).get('permissionDecisionReason') or why
 
 
-def answerer(ctx: dict, trace=None, held: dict = None):
+def answerer(ctx: dict, trace=None, held: dict = None, told: list = None):
     """The ACPClient `permit` callback for one turn: decide, answer with the matching option, and say it in the trace. `held`
     gets Taskuary's own words for each call it did not allow (id -> words), which the step shows instead of the adapter's "the user
-    refused": a held one reads "held for the owner" (shellgate.HELD), not "failed"."""
+    refused": a held one reads "held for the owner" (shellgate.HELD), not "failed".
+    `told`: the turn's own list of what the agent is to hear of each no ({'words', 'tell'}) - the turn says it (agents.run_acp): as the words
+    it goes on with where the no ended its turn, else by the one road (`tell`: a refusal's reason, which the adapter's answer drops)."""
+    from . import readgate
     def permit(params):
         tc = params.get('toolCall') or {}
         asks = owner_asks(ctx)
@@ -163,14 +175,26 @@ def answerer(ctx: dict, trace=None, held: dict = None):
         if answer == HELD and asks: answer, why = put_to_owner(ctx, params, why)
         out = acp.pick(params.get('options'), answer == ALLOWED)
         iid = str(tc.get('toolCallId') or '')
+        # ...a file it was let write is its own work from now on: reading it back is never asked (readgate.wrote)
+        if answer == ALLOWED and (tool_of(tc)['kind'] == 'edit' or tool_of(tc)['name'] in readgate.WRITE_TOOLS):
+            raw = tc.get('rawInput') if isinstance(tc.get('rawInput'), dict) else {}
+            readgate.wrote(ctx.get('task_id'), readgate.tool_paths(raw, tc.get('locations'), str(raw.get('cwd') or ctx.get('cwd') or '')))
         if answer != ALLOWED and held is not None: held[iid] = why if answer in (HELD, CARD) or why in (YOU_REJECTED, STILL_WAITING, YOU_STOPPED) else f'Taskuary refused it: {why}'
         # ...AND THE AGENT HEARS TASKUARY'S OWN REASON (recorded on the real CLI, 2026-11-15): the adapter's answer is "User refused permission
         # to run tool" whoever said no, so a push refused with the way on ("call propose_land") reached only the page's trace - the agent
         # told the owner "once you approve, I'll push" over nothing to approve. Said as the owner's own no is (put_to_owner), by the one road
-        if answer in (REFUSED, CARD) and why and why not in (YOU_REJECTED, YOU_STOPPED) and ctx.get('store') is not None and str(ctx.get('task_id') or '').isdigit():
-            from .browsergate import _tell
-            cmd = tool_of(tc)['command']
-            _tell(ctx['store'], int(ctx['task_id']), f"{f'`{cmd[:200]}`' if cmd else 'That step'} was not run - " + (why if why == STILL_WAITING else f"Taskuary's own answer, not the owner's: {why}"))
+        cmd = tool_of(tc)['command']
+        step = f'`{cmd[:200]}`' if cmd else 'That step'
+        tell = answer in (REFUSED, CARD) and why and why not in (YOU_REJECTED, YOU_STOPPED) and ctx.get('store') is not None and str(ctx.get('task_id') or '').isdigit()
+        if tell:
+            from .actrule import DISMISSED
+            words = f'{step} was not run - ' + (why if why == STILL_WAITING or why.startswith(DISMISSED) else f"Taskuary's own answer, not the owner's: {why}")
+            if told is not None: told.append({'words': words, 'tell': True})
+            else:
+                from .browsergate import _tell
+                _tell(ctx['store'], int(ctx['task_id']), words)
+        # ...a hold's own words, which the agent hears in the step's answer where its adapter goes on - and nowhere where the no ended its turn
+        elif answer == HELD and why and told is not None: told.append({'words': f'{step} was not run yet - {why}', 'tell': False})
         name = tool_of(tc)['name'] or str(tc.get('title') or 'tool')
         (logger.info if answer == ALLOWED else logger.warning)(f'acp permission: {name} {answer}' + (f' - {why}' if why else ''))
         if trace: trace('permission', name, {'tool_call_id': iid, 'answer': answer, 'why': why, 'title': str(tc.get('title') or '')[:200]})

@@ -12,7 +12,8 @@ The file lives under Taskuary's own home (~/.taskuary/context/TQ-0244.md), never
 a stray file in a shared checkout gets staged by somebody (commit 8abb175 exists because it did),
 and a .gitignore in every repo is not ours to write. The seed points at it: "read this first".
 """
-import json, re
+import json, re, threading
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta
 from loguru import logger
 
@@ -24,6 +25,7 @@ PAST = 5                 # closed tasks worth carrying
 THREAD_CHARS = 15000     # the whole thread, newest first, capped - never what is new since the last run. A file, not the seed: no tty limit
 REPORT_CHARS = 1500
 AGENT_PEOPLE = 600       # the people lines about this task's own people an agent's brief carries; the rest of the memory it reads on demand
+AGENT_OWN = 1500         # ...and what the owner HIMSELF said, in every other section: his hours, his rules (memoryedit.remember)
 MEMORY_LINE = ("Everything Taskuary has learned about the owner - their people, what they care about and what they do not, how they work, "
                "their promises - is in LEARNED.md. Read it when the work turns on what the owner would want: the `owner_memory` tool "
                "(the `taskuary` MCP server), or `taskuary --memory` in a shell (`--memory care` for one section). Read-only.")
@@ -82,23 +84,83 @@ DONE_POOL = 400          # the closed tasks a past-work read looks among, newest
 # matched only a post carrying the whole query. Now one judgement of meaning (textsim.pick: embeddings, else one light model call over
 # the titles) picks the few Hub notes, closed tasks and the repository this task is about, once per task, and the brief leads with them
 RECALL_HUB, RECALL_PAST, RECALL_LINE, RECALL_TTL = 5, 5, 220, 6 * 3600
-_recalled: dict = {}             # (task, what it is about) -> (when, picks): every turn rebuilds the brief, the judgement is made once
+RECALL_RETRY, RECALL_KEPT, RECALL_WAIT = 120, 512, 0.5    # an open does not ask again for 2 min after a judgement failed; at most this many are kept
+_recalled: dict = {}             # (task, what it is about) -> (until, picks, made): every turn rebuilds the brief, the judgement is made once
+# ...AND IT IS MADE BEFORE THE TURN ASKS FOR IT (speed round, 2026-11-18): on a store with a few hundred closed tasks the one light model call
+# that reads their titles took ~3 s of the ~4 s before a first turn's prompt was handed to its CLI. warm() starts that same judgement when
+# the owner's line is taken or its task page is opened, and the turn's recall() waits on the one in flight for the same key instead of asking again
+_judging: dict = {}              # the same key -> the Future of the judgement in flight
+_judging_lock = threading.Lock()
 _REPO_TAG = re.compile(r'(?:^|[\s,])(?:agent-|triage-)?repo:([^\s,]+)')
 PAST_LIST = 'closed tasks, by title'
 REPO_LIST = "the owner's repositories and what each is"
 NOTHING = {'hub': [], 'past': [], 'repo': '', 'why': ''}
 
 
-def recall(store, tid: int, msgs: list = None, repo: str = None) -> dict:
+def recall(store, tid: int, msgs: list = None, repo: str = None, wait: float = None) -> dict:
     """{'hub': [post rows], 'past': [task ids], 'repo': name or '', 'why': how the repo was found} - what is already known that bears on
-    this task. NOTHING on a stranger's task (the Hub and the owner's past work are company fact) and where nothing can judge."""
-    from . import handbook, origin
-    if origin.of_task(store, tid)[0] == 'stranger': return NOTHING
+    this task. NOTHING on a stranger's task (the Hub and the owner's past work are company fact) and where nothing can judge.
+    `wait`: at most this long, else NOTHING now - the judgement goes on behind, kept for the next read (an agent's turn: build)."""
+    f = _judgement(store, tid, msgs, repo, now=True, behind=wait is not None)
+    try: return f.result(timeout=wait)
+    except FutureTimeout: return NOTHING
+
+
+def warm(store, tid: int) -> None:
+    """Start the judgement the brief's next recall (build) will ask for, behind the caller: claimed here, so that recall waits on it.
+    Nothing where no AI is connected to make it - read off the settings, never by building a brain (which records its route)."""
+    from . import capabilities
+    try:
+        if textsim.available(store) or capabilities.has_ai(store): _judgement(store, tid, brief_messages(store, tid), None, now=False)
+    except Exception as e: logger.debug(f'context: nothing warmed for task {tid} - {e}')
+
+
+def brief_messages(store, tid: int) -> list:
+    "The messages the brief reads (build): a message kept only as context is not the task's."
+    return [m for m in store.list_messages(tid) if m.get('Status') != 'context']
+
+
+def _judgement(store, tid, msgs, repo, now: bool, behind: bool = False) -> Future:
+    """The Future of recall's picks for what the task is about now: the one kept, the one in flight, or a new one - run here (`now`) or
+    behind the caller. Keyed by what it ranks, so a judgement made for other words is never the answer."""
+    from . import origin
+    done = Future()
+    if origin.of_task(store, tid)[0] == 'stranger': done.set_result(NOTHING); return done
     t = store.get_task(tid) or {}
     msgs = msgs if msgs is not None else store.list_messages(tid)
-    about = '\n'.join([task_text(t), *dict.fromkeys(str(m.get('Subject') or '') for m in msgs if m.get('Subject'))])
+    # ...its subjects, each said once, and none the title already says: a task the owner opened gets its own row under its title as its first
+    # session opens (ownwork.ensure) - the same words, and a key of its own, so a judgement warmed before it was never the turn's
+    subjects = dict.fromkeys(x for m in msgs if (x := str(m.get('Subject') or '').strip()) and x != str(t.get('Title') or '').strip())
+    about = '\n'.join([task_text(t), *subjects])
     key = (id(store), int(tid), about, repo or '')
-    if (had := _recalled.get(key)) and datetime.now().timestamp() - had[0] < RECALL_TTL: return had[1]
+    with _judging_lock:
+        # ...a judgement that could not be made is held against the next WARM only: a turn asks again, the model may be back
+        if (had := _recalled.get(key)) and datetime.now().timestamp() < had[0] and (had[2] or not now): done.set_result(had[1]); return done
+        if (going := _judging.get(key)): return going
+        _judging[key] = done
+    def judge():
+        # ...a judgement that could not be made (no AI to answer, a model that failed) is NOTHING, kept a short while: a page opened again and
+        # again does not ask a failing model each time (a turn does - above)
+        try: out = _judge(store, tid, about, repo)
+        except Exception as e: logger.info(f'context: nothing recalled for task {tid} - {e}'); out = None
+        _keep(key, out or NOTHING, RECALL_TTL if out else RECALL_RETRY, bool(out))
+        done.set_result(out or NOTHING)
+        with _judging_lock: _judging.pop(key, None)
+    if now and not behind: judge()
+    else: threading.Thread(target=judge, daemon=True, name=f'recall-{tid}').start()
+    return done
+
+
+def _keep(key, out: dict, ttl: int, made: bool = True) -> None:
+    "Keep a judgement `ttl` seconds - the oldest let go past RECALL_KEPT: a long-running app opens thousands of tasks."
+    with _judging_lock:
+        _recalled.pop(key, None); _recalled[key] = (datetime.now().timestamp() + ttl, out, made)
+        while len(_recalled) > RECALL_KEPT: _recalled.pop(next(iter(_recalled)))
+
+
+def _judge(store, tid, about: str, repo) -> dict | None:
+    "The picks for `about`, or None where nothing could judge (textsim.pick)."
+    from . import handbook
     hub = store.lore_posts(limit=store.LORE_POOL, sort='top') if handbook.enabled(store) else []
     done = [d for d in store.list_tasks(status='done')[:DONE_POOL] if d['TaskId'] != tid]
     from .repochoice import known
@@ -108,7 +170,7 @@ def recall(store, tid: int, msgs: list = None, repo: str = None) -> dict:
                                       'past': [(f"task:{d['TaskId']}", d.get('Title') or '') for d in done],
                                       'repo': [(f"repo:{r['repo']}", f"{r['repo']}: {r['about']}") for r in repos]},
                        RECALL_HUB, about={'hub': handbook.HUB_LIST, 'past': PAST_LIST, 'repo': REPO_LIST}, task_id=tid)
-    if got is None: return NOTHING
+    if got is None: return None
     by = {f"lore:{p['LoreId']}": p for p in hub}
     past = [int(k.split(':', 1)[1]) for k in got['past']][:RECALL_PAST]
     # ...the repository: where the closed tasks on the same thing were worked (a fact each kept), else the one the model read as its home
@@ -118,9 +180,7 @@ def recall(store, tid: int, msgs: list = None, repo: str = None) -> dict:
     pick = top or next((k.split(':', 1)[1] for k in got['repo']), '')
     why = (f"earlier tasks on the same thing worked in it ({', '.join(task_ref(i) for i in past if f'repo:{top}' in tags.get(i, ''))})" if top
            else 'what the repository map says it is' if pick else '')
-    out = {'hub': [by[k] for k in got['hub'] if k in by], 'past': past, 'repo': '' if repo else pick, 'why': why}
-    _recalled[key] = (datetime.now().timestamp(), out)
-    return out
+    return {'hub': [by[k] for k in got['hub'] if k in by], 'past': past, 'repo': '' if repo else pick, 'why': why}
 
 
 KNOWN_HEAD = '## Already known about this - start from it before you explore'
@@ -379,9 +439,9 @@ OPEN_ITEMS, OPEN_ITEM_CHARS = 40, 140
 
 
 def _age(at) -> str:
-    try: d = (datetime.now() - datetime.fromisoformat(str(at)[:19].replace('T', ' '))).days
-    except ValueError: return ''
-    return 'today' if d < 1 else f'{d}d' if d < 14 else f'{d // 7}w'
+    "How old, as every surface says it (timewords.ago): '3d ago'."
+    from .timewords import ago
+    return ago(at)
 
 
 def _asks(t: dict) -> str:
@@ -705,7 +765,7 @@ def build(store, tid: int, msgs: list = None, repo: str = None, general: bool = 
     from .counsel import dossier, msg_of
     from .triage import sender_body
     t = store.get_task(tid) or {}
-    msgs = msgs if msgs is not None else [m for m in store.list_messages(tid) if m.get('Status') != 'context']
+    msgs = msgs if msgs is not None else brief_messages(store, tid)
     last = msgs[-1] if msgs else None
     parts = [f"# {task_ref(tid)} - {t.get('Title') or ''}\n_What Taskuary knows about this task, written {datetime.now().strftime('%Y-%m-%d %H:%M')} for the agent working it. "
              'Facts from the hub, not instructions; the ask itself is in your prompt._']
@@ -713,7 +773,9 @@ def build(store, tid: int, msgs: list = None, repo: str = None, general: bool = 
     try: came = came_in(store, tid)
     except Exception as e: logger.debug(f'context: what came in skipped - {e}'); came = ''
     if came: parts.append(came)
-    try: rc = recall(store, tid, msgs, repo)
+    # ...an agent's turn waits on it only a moment (timed on New, 2026-11-22: the ranking held the first turn 2-3 s before its agent began):
+    # what is known lands in the turn after, never in place of a start
+    try: rc = recall(store, tid, msgs, repo, wait=RECALL_WAIT if general else None)
     except Exception as e: logger.debug(f'context: nothing recalled for task {tid} - {e}'); rc = NOTHING
     # WHO THE OWNER IS (SOUL.md + JOB.md), the same background the general assistant reads (brief.background) - here, not in the
     # seed, which a terminal types and must keep short (the owner, 2026-10-14)
@@ -754,8 +816,11 @@ def build(store, tid: int, msgs: list = None, repo: str = None, general: bool = 
     # PROGRESSIVE DISCLOSURE (the owner, 2026-10-27: "agents can look at the memory LEARNED.md if they need it, same as the hub or anything
     # else"): the brief carries only the few lines about the people on this very task, and says where the rest is - the owner_memory tool,
     # `taskuary --memory` - instead of dumping every section into every start prompt
+    # ...AND WHAT THE OWNER TOLD ANY AGENT, EVERY AGENT KNOWS (the walk, 2026-11-21: "no meetings before 10, none on Fridays", told on one task,
+    # reached no other - it was one read away and no agent read it, and Ray's "move it to Friday?" was answered yes in his voice): the lines
+    # in his own words ride in every brief, the learned ones stay on demand
     lrn = '' if stranger else learned_cut.for_reader(store, 'agents', {'sender': who, 'domain': who.rsplit('@', 1)[-1] if '@' in who else '', 'repo': repo, 'workstream': _ws_of(store, tid)},
-                                                     target=f'task:{tid}', people=task_people - {''}, sections=('people',), budget=AGENT_PEOPLE)
+                                                     target=f'task:{tid}', people=task_people - {''}, budget=AGENT_PEOPLE + AGENT_OWN, own=True)
     # ...and only when there is something in it: a fresh LEARNED.md is placeholders, and a pointer at nothing is not context
     doc = '' if stranger else store.doc('learned') or ''
     if any(learned_cut.lines(doc, h) for h in learned_cut.SECTIONS.values()): parts.append("## The owner's memory (LEARNED.md)\n" + (re.sub(r'(?m)^## ', '### ', lrn) + '\n\n' if lrn else '') + MEMORY_LINE)

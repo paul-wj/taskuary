@@ -103,6 +103,12 @@ export const liveBrowseId = (shown = []) => {
   }
   return null;
 };
+// GOING TO A PAGE REPLACES THE VIEW (the owner's ruling, 2026-11-20): every page and task visited stayed on the canvas as a folded bar over the one
+// in front - Settings, Reports, Hub, About you, another task - and pushed it half off the screen. The canvas draws one view: the page open
+// (`browsing`), else the item on the table (`live`, the line tableCardIndex picked). A page or an item left behind is not drawn; the
+// conversation's own lines are the chat window's, and a proposal is a question still waiting, so both stay.
+export const pastView = (m, i, { browsing = null, live = -1 } = {}) =>
+  m?.role === "browse" ? m.id !== browsing : onTable(m) && !m.proposal && (!!browsing || i !== live);
 // Which line carries the action words. It is the LAST thing Taskuary said, card or no card: an answer
 // to a typed question offers the same verbs as the line that introduced the item, and a receipt is not a
 // place to act. interactiveCardIndex is about the card inside the bubble and stays separate.
@@ -331,7 +337,7 @@ const AGENT_LANES = ["blocked", "working", "stopped", "saved"];
 // ...and so does any task whose agent is WORKING, whatever kind of card it came as: under Tasks, ring spinning, never on you
 // ...but a CLOSED task opened is only shown (the owner, 2026-11-08: a done task opened from Search took Tasks from 20 to 21): no row at all -
 // it comes back to Tasks when something acts on it (typed to, reopened, new mail), which the server's rail then says
-export const pulledRow = (card) => (card?.closed ? null : card?.tid && ((card.kind === "agent" && AGENT_LANES.includes(card.lane)) || card.lane === "working")
+export const pulledRow = (card) => (card?.closed || card?.offRail ? null : card?.tid && ((card.kind === "agent" && AGENT_LANES.includes(card.lane)) || card.lane === "working")
   ? { ...card, put_down: false, deferred: false, watching: false }
   : card?.tid ? { ...card, lane: "yours", order_band: 2, put_down: false, deferred: false, watching: false } : { ...card });
 // ONE ROW BY KEY OR ALIAS - the ring's own matching (AssistantView Pile `atTable`). A row that RE-RAN while it was on the table (a nightly
@@ -367,7 +373,13 @@ export const holdsNew = (msgs, browsing, rail, key) => !!key && !!browsing
 // ... it should show ... on the agent starting, not randomly on the bottom of the canvas"): the task New just made, as the row the table draws -
 // put up at the press like a rail row (AssistantView pull), its chat's starting turn under his words from there, and the "…" of the move that
 // fetches its real row waiting under the fold, never at the canvas foot under New's card
-export const madeRow = (tid, title) => ({ key: `task:${tid}`, kind: "task", tid: Number(tid), title: String(title || "").slice(0, 300) });
+// A TASK BY NUMBER IS ITS RAIL ROW, whatever key the row wears (review:, processing:, agent:...): a search hit opened `task:N`, which no row's
+// key is, so nothing drew at the click, the light went out over the task left standing, and the task came a round trip later (the owner,
+// 2026-11-18: "it does nothing then moves to new one slowly ... and then the walk highlight disappears"). Unjudged rows are no row to stand on
+export const rowOfTask = (items, n) => (items || []).find((i) => Number(i.tid) === Number(n) && i.lane !== "unjudged") || null;
+// ...`closed`: a hit on a task closed or let go, drawn as the closed card it is - with no row on the rail (pulledRow), never one drawn at the
+// press and taken off a beat later when its card came back closed (the owner, live 2026-11-20)
+export const madeRow = (tid, title, closed = false) => ({ key: `task:${tid}`, kind: "task", tid: Number(tid), title: String(title || "").slice(0, 300), ...(closed ? { closed: true } : {}) });
 // NEXT TURNS BLUE AS SOON AS THE MOVE SAVES (the owner, 2026-11-06): a light walk answer (no rail rides) carries the walk's whole word -
 // below included - and the rail on screen takes it until its own read lands, so a second press draws its row and Back stands at once
 export const withWalk = (pile, walk) => (pile && walk && "below" in walk ? { ...pile, walk } : pile);
@@ -384,6 +396,18 @@ export const rowKeys = (items, keys, card = null) => {
 // `read`: the keys a walk press reads (rule 4) - they leave with the press, as the server's answer will have them - a row answering to one
 // as an alias with them (answersTo)
 // `leaving`: the task, or every task, a press is putting down (AssistantView's `leaving` holds them all)
+// THE TASK HE HAS OPEN STANDS ON THE RAIL WHILE IT IS OPEN (the owner, 2026-11-22: "does search bring the new task onto rail perfectly"; walk 5:
+// a closed task opened from Search had no row, nothing ringed, Back and Next relative to nothing): one the server's list does not hold is drawn
+// in Tasks as it now reads - never a copy kept from before (offRail: an old open row drawn for a closed task, the owner live 2026-11-20)
+export const withOpened = (pile, cur) => {
+  if (!pile?.items || !cur?.tid || cur.offRail || !cur.key || pile.items.some((i) => i.tid === cur.tid || i.key === cur.key)) return pile;
+  // ...drawn whole while the server's own row is still on its way: a task just made from New, or a search hit, is its key, title and number alone -
+  // the goal walk saw it tall, empty under its title, with no age and a mail icon (2026-11-22). Its lane and its time stand in until then
+  const lane = cur.lane || (cur.closed ? "yours" : "working"), since = cur.since || cur.when || cur.arrived_at || new Date().toISOString();
+  // ...its number, its mark (his own work unless it says where it came from) and a line of what it is - the server's row says the same a beat later
+  const ref = cur.ref || `TQ-${String(cur.tid).padStart(4, "0")}`, channel = cur.channel || "own", why = cur.why || (cur.closed ? "closed" : "starting");
+  return { ...pile, items: [...pile.items, { ...cur, lane, since, ref, channel, why, opened: true, order_band: 2, deferred: false, watching: false, settling: false }] };
+};
 export const asPressed = (items, { leaving = null, continuing = null, read = null } = {}) => { const gone = [].concat(leaving ?? []).filter(Boolean);
   return !gone.length && !continuing && !read?.length ? items
   : items.filter((i) => !gone.includes(i.tid) && !read?.some((k) => answersTo(i, k)))

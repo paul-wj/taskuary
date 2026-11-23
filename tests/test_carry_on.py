@@ -90,7 +90,8 @@ class CarryOnTests(unittest.TestCase):
         self.assertFalse([c for c in s.list_comments(tid) if c['Body'].startswith(ingest.NOT_STARTED)])
 
     def test_a_dismissed_task_starts_nothing_and_says_nothing(self):
-        s = store(); tid = finished_task(s); s.update_task(tid, {'Status': 'dropped'}, 't')
+        # ...FOLDED into another (ingest.folded): one he let go is still his, and a line owed him reopens it (test_reopened_arrives_now)
+        s = store(); tid = finished_task(s); s.update_task(tid, {'Status': 'dropped'}, 't'); s.audit('task', tid, ingest.FOLDED, 't')
         with mock.patch.object(senders, 'wrote_to', return_value=True):
             self.assertFalse(ingest._carry_on(s, tid, mail(**AGAIN), None, {'intent': 'task'}, 't'))
         self.assertFalse([c for c in s.list_comments(tid) if c['Body'].startswith(ingest.NOT_STARTED)])
@@ -158,7 +159,7 @@ class CarryOnTests(unittest.TestCase):
         # a full house queued the task's first start, and the sender wrote again before a slot freed: the line read "No agent started: no
         # conversation to carry on" under "Waiting its turn" - the queued start opens on the task with every message on it, the new one too
         s = store()
-        with mock.patch.object(ingest, 'has_room', return_value=False), mock.patch.object(ingest, '_reads_quick', return_value=False), \
+        with mock.patch.object(ingest, 'has_room', return_value=False), \
              mock.patch('taskuary.ingest._spawn', side_effect=lambda fn, *a, **k: fn(*a, **k)), \
              mock.patch.object(senders, 'wrote_to', return_value=True), \
              mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
@@ -198,7 +199,7 @@ class CodingCarryOnTests(unittest.TestCase):
         self.assertEqual((out['task_id'], spawned), (tid, ['_continue_coding']))
         self.assertTrue(any('coding agent reopens its own session' in c['Body'] for c in s.list_comments(tid)))
         self.assertIn(tid, general.OPENING)
-        # ...BY THE ONE ROAD (general.tell -> the waiting room -> waitroom.reopen_coding), as a typed line and an approval reach it: it
+        # ...BY THE ONE ROAD (general.to_agent -> the waiting room -> waitroom.reopen_coding), as a typed line and an approval reach it: it
         # started the CLI itself, so nothing was written down as heard and a start that found no room was never tried again
         with mock.patch.object(terminal, 'start_on_task', return_value={}) as start, mock.patch.object(ingest, 'has_room', return_value=True): ingest._continue_coding(s, tid)
         args, kw = start.call_args
@@ -316,7 +317,7 @@ class PassInTests(unittest.TestCase):
 
     def test_a_dismissed_tasks_live_agent_is_not_handed_the_line(self):
         # ONE GATE (2026-11-10): passing in checked no task state at all, while a carry-on held a dismissed task back
-        s = store(); tid = finished_task(s); s.update_task(tid, {'Status': 'dropped'}, 't')
+        s = store(); tid = finished_task(s); s.update_task(tid, {'Status': 'dropped'}, 't'); s.audit('task', tid, ingest.FOLDED, 't')
         with mock.patch.object(general, 'session_for', return_value=mock.Mock(busy=True)), mock.patch.object(senders, 'wrote_to', return_value=True):
             self.assertEqual(ingest.pass_in_why(s, tid, mail(**AGAIN), None, {'intent': 'task'}), 'the task is closed')
 

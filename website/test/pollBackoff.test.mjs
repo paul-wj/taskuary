@@ -3,9 +3,12 @@
 // of the rail on a large home. What the owner does still reaches the screen at once: every write asks for the status again.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { syncStatusDelay } from "../src/syncTiming.js";
 import { observeSync } from "../src/syncObserver.js";
 
+const src = f => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 
 test("a poll that never comes stops being watched twice a second", () => {
   assert.equal(syncStatusDelay({ nextAt: 1, now: 30_000 }), 30_000);       // just due: the sync's own push says when it starts

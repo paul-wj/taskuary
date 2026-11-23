@@ -22,6 +22,7 @@ approved review carrying `Deliver`), which is what keeps "the owner approves eve
 leaves" true no matter how many doors open onto the drafting.
 """
 import json
+from .say import said as _said            # a failure written to the chat is said in his words (say.py)
 import re
 from datetime import datetime
 from loguru import logger
@@ -66,7 +67,7 @@ def draft_message(store, channel: str, to, about: str, resolution: str = None, l
     signature, so mail from a second mailbox went out under the first one's hat."""
     from .knowledge import block as kb_block
     from .llm import build_llm
-    from .responder import email_rule, own_lines, signature_for, signed, strip_signoff
+    from .responder import chat_said, email_rule, own_names, signature_for, signed
     llm = llm or build_llm(store, job='draft')
     if not llm: raise RuntimeError('no AI connector is set up to write messages')
     ident, soul, sty, lrn, brevity, chat, _ = _voice(store)
@@ -93,7 +94,7 @@ def draft_message(store, channel: str, to, about: str, resolution: str = None, l
     if kb: user += kb
     out = str(llm(system, user, max_tokens=DRAFT_TOKENS) or '').strip()
     if not out: raise RuntimeError('the AI returned an empty message')
-    return (strip_signoff(out, own_lines(store)) or out) if is_chat else signed(out, signature_for(store, mailbox))
+    return chat_said(store, out) if is_chat else signed(out, signature_for(store, mailbox), own_names(store))
 
 
 def subject_for(store, about: str, llm=None) -> str:
@@ -156,12 +157,12 @@ def asked(m) -> str:
 
 
 def compose(store, channel: str, to, about: str, mode: str = 'draft', subject: str = None,
-            repo: str = None, actor: str = 'owner', llm=None, cc: list = None) -> dict:
+            repo: str = None, actor: str = 'owner', llm=None, cc: list = None, files=None) -> dict:
     """Start something outbound. Returns {taskId, messageId, reviewId, mode, draft, subject}.
 
     Both modes leave the same shape behind - a task, a Timeline row holding the owner's ask, and a
     review carrying WHERE it goes - so the approve button, the audit trail and the reply-pending
-    tag on the Timeline are the ones that already exist."""
+    tag on the Timeline are the ones that already exist. `files`: what he attached to his ask - the task's Files, beside his words."""
     from . import outbound, terminal as term
     from .store import task_ref
     channel, about = str(channel or '').strip().lower(), str(about or '').strip()
@@ -184,16 +185,17 @@ def compose(store, channel: str, to, about: str, mode: str = 'draft', subject: s
     if mode not in MODES: raise ValueError(f"mode must be one of {', '.join(MODES)}")
     no = capabilities.send_refusal(store, channel)
     if no: raise ValueError(no)
-    from .general import split_files
-    subject = (subject or '').strip() or (subject_for(store, about, llm) if channel == 'email' else split_files(about)['text'].strip()[:120] or about[:120])
+    subject = (subject or '').strip() or (subject_for(store, about, llm) if channel == 'email' else about.strip()[:120])
 
-    tid = store.create_task({'Title': subject[:300], 'Summary': about,
+    tid = store.create_task({'Title': subject[:300], 'Summary': about, 'Files': list(files or []),
                              'Kind': 'coding' if mode == 'task' else 'reply',
                              'Status': 'open', 'Priority': 'normal', 'Source': 'outbox',
                              'Tags': f'repo:{repo}' if repo else None}, actor)
-    # ...a file he attached is the task's own, in its folder, named there - its drafter and its agent read it where they can (outputs.take_in_summary)
+    # ...a file he attached is the task's own, in its folder, named there - its drafter and its agent read it where they can (outputs.take_in_ask):
+    # told them under his words, the block built for their prompt from the field (general.with_files)
     from . import outputs
-    about = outputs.take_in_summary(store, tid, actor) or about
+    from .general import with_files
+    told = with_files(about, outputs.take_in_ask(store, tid, actor))
     to_text = ', '.join(to) if isinstance(to, list) else to
     mid = ask_row(store, tid, channel, to, cc, subject, about)
     deliver = json.dumps({'channel': channel, 'to': to, 'cc': cc, 'subject': subject})
@@ -211,22 +213,22 @@ def compose(store, channel: str, to, about: str, mode: str = 'draft', subject: s
                                 'Deliver': deliver})
         store.hold_reviews(tid, 'held while an agent finds out - the message is written from what it finds')
         try:
-            ses = term.start_on_task(store, tid, instruction=f'Find out what is needed to send this message to {to_text}: {about}', actor=actor, instruction_theirs=True)
+            ses = term.start_on_task(store, tid, instruction=f'Find out what is needed to send this message to {to_text}: {told}', actor=actor, instruction_theirs=True)
         except Exception as e:
             logger.warning(f'outbox could not start an agent on {task_ref(tid)}: {e}')
-            store.add_comment(tid, 'router', 'agent', f'Could not start the agent ({str(e)[:200]}) - start it from the task.')
+            store.add_comment(tid, 'router', 'agent', f'Could not start the agent ({_said(e)}) - start it from the task.')
             ses = None
         return {'taskId': tid, 'ref': task_ref(tid), 'messageId': mid, 'reviewId': rid,
                 'mode': mode, 'subject': subject, 'draft': None, 'session': ses}
 
     draft = ''
     try:
-        draft = draft_message(store, channel, to, about, llm=llm, cc=cc)
+        draft = draft_message(store, channel, to, told, llm=llm, cc=cc)
     except Exception as e:
         # a review with no draft is still the right row: "Draft with AI" retries it, and the
         # owner can simply type the message themselves. Losing the row would lose the intent.
         logger.warning(f'outbox draft failed for {task_ref(tid)}: {e}')
-        store.add_comment(tid, 'router', 'agent', f'Could not draft this ({str(e)[:200]}) - write it yourself, or retry the draft.')
+        store.add_comment(tid, 'router', 'agent', f'Could not draft this ({_said(e)}) - write it yourself, or retry the draft.')
     rid = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending',
                             'DraftText': draft, 'Deliver': deliver,
                             'Reason': f'a message to {to_text} you started - approve to send it'})

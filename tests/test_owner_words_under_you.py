@@ -58,7 +58,7 @@ def test_a_note_held_for_a_working_agent_keeps_both_and_files_them_apart():
     chat = Chat(s, tid)
     with mock.patch.dict(terminal.SESSIONS, {'g': chat}, clear=True), mock.patch.object(waitroom, 'state', return_value=('parked', chat)), \
          mock.patch.object(general, 'GeneralSession', Chat):        # the parked chat is a general agent's (waitroom.to_general)
-        out = waitroom.add(s, tid, 'Also add Northwind Payroll to vendors-2026.txt, sorted in.', owner='Also put Northwind Payroll on the list, please.')
+        out = waitroom.add(s, tid, 'Also add Northwind Payroll to vendors-2026.txt, sorted in.', 'owner', owner='Also put Northwind Payroll on the list, please.')
         time.sleep(0.3)
     assert out['delivered'] == 1
     rows = said(s, tid)
@@ -69,10 +69,11 @@ def test_a_note_held_for_a_working_agent_keeps_both_and_files_them_apart():
 
 class AssistantDoors(unittest.TestCase):
     def test_the_assistant_passes_the_typed_words_with_its_version(self):
+        "On the phone, where there is no task to open, the Assistant's words still go in (concierge._tell_now) - his own words kept beside them."
         s = MemoryStore(); tid = Factory(s).task(title='PhishGuard renewal', kind='general', status='in_progress')
         seen = []
         with mock.patch.object(concierge, 'run_proposal', side_effect=lambda st, op, a: (seen.append(op['params']), {'status': 'done', 'outcome': {'delivered': True}})[1]):
-            out = concierge._answer_now(s, general.dock_task(s, 'owner')[0]['TaskId'], None, tid, RELAY, 'owner', owner=OWNER)
+            out = concierge._tell_now(s, general.dock_task(s, 'owner')[0]['TaskId'], tid, RELAY, 'owner', owner=OWNER)
         self.assertEqual(seen, [{'text': RELAY, 'owner': OWNER}])
         # ...and its receipt quotes what the owner typed, never the Assistant's version put in their mouth (the desktop run, 2026-11-04)
         self.assertIn(f'“{OWNER}”', out['say'])

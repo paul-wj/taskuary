@@ -113,7 +113,9 @@ targeted() {
   say "the fix: $BASE..HEAD"
   git diff --stat "$BASE" HEAD | tail -25
   local -a PY=() NODE=() LOOSE=(); local WEB=0 SMOKE=false f s m
-  while read -r f; do [ -n "$f" ] && PY+=("$f"); done < <(sed -n 's/^py //p' <<<"$PLAN")
+  # ...a parametrized test is rerun by its function, every case: its id's [case] can hold spaces, and the list is passed space-separated
+  # (2026-11-22: "[answered before the stop]" was cut into four ids, and the targeted run found none)
+  while read -r f; do [ -n "$f" ] && PY+=("${f%%[*}"); done < <(sed -n 's/^py //p' <<<"$PLAN")
   grep -qx 'node all' <<<"$PLAN" && NODE=(all)
   grep -qx 'smoke' <<<"$PLAN" && SMOKE=true
   while read -r f; do
@@ -142,15 +144,15 @@ targeted() {
 
   local SHA BR="release-check/v$V"; SHA=$(git rev-parse HEAD)
   say "dispatch ci-targeted.yml on $SHA (windows + macos, py 3.12)"
-  printf '  tests:      %s\n  node_tests: %s\n  web build:  %s\n  smoke:      %s\n' "${TESTS:-(none)}" "${NT:-(none)}" "$WEBB" "$SMOKE"
-  echo "  gh workflow run ci-targeted.yml --ref $BR -f after=$AFTER -f smoke=$SMOKE -f web=$WEBB -f tests='$TESTS' -f node_tests='$NT'"
+  printf '  tests:      %s\n  node_tests: %s\n  web build:  %s\n  smoke:      %s\n' "${TESTS:-(none)}" "${NT:-(none)}" "$WEBB"
+  echo "  gh workflow run ci-targeted.yml --ref $BR -f after=$AFTER -f web=$WEBB -f tests='$TESTS' -f node_tests='$NT'"
   [ "$DRY" = 1 ] && { say "dry run - nothing pushed, dispatched or tagged"; exit 0; }
 
   [ "$SHA" = "$BASE" ] && echo "(no new commit - rerunning the failed tests on $BASE)" || { git push -q origin HEAD:master || die "push refused - master moved; rebase and run again"; echo "pushed $SHA to master (its full ci.yml runs there, not waited on)"; }
   # a branch pinned to the sha: a dispatch on master would test whatever master is by then
   git push -q -f origin "$SHA:refs/heads/$BR"
   local T0 TRUN=""; T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run ci-targeted.yml --ref "$BR" -f after="$AFTER" -f smoke="$SMOKE" -f web="$WEBB" -f tests="$TESTS" -f node_tests="$NT"
+  gh workflow run ci-targeted.yml --ref "$BR" -f after="$AFTER" -f web="$WEBB" -f tests="$TESTS" -f node_tests="$NT"
   for i in $(seq 1 40); do TRUN=$(gh run list --workflow ci-targeted.yml --commit "$SHA" --json databaseId,createdAt -q "[.[] | select(.createdAt >= \"$T0\")][0].databaseId // empty"); [ -n "$TRUN" ] && break; sleep 5; done
   [ -n "$TRUN" ] || die "no ci-targeted.yml run appeared for $SHA"
   echo "targeted run $TRUN"

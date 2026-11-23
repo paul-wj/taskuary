@@ -26,6 +26,7 @@ import json, os, queue, subprocess, threading, time
 from loguru import logger
 
 from . import spawn
+from .clipool import MID_TURN, PartWay
 
 VERSION = 1
 # what we tell the agent we can do. Omitted means UNSUPPORTED per the spec, and `fs` is omitted on
@@ -38,6 +39,10 @@ ALLOW_KINDS, REJECT_KINDS = ('allow_once', 'allow_always'), ('reject_once', 'rej
 
 class ACPAgentError(RuntimeError):
     """The agent answered with an error, or died holding a turn."""
+
+
+class DiedMidTurn(ACPAgentError, PartWay):
+    "The agent died holding a turn: said in the one sentence for it (clipool.MID_TURN), with the conversation it was on."
 
 
 class ACPStartError(ACPAgentError):
@@ -68,6 +73,7 @@ class ACPClient:
         # each caller the other's reply to drop
         self._id, self._waiters, self._idlock, self._alive = 0, {}, threading.Lock(), True
         self._caps, self._meta, self._write_lock, self.options, self.last_turn = {}, {}, threading.Lock(), [], {}
+        self.unnamed_own = False         # a chunk with no message id is the adapter's own line, not the model's (clis.ADAPTERS `unnamed_own`)
         try:
             self.p = spawn.popen([cmd] + list(args or []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
@@ -79,7 +85,7 @@ class ACPClient:
         if process_tree and isinstance(getattr(self.p, 'pid', None), int) and self.p.pid > 0: spawn.track_tree(self.p)
         self._err = []
         threading.Thread(target=self._pump, daemon=True).start()
-        threading.Thread(target=lambda: self._err.append(self.p.stderr.read()), daemon=True).start()
+        self._err_reader = threading.Thread(target=lambda: self._err.append(self.p.stderr.read()), daemon=True); self._err_reader.start()
 
     # ── wire ────────────────────────────────────────────────────────────────────────────────
     def _send(self, msg):
@@ -137,6 +143,16 @@ class ACPClient:
             logger.warning(f'acp: the permission rule raised, so the call is refused - {e}')
             return pick(params.get('options'), False)
 
+    def _last_words(self) -> str:
+        """Why the adapter went, for the log: its exit code and the tail of what it wrote to stderr - read to its end first. The reader thread
+        finishes only at the stream's end, so a death noticed at once logged just "the agent exited" (the walk, 2026-11-22: a Codex adapter
+        died 0.3 s after a command was allowed, and nothing said why)."""
+        r = getattr(self, '_err_reader', None)
+        if r is not None: r.join(1.0)
+        code = self.p.poll() if getattr(self, 'p', None) is not None else None
+        tail = ''.join(self._err).strip()[-600:]
+        return ' - '.join(x for x in (f'exit code {code}' if code is not None else '', tail) if x)
+
     def request(self, method, params=None, timeout=None, sent=None):
         with self._idlock: self._id += 1; mine = self._id; q = self._waiters[mine] = queue.Queue()
         try:
@@ -146,12 +162,11 @@ class ACPClient:
                 if sent: sent()                           # ...once it is on its way: a cancel then is this request's (prompt)
             m = q.get(timeout=timeout or self.timeout)
             if m is None:
-                err = ''.join(self._err).strip()[:300]
+                err = self._last_words()
                 # ...a turn it died holding is said as a chat CLI's that died mid-turn (clipool.MID_TURN): one sentence for one fact, whatever the agent
-                from .clipool import MID_TURN
                 # ...and nothing of the process after it, which the chat drew as "(the agent exited)" - that detail is the log's
-                if method == 'session/prompt': logger.warning(f"acp: died mid-turn - {err or 'the agent exited'}"); raise ACPAgentError(MID_TURN)
-                raise ACPAgentError(f'the agent stopped during {method}' + (f': {err}' if err else ''))
+                if method == 'session/prompt': logger.warning(f"acp: died mid-turn - {err or 'the agent exited'}"); raise DiedMidTurn(MID_TURN, self.session_id)
+                raise ACPAgentError(f'the agent stopped during {method}' + (f': {err[-300:]}' if err else ''))
             if 'error' in m: raise ACPAgentError(f"{method}: {m['error'].get('message', m['error'])}")
             return m.get('result')
         finally: self._waiters.pop(mine, None)            # a reply to a request we gave up on is dropped by the pump
@@ -230,15 +245,25 @@ class ACPClient:
         THE ANSWER IS WHAT IT SAID LAST, after its last tool call - what claude's `result` and codex's last agent_message are on the
         argv road. Its words before are steps in the trace (agents.ACPSteps); joined into the answer they read "I'll list the
         files... There are 3 files" as one reply. All of it when it said nothing after its last call."""
-        said, cut, of = [], [0], [None]
+        said, cut, of, own = [], [0], [None], []
         self.last_turn = {}
         outer = self.on_update
+        t0, first = time.time(), [None]          # ...the wait before the model's first word, in the log (a slow start read, never guessed)
         def collect(u):
             kind = u.get('sessionUpdate')
+            if first[0] is None: first[0] = time.time(); logger.info(f'acp: first update {first[0] - t0:.1f}s after the prompt ({kind})')
+            # ...THE ADAPTER'S OWN LINE IS NEVER THE AGENT'S WORDS (clis.ADAPTERS `unnamed_own`): Codex's "Warning: Model metadata ... not found"
+            # stood above every answer, and a turn's provider error stood as its answer, raw JSON and all (the gateway walk, 2026-11-20). It
+            # goes to the log; a turn that said nothing else failed, in those words (say.turn_failed reads them for him)
+            if kind == 'agent_message_chunk' and self.unnamed_own and not u.get('messageId'):
+                own.append(_text_of(u.get('content'))); logger.info(f'acp: the adapter said: {own[-1].strip()[:400]}'); return
             # a message resumed after a tool call is a new paragraph: copilot and devin both stream
             # "Hello!" / tool_call / "What would you like..." and the result read "Hello!What would you"
             if kind == 'agent_message_chunk':
-                if said and said[-1] is None: said[-1] = chr(10); cut[0] = len(said)
+                # ...but A PIECE OF THE SAME MESSAGE GOES ON WITH IT (walk 2, 2026-11-21, Codex): a shell call left running posted an update
+                # mid-message, the answer was cut there, and only its tail - '_left": false}' - was filed, question and summary lost
+                if said and said[-1] is None and u.get('messageId') and u.get('messageId') == of[0]: said.pop()
+                elif said and said[-1] is None: said[-1] = chr(10); cut[0] = len(said)
                 # ...and so is a new message said straight after another (the adapter names each chunk's message): they ran together
                 elif said and u.get('messageId') != of[0]: said.append(chr(10) * 2)
                 of[0] = u.get('messageId')
@@ -247,13 +272,18 @@ class ACPClient:
             if outer: outer(u)
         self.on_update = collect
         try:
-            r = self.request('session/prompt', {'sessionId': self.session_id,
-                                                'prompt': [{'type': 'text', 'text': str(text or '')}]}, sent=sent) or {}
+            r = self.request('session/prompt', {'sessionId': self.session_id, 'prompt': blocks(text, getattr(self, '_caps', None))}, sent=sent) or {}
         finally:
             self.on_update = outer
         self.last_turn = r              # ...the whole PromptResponse: its `usage` and _meta are what the turn used (aiusage.acp)
+        if own and not ''.join(x for x in said if x).strip() and r.get('stopReason') != 'cancelled': raise ACPAgentError(''.join(own).strip())
         last = ''.join(x for x in said[cut[0]:] if x).strip()
-        return r.get('stopReason'), last or ''.join(x for x in said if x).strip()
+        if not last: return r.get('stopReason'), ''.join(x for x in said if x).strip()
+        # ...and what it wrote FOR THE APP before its last tool call goes with the answer (selfclose.carried): a question asked, then one more
+        # call (a tick, a card), was never recorded, and the turn read "agent done" over it (the agent audit, 2026-11-22)
+        from .selfclose import carried
+        more = carried(''.join(x for x in said[:cut[0]] if x), last)
+        return r.get('stopReason'), f'{last}\n\n{more}' if more else last
 
     def cancel(self):
         if not (self._alive and self.session_id): return
@@ -297,6 +327,47 @@ class Conversation:
     def sid(self): return self.client.session_id
     def alive(self) -> bool: return self.client.alive()
     def close(self): self.client.close()
+
+
+# HIS FILES REACH EVERY BRAIN AS FILES (the walk, 2026-11-21: Codex answered "I can't read the whiteboard photo - please attach it" with the
+# path in its prompt and no call made; Claude had read it with its own Read). The words keep their ATTACHED block - the path is what the
+# agent acts on - and each file it names also rides as a content block, as far as the agent's promptCapabilities (initialize) allow: a
+# picture as an image, any other file as its text read here (attachtext) in an embedded resource, else a resource_link, which every ACP
+# agent takes. One road for Claude, Codex and a card's model on the Codex harness
+IMAGE_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
+IMAGE_MAX = 5 * 1024 * 1024              # the largest picture a model's API takes inline
+FILE_CHARS = 20_000                      # what one embedded file carries of its text (attachtext.KEEP_CHARS)
+
+
+def file_block(path, caps: dict) -> dict:
+    "One file the prompt names, as the content block the agent can take."
+    import base64, mimetypes
+    from pathlib import Path
+    p = Path(str(path)); pc = (caps or {}).get('promptCapabilities') or {}
+    uri, mime = p.resolve().as_uri() if p.is_absolute() else f'file:///{p.as_posix()}', mimetypes.guess_type(p.name)[0] or 'application/octet-stream'
+    try: size = p.stat().st_size
+    except OSError: size = None
+    if pc.get('image') and p.suffix.lower() in IMAGE_TYPES and size is not None and size <= IMAGE_MAX:
+        return {'type': 'image', 'mimeType': IMAGE_TYPES[p.suffix.lower()], 'data': base64.b64encode(p.read_bytes()).decode('ascii'), 'uri': uri}
+    if pc.get('embeddedContext') and size is not None and p.suffix.lower() not in IMAGE_TYPES:
+        from . import attachtext
+        e = (attachtext.of_paths([p]) or [{}])[0]
+        if e.get('text'):
+            return {'type': 'resource', 'resource': {'uri': uri, 'mimeType': 'text/plain', 'text': '\n'.join(attachtext.lines([e], FILE_CHARS, FILE_CHARS))}}
+    return {'type': 'resource_link', 'uri': uri, 'name': p.name, 'mimeType': mime, **({'size': size} if size is not None else {})}
+
+
+def blocks(text, caps: dict = None) -> list:
+    "A prompt as ACP content: its words, then each file its own ATTACHED block names (general.prompt_files) as a block the agent takes."
+    from pathlib import Path
+    from .general import prompt_files
+    out = [{'type': 'text', 'text': str(text or '')}]
+    # ...only a line that IS a file on this computer (the Codex walk, 2026-11-21: a seed whose next lines ran on under the block with no blank
+    # line between sent "STATUS: in_progress" and each checklist line as links to files)
+    for f in dict.fromkeys(x for x in prompt_files(text) if Path(x).is_absolute() and Path(x).is_file()):
+        try: out.append(file_block(f, caps or {}))
+        except Exception as e: logger.debug(f'acp: {f} rides as its path only - {e}')
+    return out
 
 
 def _text_of(content) -> str:

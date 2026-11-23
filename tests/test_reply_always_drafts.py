@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 from fastapi.testclient import TestClient
 
-from taskuary import ingest, routing, server, triage
+from taskuary import ingest, routing, server
 from taskuary.store import MemoryStore
 
 Q = {'external_id': 'q1', 'channel': 'teams', 'from_email': 'dana@vendor.example', 'from_name': 'Dana',
@@ -144,14 +144,14 @@ class GeneralDefaultTests(unittest.TestCase):
         s = store(replies_off=()); spawned = []
         with mock.patch.object(ingest, '_spawn', side_effect=lambda f, *a: spawned.append(f.__name__)):
             out = ingest.ingest_message(s, {**Q, 'body': 'Please sort out the badge situation.'}, llm=lambda *a, **k: '{"intent": "task", "why": "an ask"}')
-        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'task')
+        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'general')
         self.assertNotIn('_auto_code', spawned)                          # no coding session on a guess (PW-068)
 
     def test_an_invalid_kind_is_general_too(self):
         s = store(replies_off=())
         with mock.patch.object(ingest, '_spawn'):
             out = ingest.ingest_message(s, {**Q, 'body': 'Please sort out the badge situation.'}, llm=lambda *a, **k: '{"intent": "task", "kind": "robot", "why": "x"}')
-        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'task')
+        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'general')
 
     def test_explicit_coding_and_owner_task_decisions_are_kept(self):
         s = store(replies_off=()); spawned = []
@@ -159,20 +159,13 @@ class GeneralDefaultTests(unittest.TestCase):
             coding = ingest.ingest_message(s, {**Q, 'external_id': 'c', 'conversation_id': 'c', 'body': 'Fix the export job.'}, llm=lambda *a, **k: '{"intent": "task", "kind": "coding", "why": "x"}')
             own = ingest.ingest_message(s, {**Q, 'external_id': 'o', 'conversation_id': 'o', 'body': 'Sign the lease form in person.'}, llm=lambda *a, **k: '{"intent": "task", "kind": "task", "why": "x"}')
         self.assertEqual(s.get_task(coding['task_id'])['Kind'], 'coding'); self.assertIn('_auto_code', spawned)
-        self.assertEqual(s.get_task(own['task_id'])['Kind'], 'task')
+        self.assertEqual(s.get_task(own['task_id'])['Kind'], 'general')          # ...what is placed in Tasks is its agent's (one arrival rule)
 
     def test_the_keyword_fallback_no_longer_guesses_coding(self):
         f = routing.draft_task_fields({'subject': 'Stack trace in the nightly export', 'body': 'Traceback (most recent call last): the export crashed with a KeyError again, can someone fix'})
         self.assertEqual(f['kind'], 'task')
         self.assertEqual(routing.draft_task_fields({'subject': 'x', 'body': 'Are you free Tuesday?'})['kind'], 'task')   # "?" decides nothing
         self.assertEqual(routing.draft_task_fields({'subject': 'x', 'body': 'x'}, kind='coding')['kind'], 'coding')
-
-    def test_the_classifier_instructions_default_to_general(self):
-        self.assertNotIn('Cannot tell? Say coding', triage.INTENT_SYSTEM)
-        self.assertIn('when you cannot tell at all, say task', triage.INTENT_SYSTEM)         # 2026-09-23: unsure is the owner's list
-        from pathlib import Path
-        doc = (Path(__file__).parent.parent / 'taskuary' / 'templates' / 'triage.md').read_text(encoding='utf-8')
-        self.assertNotIn('say coding', doc.lower()); self.assertIn('say task', doc.lower())
 
 
 if __name__ == '__main__':

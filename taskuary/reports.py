@@ -990,6 +990,8 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             'mastodon_me': _lazy('social', 'run_mastodon_me'),
             'mastodon_timeline': _lazy('social', 'run_mastodon_timeline'),
             'mastodon_post': _lazy('social', 'run_mastodon_post'),
+            # ...and the two whose cards read an inbox (inboxes.py): a post on the same sign-in
+            'reddit_post': _lazy('inboxes', 'run_reddit_post'), 'x_post': _lazy('inboxes', 'run_x_post'),
             'linkedin_me': _lazy('linkedin', 'run_linkedin_me'),
             'linkedin_post': _lazy('linkedin', 'run_linkedin_post'),
             'github_issue': _lazy('github', 'run_github_issue'),     # a new issue, on the owner's press (github.run_github_issue)
@@ -1121,7 +1123,7 @@ CARD_OF = {'postgresql': 'postgresql', 'mysql': 'mysql', 'clickhouse': 'clickhou
            'treg_tools': 'treg', 'treg_search': 'treg', 'treg_call': 'treg',
            'linkedin_me': 'linkedin', 'linkedin_post': 'linkedin', 'github_issue': 'github', 'github_issues': 'github', 'github_close': 'github',
            'bluesky_me': 'bluesky', 'bluesky_timeline': 'bluesky', 'bluesky_post': 'bluesky',
-           'mastodon_me': 'mastodon', 'mastodon_timeline': 'mastodon', 'mastodon_post': 'mastodon',
+           'mastodon_me': 'mastodon', 'mastodon_timeline': 'mastodon', 'mastodon_post': 'mastodon', 'reddit_post': 'reddit', 'x_post': 'x',
            's3_object': 'aws', 'cloudwatch_logs': 'aws', 'azure_blob': 'azure', 'azure_logs': 'azure', 'calendar': 'outlook',
            'entra_users': 'azure', 'entra_groups': 'azure', 'entra_signins': 'azure', 'entra_licenses': 'azure',
            'intacct_fields': 'intacct', 'intacct_create': 'intacct', 'intacct_update': 'intacct',
@@ -1294,6 +1296,14 @@ def _read_card(t):
     return lambda store, connector_id=None: {**_card(store, t, 'api_key', connector_id), 'store': store, 'connector_id': connector_id}
 
 
+def _inbox_card(t):
+    "An inbox card's write (reddit_post, x_post): the card, secret and all, as `_card` - inboxes signs in from it as it does to read."
+    def conn(store, connector_id=None) -> dict:
+        c = _connector(store, t, connector_id, with_secret=True)
+        return {'_card': c, 'token': c.get('Secret')} if c else {}
+    return conn
+
+
 def linkedin_connection(store, connector_id=None) -> dict:
     """The access token IS the card's secret, and it arrives as `token` because that is the name
     linkedin._headers reads. Without this the card holds a token nobody can spend: resolve_cfg
@@ -1391,6 +1401,7 @@ CONNECTION_OF = {'mssql': mssql_connection, 'winrm': winrm_connection, 'database
                  'bluesky_post': bluesky_connection,
                  'mastodon_me': mastodon_connection, 'mastodon_timeline': mastodon_connection,
                  'mastodon_post': mastodon_connection,
+                 'reddit_post': _inbox_card('reddit'), 'x_post': _inbox_card('x'),
                  'treg_tools': treg_connection, 'treg_search': treg_connection, 'treg_call': treg_connection,
                  **{e: engine_connection(e) for e in
                     ('postgresql', 'mysql', 'clickhouse', 'snowflake', 'bigquery', 'cockroachdb', 'oracle', 'duckdb', 'mongodb', 'redis', 'neo4j')},
@@ -1684,7 +1695,9 @@ def report_system(store, cfg: dict, charts: bool = False) -> str:
 # it is the report, and the owner may want it - but a row whose own first line says it could not do
 # the thing it exists for is not something to walk somebody through: three of them came out of the
 # pipe one per turn on a fresh install (the 2026-09-03 break test). funnel.from_feed reads this.
-NO_BRAIN = '(AI prompt set, but no active AI connector'
+# ...said in his words with the way past it, its rows under the raw mark the page folds away (walk 5, 2026-11-19: "(AI prompt set, but no active
+# AI connector - raw data below)" over a page of evidence lines)
+NO_BRAIN = 'No AI is connected, so this report could not be written'
 
 
 def headline_from(summary: str, fallback: str) -> str:
@@ -1836,7 +1849,8 @@ def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = 
         # ...written again over a kept one says why, under the summary (the first line stays the summary's own: headline_from)
         return headline_from(ai, head), f"{ai}{f'{chr(10) * 2}{says}' if says else ''}{RAW_MARK}{summary[:4000]}"
     if cfg.get('ai_prompt') and not llm:
-        return head, f'{NO_BRAIN} - raw data below)\n\n{summary}'
+        from . import words
+        return head, f"{NO_BRAIN} - [connect one under {words.name('ai')}]({words.href('ai_apps')}) and it is written at its next run.{RAW_MARK}{summary}"
     return head, summary
 
 
@@ -1951,17 +1965,43 @@ def times_a_day(cron: str) -> str:
     return f"{'twice' if len(hs) == 2 else f'{len(hs)} times'} a day: {', '.join(at[:-1])} and {at[-1]}"
 
 
+_DAYS = {'0': 'Sundays', '1': 'Mondays', '2': 'Tuesdays', '3': 'Wednesdays', '4': 'Thursdays', '5': 'Fridays', '6': 'Saturdays', '7': 'Sundays',
+         '1-5': 'weekdays', '0,6': 'weekends', '6,0': 'weekends'}
+
+
+def cron_words(cron: str) -> str:
+    """A cron line as the owner says it - "Mondays at 08:00", "weekdays at 07:30", "day 1 of each month at 09:00", "every 15 minutes",
+    "twice a day: 7:30 and 16:30" - for the shapes people write; the raw line for anything cleverer (a wrong paraphrase is worse than none)."""
+    m, h, dom, mon, dow = f = (str(cron or '').split() + [''] * 5)[:5]
+    if len(str(cron or '').split()) != 5: return f'cron {cron}'
+    if (x := times_a_day(cron)): return x
+    if h == dom == mon == dow == '*' and m.startswith('*/') and m[2:].isdigit(): return f'every {m[2:]} minutes'
+    if m.isdigit() and h.startswith('*/') and h[2:].isdigit() and dom == mon == dow == '*': return f'every {h[2:]} hours at :{int(m):02d}'
+    if not (m.isdigit() and h.isdigit() and mon == '*'): return f'cron {cron}'
+    at = f'{int(h):02d}:{int(m):02d}'
+    if dom == '*' and dow == '*': return f'daily at {at}'
+    if dom == '*' and (dow in _DAYS or all(d in _DAYS for d in dow.split(','))):
+        days = _DAYS.get(dow) or ', '.join(_DAYS[d] for d in dow.split(','))
+        return f'{days} at {at}'
+    if dom.isdigit() and dow == '*': return f'day {dom} of each month at {at}'
+    return f'cron {cron}'
+
+
 def schedule_words(cfg: dict) -> str:
-    """A report's WHOLE clock in one phrase, guard included. Every surface that printed half of it
-    invited the same misreading: "on startup" alone hid the Monday cron behind it, and "on every app
-    start" said `every` while once_per_day was quietly dropping the repeats - so two seeded reports
-    greeting one evening launch read as a scheduler fault, or as an unexplained restart (TQ-0010)."""
+    """A report's or a routine's WHOLE clock in one phrase, guard included - THE ONE PLACE it is said: the Reports list, the routine's
+    editor, its task's header, the phone and the Assistant all read this (the API carries it as ScheduleWords). One routine read
+    "daily 08:00" on its task, "every day at 08:00" in its editor and "daily at 08:00" in the list. Every surface that printed half
+    of it invited the same misreading: "on startup" alone hid the Monday cron behind it, and "on every app start" said `every` while
+    once_per_day was quietly dropping the repeats (TQ-0010)."""
     cap = (' (at most once a day)' if cfg.get('once_per_day') else
            ' (at most once a week)' if cfg.get('once_per_week') else '')
-    parts = [times_a_day(cfg['cron']) or f"cron {cfg['cron']}" if cfg.get('cron') else '', f"daily at {cfg['daily_at']}" if cfg.get('daily_at') else '',
+    parts = [cron_words(cfg['cron']) if cfg.get('cron') else '', f"daily at {cfg['daily_at']}" if cfg.get('daily_at') else '',
              f"every {cfg['every_minutes']} minutes" if cfg.get('every_minutes') else '',
              f'on app start{cap}' if cfg.get('on_startup') else '']
-    return ' + '.join(p for p in parts if p) or 'no schedule - run it by hand'
+    clock = ' + '.join(p for p in parts if p)
+    # ...and when a mail starts it too (workflows.from_mail): the clock alone said "run it by hand" over a job a mail starts
+    if str(cfg.get('on_mail') or '').strip(): return f'{clock}, and when a mail like the one described arrives' if clock else 'when a mail like the one described arrives'
+    return clock or 'no schedule - run it by hand'
 
 
 def schedule_error(cfg: dict) -> str | None:
@@ -2580,7 +2620,7 @@ def source_title(t: str) -> str:
 
 
 def plain_reason(e) -> str:
-    from .channels import plain_failure
+    from .say import plain_failure
     return plain_failure(e if isinstance(e, Exception) else RuntimeError(str(e)))[:300]
 
 

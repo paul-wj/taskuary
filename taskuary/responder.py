@@ -261,15 +261,27 @@ def signature_for(store, mailbox: str = None) -> str:
     return ' '.join(str(store.get_setting('owner_name') or '').split())
 
 
-def signed(text: str, sig: str) -> str:
+def own_names(store) -> tuple:
+    "The owner's name as a writer signs with it - whole and first - for strip_signoff: () when no name is known."
+    n = ' '.join(str((store.owner() or {}).get('owner') or '').split())
+    return (n, n.split()[0]) if n and n != 'the owner' else ()
+
+
+def signed(text: str, sig: str, names=()) -> str:
     """An email as it goes out: plain text (chatformat.plain_text - a writer's Markdown is syntax a mail client prints as stars), the
-    writer's own sign-off taken off and the saved signature put on, once. Nothing saved: no signature."""
+    writer's own sign-off taken off and the saved signature put on, once. Nothing saved: no signature. `names` (own_names): the owner's
+    name, which a writer signs with whatever the saved block is - "Thanks, Alex Doyle" over a saved "Best, Alex" read signed twice
+    (the walk, 2026-11-21)."""
     from .chatformat import plain_text
     if not str(sig or '').strip(): return plain_text(text) or str(text or '').rstrip()
     body = str(text or '').rstrip()
     if body.endswith(sig.strip()): body = body[:-len(sig.strip())].rstrip()
     lines = [l for l in sig.splitlines() if l.strip()]
-    body = strip_signoff(body, lines + [l.split()[0] for l in lines]) or body
+    body = strip_signoff(body, lines + [l.split()[0] for l in lines] + list(names)) or body
+    # ...and a closing left with no name under it ("Thanks," - the writer told its name goes on) is the letter's closing by its SHAPE: the saved
+    # block is the closing now (the fix1 walk, 2026-11-21: "Thanks,\n\nBest, Alex")
+    ls = body.rstrip().splitlines()
+    if len(ls) > 1 and ls[-1].rstrip().endswith(','): body = '\n'.join(ls[:-1]).rstrip()
     return with_signature(plain_text(body) or body, sig)
 
 
@@ -365,6 +377,15 @@ def own_lines(store, sig: str = '') -> list:
     """The lines that are the owner's own name or signature - what a writer that signed anyway put at the end, known from Settings."""
     name = ' '.join(str(store.get_setting('owner_name') or '').split())
     return [name, name.split()[0] if name else ''] + str(sig or '').splitlines()
+
+
+def chat_said(store, text: str) -> str:
+    """A chat reply as it is filed in his box: the owner's name lines off, nothing put on, and a writer's Markdown spelled as the plain words
+    every chat send leaves as (chatformat.plain_text), each link's address written out. Left raw, the box he edits and approves showed
+    "[Calculator](https://...)" four times (design round 6, D4) - one spelling for the box and for what goes."""
+    from .chatformat import plain_text
+    t = strip_signoff(text, own_lines(store)) or str(text or '').strip()
+    return plain_text(t) or t
 
 
 def _bare(l: str) -> str: return ' '.join(str(l).split()).strip(' ,.!-').lower()
@@ -679,7 +700,7 @@ def draft_for_review(store, task_id: int, review_id: int, llm=None, resolution: 
     if saw and str(saw.get('Channel') or '').lower() == 'email':
         # the signature rides in the draft the owner reviews, once (PW-065); the recipients it will go to are pinned
         # with it, Reply all by default (PW-063/064) - an envelope the owner already set is kept
-        text = signed(text, signature_for(store, mailbox_in(saw)))
+        text = signed(text, signature_for(store, mailbox_in(saw)), own_names(store))
         from . import outbound as _ob
         if not store.review_envelope(review_id):
             env = _ob.reply_envelope(store, tgt)
@@ -756,7 +777,7 @@ class Handed(Exception):
 REDRAFT = ('The owner pressed {press} on the reply waiting on this task{said}. Write that reply again and save it in place of the one '
            'waiting - its card shows it; say nothing of the old one.')
 def to_agent(store, tid: int, nudge: str = None) -> str:
-    """Hand the owner's Redraft / Draft with AI to task `tid`'s agent, as every word of Taskuary's to an agent goes (general.tell): 'told' or
+    """Hand the owner's Redraft / Draft with AI to task `tid`'s agent, as every word of Taskuary's to an agent goes (general.to_agent): 'told' or
     'woke' - and his press is a line in the chat - or '' where no agent ever worked it."""
     from . import general, buttons
     t = store.get_task(int(tid)) if tid else None
@@ -765,7 +786,7 @@ def to_agent(store, tid: int, nudge: str = None) -> str:
     press = buttons.label('redraft') if rv and str(rv.get('DraftText') or '').strip() else buttons.label('redraft', 'none')
     # ...his press is written first: the turn it wakes reads it with what the owner did since its last answer
     store.audit('task', int(tid), 'redraft_asked', 'owner', 'human', {'said': said[:300]})
-    got = general.tell(store, int(tid), REDRAFT.format(press=press, said=f', saying: "{said}"' if said else ''))
+    got = general.to_agent(store, int(tid), REDRAFT.format(press=press, said=f', saying: "{said}"' if said else ''))
     if not got: store._exec("DELETE FROM audit WHERE Id=(SELECT MAX(Id) FROM audit WHERE EntityType='task' AND EntityId=? AND Action='redraft_asked')", (int(tid),))
     return got
 
@@ -812,7 +833,7 @@ def draft_for_message(store, m: dict, review_id: int, llm=None, instruction: str
     has = bool(files) or len(sender_body(str(m.get('BodyText') or ''), m.get('OwnText'))[0]) >= SUBSTANCE
     out, files, why = _answer(llm, system, user, FEEDBACK_TOKENS if has else REPLY_TOKENS, images, guard=not instruction,
                          sig=signature_for(store, mailbox_in(m)))
-    out = (strip_signoff(out, own_lines(store)) or out) if chat else signed(out, signature_for(store, mailbox_in(m)))
+    out = chat_said(store, out) if chat else signed(out, signature_for(store, mailbox_in(m)), own_names(store))
     if not chat and not store.review_envelope(review_id):
         from . import outbound as _ob
         env = _ob.reply_envelope(store, m)

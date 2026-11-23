@@ -9,10 +9,12 @@ import { CATALOGUE } from "./connectorCatalog.js";
 
 const CHANNEL_NAMES = { email: "Email", whatsapp: "WhatsApp", telegram: "Telegram", slack: "Slack", teams: "Teams", github: "GitHub",
   monday: "Monday", jira: "Jira", linear: "Linear", imessage: "iMessage", discord: "Discord", report: "Report", assistant: "Assistant",
-  google_chat: "Google Chat", sms: "SMS", calendar: "Calendar" };
-// ...a source card's own title past the named channels (Zendesk, Help Scout, Zoom Team Chat): the card's own title, else a title-cased word
-export const channelName = (ch) => CHANNEL_NAMES[ch] ? t(CHANNEL_NAMES[ch]) : CATALOGUE.find((c) => c.type === ch)?.title
-  || (ch ? ch[0].toUpperCase() + ch.slice(1).replace(/_/g, " ") : t("Message"));
+  google_chat: "Google Chat", sms: "SMS", calendar: "Calendar",
+  // ...and what he asked for himself (ownwork.CHANNEL): "Own · you" stood on the box of every task he made (design round 4, 2026-11-19)
+  own: "Your ask" };
+// ...a source card's own title past those (Zendesk, Help Scout, Zoom Team Chat): "Helpscout" and "Zoom chat" named no card the owner has
+export const channelName = (ch) => CHANNEL_NAMES[ch] || CATALOGUE.find((c) => c.type === ch)?.title
+  || (ch ? ch[0].toUpperCase() + ch.slice(1).replace(/_/g, " ") : "Message");
 const CHATS = new Set(["whatsapp", "teams", "slack", "telegram", "imessage", "discord", "mattermost", "rocketchat", "matrix", "google_chat", "sms"]);
 export const isChat = (ch) => CHATS.has(ch);
 

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { movesOf, put, rowNow } from "../src/actionRow.js";
-import { isSend } from "../src/pageView.js";
 import { setLocale, t } from "../src/i18n.js";
 
 test("an outward card action keeps its canonical identity and protection when its label changes language", () => {
@@ -15,7 +14,7 @@ test("an outward card action keeps its canonical identity and protection when it
   assert.equal(chinese.id, english.id);
   put("localized-action-proof", [chinese]);
   const offered = rowNow().list.find((item) => item.id === chinese.id);
-  assert.equal(isSend(offered), true);
+  assert.equal(offered.send, true);
   put("localized-action-proof", null);
   setLocale("en");
 });

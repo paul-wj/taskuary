@@ -58,4 +58,41 @@ class ReopenedArrivesNow(unittest.TestCase):
         self.assertIsNone(processing_unread.came_back(self.s, self.quiet, self.s.list_messages(self.quiet)))
 
 
+class OneReopen(unittest.TestCase):
+    """ONE REOPEN (general.reopen): a line owed him on a closed task, his own typing, a batch item someone wrote on - each brings it back the
+    same way. Triage's own reopen read only done, so a task he let go stayed closed, and kept a Remind me date that held it under For later."""
+    def test_every_door_brings_a_closed_task_back_the_same_way(self):
+        from taskuary import general, remind
+        s = store()
+        for st in ('done', 'dropped'):
+            a, b = (s.create_task({'Title': 'Budget', 'Kind': 'task', 'Status': 'open', 'RemindAt': ahead(3 * 24 * 60)}, 'owner') for _ in range(2))
+            for t in (a, b): s.update_task(t, {'Status': st}, 'owner')
+            ingest._reopen(s, a, {'from_name': 'Erin Blake', 'subject': 'One more question'}, 'router', {'intent': 'reply_only'})
+            general.reopen(s, b, 'owner')
+            seen = [(s.get_task(t)['Status'], remind.waiting(s.get_task(t))) for t in (a, b)]
+            self.assertEqual(seen, [('open', False)] * 2, st)
+
+
 if __name__ == '__main__': unittest.main()
+
+
+def test_a_task_he_let_go_comes_back_when_its_sender_writes_again_and_a_folded_one_does_not():
+    """LET IT GO IS STILL HIS TASK (the owner, 2026-10-25: nothing important stays closed). A task put down with Let it go is dropped, and
+    a dropped task was read as "folded away": the sender's next mail on that thread opened a new task beside it, or nothing. Only a task
+    FOLDED into another (a batch combined, a duplicate folded) stays put - its work lives on where it went."""
+    from taskuary import concierge
+    s = store()
+    let = s.create_task({'Title': 'Chase the Payworth refund', 'Kind': 'task', 'Status': 'open'}, 'owner')
+    mail(s, 'Payworth refund', who='Ray Colton', email='ray@vendor.example', hours=30, tid=let, conv='email:refund')
+    concierge.close_task(s, let, 'owner', save=False, status='dropped', note='Let it go - nobody is chasing this further.')
+    folded, into = (s.create_task({'Title': t, 'Kind': 'task', 'Status': 'open'}, 'owner') for t in ('Trainly seats', 'Trainly seats, all'))
+    mail(s, 'Trainly seats', who='Gail Moreno', email='gail@vendor.example', hours=30, tid=folded, conv='email:seats')
+    concierge.close_task(s, folded, 'router', save=False, status='dropped')
+    s.audit('task', folded, ingest.FOLDED, 'router', detail={'into': into})
+    r = ingest.identity_route(s, {'conversation_id': 'email:refund', 'channel': 'email'})
+    assert r['decision'] == 'attach' and r['task_id'] == let and r.get('reopen'), r
+    assert ingest.joinable(s, let) == let and ingest.joinable(s, let, shut=False) is None
+    assert ingest._reopen(s, let, {'from_name': 'Ray Colton', 'subject': 'Refund still missing'}, 'router', {'intent': 'reply_only'})
+    assert s.get_task(let)['Status'] == 'open'
+    assert ingest.identity_route(s, {'conversation_id': 'email:seats', 'channel': 'email'})['decision'] == 'create'
+    assert ingest.joinable(s, folded) is None

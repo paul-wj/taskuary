@@ -15,7 +15,10 @@ SITES = [('rentscope', 'RentScope', 'asking rent per sq ft', ''), ('vacancyiq', 
          ('parcelpulse', 'ParcelPulse', 'tax-delinquent parcels', 'plan'), ('capratehub', 'CapRateHub', 'average cap rate %', 'wizard'),
          ('permitwatch', 'PermitWatch', 'building permits filed', 'sum'), ('lienlens', 'LienLens', 'new liens filed', 'emailcode'),
          ('footfall', 'Footfall', 'weekly foot traffic (k)', ''), ('zoningnow', 'ZoningNow', 'rezoning applications', 'phone'),
-         ('dealflowpro', 'DealFlow Pro', 'off-market listings', 'payment'), ('tenantpulse', 'TenantPulse', 'lease renewals %', '')]
+         ('dealflowpro', 'DealFlow Pro', 'off-market listings', 'payment'), ('tenantpulse', 'TenantPulse', 'lease renewals %', ''),
+         # ...and the web as it also is: a site that crashes on its form, one that never answers it, one that turns automated visitors away
+         ('quotabase', 'QuotaBase', 'office rents quoted', 'crash'), ('slowstat', 'SlowStat', 'construction starts', 'hang'),
+         ('botwall', 'BotWall', 'retail closures', 'blocked')]
 HOST = {s: f'127.0.0.{i + 2}' for i, (s, *_) in enumerate(SITES)}     # each vendor its own site, as real vendors are
 DATA = {s: [(c, round(r.uniform(5, 95), 1)) for c in CITIES] for s, *_ in SITES}
 USERS, SESS, CODES = {}, {}, {}     # (slug, email) -> {..}; cookie -> (slug, email); (slug, email) -> code
@@ -49,17 +52,24 @@ class H(BaseHTTPRequestHandler):
     def _in(self, site, email):
         c = f'{r.random():.12f}'; SESS[c] = (site, email); return [('Set-Cookie', f'sid={c}; Path=/s/{site}')]
 
+    def _home(self, site):
+        """A vendor answers only at its own address, as a real one does: answering every vendor's path on every address let an agent sign in to
+        one vendor's page on another's host - where the vault, rightly, filled the other's sign-in (the real-CLI job walk, 2026-11-18)."""
+        return (self.headers.get('Host') or '').split(':')[0] in (HOST[site], 'localhost')
+
     def do_GET(self):
         u = urlparse(self.path); parts = [p for p in u.path.split('/') if p]
         if not parts or parts[0] != 's':
             return self._send(200, page('', 'Data vendors', '<ul>' + ''.join(f'<li><a href="http://{HOST[s]}:{PORT}/s/{s}/">{n}</a> - {d}</li>' for s, n, d, _ in SITES) + '</ul>'))
         site = parts[1] if len(parts) > 1 else ''
         meta = next((x for x in SITES if x[0] == site), None)
-        if not meta: return self._send(404, page('', 'Not found', '<p>No such site.</p>'))
+        if not meta or not self._home(site): return self._send(404, page('', 'Not found', '<p>No such site.</p>'))
         _, name, what, extra = meta; act = parts[2] if len(parts) > 2 else ''
         who = self._who(); mine = who and who[0] == site and USERS.get(who, {}).get('ok')
         if act == '': return self._send(200, page(site, 'Welcome', f'<p>{name} publishes {what} by city. Free accounts see the table.</p>'
                                                   f'<p><a href="/s/{site}/signup">Sign up</a> · <a href="/s/{site}/login">Sign in</a> · <a href="/s/{site}/data">Data</a></p>'))
+        if act == 'signup' and extra == 'blocked':
+            return self._send(403, page(site, 'Access denied', '<p>Automated access to this site is not allowed. If you are a person, contact sales@ to request an account.</p>'))
         if act == 'signup':
             fields = BASE + ([('Plan (free or pro)', 'plan', 'text')] if extra == 'plan' else []) + ([('What is 7 plus 5?', 'sum', 'text')] if extra == 'sum' else []) \
                 + ([('Mobile phone (we text you a login code)', 'phone', 'tel')] if extra == 'phone' else [])
@@ -89,12 +99,15 @@ class H(BaseHTTPRequestHandler):
         parts = [p for p in urlparse(self.path).path.split('/') if p]
         site = parts[1] if len(parts) > 1 else ''; act = parts[2] if len(parts) > 2 else ''
         meta = next((x for x in SITES if x[0] == site), None)
-        if not meta: return self._send(404, page('', 'Not found', ''))
+        if not meta or not self._home(site): return self._send(404, page('', 'Not found', ''))
         extra, who = meta[3], self._who()
         # ...a refused form is drawn again as itself: a wizard's first step stays its two boxes and its Next, as a real one does
         def again(err, fields=None):
             fields = fields or ([('Full name', 'name', 'text'), ('Work email', 'email', 'email')] if extra == 'wizard' else BASE)
             return self._send(400, page(site, 'Create your account', form(site, 'signup', fields, 'Next' if extra == 'wizard' else 'Create account', err=err)))
+        if act == 'signup' and extra == 'crash':
+            return self._send(500, b'<!doctype html><title>500</title><h1>Internal Server Error</h1><p>Something went wrong. Please try again later.</p>')
+        if act == 'signup' and extra == 'hang': time.sleep(600); return
         if act == 'signup':
             email = (f.get('email') or '').strip().lower()
             if '@' not in email or not f.get('name'): return again('Name and a valid email are needed.')
@@ -136,6 +149,20 @@ class H(BaseHTTPRequestHandler):
         with open(INBOX + '.log' if INBOX else 'signup.log', 'a', encoding='utf-8') as o: o.write(f'{time.strftime("%H:%M:%S")} {a[0] % a[1:] if len(a) > 1 else a}\n')
 
 
-import threading
-for h in ['127.0.0.1', *HOST.values()]: threading.Thread(target=ThreadingHTTPServer((h, PORT), H).serve_forever, daemon=True).start()
+import socket, threading
+
+
+class Alone(ThreadingHTTPServer):
+    """ONE WORLD A PORT (round 4, 2026-11-19): three walks started this on 18791 at once, and Windows let each bind it again - every vendor was
+    served by whichever walk's copy held that address. Accounts one walk made "already existed" for the next, a code went to another walk's
+    inbox, and a password that worked was "wrong" a minute later. A port already held is refused, so a second copy stops at once."""
+    allow_reuse_address = False
+    def server_bind(self):
+        if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'): self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+try: servers = [Alone((h, PORT), H) for h in ['127.0.0.1', *HOST.values()]]
+except OSError as e: sys.exit(f'port {PORT} is taken - the sites of another walk run there; pick another port ({e})')
+for sv in servers: threading.Thread(target=sv.serve_forever, daemon=True).start()
 threading.Event().wait()

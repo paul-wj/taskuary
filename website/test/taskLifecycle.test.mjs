@@ -1,13 +1,12 @@
+import { taskSource } from "./taskSource.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import {
   AGENT, agentPhase, focusStage, generalAnswered, hasCorrespondent, ownerControlsCompletion, replySource, sessionWord, wentOut, pendingProposals, pendingReplyReview, replyPhase,
   sentReplyReview, taskPhase, timelinePhases,
 } from "../src/taskLifecycle.js";
-import { setLocale } from "../src/i18n.js";
-
-// The phase words below read English: the locale is pinned, never the host's.
-setLocale("en");
 
 test("a self-forward has nobody to answer: the owner's own mail is never the reply's correspondent", () => {
   const self = { MessageId: 2, Channel: "email", FromEmail: "alex@northwind.example", FromOwner: true, Direction: "in" };
@@ -52,6 +51,7 @@ test("timeline exposes task state beside current agent or reply attention", () =
     { task: "done", agent: null, reply: "sent" });
 });
 
+
 test("one stage is open: the last thing owed wins, and a closed task shows itself", () => {
   const draftReady = { kind: "coding", task: "open", agent: "stopped and saved", reply: "ready to send", hasSender: true };
   assert.equal(focusStage(draftReady), "reply");                                    // sending it is what closes the task
@@ -75,7 +75,6 @@ test("one stage is open: the last thing owed wins, and a closed task shows itsel
 });
 
 
-
 test("a general chat that has answered is agent state, not \"not started\"", () => {
   assert.equal(agentPhase({ conversation: true }), "stopped and saved");
   assert.equal(agentPhase({ conversation: true, report: { Body: "x" } }), "stopped and saved");
@@ -84,6 +83,7 @@ test("a general chat that has answered is agent state, not \"not started\"", () 
   assert.equal(agentPhase({ state: "held", handed: true }), "new sender");
   assert.equal(focusStage({ kind: "general", task: "open", agent: "stopped and saved", reply: "not drafted" }), "agent");
 });
+
 
 // A PROPOSAL IS A DECISION TOO. A playbook drafted after a coding job, or a setting proposed in
 // chat, has no sender and still needs a yes - so the stage cannot be gated on there being someone
@@ -162,3 +162,18 @@ test("a session's new word is a change the task page takes, and the same word is
   assert.equal(sessionWord(null), "");
 });
 
+
+// A CHAT AT REST IS NOT RE-READ ON A TIMER (stress round, 2026-11-18): a general agent's CLI stays open half an hour after it answers, and
+// the task page counted it as a running agent - the whole task read every 3-12 s for all of that half hour. Only a session at work (or one
+// that cannot say, a pty) keeps the page's calm poll on; a chat's next turn pokes task-changed, read at once
+test("the task page polls its detail for a session at work, never for a chat that has answered", () => {
+
+  const chatAtRest = { alive: true, busy: false, waiting: true }, chatAtWork = { alive: true, busy: true }, pty = { alive: true, waiting: true };
+  const atWork = (s) => !!s?.alive && !generalAnswered(true, s);
+  assert.equal(atWork(chatAtRest), false);
+  assert.equal(atWork(chatAtWork), true);
+  assert.equal(atWork(pty), true, "a pty says no busy: its quiet is watched");
+  const source = taskSource();
+  assert.match(source, /const sessionAtWork = sessionAlive && !generalAnswered\(true, detail\?\.session\);/);
+  assert.match(source, /const running = hasRunningRun \|\| sessionAtWork;/, "the poll runs for a session at work, not one merely alive");
+});

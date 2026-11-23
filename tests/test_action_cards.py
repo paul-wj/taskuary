@@ -137,6 +137,46 @@ class OnePress(unittest.TestCase):
         on_task = next(r for r in c.get(f'/api/tasks/{self.tid}').json()['reviews'] if r['ReviewId'] == rv['ReviewId'])
         self.assertEqual(on_task['Connect'], chat['connect'])
 
+    def test_a_press_on_a_post_whose_network_is_not_connected_posts_nothing_and_says_connect(self):
+        # the walk, 2026-11-18: Post to LinkedIn was pressed on a network never connected and came back in developer words (Client ID, Client
+        # Secret, the OAuth token generator), the card set aside. The press is refused before anything runs, in the card's own Connect words,
+        # and the card stays waiting with its Connect - the same answer for every network (outbound.review_connect)
+        net = LinkedIn()
+        rv = self.propose(text='Northwind is at the spring hiring fair on Friday.')
+        server.store.save_connector({'ConnectorId': self.card['ConnectorId'], 'Active': 0, 'ConfigJson': '{}'}, 'test')
+        with stubbed(net):
+            out = verdicts.decide(server.store, rv, 'approve', 'Northwind is at the spring hiring fair on Friday.')
+        self.assertFalse(out['ok']); self.assertEqual(net.calls, [])
+        self.assertEqual(out['status'], 'pending')
+        self.assertIn("LinkedIn isn't connected", out['send_error'])
+        self.assertNotIn('Client', out['send_error'])
+        kept = server.store.get_review(rv['ReviewId'])
+        self.assertEqual((kept['Status'], kept.get('ActError')), ('pending', None))
+
+    def test_a_card_switched_on_but_never_signed_in_is_not_connected_and_its_post_says_connect(self):
+        # the walks, 2026-11-18: a LinkedIn card stood on with no sign-in, and the agent's card offered Post to LinkedIn. Connected is what the
+        # Connections page counts (connectorcatalog.signed_in): on AND holding its sign-in - the card says Connect, and the press runs nothing
+        net = LinkedIn()
+        rv = self.propose(text='Northwind is at the spring hiring fair on Friday.')
+        server.store._exec("UPDATE connector SET Secret=NULL, Active=1 WHERE ConnectorId=?", (self.card['ConnectorId'],))
+        chat = next(x for x in c.get(f'/api/tasks/{self.tid}/assistant').json()['cards'] if x['ReviewId'] == rv['ReviewId'])
+        self.assertEqual(chat['connect']['label'], 'Connect LinkedIn')
+        with stubbed(net):
+            out = verdicts.decide(server.store, server.store.get_review(rv['ReviewId']), 'approve', 'Northwind is at the fair.')
+        self.assertFalse(out['ok']); self.assertEqual(net.calls, [])
+
+    def test_an_agents_post_on_a_network_not_connected_is_its_card_with_connect_and_nothing_runs(self):
+        # ...and the agent that calls the post as a tool on that network gets the same card, never "the connection is off - turn it on": a
+        # post waits for the press on every road, and where the network is not connected the press is Connect (outbound.review_connect)
+        net = LinkedIn()
+        server.store._exec("UPDATE connector SET Secret=NULL, Active=0 WHERE ConnectorId=?", (self.card['ConnectorId'],))
+        with stubbed(net):
+            r = c.post('/api/tools/run', headers=agent(self.tid), json={'task_id': self.tid, 'type': 'linkedin_post',
+                                                                       'text': 'Northwind is at the spring hiring fair on Friday.'})
+        self.assertEqual(r.status_code, 202, r.text); self.assertEqual(net.calls, [])
+        card = next(x for x in c.get(f'/api/tasks/{self.tid}/assistant').json()['cards'] if x['ReviewId'] == r.json()['review'])
+        self.assertEqual(card['connect']['label'], 'Connect LinkedIn')
+
     def test_a_change_the_card_does_not_offer_posts_nothing(self):
         net = LinkedIn()
         with stubbed(net):

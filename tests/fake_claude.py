@@ -28,6 +28,12 @@ T0 = time.time()
 args = sys.argv[1:]
 def arg(k): return args[args.index(k) + 1] if k in args and args.index(k) + 1 < len(args) else None
 def env(k, d): return float(os.environ.get(k) or d)
+# FAKE_CLAUDE_PRINTS=<file>: any CLI that prints its `lines` as they are (and `err` on stderr), then exits `code` - a text CLI's own words
+if os.environ.get('FAKE_CLAUDE_PRINTS'):
+    _p = json.load(open(os.environ['FAKE_CLAUDE_PRINTS'], encoding='utf-8'))
+    sys.stdout.write(''.join(l + '\n' for l in _p['lines'])); sys.stdout.flush()
+    if _p.get('err'): sys.stderr.write(_p['err'] + '\n')
+    sys.exit(_p['code'])
 if '--version' in args: print(f"{os.environ.get('FAKE_CLAUDE_VERSION') or '2.1.300'} (Claude Code)"); sys.exit(0)   # a stranger's task needs a new one (origin.py)
 if '--help' in args:                     # an older claude has no --setting-sources: FAKE_CLAUDE_OLD=1
     print('Usage: claude [options]\n  -p, --print\n' + ('' if os.environ.get('FAKE_CLAUDE_OLD') else '  --setting-sources <sources>\n')); sys.exit(0)
@@ -61,12 +67,31 @@ def answer(prompt: str) -> str:
         if not re.search(r['when'], prompt if r.get('anywhere') else said, re.I): continue
         # ...`events`: stream-json lines said as they are, in order, each after its own `_sleep` - a tool that fails, a compaction (chat-render)
         for e in r.get('events') or []:
+            if isinstance(e, str): sys.stdout.write(e); sys.stdout.flush(); continue     # ...a line as it is, cut where its process died
             e = dict(e); time.sleep(float(e.pop('_sleep', 0) or 0)); out({'session_id': sid, **e})
         if r.get('exit') is not None: log('exit', code=r['exit']); sys.exit(r['exit'])   # a CLI that dies mid-turn (website/browser/agent-journey)
         for p in r.get('post') or []: act(p)
+        STEPS[:] = r.get('steps') or []
+        TAIL[0] = float(r.get('tail') or 0)
         time.sleep(r.get('wait') or 0)                   # a long turn, for a stop pressed while it works
-        return r.get('then' if then else 'first') or r.get('first') or 'Ok.'
+        said = r.get('then' if then else 'first') or r.get('first')
+        return 'Ok.' if said is None else said             # ..."" a turn that ends on its last step, no words after it
     return 'Ok.'
+
+
+# a rule's `steps`: what the turn does before its words, as the CLI streams it - {"tool": name, "input": {...}, "error": text} a call and its
+# answer (an error when `error`), {"thought": text} a thinking block. A rule whose `first` is "" ends on its last step, no words after it
+STEPS, TAIL = [], [0.0]           # ...`tail`: seconds between its last words and the turn's result, as a CLI's Stop hooks take
+def steps(sid_):
+    for i, st in enumerate(STEPS):
+        if 'thought' in st:
+            out({'type': 'assistant', 'session_id': sid_, 'message': {'role': 'assistant', 'content': [{'type': 'thinking', 'thinking': st['thought'], 'signature': 'x'}]}})
+            continue
+        tid_ = f'toolu_{os.getpid()}_{i}'
+        out({'type': 'assistant', 'session_id': sid_, 'message': {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': tid_, 'name': st['tool'], 'input': st.get('input') or {}}]}})
+        time.sleep(float(st.get('wait') or 0.2))
+        out({'type': 'user', 'session_id': sid_, 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': tid_, 'is_error': bool(st.get('error')),
+                                                                                     'content': st.get('error') or st.get('output') or 'ok'}]}})
 
 
 QUEUED = lambda: 0          # the sends still waiting behind this turn (the live loop's)
@@ -79,19 +104,23 @@ def turn(prompt: str, n: int):
     unseen = len(prompt) + (len(system) if n == 1 else 0)
     time.sleep(THINK + PREFILL * unseen / 10_000)
     # ...a scenario's own turn (fake_director.py) is an agent's - a kept conversation, or a run with Taskuary's tools (a stranger's task runs one
-    # turn a process); a call beside it with no tools (a summary, a lesson) is answered at once
-    text = directed(prompt) if folder_of() and (LIVE or '--mcp-config' in args) else answer(prompt)
+    # turn a process); a call beside it with no tools (a summary, a lesson) is answered at once - told by `--tools ''`, not by LIVE: a
+    # one-shot runs on a process started ahead in stream-json input too (clipool.spare_turn), and each waited out the director (2026-11-21)
+    text = directed(prompt) if folder_of() and (LIVE or '--mcp-config' in args) and arg('--tools') != '' else answer(prompt)
     log('first_token', n=n)
+    steps(sid)
     chunks = re.findall(r'.{1,4}', text, re.S) or ['']
     start = time.time()
     for i, c in enumerate(chunks):
         if PARTIAL: out({'type': 'stream_event', 'session_id': sid, 'event': {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': c}}})
         lag = start + (i + 1) / TPS - time.time()
         if lag > 0: time.sleep(lag)
-    out({'type': 'assistant', 'session_id': sid, 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}})
+    if text: out({'type': 'assistant', 'session_id': sid, 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}})
+    time.sleep(TAIL[0])
     log('result', n=n, out_chars=len(text))
     out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': text, 'session_id': sid, 'num_turns': n,
-         'duration_ms': int((time.time() - t) * 1000), **({'queued_turn_count': QUEUED()} if LIVE else {})})
+         'duration_ms': int((time.time() - t) * 1000), **({'queued_turn_count': QUEUED()} if LIVE else {}),
+         **json.loads(os.environ.get('FAKE_CLAUDE_RESULT') or '{}')})      # ...FAKE_CLAUDE_RESULT: its result as claude ends a turn otherwise
 
 
 TAKES = {'--session-id', '--resume', '-r', '--settings', '--model', '--system-prompt-file', '--append-system-prompt-file', '--append-system-prompt', '--permission-mode',
@@ -139,14 +168,18 @@ def reflowing(n: int):
 def interactive():
     """`claude` with no -p, as a coding agent runs it in a pty: the seed answered, then each line typed answered, until the pty goes.
     The rules match anywhere in what was said - a coding seed is Taskuary's whole prompt, not "The owner says: ..." (browser/agent-presses)."""
+    # FAKE_CLAUDE_CHROME=1: the real CLI's own footer - "esc to interrupt" while a turn works, "? for shortcuts" at rest - which the
+    # server's screen reading knows (terminal.phase_of), as it knows the real one's
+    chrome = os.environ.get('FAKE_CLAUDE_CHROME') == '1'
     def say(text):
+        if chrome: sys.stdout.write('\r\n✻ Thinking… (esc to interrupt)\r\n'); sys.stdout.flush()
         time.sleep(THINK)
         for r in script:
             if re.search(r['when'], text, re.I | re.S):
                 if r.get('exit') is not None: sys.exit(r['exit'])
                 reply = r.get('first') or 'Ok.'; break
         else: reply = 'Ok.'
-        sys.stdout.write(f'\r\n● {reply}\r\n\r\n> '); sys.stdout.flush()
+        sys.stdout.write(f'\r\n● {reply}\r\n\r\n> ' + ('\r\n  ? for shortcuts\x1b[1A\r> ' if chrome else '')); sys.stdout.flush()
     sys.stdout.write(f'fake claude - session {sid}\r\n'); sys.stdout.flush()
     if os.environ.get('FAKE_CLAUDE_HISTORY'): reflowing(int(os.environ['FAKE_CLAUDE_HISTORY']))
     first = seed()

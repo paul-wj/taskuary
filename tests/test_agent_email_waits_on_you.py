@@ -51,3 +51,84 @@ def test_a_finished_run_with_a_post_waiting_is_that_press_not_agent_done():
                   'DraftText': json.dumps({'action': 'run_tool', 'type': 'linkedin_post', 'text': 'Northwind rolled out Spendly.'})})
     s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'superseded', 'DraftText': 'old'})        # the newest row is not the waiting one
     assert taskstate.state(s, s.get_task(tid)) == 'approve'
+
+
+def test_a_reply_held_behind_a_post_is_lit_and_offered_nowhere():
+    # the roads audit, 2026-11-19 (#4): "what waits on him" had two answers - waiting_on_owner (the pill, the rail) left out a card held behind
+    # another (cardqueue), pending_review (the desk's lit Send, the phone's picks, the Assistant) did not. Ray Colton's reply, written behind a
+    # post still waiting, was the phone's "Send the reply" while the pill and the chat said the post stood. Every surface asks one rule now.
+    from taskuary import asks, cardqueue, rulebook
+    s = MemoryStore(); tid = s.create_task({'Title': 'Expense tool rollout post', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+    post = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the agent proposes to post on LinkedIn',
+                         'DraftText': json.dumps({'action': 'run_tool', 'type': 'linkedin_post', 'text': 'Northwind rolled out Spendly.'})})
+    reply = s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Ray - the post goes up today.'})
+    assert cardqueue.held(s, tid) == {reply}
+    assert s.pending_review(tid)['ReviewId'] == reply, 'the row a decider re-drafts into is still found'
+    assert s.waiting_on_owner(tid)['ReviewId'] == post
+    assert rulebook._draft(s, {'tid': tid}, 'task', tid)['ReviewId'] == post, "the desk's lit button is the card that stands"
+    text, picks = asks.phone_text(s, s.get_task(tid), 'approve', 'a post waits for your Post')
+    assert 'Hi Ray' not in text and not any(a.get('rid') == reply for _, a in picks), 'the phone offers no held reply'
+    assert s.waiting_on_owner(tid, ('draft', 'draft_reply')) is None
+
+
+def test_the_rail_offers_no_reply_held_behind_another_card():
+    # the card audit, 2026-11-22 (C4): the rail read only "written past", never the card queue - a reply waiting behind a post stood on the
+    # rail as "ready to send" and could be sent there out of turn, while the task drew the post alone. One rule: store.off_table
+    from taskuary import cardqueue
+    s = MemoryStore(); tid = s.create_task({'Title': 'Expense tool rollout', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'r1', 'Channel': 'email', 'FromName': 'Ray Colton', 'FromEmail': 'ray@northwind.example',
+                         'Subject': 'Rollout?', 'BodyText': 'When does the post go up?', 'Status': 'routed', 'SentAt': '2026-11-21 09:00:00'})
+    s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the agent proposes to post on LinkedIn',
+                  'DraftText': json.dumps({'action': 'run_tool', 'type': 'linkedin_post', 'text': 'Northwind rolled out Spendly.'})})
+    reply = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'Channel': 'email', 'DraftText': 'Hi Ray - today.'})
+    assert cardqueue.held(s, tid) == {reply}
+    rows = [r for r in s.feed(limit=50, days=3650, ids=[mid]) if r.get('ReviewId')]
+    assert rows and not any(i.get('rid') == reply for i in funnel.from_feed(s, rows, canonical=True))
+
+
+def test_the_tasks_status_and_its_words_are_said_once_by_the_server():
+    # the roads audit, 2026-11-19 (#9): the pill put a chat's words, a reply owed and a failed start over the state key in the page, while the
+    # phone and the list said the key's own words - one function says the status and its words, and the page's detail carries it
+    from fastapi.testclient import TestClient
+    from unittest import mock
+    from taskuary import lanes, server
+    s, tid, rid = chat_with_email()
+    s._exec("UPDATE review SET Status='approved', DeliveryState='sent' WHERE ReviewId=?", (rid,))
+    with mock.patch.object(server, 'store', s):
+        got = TestClient(server.app).get(f'/api/tasks/{tid}').json()
+    assert got['state'] == taskstate.state(s, s.get_task(tid)) == 'agentdone'
+    assert got['status'] == taskstate.status(s, s.get_task(tid)) and (got['status']['key'], got['status']['word']) == ('chat_done', lanes.word('chat_done'))
+    # ...a reply owed that nothing has written is said so, never "ready to send"
+    r = MemoryStore(); t = r.create_task({'Title': 'Visitor parking', 'Kind': 'reply', 'Status': 'open'}, 'o')
+    r.add_review({'TaskId': t, 'Kind': 'draft', 'Status': 'pending', 'DraftText': ''})
+    assert taskstate.state(r, r.get_task(t)) == 'approve' and taskstate.status(r, r.get_task(t))['word'] == lanes.word('owed')
+    # ...and a start that failed says it could not start, never "waiting to start"
+    assert taskstate.status(r, r.get_task(t), key='queued', queued={'State': 'failed'})['key'] == 'start_failed'
+
+
+def test_the_pill_reads_the_card_at_the_front_not_the_reply_held_behind_it():
+    # the judge's look at the redesign, 2026-11-19: a held browser step stood at the front and a reply waited behind it, and the pill said
+    # "ready to send" - the step is what waits on him now, said in its own words
+    from taskuary import lanes
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Pay the toll invoice', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
+    s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps({'action': 'browser_act', 'args': ['click', '@e5'],
+                  'what': 'pays the $412.50 order on toll.example', 'site': 'toll.example'})})
+    s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Erin - paid today.'})
+    front = s.waiting_on_owner(tid)
+    assert front['Kind'] == 'action', front
+    st = taskstate.status(s, s.get_task(tid))
+    assert st['word'] != lanes.word('approve') and st['word'] == lanes.word('blocked'), st
+
+
+def test_a_turn_that_left_a_step_on_him_waits_on_him_on_the_rail_as_in_the_header():
+    """The walk, 2026-11-21: a chat turn ended with a step only the owner could take (its summary's on_you); the header read "agent waiting on
+    you" and the rail's row, reading the session alone, "Finished; nothing since". Invented people."""
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Lease summary', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'The lease lets either side break it after a year.')
+    s.add_comment(tid, 'assistant', general.SUMMARY_TYPE, json.dumps({'did': 'Summarised the lease', 'on_you': ['Confirm which party holds the break'], 'nothing_left': False}))
+    live = {'taskId': tid, 'agent': 'assistant', 'sid': 'g1', 'mode': 'assistant', 'waiting': True, 'state': 'parked', 'line': '', 'tail': []}
+    assert taskstate.state(s, s.get_task(tid), session={**live, 'alive': True}) == 'blocked'
+    row = funnel.from_agents(s, live_state=[live])[0]
+    assert row['lane'] == 'blocked' and not row.get('chat_done'), row

@@ -33,13 +33,12 @@ class Fixable(RuntimeError):
 def fix_of(e) -> dict | None: return getattr(e, 'fix', None) or auth_fix(e)
 # A REFUSED SIGN-IN is fixed by signing in again, never by sending again: an SMTP 535 or a Graph 401/403 left the Advisor
 # advising Send, with no button to the mailbox (error sweep, 2026-10-18)
-_AUTH = re.compile(r'\((401|403)\)|\b535\b|authentication (unsuccessful|failed)|invalid_grant|AADSTS\d+|token (has )?expired', re.I)
+_AUTH = re.compile(r'\((401|403)\)|\b535\b|authentication (unsuccessful|failed)|AADSTS\d+|token (has )?expired', re.I)
 def auth_fix(e) -> dict | None:
-    # ...and a sign-in the app itself found lapsed or refused, by the words it wrote (a Gmail Send with a lapsed Google sign-in offered Try again)
-    from . import googlecal, imapmail, msauth
+    # ...and a sign-in the app itself found lapsed or refused, by the card's own rule (a Gmail Send with a lapsed Google sign-in offered Try again)
+    from .connectorcatalog import lapsed
     s = str(e)
-    lapsed = msauth.LAPSED in s or googlecal.lapsed(s) or imapmail.GOOGLE_REFUSED in s
-    return {'label': 'Sign in again', 'href': MAIL[1]} if isinstance(e, smtplib.SMTPAuthenticationError) or _AUTH.search(s) or lapsed else None
+    return {'label': 'Sign in again', 'href': MAIL[1]} if isinstance(e, smtplib.SMTPAuthenticationError) or _AUTH.search(s) or lapsed(s) else None
 MAIL = ('Connect a mailbox', words.href('mail'))          # the places, by their one link (words.json)
 # ENVELOPES THAT ARE NOT MAIL: an invoice Zoho sends and a calendar answer (calwrite.py) leave by their own provider - no reply
 # channel, no redraft, no mailbox receipt to check
@@ -530,10 +529,19 @@ def connect_fix(store, kind) -> dict | None:
         # ...its button opens the mailbox's own card - one set up and switched off, else Email's section, where each mailbox has its card
         had = next((str(c.get('Type')).lower() for c in cards if str(c.get('Type') or '').lower() in (*MAILBOXES, *HOSTS)), '')
         return {'says': 'No mailbox is connected', 'label': 'Connect email', 'href': f'#connector={had}' if had else MAIL[1]}
+    # ...an act's network by the Connections page's own rule (connectorcatalog.signed_in): a LinkedIn card switched on and never signed in
+    # had Post to LinkedIn lit over it (the walks, 2026-11-18)
+    # ...BY ITS ONE STATE (connectorcatalog.state; the judge's look, 2026-11-20: a LinkedIn card signed in once and since signed out kept "Post to
+    # LinkedIn" lit, and the press failed into "LinkedIn isn't signed in"): only a connection that can act now takes the press - connected, or
+    # failing for a moment; anything else is its Connect, with the draft kept to copy
     card = connectorcatalog.by_type(k)
-    if not card or k in live: return None
-    name = card.get('title') or k
-    return {'says': f"{name} isn't connected", 'label': f'Connect {name}', 'href': f'#connector={k}'}
+    if not card: return None
+    srcs = store.list_sources() if hasattr(store, 'list_sources') else ()
+    mine = [c for c in cards if str(c.get('Type') or '').lower() == k]
+    if any(connectorcatalog.state(c, srcs)['state'] in ('connected', 'failing') for c in mine): return None
+    name, st = card.get('title') or k, (connectorcatalog.state(mine[0], srcs)['state'] if mine else 'off')
+    says = {'signed_out': f'{name} needs you to sign in again', 'not_signed_in': f"{name} isn't signed in"}.get(st, f"{name} isn't connected")
+    return {'says': says, 'label': f'Connect {name}', 'href': f'#connector={k}', 'waits': 'the draft waits here - copy it to post it yourself'}
 
 
 def review_connect(store, r: dict, memo: dict = None) -> dict | None:
@@ -875,6 +883,34 @@ def reply_envelope(store, msg: dict, mode: str = 'reply_all'):
         cc = clean(rec.get('cc'), set(to))
     else: cc = []
     return {'kind': 'reply', 'mode': 'reply_all' if mode == 'reply_all' else 'reply_to', 'to': to, 'cc': cc}
+
+
+def new_mail(env: dict) -> bool:
+    """Does an envelope go out as NEW mail, not as a reply on the thread that asked - not files, a cc or a failed try's bookkeeping.
+    A reply whose people the card set is still a reply: its channel's block holds it, and what it asked is watched (verdicts.decide)."""
+    env = env if isinstance(env, dict) else {}
+    return env.get('kind') not in (None, '', 'reply') or (not env.get('kind') and bool(env.get('to') or env.get('channel')))
+def outgoing(env: dict) -> bool:
+    "Does an envelope name a destination of its own (new mail, a reply with its people set) - not files, a cc or a failed try's bookkeeping."
+    return new_mail(env) or bool((env if isinstance(env, dict) else {}).get('to'))
+
+
+def review_envelope(store, rv: dict) -> dict:
+    """WHERE A REVIEW'S WORDS GO - the one answer the card, the send, the agent's "it went to" and the "already answered" check all read:
+    the envelope it went out on once sent; its own envelope when it names a destination (new mail, a reply with its people set); else the
+    reply to the mail that asked (AnswersMid), as the send works it out (reply_envelope - Reply all, the Reply-To honoured). The agent was
+    told a reply went to the From address when the card had sent it to the Reply-To, and a second draft followed."""
+    def load(f):
+        try: d = json.loads((rv or {}).get(f) or '{}') or {}
+        except (TypeError, ValueError): d = {}
+        return d if isinstance(d, dict) else {}
+    went = load('DeliveryEnvelope').get('envelope')
+    if isinstance(went, dict) and went.get('to'): return went
+    env = load('Deliver')
+    if outgoing(env): return env
+    mid = (rv or {}).get('AnswersMid') or (rv or {}).get('MessageId')
+    m = store.get_message(int(mid)) if mid else None
+    return {**(reply_envelope(store, m) or {'kind': 'reply'}), **({'cc': env['cc']} if env.get('cc') is not None else {})}
 
 
 UNKNOWN_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError, TimeoutError,

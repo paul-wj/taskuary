@@ -40,15 +40,22 @@ test("his line greys the reply card above it in the same frame, before the serve
   assert.deepEqual(withMine(read, []).items[1].cards.map((c) => c.status), ["pending"]);     // ...and only then
 });
 
-// ...IN THE SERVER'S OWN WORDS FROM THAT FRAME (chat-render, 2026-11-18): greyed by the page it read "Earlier draft - not sent; set aside when you
-// moved on", and a beat later, as the read came back, "Not sent - you wrote "what is on my plate" after it" - one fact said two ways, swapped
-// under his eyes. The list names the sentence a line of his would grey it with (`aside`, proposals.WROTE_PAST); the page fills in his line
-test("his line greys the card above it with the sentence the server will say, in the same frame", () => {
+// ...THE SAME CARD, ITS BUTTONS GREYED, NO REASON (the owner, 2026-11-18: "don't need reason. just keep it with buttons but the buttons grayed
+// out once you moved on"): greyed from the frame he presses Enter, and no sentence of why rides on it for the chat to draw
+test("his line greys the card above it in the same frame, with no reason line", () => {
   const card = { id: "r:1", review: 1, what: "draft_reply", status: "pending", was: { text: "Hi Gail, yes." }, aside: 'Not sent - you wrote "{line}" after it' };
   const read = { items: [mail, { ...answer, cards: [card] }], pending: [], working: false };
-  const long = "what is   on my plate today, and which of it is for Gail Moreno before the vendor call";
-  const got = withMine(read, [{ id: "l-2", kind: "line", text: long, at: new Date(), rest: true }]);
-  assert.equal(got.items[1].cards[0].why, 'Not sent - you wrote "what is on my plate today, and which of it is for Gail Moren…" after it');
+  const got = withMine(read, [{ id: "l-2", kind: "line", text: "what is on my plate today", at: new Date(), rest: true }]);
+  assert.deepEqual(got.items[1].cards[0], { ...card, status: "passed" });
+});
+
+// ...A CARD OF SEVERAL EMAILS TOO (the real-CLI card walk, 2026-11-18): it carries no draft words of its own, so the page left it lit under his
+// new line for a read (~230 ms) - two Sends to press over the line that had just set them aside. The server's `aside` says it greys
+test("his line greys a card of several emails above it from the same frame", () => {
+  const card = { id: "r:2", review: 2, what: "batch", batch: "b1", n: 2, status: "pending", aside: 'Not sent - you wrote "{line}" after it' };
+  const read = { items: [mail, { ...answer, cards: [card] }], pending: [], working: false };
+  const got = withMine(read, [{ id: "l-2", kind: "line", text: "draft them again", at: new Date(), rest: true }]);
+  assert.equal(got.items[1].cards[0].status, "passed"); assert.equal(got.items[1].cards[0].why, undefined);
 });
 
 test("a line whose send failed stays where it stands in his own words; the failure is one line under it with Try again", async () => {
@@ -71,15 +78,6 @@ test("what came in waits as a count on its sender's chip, his outside replies as
     { key: "You on WhatsApp", came: false, ids: ["m:8"], label: "You on WhatsApp · 1" }]);
 });
 
-test("his waiting lines are slim rows over the box - the newest two, +N more, Send now only where the turn takes words, a trash", async () => {
-  const src = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /const rows = items\.filter\(\(x\) => x\.kind !== "arrival"\), shown = waitingShown\(rows, 2\), more = rows\.length - shown\.length;/);
-  assert.match(src, /\{x\.kind === "line" && now && onNow && <button type="button" className="tq-conv-pending-act" data-tq-send-now=""/);
-  assert.match(src, /data-tq-drop-line="" onClick=\{\(\) => onDrop\(x\)\}/);
-  assert.doesNotMatch(src, /Waiting for the agent\{items\.length/, "no heading, no box");
-  const css = await readFile(new URL("../src/generalWorkspace.css", import.meta.url), "utf8");
-  assert.match(css, /\.tq-conv-pending \{ display: flex; flex-direction: column; align-items: flex-end;/);
-});
 
 test("nothing drawn goes or moves, and nothing new is drawn above it", () => {
   const was = { items: [mail, answer] };
@@ -88,44 +86,6 @@ test("nothing drawn goes or moves, and nothing new is drawn above it", () => {
   assert.match(flowBreaks({ items: [mail] }, was)[0], /^c: t:m:1:0 was on the canvas and is gone/);
 });
 
-test("a card is drawn where the list has it and nowhere else - never loose under a turn at work, never live again at the foot", async () => {
-  const src = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  // ...nor before the list is read (chatStream.placesLoose: one word for "there is a list, and no turn of it is at work")
-  assert.match(src, /const loose = looseOk \? nodes\.filter\(\(n\) => !used\.has\(n\.key\) && !listed\.has\(n\.rid\) && !held\.has\(n\.rid\)\) : \[\]/);
-  assert.match(src, /const nextLoose = next && !used\.has\("next"\) && looseOk && !listed\.has\(nextRid\)/);
-  assert.match(src, /loose=\{placesLoose\(list\)\}/);
-  // ...a draft no longer to press is greyed in its place with its words: rewritten, set aside as he wrote again, taken back by its agent
-  assert.match(src, /const PAST = \{ superseded: .*passed: .*withdrawn: /);
-  assert.doesNotMatch(src, /stands below, under a later answer/);
-});
-
-// ONE CARD AT A TIME (the owner, 2026-11-16: "it should say I have 2 emails to send, should we send this one? then user clicks then the next one
-// shows"): the list names what waits behind the card that stands (conversation.items `queue`, cardqueue.py) - the page draws none of it, at
-// its turn, loose at the foot or as the landing question, and says over the card that stands how many come and which is next
-test("a card that waits behind another is drawn nowhere, and the one that stands says what comes next", async () => {
-  const src = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /if \(held\.has\(c\.review\)\) return \[\];/);
-  assert.match(src, /landing = held\.has\("land"\) \? null : landed/);
-  assert.match(src, /data-tq-card-queue=""/);
-  assert.match(src, /return out\.length && live\.has\(c\.review\) && c\.status === "pending" \? \[\.\.\.qLine\(\), \.\.\.out\] : out;/);
-  assert.match(src, /queue=\{list\?\.queue \|\| null\}/);
-  // ...and no second road draws two letters side by side: the other replies' block and the emails' Approve all are gone
-  const page = await readFile(new URL("../src/TaskPage.jsx", import.meta.url), "utf8"), slots = await readFile(new URL("../src/SlotList.jsx", import.meta.url), "utf8");
-  assert.doesNotMatch(page, /MoreDrafts/); assert.doesNotMatch(slots, /Approve all/);
-});
-
-// the bug hunt's stop, 2026-11-12: after Stop his next line set the stopped turn's draft aside, and it read "Earlier draft - not sent; you
-// wrote again" - he had written once, his next line. A card set aside says what the server and its agent say of it (proposals.SET_ASIDE)
-test("a card set aside reads \"set aside when you moved on\" on every surface, never \"you wrote again\"", async () => {
-  const ws = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8"), pc = await readFile(new URL("../src/PassedCard.jsx", import.meta.url), "utf8");
-  const past = /const PAST = \{[^\n]*\};/.exec(ws)[0], line = /export const PASSED_LINE = [^\n]*/.exec(pc)[0];
-  for (const s of [past, line]) { assert.doesNotMatch(s, /wrote again/); assert.match(s, /set aside when you moved on/i); }
-});
-
-test("the box says what the header says: never \"pick the session back up\" while a turn is at work", async () => {
-  const src = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /cli \|\| convWorks \|\| !conv\.list\?\.ran \? MESSAGE : "Write to pick the session back up…"/);
-});
 
 test("a turn at work says what is happening, or what we wait for, beside its dots - one line, on every level", async () => {
   const { workingLine } = await import("../src/chatStream.js");
@@ -142,6 +102,12 @@ test("a turn at work says what is happening, or what we wait for, beside its dot
   // ...and where the newest step is a thought, its latest words - never a bare "Thinking…" for minutes (the owner, 2026-11-16)
   const thought = { kind: "thought", status: "done", summary: "The owner wants two bakeries.", detail: "The owner wants two bakeries. Tatte opens at 7 on Sundays, so I should check Bakey next." };
   assert.equal(workingLine([{ type: "work", steps: [thought] }], label), "Tatte opens at 7 on Sundays, so I should check Bakey next");
+  // ...but never the words of a row in sight (the status walk, 2026-11-18): a short thought is its row's whole text, standing open over the line
+  // while no work folds it - the line says "Thinking…" under it, and the thought's words again only once a fold has shut it away
+  const short = { kind: "thought", status: "done", summary: "The budget note comes first, then the archive." };
+  assert.equal(workingLine([{ type: "work", steps: [short] }], label), "Thinking…", "the row says it: the line does not");
+  assert.equal(workingLine([{ type: "work", steps: [{ summary: "Read budget.xlsx", status: "done" }, short] }], label), "The budget note comes first, then the archive",
+    "folded behind \"1 step\", the row is out of sight: the line says it");
   const { thinkingLine } = await import("../src/chatStream.js");
   assert.ok(thinkingLine("word ".repeat(80)).length <= 110);
   // ...and the answer it is writing, while that is the newest thing it did - a long answer read "Thinking…" for 85 s on the real CLI
@@ -151,20 +117,82 @@ test("a turn at work says what is happening, or what we wait for, beside its dot
   assert.equal(workingLine(parts, label, { ask: "Waiting for your Allow once" }), "Waiting for your Allow once");
   const { waitingOn } = await import("../src/chatStream.js");
   assert.equal(waitingOn({ permissions: [{}] }), "Waiting for your Allow once");
-  assert.equal(waitingOn({ asking: { request_id: "signin:bank.example" } }), "Waiting for you to sign in");
+  assert.equal(waitingOn({ asking: { ask: "signin", site: "bank.example" } }), "Waiting for you to sign in");
   assert.equal(waitingOn({ asking: { request_id: "q1" } }), "", "a question asked before is no wait while it works");
   assert.equal(waitingOn({}), "");
   const src = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
   assert.match(src, /: doing \? <span className="tq-aui-working-line" data-tq-working-line="" title=\{doing\}>\{doing\}<\/span> : null/);
 });
 
-test("his waiting line is pinned just over the box until the agent takes it - never in the scrolled conversation, where a turn at work pushed it down (the owner, 2026-11-15)", async () => {
-  const src = (await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
-  const conv = src.slice(src.indexOf('className="tq-conv"'), src.indexOf("</ThreadPrimitive.Viewport>")), foot = src.slice(src.indexOf('<div className="tq-aui-footer">'));
-  assert.doesNotMatch(conv, /<PendingStrip/, "not in the scrolled conversation: it moved as the turn wrote");
-  assert.match(foot, /<PendingStrip items=\{merged\.pending\}/, "over the box");
-  assert.ok(foot.indexOf("<PendingStrip") < foot.indexOf("<OneBox"), "above the box, whatever agent works the task");
-  const css = (await readFile(new URL("../src/generalWorkspace.css", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
-  assert.match(css, /\.tq-conv-pending \{[^}]*margin: 0 0 10px/, "a little room between it and the box");
-  assert.match(css, /\.tq-conv-pending-row \{[^}]*border: 1px solid/, "each line in its own border");
+
+// ...ONE TABLE WORDS A STEP AT WORK (rule 3): the edit row's running verbs were a pair of its own beside agentSteps' ING; it reads them from there
+test("an edit's running verb is the one table's, never words of its own", async () => {
+  const { editRow } = await import("../src/chatStream.js");
+  assert.equal(editRow({ name: "Write", file: "notes.md", edit: "", running: true }).summary, "Writing notes.md");
+  assert.equal(editRow({ name: "Edit", file: "a/budget.py", edit: "", running: true }).summary, "Editing budget.py");
+  const src = await readFile(new URL("../src/chatStream.js", import.meta.url), "utf8");
+  assert.doesNotMatch(src.slice(src.indexOf("export const editRow"), src.indexOf("// THE PLAN IS A CHECKLIST")), /"Writing"|"Editing"/);
+});
+
+test("an edit still being made is \"Editing x\" in its row and on the working line - never \"Edited x (+1 -1)\" over \"Thinking...\"", async () => {
+  const { eventsOf, turnParts, workingLine } = await import("../src/chatStream.js");
+  const label = (s) => (s.status === "running" ? s.doing : s.summary);
+  const steps = [{ k: "tool", name: "Read", args: { file_path: "a.py" }, status: "completed" },
+    { k: "tool", name: "Edit", args: { file_path: "budget.py", old_string: "a", new_string: "b" }, status: "in_progress" }];
+  const live = turnParts(eventsOf(steps, true), { live: true });
+  assert.equal(live.at(-1).summary, "Editing budget.py");
+  assert.equal(workingLine(live, label), "Editing budget.py");
+  // ...made once its call returned, or once the turn is over
+  const made = turnParts(eventsOf([steps[0], { ...steps[1], status: "completed" }], true), { live: true });
+  assert.equal(made.at(-1).summary, "Edited budget.py (+1 −1)");
+  assert.equal(workingLine(made, label), "Thinking…");
+  assert.ok(!turnParts(eventsOf(steps, false)).some((p) => p.type === "edit"), "one that never returned is no edit made once the turn is over");
+});
+
+test("the working line names what no row in sight says - at every beat of a turn, its fold shut or opened, on the chat and the dock", async () => {
+  // The status walk, 2026-11-18: a thought stood as its row and again on the line under it; a thought then a finished edit read the old
+  // thought's words, the edit newer than it; and with the fold opened, "Reading budget.md" / "Editing budget.py" stood as a row and on the line
+  const { workingLine, editRow } = await import("../src/chatStream.js");
+  const { stepLabel } = await import("../src/agentSteps.js");
+  const short = { kind: "thought", status: "done", summary: "The budget note comes first, then the archive." };
+  const read = (status) => ({ kind: "read", status, summary: "Read budget.md" });
+  const edit = (running) => editRow({ name: "Edit", file: "budget.py", edit: { old_string: "a = 1", new_string: "a = 2" }, running });
+  const beat = (parts, open = false) => workingLine(parts, stepLabel, { open });
+  // a thought alone: its row stands open (no work to fold it) - the line does not say it again
+  assert.equal(beat([{ type: "work", steps: [short] }]), "Thinking…");
+  // a step at work: shut in its fold, the line names it; the fold opened, its row says it with its spinner
+  assert.equal(beat([{ type: "work", steps: [short, read("running")] }]), "Reading budget.md");
+  assert.equal(beat([{ type: "work", steps: [short, read("running")] }], true), "Working…");
+  // an edit being made: the same (4bce367's "Editing budget.py" under the shut fold)
+  assert.equal(beat([{ type: "work", steps: [short] }, edit(true)]), "Editing budget.py");
+  assert.equal(beat([{ type: "work", steps: [short] }, edit(true)], true), "Working…");
+  // a thought, then an edit that has been made, nothing newer: the edit is the newest thing - never the older thought's words
+  assert.equal(beat([{ type: "work", steps: [short] }, edit(false)]), "Thinking…");
+  // a thought behind a step, the fold shut: its row is out of sight - the line says it; opened, the row says it
+  assert.equal(beat([{ type: "work", steps: [read("done"), short] }]), "The budget note comes first, then the archive");
+  assert.equal(beat([{ type: "work", steps: [read("done"), short] }], true), "Thinking…");
+  // ...and a long thought's row shows its start only: its latest words are on no row, so the line says them, open or shut
+  const long = { kind: "thought", status: "done", summary: "The owner wants two venues.", detail: "The owner wants two venues. The Mill has parking, so I check the Quay next." };
+  assert.equal(beat([{ type: "work", steps: [read("done"), long] }], true), "The Mill has parking, so I check the Quay next");
+  // ConvTurn reads the fold's open state as the fold does, and the dock's trail as always open
+  const src = await readFile(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(src, /const folded = useFoldOpen\(`\$\{foldKey\(t\.id\)\}:all`\), work = React\.useContext\(WorkCtx\), open = folded \|\| !work;/, "both hooks called on every render");
+  assert.match(src, /const Fold = \(\{ k, label, quiet = false, children \}\) => \{\n  const open = useFoldOpen\(k\);/);
+  // ...and the fold's open state is set by his click, in the render the click causes - heard from the native toggle (a task later), the line on
+  // ACP followed the opened fold 75-90 ms late, saying the row's words under it (the judges' recording, 2026-11-18)
+  const fold = src.slice(src.indexOf("const Fold = "), src.indexOf("// ONE RULE FOR EVERY FOLD"));
+  assert.match(fold, /<summary onClick=\{\(e\) => \{ e\.preventDefault\(\); set\(!OPEN_FOLDS\.has\(k\)\); \}\}>/);
+  assert.match(fold, /const set = \(o\) => \{ if \(o === OPEN_FOLDS\.has\(k\)\) return;[^\n]*FOLD_HEARD\.forEach/, "the click and the toggle agree on one state");
+});
+
+
+// ...ONLY A CARD THAT STOOD BEFORE HIS LINE (a walk, 2026-11-18): the agent's answer to his line raised a Post card twelve seconds later, and
+// while his line was still the page's own it was drawn greyed "you wrote ... after it" - no button he ever saw lit
+test("a card raised after his line is never greyed by it", () => {
+  const pad = (n) => String(n).padStart(2, "0"), stamp = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const typed = new Date(Date.now() - 20000), later = new Date(typed.getTime() + 12000), earlier = new Date(typed.getTime() - 30000);
+  const card = (n, d) => ({ id: `r:${n}`, review: n, what: "action", status: "pending", at: stamp(d), was: { text: "Post it" }, aside: 'Not sent - you wrote "{line}" after it' });
+  const read = { items: [mail, { ...answer, cards: [card(1, earlier), card(2, later)] }], pending: [], working: false };
+  const got = withMine(read, [{ id: "l-2", kind: "line", text: "where is the button", at: typed, rest: true }]);
+  assert.deepEqual(got.items[1].cards.map((c) => c.status), ["passed", "pending"]);
 });

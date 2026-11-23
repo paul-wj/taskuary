@@ -6,19 +6,20 @@ A typed ask that means an act brings its item up with the row's OWN button for i
 (`open`), or writes a new job into New (`new`) - and changes nothing until the owner presses. No proposal card is drawn from a typed
 ask on the desk; a phone chat, which has no buttons, keeps its text yes/no.
 """
-import json, unittest
+import json, os, unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
-from taskuary import buttons, concierge, funnel, general, ingest, operations, server, terminal
+from taskuary import buttons, concierge, config, funnel, general, ingest, operations, server, terminal
 from taskuary.store import MemoryStore
+from taskuary.testing import mailbox
 
 
 def ago(hours=0): return (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def store():
-    s = MemoryStore()
+    s = mailbox(MemoryStore())
     s.upsert_agent('coding', 'coding', 'cli', '{}')
     for k in ('calendar_enabled', 'auto_draft_enabled'): s.set_setting(k, '0', 't')
     s.set_setting('team_domains', 'northwind.example', 't'); s.set_setting('owner_email', 'alex@northwind.example', 't')
@@ -208,12 +209,15 @@ class DeskRoutes(unittest.TestCase):
         self.assertEqual((out['say'], out['light']['line']), ('', ''))          # the lit button is the whole answer (2026-10-23)
         self.assertFalse(s.get_task(other).get('RemindAt'))
 
-    def test_send_erin_the_answer_drafts_and_sends_nothing(self):
-        s = store(); tid, item = on_table(s)
-        out, _ = say(s, 'send Erin the answer', item['key'], 'CALL: {"kind": "reply", "params": {"text": "the May numbers are attached"}}')
-        self.assertNotIn('proposal', out)
-        self.assertEqual(out['decision']['verb'], 'reply')                            # the page drafts it and lights Send (AssistantView)
-        self.assertEqual(s._rows("SELECT * FROM review WHERE TaskId=?", (tid,)), [])  # nothing drafted, nothing sent by the words
+    def test_send_erin_the_answer_opens_her_task_and_drafts_nothing(self):
+        """The owner's ruling (2026-11-18): the Assistant "should just open the task, not do anything on the tasks" - a reply or a redraft
+        asked of it on the walk opens the task, where its agent drafts when he asks it there. Nothing is drafted, nothing asked for, by the words."""
+        for model in ('CALL: {"kind": "reply", "params": {"text": "the May numbers are attached"}}', 'CALL: {"kind": "redraft", "params": {"text": "shorter"}}'):
+            s = store(); tid, item = on_table(s)
+            out, _ = say(s, 'send Erin the answer', item['key'], model)
+            self.assertNotIn('proposal', out)
+            self.assertEqual((out.get('open'), out.get('decision')), (f'#task={tid}', None), model)
+            self.assertEqual(s._rows("SELECT * FROM review WHERE TaskId=?", (tid,)), [])
 
     def test_turn_off_background_sync_opens_the_setting(self):
         s = store(); _, item = on_table(s)
@@ -261,7 +265,7 @@ class DeskRoutes(unittest.TestCase):
         self.assertTrue(concierge.continuable(s, tid))
         for model in ('CALL: {"kind": "agent.tell", "params": {"text": "carry on, but skip the mail search"}}',
                       'CALL: {"kind": "agent.answer", "params": {"text": "carry on, but skip the mail search"}}'):
-            with mock.patch.object(concierge, '_agent_running', return_value=False), \
+            with mock.patch.object(concierge, '_on_task', return_value=False), \
                  mock.patch.object(server, 'continue_work', return_value={'continued': True}) as go:
                 out, _ = say(s, 'carry on with it, but skip the mail search', item['key'], model)
             go.assert_called_once()
@@ -271,12 +275,12 @@ class DeskRoutes(unittest.TestCase):
             self.assertNotIn('nothing would hear', out['say'])
         # ...and the row's own Continue, which a general agent's row does not draw: "get the agent going again on this" was answered "I can't
         # start it from this item" (the re-check, 2026-11-04) - it picks up, the owner's words its note
-        with mock.patch.object(concierge, '_agent_running', return_value=False), \
+        with mock.patch.object(concierge, '_on_task', return_value=False), \
              mock.patch.object(server, 'continue_work', return_value={'continued': True}) as go:
             out, _ = say(s, 'get the agent going again on this', item['key'], 'CALL: {"kind": "continue", "params": {}}')
         self.assertEqual(go.call_args[0][1].note, 'get the agent going again on this', out['say'])
         # ...and a continue called with no note carries the owner's own words (the re-check: "skip the zip file" was lost)
-        with mock.patch.object(concierge, '_agent_running', return_value=False), \
+        with mock.patch.object(concierge, '_on_task', return_value=False), \
              mock.patch.object(server, 'continue_work', return_value={'continued': True}) as go:
             say(s, 'carry on with this one, and skip the zip file', item['key'], 'CALL: {"kind": "agent.continue", "params": {}}')
         self.assertEqual(go.call_args[0][1].note, 'carry on with this one, and skip the zip file')
@@ -289,49 +293,32 @@ class DeskRoutes(unittest.TestCase):
         label = lambda rid: concierge.describe_op(s, {'kind': 'review.approve', 'targetKind': 'review', 'target': rid, 'params': {}})[0]
         self.assertEqual((label(held), label(draft)), (buttons.label('approve', 'action'), buttons.label('approve')))
 
-    def test_an_answer_that_went_in_is_said_as_what_happened(self):
-        "The overnight run, 2026-11-03: \"Go with option B\" to an agent that asked came back as \"Done - Answer it · TQ-0004.\" - a button's name."
-        from taskuary import general
-        s = store(); tid, item = on_table(s); dock = general.dock_task(s, 'owner')[0]['TaskId']
-        with mock.patch.object(concierge, 'run_proposal', return_value={'status': 'done', 'outcome': {'delivered': True}}):
-            out = concierge._answer_now(s, dock, None, tid, 'Option B,  three years.', 'owner')
-        self.assertEqual(out['say'], f'Answered the agent on TQ-{tid:04d}: “Option B, three years.”.')
-        with mock.patch.object(concierge, 'run_proposal', return_value={'status': 'error', 'error': 'the agent has gone', 'outcome': {}, 'kind': 'agent.answer', 'id': 'x', 'version': 1}):
-            out = concierge._answer_now(s, dock, None, tid, 'Option B', 'owner')
-        self.assertTrue(out['say'].startswith('Not done'), out['say'])
-
-    def test_a_note_for_a_working_agent_reaches_its_session(self):
-        """The owner, 2026-11-02: "it should be able to, like send a new prompt into the general/coding agent". With an agent WORKING (not
-        asking) on the task, "tell the agent to use the main branch" is the page's Tell the agent (waitroom.add): held while it works,
-        typed in when it stops at its prompt - by whichever road the model takes to it."""
+    def test_words_for_an_agent_open_its_task_and_write_nothing_in_it(self):
+        """The owner, 2026-11-18: the side Assistant "should just open the task, not do anything on the tasks. That's on the agent to do."
+        Words for the agent at work, an answer to one that asked, a note on a task - by whichever road the model takes - bring the task up
+        as its rail row does; nothing is typed into its session, held in its box or filed on it in his name."""
         from taskuary import waitroom
         for model in ('CALL: {"kind": "agent.tell", "params": {"text": "use the main branch"}}',
                       'CALL: {"kind": "agent.answer", "params": {"text": "use the main branch"}}',
-                      'CALL: {"kind": "answer_agent", "params": {"text": "use the main branch"}}'):
-            s = store(); tid, item = on_table(s)
-            s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # a thread he trusts: an untrusted sender's task starts no agent (origin.hold)
-            with mock.patch.object(concierge, '_agent_running', return_value=True), mock.patch.object(waitroom, 'state', return_value=('working', None)):
+                      'CALL: {"kind": "answer_agent", "params": {"text": "use the main branch"}}',
+                      'CALL: {"kind": "task.comment", "params": {"text": "use the main branch"}}'):
+            s = store(); tid, item = on_table(s); typed = []
+            s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))
+            notes = len(s.list_comments(tid))
+            with mock.patch.object(concierge, '_on_task', return_value=True), mock.patch.object(waitroom, 'state', return_value=('working', None)), \
+                 mock.patch.object(terminal, 'tell', side_effect=lambda t, text: (typed.append(text), 'typed into')[1]):
                 out, _ = say(s, 'tell the agent to use the main branch', item['key'], model)
-            # ...the receipt quotes what the owner typed, never the Assistant's version of it put in their mouth (the desktop run, 2026-11-04:
-            # "closed it, go ahead" came back as "Answered the agent: 'I've saved and closed ledger-locked.xlsx...'")
-            self.assertEqual(out['say'], f'Told the agent on TQ-{tid:04d}: “tell the agent to use the main branch” - they go in when it stops at its prompt.', model)
-            # ...the note keeps the owner's own words and the Assistant's version apart (waitroom.parts, the owner 2026-11-04)
-            self.assertEqual([waitroom.parts(n['Note']) for n in s.waiting_notes(tid)], [('tell the agent to use the main branch', 'use the main branch')])
-            self.assertNotIn('nothing on it is waiting', out['say'])
-        # ...and parked at its prompt it has them at once, typed into the live session (one under the reviewer: the task's sender is outside -
-        # a full-tools session there holds them for the owner's Continue, waitroom.full_on_stranger)
-        from types import SimpleNamespace
-        s = store(); tid, item = on_table(s); typed = []
-        s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))
-        with mock.patch.object(concierge, '_agent_running', return_value=True), \
-             mock.patch.object(waitroom, 'state', return_value=('parked', SimpleNamespace(mode='auto'))), \
-             mock.patch.object(terminal, 'tell', side_effect=lambda t, text: (typed.append(text), 'typed into')[1]):
-            out, _ = say(s, 'tell the agent to use the main branch', item['key'], 'CALL: {"kind": "agent.tell", "params": {"text": "use the main branch"}}')
-        self.assertIn('it has them now', out['say']); self.assertIn('use the main branch', typed[0])
-        # ...and with no agent at work nobody would hear it: said, nothing queued
+            self.assertEqual(out.get('open'), f'#task={tid}', model)
+            self.assertEqual(out['say'], f'Opened TQ-{tid:04d} - its agent hears what you type in its box.', model)
+            self.assertEqual((s.waiting_notes(tid), typed, len(s.list_comments(tid))), ([], [], notes), model)
+        # ...and the phone, which has no task to open, still hands them over (the owner: phone left as it is)
         s = store(); tid, item = on_table(s)
-        out, _ = say(s, 'tell the agent to use the main branch', item['key'], 'CALL: {"kind": "agent.tell", "params": {"text": "use the main branch"}}')
-        self.assertEqual(s.waiting_notes(tid), []); self.assertNotIn('Told the agent', out['say'])
+        s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))
+        with concierge.delivering(concierge.PHONE), mock.patch.object(concierge, '_on_task', return_value=True), \
+             mock.patch.object(waitroom, 'state', return_value=('working', None)):
+            out, _ = say(s, 'tell the agent to use the main branch', item['key'], 'CALL: {"kind": "agent.tell", "params": {"text": "use the main branch"}}')
+        self.assertEqual([waitroom.parts(n['Note']) for n in s.waiting_notes(tid)], [('tell the agent to use the main branch', 'use the main branch')])
+        self.assertNotIn('open', out)
 
     def test_an_outward_send_in_words_still_only_lights(self):
         # ...the line the owner kept: what leaves the app is theirs to press (pageview.is_send) - "send it" over a draft lights Send
@@ -356,6 +343,16 @@ class DeskRoutes(unittest.TestCase):
         self.assertNotIn('new', out)
         self.assertEqual((out['open'], out['say']), (f"#task={t['TaskId']}", f"Started TQ-{t['TaskId']:04d} - an agent is on it."))
         self.assertEqual(started, [t['TaskId']])
+
+    def test_a_new_job_is_titled_at_birth_by_the_hand_off_that_starts_it(self):
+        """The walk, 2026-11-18: a task made from New wore his whole sentence as its title ("Then make it a task: get PW-2291 paid by Friday.
+        Find whatever way w..."). The hand-off's own call names a short title; the task is born with it - no second call, no rename."""
+        s = store()
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch.object(general, 'start_session', return_value=mock.Mock()):
+            say(s, 'then make it a task: get the vendor invoice paid by Friday, find whatever way works and set it up for my press', None,
+                'CALL: {"kind": "task.create_from_text", "params": {"kind": "general", "title": "Pay the vendor invoice by Friday", '
+                '"text": "get the vendor invoice paid by Friday, find whatever way works and set it up for my press"}}')
+        self.assertIn('Pay the vendor invoice by Friday', [t['Title'] for t in s.list_tasks()])
 
     def test_with_no_ai_nothing_is_made_and_the_line_says_how_to_connect_one(self):
         s = store()
@@ -385,6 +382,28 @@ class DeskRoutes(unittest.TestCase):
         with mock.patch.object(terminal, 'live_sessions', return_value=[]), self.assertRaises(concierge.CallMiss) as miss:
             concierge._lit(s, tid, item, item, 'not_ours')
         self.assertIn(f"has no {buttons.label('not_ours')} button", str(miss.exception)); self.assertIn(buttons.label('close'), str(miss.exception))
+
+    def test_an_answer_on_an_fyi_never_names_a_button_it_does_not_draw(self):
+        """The API walk, design round 5 (2026-11-19): on a colleague's FYI chat he typed "reply to Ray proposing Friday, for my press" and was told
+        "Use Reply below" - an FYI has no Reply. An answer naming a button the item does not draw is asked again once, told the ones it has."""
+        s = store()
+        m = s.add_message({'ExternalId': 'ray-1', 'ConversationId': 'ray-1', 'Channel': 'email', 'Subject': 'Vendor review', 'FromName': 'Ray Colton',
+                           'FromEmail': 'ray@northwind.example', 'SentAt': ago(1), 'BodyText': 'can we move the vendor review to Friday instead?', 'Status': 'filed'})
+        s.add_route(m, None, 'file', None, 'triage: fyi', [], 'triage'); funnel.invalidate()
+        item = fyis(s)[0]
+        self.assertNotIn('Reply', concierge.on_screen(s, item)); self.assertIn(buttons.label('regular_agent'), concierge.on_screen(s, item))
+        said = []
+        def llm(system, user, **kw):
+            said.append(user)
+            return ('Use Reply below to draft the note to Ray proposing Friday.' if len(said) == 1 else
+                    f"Press {buttons.label('regular_agent')} and an agent drafts the note to Ray for your press.")
+        with mock.patch.object(terminal, 'live_sessions', return_value=[]):
+            out = concierge.say(s, 'it clashes with my 2pm - reply to Ray proposing Friday instead, for my press', key=item['key'], llm=llm)
+        self.assertEqual(len(said), 2); self.assertIn('Reply, which is no button on his screen', said[1])
+        self.assertIn(f"its buttons are {', '.join(concierge.on_screen(s, item))}", said[1])
+        self.assertNotIn('Reply below', out['say']); self.assertIn(buttons.label('regular_agent'), out['say'])
+        # ...a button it does draw, or a word at the head of a sentence, is never asked about
+        self.assertEqual(concierge.unreal_buttons(s, f"Reply is not here; press {buttons.label('regular_agent')}.", item), [])
 
     def test_a_page_beside_the_item_keeps_the_item_on_the_table(self):
         # the router's own Settings page, beside the item: the next ask carries both, and "this" is still the item (verify, 2026-10-19)
@@ -441,11 +460,12 @@ class DeskRoutes(unittest.TestCase):
         s = store()
         sorts = iter([{'kind': 'report', 'why': 'a check'}, {'kind': 'connection', 'provider': 'quickbooks', 'why': 'their books'}])
         with mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps(next(sorts))):
-            out, _ = say(s, 'every Monday send me the overdue invoices', None, 'CALL: {"kind": "setup", "params": {"text": "every Monday send me the overdue invoices"}}')
-            self.assertEqual({k: out['new'][k] for k in ('kind', 'how', 'text')}, {'kind': 'report', 'how': '', 'text': 'every Monday send me the overdue invoices'})
+            with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch.object(general, 'start_session'):
+                out, _ = say(s, 'every Monday send me the overdue invoices', None, 'CALL: {"kind": "setup", "params": {"text": "every Monday send me the overdue invoices"}}')
+            self.assertNotIn('new', out); self.assertTrue(out['open'].startswith('#task='))          # ...a report is the agent's to set up
             out, _ = say(s, 'connect our books', None, 'CALL: {"kind": "setup", "params": {"text": "connect our books"}}')
             self.assertEqual(out['open'], '#connector=quickbooks&step=1')
-        self.assertNotIn('proposal', out); self.assertEqual(proposals(s), [])
+        self.assertNotIn('proposal', out)
 
     def test_a_system_with_no_card_is_said_so_and_offered_as_a_feature_request(self):
         # "connect me to Runway" opened #connector=None - Connections with nothing on it (TQ-1251); a card is Taskuary's to build, so the
@@ -463,36 +483,45 @@ class DeskRoutes(unittest.TestCase):
         self.assertIn('Runway', c['report']['happened']); self.assertEqual(proposals(s), [])
         self.assertEqual(chat_cards(s)[-1]['chips'], out['chips'], 'the button stays on the line')
 
-    def test_a_job_the_model_says_repeats_is_new_routine_filled_in_never_a_one_off(self):
-        # the owner, 2026-10-29: "every Monday at noon run the user management review skill" made a one-off agent task
-        s = store(); ask = 'every Monday at noon run the weekly review skill in northwind/ledger'; had = len(s.list_sources())
-        recurs = {'schedule': 'every Monday at noon', 'objective': 'run the weekly review', 'repo': 'northwind/ledger', 'skill': '/weekly-review'}
-        call = {'kind': 'task.create_from_text', 'params': {'kind': 'coding', 'text': ask, 'recurs': recurs}}
-        out, spawn = say(s, ask, None, 'CALL: ' + json.dumps(call))
-        self.assertEqual(out['new']['kind'], 'workflow')
-        # ...the repository and skill in the words, which are all Set up with AI carries to the builder (2026-11-02)
-        self.assertEqual(out['new']['text'], 'every Monday at noon - run the weekly review - in northwind/ledger, with the /weekly-review skill')
-        self.assertEqual(out['new']['routine'], {'coding': True, 'repo': 'northwind/ledger', 'skill': 'weekly-review'})
-        self.assertEqual(out['say'], 'Wrote it into New - Set up with AI there starts it.')
-        spawn.assert_not_called(); self.assertEqual(proposals(s), []); self.assertEqual(len(s.list_sources()), had)   # nothing saved
-        # ...the same verdict from the set-up sort
-        sort = {'kind': 'routine', 'why': 'it repeats', 'recurs': {'schedule': 'every weekday at 7', 'objective': 'review the failed imports'}}
-        with mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps(sort)):
-            out, spawn = say(s, 'every weekday at 7 review the failed imports', None,
-                             'CALL: ' + json.dumps({'kind': 'setup', 'params': {'text': 'every weekday at 7 review the failed imports'}}))
-        self.assertEqual((out['new']['kind'], out['new']['text'], out['new']['routine']['coding']),
-                         ('workflow', 'every weekday at 7 - review the failed imports', False))
-        spawn.assert_not_called()
-        # ...and an ask with no `recurs` is the one-off it always was
-        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch.object(general, 'start_session'):
-            out, _ = say(s, 'look into the failed import', None,
-                         'CALL: ' + json.dumps({'kind': 'task.create_from_text', 'params': {'kind': 'general', 'text': 'look into the failed import'}}))
-        self.assertNotIn('new', out); self.assertTrue(out['open'].startswith('#task='))
+    def test_a_job_that_repeats_is_an_agents_job_with_his_words_and_file_never_a_form(self):
+        # the walks, 2026-11-18: "send me the vendor spend summary every Monday" with a CSV attached came up as an empty SQL "New report"
+        # form under "Wrote it into New" - his words and his file gone. Every door hands them to the one start; the agent sets the routine up
+        s = store(); ask = 'Send me the vendor spend summary from this every Monday morning'
+        recurs = {'schedule': 'every Monday morning', 'objective': 'summarise vendor spend'}
+        for call in ({'kind': 'task.create_from_text', 'params': {'kind': 'routine', 'text': ask, 'recurs': recurs}},
+                     {'kind': 'task.create_from_text', 'params': {'kind': 'report', 'text': ask}}):
+            with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch.object(general, 'start_session') as began,                  mock.patch.object(terminal, 'live_sessions', return_value=[]), mock.patch.object(ingest, '_spawn'):
+                up = config.home() / 'attachments' / 'router' / 'october-spend.csv'; up.parent.mkdir(parents=True, exist_ok=True); up.write_text('a,b')
+                out = concierge.say(s, ask, llm=lambda *a, **k: 'CALL: ' + json.dumps(call), images=[str(up)])
+            self.assertNotIn('new', out, call); self.assertTrue(out.get('open', '').startswith('#task='), out)
+            t = s.get_task(int(out['open'].split('=')[1]))
+            from taskuary.store import files_of
+            self.assertEqual(t['Summary'], ask)
+            self.assertEqual([os.path.basename(f) for f in files_of(t)], ['october-spend.csv']); self.assertEqual(t['Kind'], 'general'); began.assert_called_once()
+            self.assertNotIn('Wrote it into New', out['say'])
+
+    def test_a_code_fix_with_developer_mode_off_is_a_general_agents_never_no_coding_tool(self):
+        # the walks, 2026-11-18: New refused "fix the rounding bug in <checkout>" with "No coding tool is connected ... Nothing was made" while
+        # Claude Code was connected - the block was Developer mode, and Send to agent on the same CI mail ran the fix as a general agent
+        s = store(); ask = 'Fix the rounding bug in the ledger totals, checkout at C:/work/ledger. Do not push.'
+        call = {'kind': 'task.create_from_text', 'params': {'kind': 'coding', 'text': ask}}
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.agents.cli_ready', return_value=True),              mock.patch('taskuary.agents.developer_mode', return_value=False), mock.patch.object(general, 'start_session') as began:
+            out, spawn = say(s, ask, None, 'CALL: ' + json.dumps(call))
+        self.assertNotIn('No coding tool', out['say']); self.assertTrue(out['open'].startswith('#task='), out['say'])
+        self.assertEqual(s.get_task(int(out['open'].split('=')[1]))['Kind'], 'general'); began.assert_called_once()
+        # ...and in Developer mode with no command-line AI the one line names that, nothing made
+        had = len(s.list_tasks(None))
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.capabilities.can_code', return_value=False):
+            out, _ = say(s, ask, None, 'CALL: ' + json.dumps(call))
+        self.assertIn('No command-line AI (Claude Code, Codex) is connected', out['say']); self.assertNotIn('open', out)
+        self.assertEqual(len(s.list_tasks(None)), had)
 
     def test_a_report_brought_up_by_name_carries_its_words(self):
         s = store()
-        out = concierge._route(s, 0, 'script.start', 0, {'name': 'report', 'text': 'list the AP bills due this month'}, '', {}, None, '', 'owner')
-        self.assertEqual((out['new']['kind'], out['new']['text']), ('report', 'list the AP bills due this month'))
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch.object(general, 'start_session'):
+            out = concierge._route(s, 0, 'script.start', 0, {'name': 'report', 'text': 'list the AP bills due this month'}, '', {}, None, '', 'owner')
+        self.assertNotIn('new', out)
+        self.assertEqual(s.get_task(int(out['open'].split('=')[1]))['Summary'], 'list the AP bills due this month')
 
     def test_a_playbook_asked_for_is_new_playbook_never_an_agents_job(self):
         # the owner, 2026-10-22: "can I build a playbook for it?" opened New on Give an agent a job - "this is not playbook ui?"
@@ -503,7 +532,7 @@ class DeskRoutes(unittest.TestCase):
         with mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps({'kind': 'playbook', 'why': 'a recurring ask'})):
             out, spawn = say(s, ask, None, json.dumps({'kind': 'setup', 'params': {'text': ask}}).join(('CALL: ', '')))
         self.assertEqual({k: out['new'][k] for k in ('kind', 'how', 'text')}, {'kind': 'playbook', 'how': '', 'text': ask})
-        self.assertEqual(out['say'], 'Wrote it into New - Set up with AI there starts it.')
+        self.assertEqual(out['say'], 'Opened New on a playbook with your words - Set up with AI there starts it.')
         spawn.assert_not_called(); self.assertEqual(proposals(s), [])
         # ...and a phone, which has no New, is told where a playbook is made - nothing is started from the line
         with concierge.delivering(concierge.PHONE), \
@@ -560,9 +589,10 @@ class TheModelIsToldTheRow(unittest.TestCase):
 
 class NotesAndDueDays(unittest.TestCase):
     # neither has a button on the row; both are the task page's own writes, run and said (the owner, 2026-10-20)
-    def test_a_note_is_added_and_said(self):
+    def test_a_note_is_added_and_said_on_the_phone(self):
         s = store(); tid, item = on_table(s)
-        out, _ = say(s, 'file a note on it: waiting on the bank', item['key'], 'CALL: {"kind": "task.comment", "params": {"text": "waiting on the bank"}}')
+        with concierge.delivering(concierge.PHONE):
+            out, _ = say(s, 'file a note on it: waiting on the bank', item['key'], 'CALL: {"kind": "task.comment", "params": {"text": "waiting on the bank"}}')
         self.assertEqual(out['did'], 'task.comment'); self.assertTrue(out['say'].startswith(f'Added a note to TQ-{tid:04d}'), out['say'])
         self.assertIn('waiting on the bank', [c.get('Body') for c in s.list_comments(tid)])
 
@@ -592,19 +622,6 @@ class SetsFromOneSender(unittest.TestCase):
         with mock.patch.object(terminal, 'live_sessions', return_value=[]):
             later = {i.get('tid') for i in funnel.build(s)['items'] if i.get('deferred')}      # under For later, saying their day
         self.assertEqual(later, set(mine))
-
-    def test_close_all_from_one_sender(self):
-        s = store(); tid, item = on_table(s); mine = self.two_from(s)
-        out, _ = say(s, 'close all the tasks from Paula', item['key'], 'CALL: {"kind": "pipe.close", "params": {"select": {"sender": "Paula"}}}')
-        self.assertTrue(out['say'].startswith('Closed 2 items from Paula'), out['say'])
-        self.assertEqual({s.get_task(t)['Status'] for t in mine}, {'done'}); self.assertEqual(s.get_task(tid)['Status'], 'open')
-
-    def test_the_phone_does_it_too_and_says_so(self):
-        s = store(); tid, item = on_table(s); mine = self.two_from(s)
-        with concierge.delivering(concierge.PHONE):
-            out, _ = say(s, 'close all from Paula', item['key'], 'CALL: {"kind": "pipe.close", "params": {"select": {"sender": "Paula"}}}')
-        self.assertNotIn('proposal', out); self.assertTrue(out['say'].startswith('Closed 2 items from Paula'))
-        self.assertEqual({s.get_task(t)['Status'] for t in mine}, {'done'})
 
 
 class DraftsInTurnAndAnyButton(unittest.TestCase):
@@ -761,7 +778,7 @@ class ClearingASet(unittest.TestCase):
         with mock.patch.object(terminal, 'live_sessions', return_value=[]):
             out = concierge.say(s, 'clear the to-dos', key=item['key'], llm=lambda *a, **k: 'CALL: {"kind": "pipe.clear", "params": {"select": {"lane": "yours"}}}')
             self.assertEqual([i['tid'] for i in funnel.build(s)['items']], [tid])
-        self.assertNotIn('cleared', out); self.assertIn('own button', out['say'])
+        self.assertNotIn('cleared', out)        # ...what is on him stays, whatever words say so
 
     # "Ignore all the FYI, I mean make a mark and read" over a batch of 4 was answered "Marking all four as read." and cleared the 4 on the
     # table, with the rest waiting behind it (the owner, 2026-10-27: "I asked to mark all read and it did the 4 on the table??"). The model

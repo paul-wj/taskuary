@@ -3,7 +3,7 @@
 [English](README.md) · **简体中文**
 
 [![CI](https://github.com/ldbumble/taskuary/actions/workflows/ci.yml/badge.svg)](https://github.com/ldbumble/taskuary/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/taskuary.svg?cacheSeconds=300&release=0.4.0.23&asof=0.4.0.23-live)](https://pypi.org/project/taskuary/)
+[![PyPI](https://img.shields.io/pypi/v/taskuary.svg?cacheSeconds=300&release=0.4.1.9&asof=0.4.1.9-live)](https://pypi.org/project/taskuary/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](https://www.python.org/)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -11,7 +11,7 @@
 
 Taskuary 把邮件、聊天、工单和报表汇成一个列表。智能体逐项处理——查资料、起草回复、做表格、填表单——然后只给你一个按钮：**Send**、**Pay**、**Post**。你不按，什么都不会发出去。
 
-在你自己的电脑上运行。免费开源，AI 自选（Claude Code、Codex、Gemini、API 密钥或本地模型）。目前处于早期阶段：**v0.4.0.23**，1.0 之前可能有不兼容变更。本分支支持英文/简体中文界面切换；下文沿用上游文档中的英文按钮名称。
+在你自己的电脑上运行。免费开源，AI 自选（Claude Code、Codex、Gemini、API 密钥或本地模型）。目前处于早期阶段：**v0.4.1.9**，1.0 之前可能有不兼容变更。本分支支持英文/简体中文界面切换；下文沿用上游文档中的英文按钮名称。
 
 本分支还支持原生 Oh My Pi、只读 Jira Data Center 信息流、[从已完成任务提取并经人工审核发布 Skill](docs/site/skills.md)，以及带局域网访问控制的 Windows 源码启动器。
 

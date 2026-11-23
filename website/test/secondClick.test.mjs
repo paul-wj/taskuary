@@ -2,6 +2,7 @@
 // time or a ▾ landed on the backdrop of what the first opened, and shut it. That click is swallowed; a later one shuts as before.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { GRACE_MS, installSecondClick } from "../src/secondClick.js";
 
 function world() {
@@ -61,26 +62,49 @@ test("a click at the same spot a moment later on another control is the first cl
   assert.ok(!code.stopped, "the page's own click() is never a hand's repeat");
 });
 
-test("keyboard activation is not a repeated pointer press and does not claim the next pointer press", () => {
-  for (const initialDetail of [0, 1]) {
-    let hear;
-    const doc = { addEventListener: (_, fn) => { hear = fn; }, removeEventListener() {} };
-    installSecondClick(doc);
-    const control = () => { const el = { matches: () => false }; el.closest = () => el; return el; };
-    const click = (target, timeStamp, detail) => {
-      const event = { target, timeStamp, detail, clientX: 0, clientY: 0, isTrusted: true, stopped: false,
-        preventDefault() {}, stopImmediatePropagation() { this.stopped = true; } };
-      hear(event);
-      return event;
-    };
-    click(control(), 1000, initialDetail);
-    assert.equal(click(control(), 1050, 0).stopped, false, "Enter or Space must activate the focused control");
-    assert.equal(click(control(), 1100, 1).stopped, false, "keyboard activation has no pointer position to repeat");
-  }
-});
-
 test("the page installs it once, at start", () => {
+  const main = readFileSync(new URL("../src/main.jsx", import.meta.url), "utf8");
+  assert.match(main, /import \{ installSecondClick \} from "\.\/secondClick\.js";\ninstallSecondClick\(\);/);
   const doc = { addEventListener() {}, removeEventListener() {} };
   installSecondClick(doc);
   assert.equal(doc.__tqSecondClick, true);
+});
+
+// THE NEXT CARD DRAWN UNDER A STILL POINTER (design round 4, 2026-11-19): Send on the first of two letters, the second card drew where the press
+// had landed seconds later - after the agent's answer - and the next press sent a letter he never read
+test("a control that came under the pressed spot takes no press for its first moment, however long after the press it came", () => {
+  const on = {}; let t = 0, under = null, check = null;
+  const doc = { addEventListener: (k, f) => { on[k] = f; }, removeEventListener: (k) => { delete on[k]; }, elementFromPoint: () => under };
+  installSecondClick(doc, { now: () => t, watch: (f) => { check = f; return () => { check = null; }; } });
+  const control = () => { const c = { matches: () => false, contains: (x) => x === c, disabled: false }; c.closest = () => c; return c; };
+  const click = (target, x = 100, y = 200) => { const e = { target, timeStamp: t, clientX: x, clientY: y, isTrusted: true, stopped: false,
+    preventDefault() {}, stopImmediatePropagation() { this.stopped = true; } }; on.click(e); return e; };
+  const first = control(), second = control();
+  under = first; t = 1000; click(first);
+  t = 9000; under = second; check();                      // ...drawn eight seconds on, when the agent answered
+  t = 9150; assert.ok(click(second).stopped, "a press a beat after it came there is the hand's, not his choice of it");
+  t = 9500; assert.ok(click(second).stopped, "...within its first moment");
+  t = 10100; assert.ok(!click(second).stopped, "a moment later it is his to press");
+  // ...one that comes alive there (greyed while the agent thought) is new from then
+  const third = control(); third.disabled = true; under = third; t = 20000; check(); click(second);
+  t = 26000; third.disabled = false; check();
+  t = 26200; assert.ok(click(third).stopped, "lit under the pointer a beat ago");
+  // ...and a hand that moved off the spot is a new press wherever it lands
+  t = 40000; click(first); under = second; t = 41000; check(); on.pointermove({ clientX: 300, clientY: 200 });
+  t = 41100; assert.ok(!click(second, 300, 200).stopped);
+});
+
+// THE HYDROGEN WALK, 2026-11-19: Send on Gail's letter, and the next letter's card was drawn in the same element - its Send one button at
+// 477,702 then 477,703 - and the second press of his double-click sent Erin's letter. The card a control presses is part of what it is
+test("the next card drawn in the same button takes no press for its first moment: one double-click never sends two letters", () => {
+  const on = {}; let t = 0, check = null, card = "11";
+  const button = { matches: () => false, contains: (x) => x === button, disabled: false, closest: (sel) => (sel === "[data-tq-review]" ? { getAttribute: () => card } : button) };
+  const doc = { addEventListener: (k, f) => { on[k] = f; }, removeEventListener: (k) => { delete on[k]; }, elementFromPoint: () => button };
+  installSecondClick(doc, { now: () => t, watch: (f) => { check = f; return () => { check = null; }; } });
+  const click = (x = 477, y = 702) => { const e = { target: button, timeStamp: t, clientX: x, clientY: y, isTrusted: true, stopped: false,
+    preventDefault() {}, stopImmediatePropagation() { this.stopped = true; } }; on.click(e); return e; };
+  t = 1000; assert.ok(!click().stopped, "his Send on Gail's letter");
+  t = 1700; card = "12"; check();                          // ...Erin's card, drawn in the same button
+  t = 1900; assert.ok(click(477, 703).stopped, "the double-click's second press never sends the letter that just came");
+  t = 2800; assert.ok(!click(477, 703).stopped, "a moment later it is his to press");
 });

@@ -21,13 +21,21 @@ test("setup is the assistant canvas: no dialog opens itself, the chip goes to th
 
 // the owner, 2026-10-15: "Don't create new ui. keep the same as we have in connections but just show them/tell what to do next
 // using the advisor ... like what ai do you have? what email do you have? any other connection you would like to setup"
-test("three questions on the Advisor's line, each answered on the Connections page's own cards", () => {
+// ...and 2026-11-20: "the advisor ideas on the top of the chat in the setup is useless. remove it ... anything important put on page and
+// should be hard coded" - the question heads the page, its line under it, written in the page's own code
+test("three questions on the page itself, each answered on the Connections page's own cards", () => {
   const fr = read("FirstRun.jsx"), cv = read("ConnectorsView.jsx");
-  // the question is the ADVISOR'S line, in its bar over the row (setupLine.js) - one per step, the server's own when the AI is failing
-  assert.match(fr, /lineRef\.current = said \|\| err \|\| \{[\s\S]{0,3000}other: aiErr \? `\$\{aiErr\} Change AI picks one that does\.`/, "the question is the Advisor's, one per step");
-  // ...and nothing while it waits hidden under a page opened during setup (W2)
-  assert.match(fr, /useEffect\(\(\) => \{ writeSetupLine\(hidden \? "" : lineRef\.current\); \}\);/);
-  assert.match(fr, /className="tq-next"/, "in the Advisor's own line, not a box of our own");
+  assert.match(fr, /const ASK = \{ ai: "What AI do you have\?", mail: "Where does your work come in\?"/);
+  assert.match(fr, /let line = busy \|\| signing \? "" : err \|\| \{[\s\S]{0,3000}other: aiErr \? `\$\{aiErr\} Change AI picks one that does\.` : requiredDone\(st\) \? "Nothing more is needed/);
+  // ..."Nothing more is needed" only once the main source is set; before, the line names what is still to do (the design walk, 2026-11-20)
+  assert.match(fr, /: `Still to do: \$\{st\.todo\}\. /);
+  assert.match(fr, /\{line && <Typography role="status" data-tq-setup-line=""/, "on the page, under the question");
+  assert.doesNotMatch(fr, /setupLine|tq-next|suggest-connections|connSug/, "no bar over the row, no AI picking connections");
+  // ...the fix it names is a button beside it, never one on the row that did not draw
+  assert.match(fr, /data-tq-setup-fix=\{v\.id\} onClick=\{v\.run\}>\{v\.label\}<\/Button>/);
+  // ...and one way out, never while a step runs
+  assert.match(fr, /disabled: !!m\.disabled \|\| \(m\.id !== "back" && running\)/, "Next greyed while the AI is checked");
+  assert.match(fr, /const canLater = onFinish && !\["done", "about"\]\.includes\(q\) && !st\.ready && !busy && !signing;/);
   // ...the catalogue's own cards, in a grid that fits the shelf's width rather than the window's (the owner, 2026-11-03)
   assert.match(fr, /import \{ ChannelDetail, ConnCard, connCardOf \} from "\.\/ConnectorsView\.jsx";/);
   assert.match(fr, /gridTemplateColumns: `repeat\(auto-fill, minmax\(min\(100%, \$\{COL\}px\), 1fr\)\)`/);
@@ -48,7 +56,9 @@ test("on the setup screen the same cards say their state in plain words; Connect
   const fr = read("FirstRun.jsx"), cv = read("ConnectorsView.jsx");
   assert.match(cv, /export const connCardOf = \(c, sources, go, plain = false\) =>/, "a mode of the shared card, not a copy");
   assert.match(read("connectorCatalog.js"), /export const cardState = \(c\) => \(c\.state \|\|/, "a plain card carries its state, its words are not parsed");
-  for (const w of ["Not set up", "Connected", "Needs sign-in", "Not answering"]) assert.match(cv, new RegExp(`"${w}`), w);
+  // ...its words the server's (connectorcatalog.state, sent as State): the page reads the line, never the error text for it
+  assert.match(cv, /const plainState = \(c\) => \{ const st = c\.State \|\|/);
+  assert.doesNotMatch(cv, /SIGNED_OUT\.test/);
   assert.match(fr, /connCardOf\(c, sources, \(\) => \{ moveOn\(\); setOpen[^\n]*, true\)/,"every connector card on the setup screen is plain");
   assert.doesNotMatch(fr, /last test failed|not set up/, "the CLI cards use the same plain words");
   assert.match(cv, /chanCard = \(c\) => \(\{ \.\.\.connCardOf\(c, sources, \(\) => setOpen\(\{ kind: "connector", id: c\.ConnectorId \}\)\),/, "Connections keeps its own words");
@@ -137,7 +147,7 @@ test("the setup canvas has one quiet Set up later, on the existing dismiss", () 
   const fr = read("FirstRun.jsx");
   assert.equal((fr.match(/data-tq-setup-later/g) || []).length, 1);
   assert.match(fr, /api\.post\("\/api\/setup\/dismiss", \{ dismissed: true \}\)/);
-  assert.match(fr, /onFinish && q !== "done" && <Typography component="button"[^>]*data-tq-setup-later=""/);
+  assert.match(fr, /\{canLater && <Typography component="button"[^>]*data-tq-setup-later=""/);
 });
 
 // THE FIRST RUN, READ BY AN OFFICE MANAGER (the real-CLI audit, 2026-11-15, 5c / 5f / 5h)
@@ -164,10 +174,14 @@ test("a catalogue card and its section say themselves in plain words", async () 
     "on · brings in work · 1 of 2 chat ids on · checked 5m ago");
   assert.equal(cardStatus({ Active: 0, HasSecret: 1 }, { roles: ["tool"], keyNote: "key saved" }), "switched off · agents can use it · key saved");
   assert.equal(cardStatus({ Active: 1, LastError: "401" }, { roles: ["tool"], keyNote: "key saved" }), "on · agents can use it · key saved · last test failed");
+  // ...and a sign-in to do said as the server's state says it, first (connectorcatalog.state)
+  assert.equal(cardStatus({ Active: 1, LastError: "invalid_grant", State: { state: "signed_out", line: "Needs sign-in" } }, { roles: ["trigger"], srcs: [], label: "Mailboxes" }),
+    "needs sign-in · brings in work · no mailboxes yet");
+  assert.equal(cardStatus({ Active: 1, State: { state: "not_signed_in", line: "Not signed in" } }, { roles: ["tool"], keyNote: "no key yet" }), "not signed in · agents can use it · no key yet");
   for (const w of ["trigger", "tool", "0/0"]) assert.doesNotMatch(blank, new RegExp(w));
   // ...and the card's state is said beside the words, never read back out of them
   const cv = read("ConnectorsView.jsx");
-  assert.match(cv, /\[c\.LastError \? "failing" : c\.Active \? "on" : "off", status\]/);
+  assert.match(cv, /\[PLAIN_LIT\[connStateOf\(c\)\] \|\| "failing", status\]/, "its light is the server's state too");
   assert.equal(cardState({ state: "off", desc: blank }), "off");
   assert.equal(sectionName("Observability"), "Monitoring & alerts"); assert.equal(sectionName("Agentic web"), "Web search & reading"); assert.equal(sectionName("Email"), "Email");
   assert.equal((cv.match(/label: sectionName\(g\.title\)/g) || []).length, 2, "the rail and the first run's chips"); assert.match(cv, /: sectionName\(shown\.title\)\}/);

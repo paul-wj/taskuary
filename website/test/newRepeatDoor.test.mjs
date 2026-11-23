@@ -8,17 +8,6 @@ import { DRAFT_HASH, handDraft, onDraftHanded, takeDraft } from "../src/draftHan
 
 const read = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 
-// THE DESCRIBE BOX IS THE CHAT'S NOW (the owner, 2026-10-30): each tab brings its builder up and opens the Assistant on it - or by hand
-test("a report or routine the Assistant wrote up on New is a door to its builder and the chat", () => {
-  const src = read("NewSheet.jsx");
-  assert.match(src, /<SetupWithAi kind=\{kind\} words=\{kind === initialKind \? initialText : ""\} onOpen=\{\(\) => \{ onClose\?\.\(\); openAppLink\(NEW_HASH\[kind\]\); \}\} \/>/);
-  assert.match(src, />Set it up by hand<\/Button>/);
-  assert.doesNotMatch(src, /<Composer/);
-  assert.doesNotMatch(src, /"repeat"/);
-  const door = read("SetupWithAi.jsx");
-  assert.match(door, /onClick=\{\(\) => \(onOpen \? \(handTo\(kind, words\), onOpen\(\)\)/, "a door hands its words to the builder it opens");
-  for (const [k, h] of [["report", "report=new"], ["dashboard", "report=new-dashboard"], ["workflow", "report=new-agent"]]) assert.match(door, new RegExp(`${k}: "${h}"`));
-});
 
 test("each draft opens on its own shelf, on the canvas too", () => {
   assert.deepEqual(canvasRequestFromHash(`#${DRAFT_HASH.workflow}`).state, { section: "workflows", open: "draft" });
@@ -37,19 +26,6 @@ test("a draft waits for Reports, and an open Reports hears it at once - taken on
   assert.match(view, /take\(\);\s*\n\s*return onDraftHanded\(take\);/);
 });
 
-// THE ASSISTANT'S PREFILL LANDS IN THE FORM (the owner, 2026-10-29: "Wrote it into New - Build it there starts it" over blank fields):
-// concierge._new's `new` - its words and its `routine` {coding, repo, skill} - rides the browse state into New → Routine's own box
-test("a routine the Assistant wrote up opens New → Routine with its words, carried into the chat's ask", () => {
-  const canvas = read("CanvasBrowse.jsx"), sheet = read("NewSheet.jsx");
-  assert.match(canvas, /initialText=\{state\?\.text \|\| ""\}/);
-  assert.match(canvas, /initialRoutine=\{state\?\.routine \|\| null\}/);
-  assert.match(canvas, /JSON\.stringify\(state\?\.routine \|\| ""\)/, "a new prefill remounts the sheet, so its fields are the new ones");
-  assert.match(sheet, /initialRoutine = null, madeOf = "", initialFiles = null \}\) \{/);
-  // ...and the builder's strip starts the build with them, on that page (taskuary/build.py) - the chat is never asked
-  const strip = read("SetupWithAi.jsx");
-  assert.match(strip, /if \(handed\.current === undefined\) handed\.current = onOpen \? null : takeFor\(kind\);/, "taken in the first draw - no empty beat");
-  assert.match(strip, /useEffect\(\(\) => \{ if \(first != null\) go\(first\); \}, \[\]\);/);
-});
 
 // STRAIGHT INTO THE BUILDER (owner-approved, 2026-11-12): "a routine that lists vendors with no invoice" came back as New's Routine card with
 // Set up with AI and Set it up by hand - a middle card, and Set up with AI asked the Assistant the same thing again. A report, dashboard or
@@ -67,6 +43,6 @@ test("a report, dashboard or routine the Assistant wrote up goes straight into i
   assert.doesNotMatch(door, /openHelp/, "no road through the chat");
   // ...one road from New's box and from the chat: the card is drawn only where it did not go (pressed at the card's mount, the chat's
   // road raced the canvas opening its New card, and the setup ask was typed into New's own box instead)
-  assert.match(sheet, /if \(data\?\.new\) \{ if \(!goStraight\(data\.new, onClose\)\) setMade\(/);
+  assert.doesNotMatch(sheet, /goStraight/, "New's box starts an agent (/api/start) - it writes up no builder");
   assert.match(chat, /if \(data\.new && !goStraight\(data\.new\)\) browseRef\.current\?\.\("new", data\.new\);/);
 });

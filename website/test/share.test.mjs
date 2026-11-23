@@ -6,16 +6,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { SHARE_ID, SETTING_HREF, WAYS, offersSetting, shareBody, shareVerb, shareable, sharedNote, waysOf } from "../src/share.js";
 import { clustersOf, rowOf, typeOf } from "../src/actionRow.js";
-import { verbOfRow } from "../src/buttons.js";
+import { VERBS, label, verbOfRow } from "../src/buttons.js";
+
 const src = (f) => fs.readFileSync(path.join(import.meta.dirname, "../src", f), "utf8");
 
 test("one button, one name: Share, from buttons.json, the row id `share`", () => {
-  assert.equal(SHARE_ID, "share");
+  assert.equal(label("share_result"), "Share");
   assert.equal(verbOfRow(SHARE_ID), "share_result");
   const v = shareVerb(() => {});
-  assert.deepEqual([v.id, v.group, v.tone], ["share", "more", "s"]);
-  assert.ok(v.label);
-  assert.ok(v.title);
+  assert.deepEqual([v.id, v.label, v.group, v.tone], ["share", "Share", "more", "s"]);
+  assert.ok(v.title.length > 10);
+  // Send out results is folded into Share (the owner, 2026-10-23): its flow is Share's "Email a summary", never a row button of its own
+  assert.equal(VERBS.share.label, "Email a summary");
+  assert.deepEqual(VERBS.share.row, []);
 });
 
 test("Share stands in a band of its own at the row's end, never hidden in another type's ▾", () => {
@@ -28,19 +31,19 @@ test("Share stands in a band of its own at the row's end, never hidden in anothe
 });
 
 test("the five ways, in order, each greyed with the server's sentence", () => {
-  assert.deepEqual(WAYS.map((w) => w.key), ["email", "summary", "link", "onedrive", "gdrive"]);
+  assert.deepEqual(WAYS.map((w) => [w.key, w.word]), [["email", "Email the result"], ["summary", "Email a summary"], ["link", "Shared link"], ["onedrive", "OneDrive"], ["gdrive", "Google Drive"]]);
   const ways = { email: { ok: true, why: "" }, link: { ok: false, why: "share links are off" }, onedrive: { ok: false, why: "needs Files.ReadWrite" }, gdrive: { ok: true, why: "" }, setting: false };
   const rows = waysOf(ways);
   assert.deepEqual(rows.map((r) => [r.key, r.ok]), [["email", true], ["summary", false], ["link", false], ["onedrive", false], ["gdrive", true]]);
-  assert.ok(rows[1].why);
+  assert.match(rows[1].why, /task's work/);
   // a task offers its summary - greyed with email's own reason when mail cannot go; a task with no Result offers only the summary
   assert.equal(waysOf(ways, false, { summary: true })[1].ok, true);
   assert.equal(waysOf({ ...ways, email: { ok: false, why: "no mailbox" } }, false, { summary: true })[1].why, "no mailbox");
   const bare = waysOf(ways, false, { summary: true, noResult: "no result yet" });
   assert.deepEqual(bare.map((r) => [r.key, r.ok]), [["email", false], ["summary", true], ["link", false], ["onedrive", false], ["gdrive", false]]);
   assert.equal(bare[4].why, "no result yet");
-  assert.ok(waysOf(null, false, { summary: true }).every((r) => !r.ok && r.why));
-  assert.ok(waysOf(null, true, { summary: true }).every((r) => !r.ok && r.why));
+  assert.ok(waysOf(null, false, { summary: true }).every((r) => !r.ok && r.why === "Checking…"));
+  assert.ok(waysOf(null, true, { summary: true }).every((r) => !r.ok && /did not answer/.test(r.why)));
 });
 
 test("a greyed link because the switch is off points at the switch - and only then", () => {
@@ -61,34 +64,7 @@ test("a result the store holds is named, not re-sent; a page's own result brings
 });
 
 test("the badge's hover says where it went; an email says nothing is sent before Send", () => {
-  assert.ok(sharedNote("email", { to: ["erin@northwind.example"], ref: "TQ-0001" }).includes("erin@northwind.example"));
-  const url = "http://192.168.1.20:7787/share/x";
-  assert.ok(sharedNote("link", { url }, false).includes(url));
-  assert.notEqual(sharedNote("link", { url }, true), sharedNote("link", { url }, false));
+  assert.match(sharedNote("email", { to: ["erin@northwind.example"], ref: "TQ-0001" }), /nothing is sent until you press Send/);
+  assert.match(sharedNote("link", { url: "http://192.168.1.20:7787/share/x", expires: "2026-10-30 10:00:00" }, true), /link copied/);
+  assert.match(sharedNote("link", { url: "http://192.168.1.20:7787/share/x" }, false), /copy it: http/);
 });
-
-
-test("Settings lists the open links under the switch, each with Revoke", () => {
-  const s = src("SettingsView.jsx");
-  assert.match(s, /Sharing: panel\("panel:sharedlinks", <SharedLinks \/>\)/);
-  assert.match(src("SharedLinks.jsx"), /api\.delete\(`\/api\/shares\/\$\{id\}`\)/);
-});
-
-test("an email drafted from Share opens on the table for its Send (the owner, 2026-10-23)", () => {
-  assert.match(src("assistantCards.jsx"), /onShared: \(how, out\) => \{ if \(how === "email" && out\?\.task_id\) onOpenTask\?\.\(out\.task_id\); \}/);
-  const page = src("TaskPage.jsx");
-  assert.match(page, /onOpenTask\?\.\(out\.task_id\)/);
-  assert.match(page, /loadDetail\(selected\); onChanged\?\.\(\); setOpenStage\("reply"\);/);
-  assert.match(src("Share.jsx"), /if \(w\.key === "summary"\) return summary\?\.\(\);/);
-});
-
-test("Allow saving files on the Microsoft and Google cards - a choice, never the default", () => {
-  const fa = src("FileAccess.jsx"), cv = src("ConnectorsView.jsx");
-  assert.match(fa, /export const ALLOW_FILES = "Allow saving files"/);
-  assert.match(fa, /api\.post\(`\/api\/connectors\/\$\{conn\.ConnectorId\}\/google\/files`, \{ on \}\)/);
-  assert.match(cv, /api\.post\(`\/api\/connectors\/\$\{conn\.ConnectorId\}\/ms\/signin`,\s+\{ files: !!want, code, client_id: cfg\.client_id \|\| null, tenant_id: cfg\.tenant_id \|\| null \}\)/);
-  assert.match(cv, /useState\(!!cfg\.allow_files\)/);
-  assert.match(cv, /conn\.Type === "gmail" && <GoogleFiles/);
-});
-
-

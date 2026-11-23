@@ -21,6 +21,7 @@ does with the screen, this does with typed updates:
 
 An adapter that does not start puts today's pty in its place, said once (FELL_BACK). A turn that fails part-way is said, never retried."""
 import os, re, threading, time, uuid
+from .say import said as _said            # a failure written to the chat is said in his words (say.py)
 from collections import deque
 from datetime import datetime
 from loguru import logger
@@ -156,7 +157,7 @@ class ACPCoding:
         Kept on the task, it is drawn as the owner's on every screen until a turn takes it. A session on no task has no room: its prompt."""
         if not (self.store and self.task_id): return self.prompt(line)
         # ...the one road every line the owner types takes (general.take_line, 2026-11-10)
-        threading.Thread(target=lambda: general.take_line(self.store, self.task_id, line, wait=False), daemon=True).start()
+        threading.Thread(target=lambda: general.to_agent(self.store, self.task_id, line, frm='owner', wait=False), daemon=True).start()
 
     # ── what the rest of Taskuary reads off a session ──────────────────────────────────────────────────────────────────────
     def idle(self) -> float: return round(time.time() - self.last, 1)
@@ -288,8 +289,8 @@ class ACPCoding:
             FELL_BACK.add(self.cli); logger.warning(f'acp: {self.cli} coding session did not start over ACP ({e}) - running it in its terminal')
         if not self.fallback:
             general.answered(self.task_id, every=True)
-            self.store.add_comment(self.task_id, 'router', 'agent', f'{self.cli} did not start over ACP ({str(e)[:200]}).'); return self._emit_end()
-        self.store.add_comment(self.task_id, 'router', 'agent', f'{self.cli} did not start over ACP ({str(e)[:200]}) - it runs in its terminal instead.')
+            self.store.add_comment(self.task_id, 'router', 'agent', f'{self.cli} did not start over ACP ({_said(e)}).'); return self._emit_end()
+        self.store.add_comment(self.task_id, 'router', 'agent', f'{self.cli} did not start over ACP ({_said(e)}) - it runs in its terminal instead.')
         try: self.fallback()
         except Exception as x:
             logger.warning(f'acp coding {self.sid}: the terminal fallback did not start either - {x}')
@@ -342,6 +343,10 @@ class ACPCoding:
         lines = {s['line'] for _t, _b, shown, _d in items for s in shown if isinstance(s, dict) and s.get('line')}
         if (lines or how) and self.store and self.task_id: general.take_kept(self.store, self.task_id, lines, **how)
         return lines
+
+    def hears_mid_turn(self) -> bool:
+        "Does its adapter take words mid-turn at all (acp.can_steer) - where it does not, his waiting line says so (conversation.LATER)."
+        return bool(self.client and self.client.can_steer())
 
     def steerable(self) -> bool:
         "Does a prompt now go into the running turn: a turn on, and an adapter that said at initialize it takes words mid-turn (acp.can_steer)."
@@ -401,6 +406,8 @@ class ACPCoding:
 
     def _record(self, u: dict):
         codingchat.record_update(self.task_id, self.sid, u)
+        from . import chatlog                    # ...and the turn's steps in the chat's log, as they come (one shape for every road)
+        chatlog.feed(self.store, self.task_id, self.sid, 'acp', u)
 
     def _turn(self, items: list):
         from . import agents, acpgate
@@ -433,7 +440,7 @@ class ACPCoding:
             if d:
                 try: d(True)
                 except Exception as e: logger.debug(f'acp coding: a done callback raised - {e}')
-        stop, said, ok = None, '', False
+        stop, said, ok, quota = None, '', False, ''
         self.in_turn = True
         since, t0 = datetime.now().strftime('%Y-%m-%d %H:%M:%S'), time.monotonic()
         stop_now, self.stop_next = self.stop_next, False
@@ -446,7 +453,13 @@ class ACPCoding:
             else:
                 logger.warning(f'acp coding {self.sid}: the turn failed - {e}')
                 # ...a sentence that already says how to carry on is said as it is (acp's mid-turn death)
-                self._say('progress', 'acp', why := f'{str(e)[:400]}.' if general.CARRY_ON in str(e) else f'The turn failed: {str(e)[:300]} - {general.CARRY_ON}.')
+                f = agents.failure_of(self.cli, str(e))          # what it is, read as every road reads it
+                quota = str(f) if isinstance(f, agents.RateLimited) else ''
+                if quota:
+                    self.busy = False
+                    general.answered(self.task_id, every=True)
+                why = str(f) if f else f'{str(e)[:400]}.' if general.CARRY_ON in str(e) else f'The turn failed: {str(e)[:300]} - {general.CARRY_ON}.'
+                self._say('progress', 'acp', why)
                 # ...IN THE CHAT, where it happened (rules part 4): said only on its Terminal, the chat - drawn from the kept updates - showed the
                 # turn's first words and stopped. Taskuary's own update, marked as its brief is (chatStream.stepsFromAcp draws it as the turn's error)
                 self._record({'sessionUpdate': 'error', 'content': {'type': 'text', 'text': why}, '_meta': {'taskuary': 'error'}})
@@ -455,6 +468,14 @@ class ACPCoding:
             try: self.steps.flush(stop if ok else 'error')
             except Exception as e: logger.debug(f'acp coding: steps not flushed - {e}')
         self.stop_reason, self.turns = stop, self.turns + 1
+        if quota and self.store and self.task_id:
+            from . import workerstate as ws
+            from .wrapup import PAUSE_MARKER
+            if tail := self.transcript_text(2000).strip():
+                self.store.add_comment(self.task_id, self.agent, 'agent', f'{PAUSE_MARKER}\n{tail}')
+            ws.record(self.store, self.task_id, self.sid, 'failed', text=quota, source='acp')
+            self.client.close()
+            return self._gone()
         if ok: self._used(since, int((time.monotonic() - t0) * 1000))
         if not self.client.alive(): return self._gone()
         # ...a turn the owner STOPPED is recorded so, as a chat's stopped turn is - never as its answer (the audit, 2026-11-10)
@@ -499,7 +520,8 @@ class ACPCoding:
                 proposals.move_on(self.store, self.task_id)
                 # ...EACH DUTY ONCE, as a chat's agent is told (selfclose.DRAFTS_ONCE in its startup): the rules ride the first turn that has
                 # facts for them, and every turn after carries the facts alone - told each turn, it said "the draft waits on your Send" each turn
-                if (lb := general.turn_facts(self.store, self.task_id, resumed=True, rules=False, turn=True)):
+                from .cardqueue import once
+                if (lb := once(general.turn_facts(self.store, self.task_id, resumed=True, rules=False, turn=True), text)):
                     from . import selfclose
                     text = f"{'' if getattr(self, 'duties', False) else selfclose.DRAFTS_ONCE + chr(10) * 2}{lb}\n\n{text}"; self.duties = True
             except Exception as e: logger.debug(f'task {self.task_id}: the turn was not told its facts - {e}')
@@ -524,6 +546,8 @@ class ACPCoding:
     def _idle(self, said: str = '', turn: bool = True):
         "A turn ended: the agent waits on the owner, the Board hears it, and what waited in the waiting room goes in now."
         self.busy, self.seeding, self.last = False, False, time.time()
+        from . import chatlog                       # ...its last words, held back a beat as they streamed (CHUNK_S), go into the log at its end
+        chatlog.flush(self.store, self.task_id)
         general.answered(self.task_id, 0)          # the turn is over: "at work" stays only for a line still kept for the next one
         if said: self.witness.note({'k': 'done', 'text': said})
         if turn: self._event('Stop', last_assistant_message=said)

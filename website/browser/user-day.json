@@ -1,0 +1,136 @@
+{
+ "about": "A working day for an agent playing the owner (user-walk.mjs drips it in; user.mjs is its hands). Alex Doyle runs operations at Northwind. Every person, company and number is invented (CLAUDE.md). `at`: minutes after the walk starts.",
+ "persona": "You are Alex Doyle, operations manager at Northwind (alex@northwind.example). You are busy, you have deadlines, and you use Taskuary as your assistant to get through the day. You judge it as a demanding user: does each thing you press do what it says, right away? Does the agent actually do the work, or only say it could? Does it make things up, overpromise, ask needless questions, repeat itself, or bury the answer? Is it clear what happened and what is waiting on you?",
+ "goals": [
+  "Answer Gail's offsite question today, with a real recommendation.",
+  "Get the October vendor spend summary to Paula by 3pm - the numbers are in the attached sheet.",
+  "Make sure the Payworth invoice is paid before the late fee, but nothing is paid without your say-so.",
+  "Draft three short social posts announcing the new Northwind ledger portal (LinkedIn, X, Reddit), each clearly separate, with one clean image.",
+  "Do not let sales pitches or newsletters waste your time.",
+  "Get the rounding bug in the northwind/ledger totals fixed (the CI failure) - a real fix with a test, pushed only on your say-so.",
+  "Find three Boston caterers that can do 40 people in March, with prices, in a spreadsheet you can forward.",
+  "Have the October vendor spend summary come to you automatically every Monday from now on.",
+  "Get Erin the vendor trial accounts she asks for, using your work email.",
+  "Sort out the clashing meeting invite.",
+  "Send Paula a one-page PDF summary of October vendor spend with a chart, and a 5-slide deck of the same for the leadership meeting.",
+  "Email each of the three caterers you find to ask for availability on March 12 - three separate emails, each yours to send."
+ ],
+ "arrivals": [
+  {
+   "at": 0,
+   "channel": "email",
+   "from": "Gail Moreno <gail@northwind.example>",
+   "subject": "Offsite venue",
+   "body": "Hi Alex,\n\nCan you suggest two venues for the March offsite in Boston, about 40 people, and tell me which you would pick? I need it by end of day.\n\nThanks,\nGail"
+  },
+  {
+   "at": 1,
+   "channel": "email",
+   "from": "Paula Vance <paula@northwind.example>",
+   "subject": "October vendor spend - need by 3pm",
+   "body": "Alex - can you send me a short summary of October vendor spend by 3pm? Top five vendors and the total. The export is attached.\n\nPaula",
+   "attach": "october-spend.csv"
+  },
+  {
+   "at": 3,
+   "channel": "email",
+   "from": "Payworth Billing <billing@payworth.example>",
+   "subject": "Invoice PW-2291 due Friday - late fee applies",
+   "body": "Invoice PW-2291 for $4,860.00 is due Friday. A 2% late fee applies after the due date. Reply to this email with any questions."
+  },
+  {
+   "at": 5,
+   "channel": "email",
+   "from": "Spendly Sales <hello@spendly.example>",
+   "subject": "Quick question about Northwind's expense process",
+   "body": "Hi Alex, I'd love 15 minutes to show you how Spendly cuts expense approvals by 60%. Are you free Thursday?"
+  },
+  {
+   "at": 7,
+   "channel": "chat",
+   "from": "Erin Blake",
+   "subject": "",
+   "body": "hey - did the ledger sync finish last night? finance is asking"
+  },
+  {
+   "at": 9,
+   "channel": "email",
+   "from": "CI <noreply@ci.northwind.example>",
+   "subject": "[northwind/ledger] Build failed on main",
+   "body": "The build for commit 4be21c0 failed: 2 tests failed in tests/test_totals.py (test_rounding, test_month_end)."
+  },
+  {
+   "at": 12,
+   "channel": "email",
+   "from": "Gail Moreno <gail@northwind.example>",
+   "subject": "Re: Offsite venue",
+   "body": "Also - we need a projector and parking for about 15 cars. Thanks!"
+  },
+  {
+   "at": 15,
+   "channel": "email",
+   "from": "Trainly Weekly <news@trainly.example>",
+   "subject": "This week in workplace learning",
+   "body": "Five ways to boost engagement in your next training session..."
+  },
+  {
+   "at": 20,
+   "channel": "email",
+   "from": "Paula Vance <paula@northwind.example>",
+   "subject": "Re: October vendor spend - need by 3pm",
+   "body": "Any update on this? Leadership meeting moved up."
+  },
+  {
+   "at": 24,
+   "channel": "chat",
+   "from": "Erin Blake",
+   "subject": "",
+   "body": "can you get us trial accounts on every vendor listed at http://127.0.0.1:18791/ ? want to see their data before we pick one - tell me which ones you couldn't get and why"
+  },
+  {
+   "at": 26,
+   "channel": "email",
+   "from": "Ray Colton <ray@northwind.example>",
+   "subject": "Invitation: Vendor review - Thu 2pm",
+   "body": "Ray Colton invited you to Vendor review, Thursday 2:00-3:00 PM. Accept, decline or propose a new time."
+  },
+  {
+   "at": 28,
+   "channel": "email",
+   "from": "Gail Moreno <gail@northwind.example>",
+   "subject": "Re: Offsite venue",
+   "body": "One more - can you find catering for the 40 of us too? Three options with prices would be great."
+  },
+  {
+   "at": 30,
+   "channel": "chat",
+   "from": "Paula Vance",
+   "subject": "",
+   "body": "also can you make that a short PDF with a chart? and a few slides for leadership - meeting is at 4"
+  },
+  {
+   "at": 31,
+   "channel": "chat",
+   "from": "Erin Blake",
+   "subject": "",
+   "body": "any luck with those trials?"
+  },
+  {
+   "at": 31,
+   "channel": "email",
+   "from": "Gail Moreno <gail@northwind.example>",
+   "subject": "Re: Offsite venue",
+   "body": "Quick one - did you hear back from any caterers?"
+  },
+  {
+   "at": 32,
+   "channel": "chat",
+   "from": "Ray Colton",
+   "subject": "",
+   "body": "can we move the vendor review to Friday instead?"
+  }
+ ],
+ "files": {
+  "october-spend.csv": "vendor,amount\nPayworth,48210\nTrainly,9100\nSpendly,4400\nPhishGuard,12750\nVendorCo,3300\nNorthwind Print,2950\nCloudRack,22480\n"
+ }
+}

@@ -34,16 +34,42 @@ class Gone(Ended):
     """...before the turn's message reached it: nothing of the turn ran, so sending it again repeats nothing."""
 
 
-class TimedOut(RuntimeError):
-    """A turn that ran past its limit and was killed there - not a CLI that broke. It carries the conversation it was on, so the
-    work it did is picked up by Continue (general.send_prompt) instead of started again."""
+class Unfinished(RuntimeError):
+    """A TURN THAT DID NOT FINISH, ON ANY ROAD (the one-shot run, the kept process, ACP): stopped, out of time, ended early. It carries the
+    conversation it was on, which the caller keeps (general.send_prompt), so the next turn picks that conversation up instead of opening
+    another - and it is never sent again, as part of it may have run."""
     def __init__(self, msg='', session_id=None): super().__init__(msg); self.session_id = session_id
+
+
+class TimedOut(Unfinished):
+    """A turn that ran past its limit and was killed there - not a CLI that broke: the work it did is picked up by Continue."""
+
+
+class PartWay(Unfinished):
+    "A turn its agent ended part-way: it died mid-turn (MID_TURN), or ended it early (a refusal, a limit), before a word or after some. Never sent again: part of it may have run."
+
+
+class Cancelled(Unfinished):
+    "A turn the owner stopped - the one way every road says it (str: 'cancelled')."
+    def __init__(self, session_id=None): super().__init__('cancelled', session_id)
 
 
 RESTART_FAILED = 'the AI tool stopped, and stopped again when it was restarted'
 # ...a chat agent's CLI (this pool's only kind): typing carries it on, as no Continue button is there (general.CARRY_ON)
 # ...said as what happened and why nothing ran it again ("nothing was sent again" read, on a mail task, as a word on the mail - the walk, 2026-11-11)
 MID_TURN = 'the agent stopped in the middle of its turn. It may have done part of the work, so the turn was not run again - type to carry on'
+# ...and one its agent ENDED EARLY (an ACP adapter's stopReason, a CLI's own result): the fewest sentences true of each reason - a refusal is
+# the model's no, a limit one it reached (max_tokens, max_turn_requests; claude's error_max_turns), anything else said as no more than it is -
+# in the same voice, with the same way on. A refusal or a limit may come after words, and any of them after tool calls ran: no words does not
+# mean no work, and words do not mean it finished
+ENDED_EARLY = {'refusal': 'the agent declined to finish this turn. It may have done part of the work, so the turn was not run again - '
+                          'type to carry on, or say it another way',
+               'limit': 'the agent reached its limit for one turn before it finished. It may have done part of the work, so the turn was not run '
+                        'again - type to carry on',
+               'other': 'the agent ended its turn before it answered. It may have done part of the work, so the turn was not run again - type to '
+                        'carry on'}
+LIMITS = ('max_tokens', 'max_turn_requests', 'error_max_turns')
+def ended_early(stop: str) -> str: return ENDED_EARLY['refusal' if stop == 'refusal' else 'limit' if stop in LIMITS else 'other']
 
 
 class Live:
@@ -96,7 +122,7 @@ class Live:
         raw, end, said = [], time.time() + timeout if timeout else None, []
         while True:
             if cancel is not None and cancel.is_set():
-                self.close(); raise RuntimeError('cancelled')
+                self.close(); raise Cancelled(self.sid)
             left = end - time.time() if end else 0.5
             if left <= 0:
                 self.close(); raise TimedOut(f'timed out after {int(timeout)}s', self.sid)
@@ -111,6 +137,7 @@ class Live:
             try: j = json.loads(line)
             except ValueError: continue
             if not isinstance(j, dict): continue
+            self.sid = self.sid or j.get('session_id')          # ...named from its init on: a turn stopped or cut before its result keeps it
             if j.get('type') == 'result':
                 self.turns += 1; self.used = time.time()
                 self.sid = j.get('session_id') or self.sid
@@ -129,11 +156,12 @@ class Live:
         (_read). False, and nothing made or written, where no turn is reading."""
         with self.io:
             if not (self.on and self.alive()): return False
-            text = said() if callable(said) else said
+            text = _look(said)
             if not text: return True
             try: self._send(text)
-            except (OSError, ValueError) as e: logger.warning(f'clipool: {self.key} - words for the turn at work did not go in ({e})')
-            return True
+            except (OSError, ValueError) as e:
+                logger.warning(f'clipool: {self.key} - words for the turn at work did not go in ({e})'); return False
+            _took(said); return True
 
 
 _POOL: dict[str, Live] = {}
@@ -152,16 +180,80 @@ def _reap():
     while True: time.sleep(60); _sweep()
 
 
+# HIS LINE REACHES THE AGENT AT ITS NEXT STEP ON EVERY ROAD THAT CAN TAKE IT (design round 3, 2026-11-18: "sign up yourself" sat unheard 13
+# minutes behind a 15-minute turn on Codex): claude's stream-json input (Live.steer), an ACP agent that steers (`_session/steering`: claude-agent-
+# acp and codex-acp both say so at initialize), and an API card's own loop, which reads what was said to it between its tool calls (`ear`)
+_EARS: dict[str, list] = {}
+
+
+def _acp_turn(lv) -> bool:
+    "A kept ACP conversation (acp.Conversation) with a turn on it, whose agent takes words mid-turn."
+    c = getattr(lv, 'client', None)
+    return c is not None and lv.lock.locked() and lv.alive() and bool(getattr(c, 'can_steer', lambda: False)())
+
+
+def takes_words(key: str) -> bool:
+    "Can this conversation's road take his words in the middle of a turn at all - a fact of the road, not of this instant (the waiting line says so)."
+    with _LOCK: lv, ear = _POOL.get(key), key in _EARS
+    return ear or isinstance(lv, Live) or bool(getattr(getattr(lv, 'client', None), 'can_steer', lambda: False)())
+
+
 def steerable(key: str) -> bool:
-    "Is a turn at work on this conversation's live process, so words written now go into it (Live.steer)?"
-    with _LOCK: lv = _POOL.get(key)
-    return isinstance(lv, Live) and lv.on and lv.alive()
+    "Is a turn at work on this conversation that takes words written now (Live.steer, an ACP steer, an API loop's ear)?"
+    with _LOCK: lv, ear = _POOL.get(key), key in _EARS
+    return ear or (isinstance(lv, Live) and lv.on and lv.alive()) or _acp_turn(lv)
 
 
 def steer(key: str, said) -> bool:
-    "Words into the turn at work on this conversation (Live.steer): False where none is - they wait for the next turn."
-    with _LOCK: lv = _POOL.get(key)
-    return isinstance(lv, Live) and lv.steer(said)
+    """Words into the turn at work on this conversation: False where none is - they wait for the next turn. `said`: the text, or what makes it
+    (it takes his kept lines) - made only once it can go in: an API loop makes it at its next step, so one it never reaches stays kept."""
+    with _LOCK:
+        lv = _POOL.get(key)
+        if (ear := _EARS.get(key)) is not None: ear.append(said); return True
+    if isinstance(lv, Live): return lv.steer(said)
+    if not _acp_turn(lv): return False
+    text = _look(said)
+    if not text: return True
+    # ...WORDS THAT DID NOT GO IN ARE NOT HEARD (the agent audit, 2026-11-22: a turn that ended between the look and the request answered
+    # "promptRequired", and his line stood heard with nothing answering it): False, and they stay his waiting lines - the next turn's
+    try: got = lv.client.steer(text)
+    except Exception as e: got = str(e)
+    if got != 'injected':
+        logger.warning(f'clipool: {key} - words for the turn at work did not go in ({got or "no answer"}): {text[:200]}'); return False
+    _took(said); return True
+
+
+def _looks(said) -> bool:
+    "Can this maker of words make them without taking what they are made of (its `take`)?"
+    import inspect
+    try: return callable(said) and 'take' in inspect.signature(said).parameters
+    except (TypeError, ValueError): return False
+def _look(said) -> str:
+    "The words to steer, made from what waits without taking it (general.Session.steer's lines) - a maker with no look takes as it makes."
+    return said(take=False) if _looks(said) else said() if callable(said) else said
+def _took(said) -> None:
+    "They went in: what they were made of is taken now, heard where they went in."
+    if _looks(said): said(take=True)
+
+
+def ear(key: str):
+    "An API turn at work opens its ear (apiagent.turn): what is steered to its conversation waits here for its next step."
+    with _LOCK: _EARS[key] = []
+
+
+def heard(key: str, last: bool = False) -> str:
+    """What was said to the turn since its last step, made now (his kept lines taken as it goes in). `last`: the turn is about to answer - with
+    nothing waiting its ear closes in the same step, so a word steered after is the next turn's, never lost between."""
+    with _LOCK:
+        got = list(_EARS.get(key) or [])
+        if key in _EARS: _EARS[key].clear()
+        if last and not got: _EARS.pop(key, None)
+    return '\n\n'.join(t for t in ((f() if callable(f) else f) for f in got) if t)
+
+
+def deaf(key: str):
+    "The turn is over, however it ended: its ear closes; what never went in is still kept, the next turn's."
+    with _LOCK: _EARS.pop(key, None)
 
 
 def is_live(key: str) -> bool:
@@ -246,12 +338,54 @@ def run(key: str, cmd: list, prompt: str, on_event, *, cwd=None, env=None, resum
                 # is the caller's, said plainly (RESTART_FAILED).
                 if attempt == 2: raise Ended(f'{RESTART_FAILED} ({e})') from e
                 # ...but a turn that may have DONE something - an agent with tools, part-way through - is never sent twice
-                if not resend and not isinstance(e, Gone): raise Ended(f'{MID_TURN} ({e})') from e
+                if not resend and not isinstance(e, Gone): raise PartWay(f'{MID_TURN} ({e})', resume) from e
                 logger.info(f'clipool: {key} ended - reopening it{" on " + resume if resume else ""} and sending the turn again')
             except Exception:
                 with _LOCK:
                     if _POOL.get(key) is lv: _POOL.pop(key)
                 lv.close(); raise
+
+
+# ── A SPARE FOR A ONE-SHOT ANSWER (the speed round, 2026-11-20): triage started a fresh `claude -p` for every arrival and paid its start-up
+# each time - 3-7 s of a 10-13 s verdict, measured on the real CLI. A one-shot call with no tools (a judgement: nothing it can do, so asking
+# again repeats nothing) now takes a process started ahead for its exact command, waiting for its one message, and starts the next one
+# for the call after. Taken whole, never shared: each answer is a conversation of its own. Kept apart from the pool's conversations, so a
+# spare never pushes an agent's out, and few: the oldest goes when there are more than SPARES.
+_SPARES: dict[str, Live] = {}
+SPARES = 2
+
+
+def spare_turn(key: str, cmd: list, prompt: str, on_event, *, cwd=None, env=None, cancel=None, timeout: float = None) -> tuple:
+    """One answer on a fresh process for `cmd` - the spare started ahead when there is one - then the next spare started. (result, raw).
+    A process that ended before or during the answer is replaced once and asked again, as nothing it was asked can have run."""
+    cmd = list(cmd) + INPUT
+    with _LOCK: lv = _SPARES.pop(key, None)
+    if lv is not None and (not lv.alive() or time.time() - lv.used > GRACE): lv.close(); lv = None
+    try:
+        for attempt in (1, 2):
+            if lv is None: lv = Live(key, cmd, cwd, env, ())
+            try: return lv.turn(prompt, on_event, cancel=cancel, timeout=timeout)
+            except Ended as e:
+                lv.close(); lv = None
+                if attempt == 2: raise Ended(f'{RESTART_FAILED} ({e})') from e
+    finally:
+        if lv is not None: lv.close()
+        if cancel is None or not cancel.is_set(): _ready(key, cmd, cwd, env)
+
+
+def _ready(key: str, cmd: list, cwd, env):
+    "The next spare for this command, started now so its CLI is up by the next call."
+    try: nxt = Live(key, cmd, cwd, env, ())
+    except Exception as e: logger.debug(f'clipool: no spare started for {key} - {e}'); return
+    with _LOCK:
+        old = [x for x in [_SPARES.pop(key, None)] if x]
+        _SPARES[key] = nxt
+        while len(_SPARES) > SPARES: old.append(_SPARES.pop(next(iter(_SPARES))))
+    for x in old: x.close()
+
+
+def spares() -> int:
+    with _LOCK: return sum(1 for lv in _SPARES.values() if lv.alive())
 
 
 # ── an ACP conversation: a connection, not a process we write lines to (agents.run_acp) ─────────────────────────────────────────
@@ -301,7 +435,8 @@ def take(key: str, sig: tuple, open_conn, resume=None):
         if lv is not None and (why := _stale(lv, sig, resume) or 'none was open') != 'none was open' and not lv.lock.locked(): _POOL.pop(key).close(); lv = None
     if lv is not None: return lv
     logger.info(f'clipool: opening {key}{" on " + resume if resume else ""} - {why}')
-    lv = open_conn(); _put(key, lv)
+    t0 = time.time(); lv = open_conn(); _put(key, lv)
+    logger.info(f'clipool: {key} open in {time.time() - t0:.1f}s')          # ...the start-up a first turn waits on, said beside its reason
     return lv
 
 
@@ -339,3 +474,5 @@ def live() -> list:
 @atexit.register
 def shutdown():
     close('')
+    with _LOCK: gone = list(_SPARES.values()); _SPARES.clear()
+    for lv in gone: lv.close()

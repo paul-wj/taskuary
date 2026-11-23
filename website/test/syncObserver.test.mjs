@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { observeSync } from '../src/syncObserver.js';
+import { syncFace, syncPhaseLabel } from '../src/syncTiming.js';
 
 const flush = () => new Promise(setImmediate);
 function harness(read, opts = {}) {
@@ -67,6 +69,31 @@ test('an unavailable initial status retries promptly without reporting idle', as
   h.observer.stop();
 });
 
+test('the sync caption names the work and labels completed fetch attempts as checks', () => {
+  assert.deepEqual(['fetching', 'triaging', 'checking', 'running_reports'].map(syncPhaseLabel),
+    ['Reading sources', 'Organizing', 'Checking updates', 'Running reports']);
+  assert.equal(syncFace({ checked: true, lastAt: new Date(2026, 8, 6, 10, 42), terse: true }), 'checked 10:42 AM');
+});
+
+// Sync now said nothing on a refusal ("status unavailable"): that is the clock line's own status, in its own slot (the UX walk,
+// 2026-10-22), and the button's words are buttons.json's. A CONNECTION that failed is not the sync's: the bell says it, never this
+// line (the owner, 2026-10-23: "it also says chatgpt is not connected. Let's not show errors there")
+test("a refused sync says so on the sync line; a failed connection never does", async () => {
+  const { readFileSync } = await import("node:fs");
+  const feed = readFileSync(new URL("../src/FeedView.jsx", import.meta.url), "utf8");
+  assert.match(feed, /catch \(e\) \{ if \(e\?\.response\) \{ setSyncing\(false\); setSyncErr\(plainError\(e, /);
+  assert.match(feed, /\{syncErr \? `✗ \$\{syncErr\}` : syncUnknown \?/);
+  assert.doesNotMatch(feed, /syncFailed|data\.failed|could not be read - its card/);
+  assert.match(feed, /terse: !\(syncing \|\| bgSync\) \}\)/);
+  assert.match(feed, /bLabel\("sync_now", "unknown"\) : syncing \|\| bgSync \? syncPhaseLabel\(syncPhase\) : bLabel\("sync_now"\)/);
+  assert.doesNotMatch(feed, /: "Sync now"\}/);
+  // the line is the count, the clock and the button - a connection's name or "failed" can never reach the clock
+  assert.equal(syncFace({ checked: true, lastAt: new Date(2026, 8, 6, 10, 42), terse: true, failed: ["imap", "chatgpt"] }), "checked 10:42 AM");
+  assert.equal(syncFace({ checked: true, lastAt: new Date(2026, 8, 6, 10, 42), nextIn: 90, failed: ["imap"] }), "checked 10:42 AM · next in 1:30");
+  const { label } = await import("../src/buttons.js");
+  assert.equal(label("sync_now"), "Sync now");
+  assert.equal(label("sync_now", "unknown"), "Check status");
+});
 
 // THE OVERNIGHT WALK (2026-10-26): a press of Next sent two or three live events, and each read the status again - `gather` reads a
 // burst once, after its last event; the Timeline gathers, and a direct refresh (Sync now) is never held back
@@ -82,4 +109,17 @@ test('a burst of live events is read once, after its last event', async () => {
   assert.equal(calls, 2);
   await h.observer.refresh(); assert.equal(calls, 3);
   h.observer.stop();
+  const f = fs.readFileSync(new URL('../src/FeedView.jsx', import.meta.url), 'utf8');
+  assert.match(f, /api\.get\("\/api\/ingest\/status", \{ timeout: 10000 \}\)\.then\(\(\{ data \}\) => data\), gather: 250,/);
+});
+
+// A CARD'S SYNC NOW, BEFORE AND AFTER (the owner, 2026-11-20: "doesn't show what it syncs, how far back, how many messages etc.")
+test("a card's Sync now says what it pulls and how far back, then what it brought in and the tasks it made", async () => {
+  const { syncAsk, readSaid } = await import("../src/syncTiming.js");
+  assert.equal(syncAsk({ what: "3 chats switched on", readsBack: 0, lastAt: "" }), "Pulls in new messages from 3 chats switched on - everything waiting for it.");
+  assert.equal(syncAsk({ what: "alex@northwind.example", readsBack: 3 }), "Pulls in new messages from alex@northwind.example - going back 3 days the first time.");
+  assert.match(syncAsk({ what: "2 chats switched on", lastAt: "2026-11-20 09:00:00" }), /^Pulls in new messages from 2 chats switched on - everything since its last check, .*9:00/);
+  assert.match(readSaid({ n: 12, chats: 3, since: "2026-11-17 09:00:00", hours: 0, tasks: 2 }), /^12 messages from 3 chats since .*9:00.* - 2 new tasks$/);
+  assert.equal(readSaid({ n: 1, chats: 1, since: "", hours: 72, tasks: 0 }, "thread"), "1 message from 1 thread in the last 3 days - no new task from them yet");
+  assert.equal(readSaid(null), ""); assert.equal(readSaid({ n: 0 }), "");
 });

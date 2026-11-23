@@ -13,5 +13,3 @@ test("a general session that is open but not busy has answered; a busy one is wo
   assert.equal(generalAnswered(true, { alive: true, busy: false, waiting: true }), true);
   assert.equal(agentPhase({ session: { alive: true, waiting: generalAnswered(true, { alive: true, busy: false }) } }), AGENT.waiting);
 });
-
-

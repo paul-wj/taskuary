@@ -4,6 +4,7 @@
 // connectors (Outlook, Teams, Slack, GitHub), cloud AI APIs (Anthropic, OpenAI, Azure
 // OpenAI - wired into intent triage), AI CLI agents, and scheduled report connections.
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { sectionOr } from "./browseSection.js";
 import BuiltinVoice from "./BuiltinVoice.jsx";
 import {
   Alert, Autocomplete, Box, Button, Chip, CircularProgress, Collapse, IconButton, InputAdornment, MenuItem, Popover, Radio, Select, Step,
@@ -45,8 +46,9 @@ import { githubInboundValue } from "./githubInbound.js";
 import { ALWAYS, ENDS, HI, LO, MARKS, SAYS, clampLevel, combines, defaultLevel, kindOf } from "./combineLevel.js";
 import { useSaveNote } from "./SaveNote.jsx";
 import { errorPresentation, errorText } from "./apiError.js";
-import { namesRestart, pairAgain, restartBridge } from "./waBridge.js";
-import { waLine } from "./waStatus.js";
+import { namesRestart, pairAgain, restartBridge, startBridge } from "./waBridge.js";
+import { waLine, waPair } from "./waStatus.js";
+import { ACCESS } from "./agentAccess.js";
 import { DraftProvider, Tick, useBoxesSave, useCardDraft, useSaveConnector, useSaveSource } from "./ConnectorDraft.jsx";
 import { cfgPatch, editedBoxes, syncState } from "./connectorDraft.js";
 import { AI_SHELF, needsGateway } from "./aiShelf.js";
@@ -55,7 +57,7 @@ import SavedSignins from "./SavedSignins.jsx";
 import { hint as btnHint, label as btnLabel } from "./buttons.js";
 import { noun, placeName, PLACES } from "./words.js";
 import { plural } from "./timeWords.js";
-import { backChoices, broughtLine } from "./syncTiming.js";
+import { backChoices, broughtLine, readSaid, syncAsk } from "./syncTiming.js";
 import { openAppLink } from "./appLinks.js";
 import { LIT, lightField, lightStep } from "./connectorStep.js";
 import { FOCUS_RING, pressable } from "./pressable.js";
@@ -167,7 +169,7 @@ const META = {
       "Your own private chat with the bot — Taskuary walks you through your work there. Easier picked on Settings → Phone & chats"],
       pollSecondsField("telegram")],
     secretLabel: "bot token (from @BotFather)",
-    desc: "A Telegram bot as an inbound channel - approved chats flow through triage; approved replies go back into the same chat. Unknown chats never become work: a bot is public.",
+    desc: "A Telegram bot as an inbound channel - approved chats come into your list; approved replies go back into the same chat. Unknown chats never become work: a bot is public.",
     howto: ["Message @BotFather in Telegram → /newbot → copy the token.",
       "Paste the token under Credentials (write-only) and Test.",
       "Finding a chat id is automatic: message your bot (or add it to a group) and Sync — the chat appears under Sources with its chat id, switched OFF. Flip on the ones that are yours; messages flow from then on.",
@@ -185,7 +187,7 @@ const META = {
        "Your private Message yourself chat - Taskuary walks you through your work there"],
       pollSecondsField("whatsapp")],
     secretLabel: null,
-    desc: "Your own WhatsApp, via a small bridge that runs beside Taskuary (Baileys, installed separately) - chats flow through triage, approved replies go back into the chat.",
+    desc: "Your own WhatsApp, through a small bridge Taskuary runs on this computer - chats come into your list, and the replies you approve go back into the chat.",
     howto: ["Three steps, all in the Pair with your phone box above. 1 - Node 18+ on this machine (Windows: `winget install OpenJS.NodeJS.LTS`, or nodejs.org). The box checks for it and tells you if it is missing; nothing else to install.",
       "2 - The bridge starts by itself once Node is there (first time it fetches its dependency, Baileys - a minute or two). 3 - The QR appears; on your phone: WhatsApp → Linked devices → Link a device → scan. The box turns green when the phone accepts.",
       "Leave the bridge running (it survives closing the browser; a reboot stops it - the box starts it again when you open this card). Test confirms the pairing; it does not authorize any chat for you.",
@@ -203,7 +205,7 @@ const META = {
     fields: [["Look back this many days on first sync (blank = from now on)", "lookback_days", "", "Only read on the FIRST sync — years of private history never import by accident"],
       pollSecondsField("imessage")],
     secretLabel: null,
-    desc: "The Mac's own Messages — iMessage, SMS and RCS that reach this machine. Chats flow through triage, approved replies go back into the same chat through Messages.app. macOS only.",
+    desc: "The Mac's own Messages — iMessage, SMS and RCS that reach this machine. Chats come into your list, approved replies go back into the same chat through Messages.app. macOS only.",
     howto: ["No token: Messages.app is the account. Taskuary reads the history macOS already keeps on this Mac (~/Library/Messages/chat.db) and asks Messages.app to send.",
       "Reading needs Full Disk Access — a macOS permission, granted to the app Taskuary was launched from (Terminal, iTerm, your IDE, or the python binary itself). Test tells you which one it detected, and Settings usually needs that host relaunched before it takes.",
       "System Settings → Privacy & Security → Full Disk Access → switch on (or + and add) the host Test named, then Test again. A real read of the database is the proof — not the checkbox.",
@@ -219,7 +221,7 @@ const META = {
       ["Client ID", "google_client_id", "", "From your Desktop client in Google Cloud - it ends .apps.googleusercontent.com"],
       ["Client secret", "google_client_secret", "", "From the same client."]],
     secretLabel: "App Password - or Sign in with Google, above",
-    desc: "A Gmail or Google Workspace mailbox - IMAP in through triage, replies back over Gmail's own SMTP, in-thread. Sign in with Google for the mail, calendar and contacts together, or use an App Password for the mail alone.",
+    desc: "A Gmail or Google Workspace mailbox - mail comes into your list, replies back over Gmail's own SMTP, in-thread. Sign in with Google for the mail, calendar and contacts together, or use an App Password for the mail alone.",
     howto: ["Two ways in. Sign in with Google brings the mail, the calendar and the contacts; an App Password brings the mail alone. Enter the mailbox address under Credentials either way.",
       "Sign in with Google needs a Google client of your own - the box at the top of this card lists the steps: a Google Cloud project, the Gmail, Calendar and People APIs enabled, the consent screen with yourself as a test user, and a Desktop app client whose ID and secret go into the box.",
       "Then press Sign in with Google and leave Google's boxes ticked. With no App Password saved, mail comes in and replies go out through that sign-in; invites are accepted and declined, and meetings set up, on the same one.",
@@ -236,7 +238,7 @@ const META = {
              ["IMAP port (blank = 993; 143 or 1143 upgrade with STARTTLS)", "imap_port"], ["SMTP port (blank = 587)", "smtp_port"],
              ["TLS certificate (blank = check it; a sha256 to accept that one; 'any' for none)", "tls_accept"]],
     secretLabel: "Email password",
-    desc: "Any mailbox that speaks IMAP - a domain.com address, Yahoo, an ISP, your webhost. In through triage, replies out over its SMTP.",
+    desc: "Any mailbox that speaks IMAP - a domain.com address, Yahoo, an ISP, your webhost. Mail comes into your list, replies out over its SMTP.",
     howto: ["Find your provider's IMAP and SMTP hostnames (usually imap./smtp. + your domain; ports 993/587).",
       "Enter the address and IMAP host under Credentials; SMTP host only if it does not follow the imap->smtp pattern.",
       "Paste the mailbox password (write-only). Providers with app passwords (Yahoo, iCloud) want those.",
@@ -246,8 +248,8 @@ const META = {
       "Microsoft-hosted mailbox (outlook.com, hotmail, Microsoft 365)? IMAP passwords no longer work there - point the owner at the Outlook card and stop.",
       "Ask for the mailbox password (Yahoo and iCloud want an app password instead) and save it as Secret; save address, imap_host and, only if it breaks the imap->smtp pattern, smtp_host in ConfigJson. Test (POST {base}/api/connectors/{cid}/test{hdr}), turn the connector on, SETUP DONE."] },
   github: { group: "Developer", channel: "github", srcLabel: "Repositories", srcPh: "org/repo",
-    fields: [], secretLabel: "fine-grained PAT",
-    desc: "Paste a personal access token - repos are auto-discovered, feed the Board's repo picker and the coding agent's issue loop. Per repo, choose what issues and PRs do: tasks, feed, or off.",
+    fields: [], secretLabel: "GitHub access token",
+    desc: "Paste a personal access token - repos are auto-discovered, so tasks can be worked in them and coding agents can pick up their issues. Per repo, choose what issues and PRs do: tasks, feed, or off.",
     howto: ["Create a fine-grained PAT: GitHub → Settings → Developer settings → Fine-grained tokens.",
       "Repository access: the repos the agent may touch. Permissions: Issues Read+Write, Pull requests Read+Write, Metadata Read.",
       "Paste the token under Credentials - that's ALL the config: on save Taskuary discovers every repo the token reaches, adds them under Sources, and writes the repository map into SOUL.md.",
@@ -510,13 +512,14 @@ const META = {
       "Every sync brings in new mentions, replies, quotes and messages from your notifications. Anyone can sign up to a forum, so only staff - or the group you name - count as colleagues.",
       "Nothing is posted to Discourse; Taskuary only reads."] },
   reddit: { group: "Social", channel: "reddit", srcLabel: "Account", srcPh: "added by Test",
-    fields: [["script app client id (reddit.com/prefs/apps)", "client_id"], ["script app secret", "client_secret"], ["your Reddit user name", "username"]],
+    fields: [["script app client id (reddit.com/prefs/apps)", "client_id"], ["script app secret", "client_secret"], ["your Reddit user name", "username"],
+      ["authenticator setup key - only if your account has two-factor sign-in", "totp_key"]],
     secretLabel: "Reddit password",
-    desc: "Replies, mentions and messages in your Reddit inbox come in and are sorted like everything else that comes in.",
-    howto: ["Create a script app at reddit.com/prefs/apps (any redirect URL) - it shows the client id under its name and the secret.",
-      "Enter both and your user name; paste your Reddit password (write-only). An account with two-factor sign-in cannot use a script app.",
+    desc: "Replies, mentions and messages in your Reddit inbox come in and are sorted like everything else that comes in; an agent's post to a subreddit waits for your press.",
+    howto: ["Create a script app at reddit.com/prefs/apps (any redirect URL) - it shows the client id under its name and the secret. A script app is Reddit's road for your own personal use.",
+      "Enter both and your user name; paste your Reddit password (write-only). With two-factor sign-in, also paste the account's authenticator setup key (the letters under \"Can't scan the QR code?\" when you turn it on) - the card makes the code each time it signs in.",
       "Every sync brings in your inbox: replies to your posts and comments, mentions and messages. A Redditor is always a stranger's words.",
-      "Nothing is posted to Reddit; Taskuary only reads."] },
+      "An agent can draft a post - the subreddit, a title, and text or a link, with the flair the subreddit asks for. It waits on the task as Post to Reddit; nothing is posted until you press it, and a subreddit's refusal is said on the card."] },
   youtube: { group: "Social", channel: "youtube", srcLabel: "Channel", srcPh: "added by Test",
     fields: [["channel id (starts UC - YouTube Studio → Settings → Channel → Advanced)", "channel_id"]],
     secretLabel: "API key",
@@ -583,13 +586,15 @@ const META = {
       "Every sync brings in new comments on the Page's ten latest posts and conversations whose last message is not the Page's. Everyone who writes is a stranger's words until you trust them.",
       "Nothing is posted or replied from here; Taskuary only reads."] },
   x: { group: "Social", channel: "x", srcLabel: "Account", srcPh: "added by Test",
-    fields: [["your X handle, without the @", "username"]],
+    fields: [["your X handle, without the @", "username"], ["API key (to post)", "consumer_key"], ["API key secret (to post)", "consumer_secret"],
+      ["access token (to post)", "access_token"], ["access token secret (to post)", "access_secret"]],
     secretLabel: "app bearer token",
-    desc: "Posts on X that mention you come in and are sorted like everything else that comes in; reports and agents read posts and users.",
+    desc: "Posts on X that mention you come in and are sorted like everything else that comes in; reports and agents read posts and users. Posting needs your own X developer app, and X's plan for it limits what it may post.",
     howto: ["developer.x.com: Projects and Apps, then your app, then Keys and tokens - the Bearer Token. Reading mentions needs a paid API plan; the free one cannot.",
       "Enter your handle and paste the token (write-only). Test finds your account.",
       "Every sync brings in new posts that mention you. Everyone on X is a stranger's words until you trust them. Direct messages need a sign-in as you, which comes later.",
-      "Nothing is posted to X; Taskuary only reads."] },
+      "To post: in the same app, User authentication settings - set the permissions to Read and write. Then Keys and tokens - the API key and secret, and an access token and secret made after that change. Enter all four (the secrets are write-only).",
+      "An agent can draft a post of up to 280 characters, with a picture. It waits on the task as Post to X; nothing is posted until you press it. How many posts X allows is your app's plan."] },
   wordpress: { group: "Social", channel: "wordpress", srcLabel: "Site", srcPh: "added by Test",
     fields: [["site address (https://blog.yourco.example)", "host"], ["your WordPress user name", "user"]],
     secretLabel: "application password",
@@ -648,7 +653,7 @@ const META = {
       ["user id (issued beside the token)", "user_id", "", "Rocket.Chat authenticates with two values: the token and the id of the user it belongs to. Only the token is a secret."],
       pollSecondsField("rocketchat")],
     secretLabel: "personal access token (write-only)",
-    desc: "Rocket.Chat rooms through triage, replies back in the room. Two values, not one — the token and the user id issued with it.",
+    desc: "Rocket.Chat rooms come into your list, replies back in the room. Two values, not one — the token and the user id issued with it.",
     howto: ["Avatar → My Account → Personal Access Tokens → Add. Rocket.Chat shows a TOKEN and a USER ID; you need both.",
       "Paste the token under Credentials (write-only) and the user id in its own field.",
       "Enter the server url (https://chat.yourcompany.com — no /api/v1, that is added).",
@@ -685,20 +690,20 @@ const META = {
       "Turn the connector on, SETUP DONE."] },
   anthropic: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default claude-opus-5)", "model"]], secretLabel: "API key",
-    desc: "Claude via the Anthropic API - powers intent triage (task / reply-only / FYI) once enabled.",
+    desc: "Claude via the Anthropic API - sorts what comes in once it is on.",
     howto: ["Create an API key at console.anthropic.com → API keys.",
       "Paste it under Credentials (write-only). Optionally set a model - default is claude-opus-5.",
       "Test runs a real round trip through the model.",
       "Enable it and every new inbound message is classified by the model, guided by SOUL.md - the first active AI connector wins."] },
   openai: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default gpt-4o-mini)", "model"]], secretLabel: "API key",
-    desc: "OpenAI models for intent triage - alternative to the Anthropic connector.",
+    desc: "OpenAI models to sort what comes in.",
     howto: ["Create an API key at platform.openai.com.",
       "Paste it under Credentials; optionally set a model.",
-      "Test runs a real round trip. Enable to wire it into triage - the first active AI connector wins."] },
+      "Test runs a real round trip. Turn it on to sort what comes in - the first AI card that is on does it."] },
   azure_openai: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["Endpoint", "endpoint", "https://YOUR-RESOURCE.openai.azure.com"], ["Deployment name", "deployment"], ["API version (optional)", "api_version"]], secretLabel: "API key",
-    desc: "Your Azure OpenAI deployment for intent triage - endpoint + deployment + key.",
+    desc: "Your Azure OpenAI deployment to sort what comes in - endpoint + deployment + key.",
     howto: ["Azure Portal → your Azure OpenAI resource → Keys and Endpoint.",
       "Enter the endpoint (https://YOUR-RESOURCE.openai.azure.com), the deployment name, and optionally an api_version.",
       "Paste a key under Credentials. Test runs a real round trip through the deployment."] },
@@ -707,16 +712,16 @@ const META = {
     desc: "One key, the whole catalog — open-weights Llama / Qwen / Mistral and every closed model, through OpenRouter's OpenAI-compatible API.",
     howto: ["Create a key at openrouter.ai → Keys.",
       "Paste it under Credentials; optionally set a model from openrouter.ai/models (e.g. meta-llama/llama-3.3-70b-instruct). Empty = openrouter/auto picks per request.",
-      `Test runs a real round trip. Enable to wire it into triage, drafts, the digest and LEARNED.md — or pick it explicitly under ${PLACES.sorting.name}.`] },
+      `Test runs a real round trip. Turn it on for sorting, drafts, the digest and what Taskuary learns.md — or pick it explicitly under ${placeName("sorting")}.`] },
   meta: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default muse-spark-1.2)", "model"], ["base_url (default https://api.meta.ai/v1)", "base_url"]],
     secretLabel: "Meta Model API key",
-    desc: "Meta's Muse Spark models through the Meta Model API, billed per token — the triage road; coding sessions use the muse CLI.",
+    desc: "Meta's Muse Spark models through the Meta Model API, billed per token — for sorting what comes in; coding sessions use the muse CLI.",
     howto: ["Create a key at dev.meta.ai → API keys (a payment method is required; Meta publishes no free tier).",
       "Paste it under Credentials. Leave model blank for muse-spark-1.2, or name muse-spark-1.3.",
       "muse-spark-1.2-contributor costs about a twelfth as much — because you opt in to Meta using your prompts and completions to improve its products, and it is rate-limited to 100 requests/minute against 3,000. Do not point it at real work mail unless you mean to share it.",
-      `Test runs a real round trip. Enable to wire it into triage, drafts and the digest — or pick it explicitly under ${PLACES.sorting.name}.`,
-      `This is the TRIAGE road. For coding sessions on Muse Spark, install the muse CLI under ${PLACES.ai_apps.name} (Windows, macOS and Linux).`] },
+      `Test runs a real round trip. Turn it on for sorting, drafts and the digest — or pick it explicitly under ${placeName("sorting")}.`,
+      `This is the TRIAGE road. For coding sessions on Muse Spark, install the muse CLI under ${placeName("ai_apps")} (Windows, macOS and Linux).`] },
   // NINE PROVIDERS, ONE SURFACE. Each of these speaks the OpenAI chat-completions schema exactly,
   // so llm.py holds them as a table (OPENAI_COMPATIBLE) rather than nine branches, and a card here
   // is a base url, a default model and a key. base_url is offered on every one for the same reason
@@ -728,13 +733,13 @@ const META = {
     desc: "Your organisation's own AI, run in its own cloud - switched on with the access code it sent you. Nothing to install, no API account of your own.",
     howto: ["Paste the gateway address and the access code you were sent. The code is yours alone - usage is counted against it.",
       "The address starts with https:// - with or without /v1 at the end, either works.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   groq: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default llama-3.3-70b-versatile)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
-    desc: "Open-weights models at the fastest tokens-per-second anywhere, on a free tier generous enough to triage a real mailbox.",
+    desc: "Open-weights models at the fastest tokens-per-second anywhere, on a free tier generous enough to sort a real mailbox.",
     howto: ["Create a key at console.groq.com → API Keys. Free, no card.",
       "Paste it under Credentials. Leave model blank for llama-3.3-70b-versatile, or name one from console.groq.com/docs/models.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   cerebras: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default llama-3.3-70b)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Wafer-scale silicon running Llama faster than an ordinary GPU can — free tier, no card.",
@@ -755,7 +760,7 @@ const META = {
       "Paste the key under Credentials. Test runs a real round trip."] },
   deepseek: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default deepseek-chat)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
-    desc: "Open reasoning models at roughly a tenth of the usual price — the cheapest capable triage brain here.",
+    desc: "Open reasoning models at roughly a tenth of the usual price — the cheapest capable AI here for sorting.",
     howto: ["Create a key at platform.deepseek.com → API keys (prepaid balance, no subscription).",
       "Paste it under Credentials. deepseek-chat is the general model; deepseek-reasoner thinks before it answers and costs more.",
       "Test runs a real round trip."] },
@@ -790,49 +795,49 @@ const META = {
     desc: "Sonar answers a question with the live web behind it and cites what it read — a search engine shaped like a model.",
     howto: ["Create a key at perplexity.ai → Settings → API (prepaid credit).",
       "Paste it under Credentials. sonar is the everyday model; sonar-pro searches harder and costs more.",
-      "Test runs a real round trip. Useful as the brain for a research report rather than for triage."] },
+      "Test runs a real round trip. Useful as the brain for a research report rather than for sorting."] },
   fireworks_ai: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default accounts/fireworks/models/glm-5p3-flash)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Open models on fast serverless inference - one key, any model in its library.",
     howto: ["Create a key at app.fireworks.ai → Settings → API Keys.",
       "Paste it under Credentials. Leave model blank for accounts/fireworks/models/glm-5p3-flash, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   nvidia_nim: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default meta/llama-3.3-70b-instruct)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Open models served by NVIDIA's NIM microservices, with free credits to start.",
     howto: ["Create a key at build.nvidia.com → any model → Get API Key.",
       "Paste it under Credentials. Leave model blank for meta/llama-3.3-70b-instruct, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   sambanova: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default Meta-Llama-3.3-70B-Instruct)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Llama and other open models on SambaNova's own chips - fast, with a free tier.",
     howto: ["Create a key at cloud.sambanova.ai → APIs.",
       "Paste it under Credentials. Leave model blank for Meta-Llama-3.3-70B-Instruct, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   deepinfra: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default meta-llama/Llama-3.3-70B-Instruct-Turbo)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Open models at low per-token prices, pay as you go.",
     howto: ["Create a key at deepinfra.com → Dashboard → API Keys.",
       "Paste it under Credentials. Leave model blank for meta-llama/Llama-3.3-70B-Instruct-Turbo, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   novita: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default meta-llama/llama-3.3-70b-instruct)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Open models on pay-as-you-go GPUs, one key for the whole library.",
     howto: ["Create a key at novita.ai → Settings → Key Management.",
       "Paste it under Credentials. Leave model blank for meta-llama/llama-3.3-70b-instruct, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   hyperbolic: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default glm-5.3-flash)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Open models on low-cost GPU inference.",
     howto: ["Create a key at app.hyperbolic.ai → Settings → API Keys.",
       "Paste it under Credentials. Leave model blank for glm-5.3-flash, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   bedrock: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default openai.gpt-oss-120b-1:0)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
     desc: "Models in your own AWS account through Bedrock's chat completions - with a Bedrock API key.",
     howto: ["Create a key at AWS console → Amazon Bedrock → API keys (a Bedrock API key, not an access key pair).",
       "Paste it under Credentials. Leave model blank for openai.gpt-oss-120b-1:0, or name another from the provider's model list.",
-      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+      "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   // A decision model, not a brain. It sits in this group because it is an AI card you paste a key
   // on, but it is offered in exactly ONE picker (Settings → How mail is sorted → Where runs go): it
   // emits no text at all, so chosen as the Assistant's brain it would have nothing to say.
@@ -841,7 +846,7 @@ const META = {
   chatgpt: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (blank = the first model your plan lists)", "model"]], secretLabel: null,
     // the allowance and the cap are the sign-in box's own words, right above this line - said twice, one under the other
-    desc: "Your ChatGPT plan as Taskuary's brain - triage, the Assistant, reports.",
+    desc: "Your ChatGPT plan as Taskuary's AI - sorting, the Assistant, reports.",
     howto: ["Sign in with ChatGPT above: your browser opens auth.openai.com, you sign in with your own ChatGPT account and allow plan usage, and the card finishes by itself.",
       `Then pick it as a brain under ${PLACES.sorting.name}. It is text only: screenshots are not sent, and it has no tools.`,
       "Set or raise the weekly cap for Taskuary in ChatGPT's settings. When the cap is used up the brain stops and says so - it does not fall back to paid credits unless you allow that in ChatGPT.",
@@ -1459,7 +1464,7 @@ const DATA_META = {
       ["client certificate path (.pem) — development and production only", "cert_path", "C:/taskuary/teller/certificate.pem"],
       ["private key path (.pem) — development and production only", "key_path", "C:/taskuary/teller/private_key.pem"]],
     secretLabel: "access token (write-only) — Connect a bank fills it in",
-    desc: "What left the bank and the cards, as rows: every account under one bank login, its transactions newest first, its balances. Read-only by construction — a feed cannot move money. Schedule the transactions with 'can become work' and each new one is a message triage judges.",
+    desc: "What left the bank and the cards, as rows: every account under one bank login, its transactions newest first, its balances. Read-only by construction — a feed cannot move money. Schedule the transactions with 'can become work' and each new one is sorted like a message.",
     connect: { widget: "teller", label: "Connect a bank", status: (cid) => `/api/connectors/${cid}/teller/status`, enroll: (cid) => `/api/connectors/${cid}/teller/enroll`,
       text: "Opens the bank's own sign-in (Teller Connect). The token for that login lands on this card; the browser never keeps it." },
     howto: ["teller.io → sign up → create an application. The dashboard hands you an application id and, for development and production, a certificate.pem and private_key.pem — save both somewhere on this machine and put their paths on the card. Sandbox needs no certificate and accepts any login at its fake banks, which is how to try the loop first.",
@@ -1518,7 +1523,7 @@ const DATA_META = {
     desc: "US public-company filings and the XBRL facts inside them, straight from SEC EDGAR — no key, though SEC asks every caller to identify itself, which this card does for you.",
     howto: ["Nothing to configure. Test looks up Apple's filings (CIK 320193).",
       "Build the reports on the REPORTS tab: 'edgar_filings' for a company's recent filings by CIK (find one at sec.gov/cgi-bin/browse-edgar), optionally filtered to certain forms (8-K,10-Q); 'edgar_facts' for one reported XBRL number over time (a tag like Revenues) as the company itself filed it.",
-      "Schedule 'edgar_filings' with 'can become work' and a new 8-K is a message triage judges."],
+      "Schedule 'edgar_filings' with 'can become work' and a new 8-K is sorted like a message."],
     agent: ["A CIK is a number, not a ticker - sec.gov/cgi-bin/browse-edgar looks one up by company name. Nothing else to ask the owner for."] },
   screen: { title: "Strategy screen", types: ["markets_screen"], fields: [], noSecret: true,
     desc: "Not a data source of its own: a screen BORROWS another card's connection to filter its rows down to the ones that match a condition. Its connector_id — set on the 'markets_screen' report, not here — names the provider card to read through; this card holds no credentials of its own.",
@@ -1836,13 +1841,12 @@ const BridgeRestart = ({ cid, text }) => {
 
 // THE WHATSAPP STATUS LINE (waStatus.js, 2026-10-23): what the bridge says, not what the switch says - short words, the
 // turned-away count a link into the chat picker where they can be switched on, and the next step as a button, not a paragraph
-const WaStatusLine = ({ st, cid, onTurnedAway, fixes = ["restart", "pair"] }) => {
-  useLocale();
+const WaStatusLine = ({ st, cid, onTurnedAway, fixes = ["start", "restart", "pair"] }) => {
   const [busy, setBusy] = useState("");
   const line = waLine(st);
   if (!line) return null;
   const fix = fixes.includes(line.fix) ? line.fix : "";
-  const act = async () => { setBusy(fix); try { await (fix === "pair" ? pairAgain(cid) : restartBridge(cid)); } catch { /* the pairing box shows the outcome */ } setBusy(""); };
+  const act = async () => { setBusy(fix); try { await (fix === "pair" ? pairAgain(cid) : fix === "start" ? startBridge(cid) : restartBridge(cid)); } catch { /* the pairing box shows the outcome */ } setBusy(""); };
   return (
     <Box data-tq-wa-status={line.fix || "ok"} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
       <Typography variant="body2" sx={{ color: DIM }}>
@@ -1853,13 +1857,15 @@ const WaStatusLine = ({ st, cid, onTurnedAway, fixes = ["restart", "pair"] }) =>
           {t("{count} turned away", { count: line.away })}</Button></>}
       </Typography>
       {fix && <Button size="small" variant="outlined" disabled={!!busy} data-tq-wa-fix={fix} sx={{ fontSize: 11.5, textTransform: "none" }}
-        startIcon={busy ? <CircularProgress size={12} /> : <RestartAltIcon sx={{ fontSize: 15 }} />}
-        title={fix === "pair" ? t("Unlink this computer on your phone and show a new QR to scan - the old pairing is kept aside, not deleted")
-          : t("Start the bridge again on this machine - you stay paired")}
-        onClick={act}>{busy ? (fix === "pair" ? t("Unlinking…") : t("Restarting…")) : fix === "pair" ? t("Pair again") : t("Restart bridge")}</Button>}
+        startIcon={busy ? <CircularProgress size={12} /> : fix === "start" ? <PlayArrowIcon sx={{ fontSize: 15 }} /> : <RestartAltIcon sx={{ fontSize: 15 }} />}
+        title={fix === "pair" ? "Unlink this computer on your phone and show a new QR to scan - the old pairing is kept aside, not deleted"
+          : fix === "start" ? "Start the bridge on this computer - Taskuary sets up what it needs first"
+          : "Start the bridge again on this machine - you stay paired"}
+        onClick={act}>{busy ? (fix === "pair" ? "Unlinking…" : "Starting…") : WA_FIX[fix]}</Button>}
     </Box>
   );
 };
+const WA_FIX = { start: "Start bridge", restart: "Restart bridge", pair: "Pair again" };
 
 const TestLine = ({ test, mt = 1, cid }) => {
   useLocale();
@@ -1941,13 +1947,17 @@ export const ConnCard = ({ c }) => {
 
 // THE SAME CARD IN PLAIN WORDS (`plain`, the first run's questions): "off · trigger + tool · 0/0 chat jids" is the catalogue's
 // shorthand for someone who has set connections up before; a first-time owner gets the state itself (the owner, 2026-10-15)
-const SIGNED_OUT = /sign-in has lapsed|signed out|sign in again|expired/i;
 // ...and what its first read did - how far back it went, how many it brought in - not only "Connected" (the owner, 2026-11-10: "it
 // says connected but it's not going back"). channels._first_read keeps it on the card once that read moved the watermark.
 const firstRead = (c) => { try { const f = JSON.parse(c.ConfigJson || "{}").first_read; return f ? ` · ${broughtLine(f.n || 0, f.hours || 0)}` : ""; } catch { return ""; } };
-const plainState = (c, srcs) => (c.LastError ? (SIGNED_OUT.test(c.LastError) ? ["failing", "Needs sign-in"] : ["failing", "Not answering - click to fix it"])
-  : c.Active && (c.HasSecret || c.LastSyncAt || (srcs || []).some((s) => s.Active)) ? ["on", c.LastSyncAt ? `Connected${firstRead(c)} · checked ${timeAgo(c.LastSyncAt)}` : "Connected"]
-  : ["off", "Not set up"]);
+// IS IT CONNECTED is the server's to say, once (connectorcatalog.state, sent as State): the page read its own rules in six places, one a
+// word list over the error text that missed Gmail's "invalid_grant" and said "Not answering" over a sign-in to do (2026-11-19)
+export const connStateOf = (c) => c?.State?.state || "off";
+const PLAIN_LIT = { connected: "on", off: "off", not_signed_in: "off" };
+const plainState = (c) => { const st = c.State || { state: "off", line: "Not set up" };
+  return [PLAIN_LIT[st.state] || "failing", st.state === "connected" && c.LastSyncAt ? `Connected${firstRead(c)} · checked ${timeAgo(c.LastSyncAt)}` : st.line]; };
+
+const SIGNED_OUT = /sign-in has lapsed|signed out|sign in again|expired/i;
 
 // A connector's card as the catalogue draws it - its status line said one way, wherever the card is shown (the first run's
 // questions show these same cards: the owner, 2026-10-15, "Don't create new ui. keep the same as we have in connections")
@@ -1960,7 +1970,7 @@ export const connCardOf = (c, sources, go, plain = false) => {
   // ...the catalogue's own line, in plain words too (connectorCatalog.cardStatus) - and its state said, not read back out of those words
   const status = cardStatus(c, { roles, srcs, label: m.srcLabel || "sources", read: firstRead(c).replace(/^ · /, ""), checked: c.LastSyncAt ? timeAgo(c.LastSyncAt) : "",
     keyNote: c.HasSecret ? "key saved" : ["ollama", "local_whisper"].includes(c.Type) ? "local — no key needed" : c.Type === "stt_server" ? "your server — key optional" : "no key yet" });
-  const [state, said] = plain ? plainState(c, srcs) : [c.LastError ? "failing" : c.Active ? "on" : "off", status];
+  const [state, said] = plain ? plainState(c) : [PLAIN_LIT[connStateOf(c)] || "failing", status];
   // the product's own logo wins over the channel glyph: five AI cards sharing one sparkle,
   // or Jira and Linear both wearing 'boards', tells you nothing about which is which
   return { key: `c${c.ConnectorId}`, type: c.Type, title: c.Name, desc: said, state, plain,
@@ -2284,16 +2294,16 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const chanCard = (c) => ({ ...connCardOf(c, sources, () => setOpen({ kind: "connector", id: c.ConnectorId })),
     remove: removable(c) ? { conn: c, channel: META[c.Type]?.channel || "", reload: load } : null });
   // three shapes of card, said once instead of inline in five groups
-  const dataDesc = (c, rtype) => (c?.LastError ? "connection failing" : c?.LastSyncAt ? "connection ✓" : NOT_SET_UP)
-    + ` · ${plural(reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length, "report")} (built under Reports)`;
-  const dataCards = (keys) => keys.flatMap((type) => allOf(type).filter(() => DATA_META[type]).map((c) => {
-    const dm = DATA_META[type];
-    const count = reports.filter((s2) => dm.types.includes(parse(s2.ConfigJson).type)).length;
-    return { key: `d${c.ConnectorId}`, title: c.Name, channel: type,
-      desc: (c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : NOT_SET_UP)
-        + ` · ${plural(count, "report")} (built under Reports)`,
-      displayDesc: `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
-      haystack: `${dm.title} ${type} ${dm.desc} ${dm.types.join(" ")} ` + dm.howto.join(" "),
+  // ...the data source's connection said by the server's state (connectorcatalog.state): a failing or switched-off card read "connection ✓"
+  const connWord = (c) => ({ connected: "connection ✓", off: NOT_SET_UP })[connStateOf(c)] || `connection: ${c.State.line.toLowerCase()}`;
+  const dataDesc = (c, rtype) => connWord(c)
+    + ` · ${plural(reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length, "report")}`;
+  const dataCards = (keys) => keys.flatMap((t) => allOf(t).filter(() => DATA_META[t]).map((c) => {
+    const dm = DATA_META[t];
+    return { key: `d${c.ConnectorId}`, title: c.Name, channel: t,
+      desc: connWord(c)
+        + ` · ${plural(reports.filter((s2) => dm.types.includes(parse(s2.ConfigJson).type)).length, "report")}`,
+      haystack: `${dm.title} ${t} ${dm.desc} ${dm.types.join(" ")} ` + dm.howto.join(" "),
       go: () => setOpen({ kind: "connector", id: c.ConnectorId }), remove: removable(c) ? { conn: c, channel: "data", reload: load } : null };
   }));
   const channelCards = (keys) => keys.flatMap((t) => allOf(t).map(chanCard));
@@ -2474,21 +2484,22 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
 
   if (browse) {
     const all = groups.flatMap((g) => g.cards);
-    const connected = nOn ?? connectors.filter((c) => c.Active && (c.HasSecret || c.LastSyncAt) && !c.LastError).length;
+    const connected = nOn ?? connectors.filter((c) => connStateOf(c) === "connected").length;
     const openCard = all.find((c) => c.key === browseState.open);
-    const inSection = q ? hits : (groups.find((g) => g.title === browseState.section)?.cards || []);
+    const sec = sectionOr(browseState.section, groups.map((g) => g.title));
+    const inSection = q ? hits : (groups.find((g) => g.title === sec)?.cards || []);
     return browse({
       title: t("Connections"),
-      summary: t("{connected} connected · {count} in the catalogue · pick a section", { connected, count: all.length }),
+      summary: t("{connected} connected · {count} in the catalogue", { connected, count: all.length }),
       sections: groups.map((g) => ({ key: g.title, label: t(sectionName(g.title)), n: g.cards.length || null })),
-      section: q ? "" : browseState.section ?? null,
+      section: q ? "" : sec,
       onSection: (key) => { setQ(""); setOpen(null); onBrowseState?.({ section: key, open: null }); },
-      note: err ? displayMessage(err) : (q ? "" : t(groups.find((g) => g.title === browseState.section)?.note || "")),
+      note: err ? displayMessage(err) : q ? "" : t(groups.find((g) => g.title === sec)?.note || ""),
       // ...the card opened names its connector, so the address can (canvasLinks.hashFor) - a guide card has none and is its section's
       cards: inSection.map((c) => ({ key: c.key, node: <ConnCard c={{ ...c, go: c.go && (() => { c.go();
-        onBrowseState?.({ ...browseState, section: q ? c.crumb || browseState.section : browseState.section, open: c.key,
+        onBrowseState?.({ ...browseState, section: q ? c.crumb || sec : sec, open: c.key,
           connector: c.key === "agents" ? "cli-agents" : /^[cds](\d+)$/.exec(c.key)?.[1] || "" }); }) }} /> })),
-      detail, onBack: back, openKey: browseState.open || (conn ? `c${conn.ConnectorId}` : ""),
+      detail, openKey: browseState.open || (conn ? `c${conn.ConnectorId}` : ""),
       openLabel: openCard ? `the ${openCard.title} connector card (Connections), ${openCard.desc}` : conn ? `the ${conn.Name} connector card (Connections)` : "",
       search: (
         <Box component="input" type="search" value={q} onChange={(e) => search(e.target.value)} placeholder={t("Search connectors…")}
@@ -2560,7 +2571,8 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
   const one = oneOf(conn.Type);
   // ...ONLY ONCE THIS ONE IS CONNECTED (the setup sweep, 2026-10-28): "Add another Outlook mailbox" under a first one not yet signed in
   // offered a second before there was a first
-  const connected = !!(conn.HasSecret || conn.LastSyncAt);
+  // ...signed in once, by the server's state (connectorcatalog.state): failing or signed out is still a first one there
+  const connected = ["connected", "failing", "signed_out"].includes(connStateOf(conn));
   // THE NAME SAVES ITSELF (the owner, 2026-11-05): once the typing pauses, or the box is left - a blank one is never saved
   const rename = async () => {
     clearTimeout(renameAt.current);
@@ -2629,7 +2641,7 @@ function CardPlaybooks({ type }) {
   return (
     <Box sx={{ mt: 3, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL }}>
       <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.75 }}>
-        {t("PLAYBOOKS — WHAT THIS CONNECTION DOES FOR US")}
+        Playbooks - what this connection does for you
       </Typography>
       {books.length === 0 && (
         <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>
@@ -2898,6 +2910,49 @@ function ThinkingSwitch({ cfg, setCfg }) {
 const metaOf = (conn) => { const p = presetOf(conn), m = META[conn.Type];
   return p && m ? { ...m, desc: p.desc, secretLabel: p.preset.secret || m.secretLabel, howto: p.preset.howto || m.howto } : m; };
 
+// ONE SYNC NOW ON EVERY CARD (the owner, 2026-11-20: "the Sync now button in connector (I was looking at WhatsApp) doesn't show what it
+// syncs, how far back, how many messages etc."): before the press, from where and how far back (syncTiming.syncAsk); after it, what the
+// card's last read brought in, from the server's own counts (LastRead, channels.read_line). Telegram's chat list had a button of its own
+// that said neither - it is this one now. `sync`: syncState - there once the server has the card on, greyed while an edit still saves.
+const READ_WAIT_MS = 90_000;
+function SyncNow({ conn, mine, sync, reload }) {
+  const { run, note } = useSaveNote();
+  const [pressed, setPressed] = useState(0), [heard, setHeard] = useState("");
+  const mail = MAIL_CARDS.includes(conn.Type), on = mine.filter((s) => s.Active), every = on.some((s) => s.Address === "*");
+  const what = mail ? on.map((s) => s.Address).join(", ") : every ? "every chat that writes to it" : on.length ? `${plural(on.length, "chat")} switched on` : "";
+  // ...pressed: read the card again until its check has moved past the press, then say what that check brought in
+  useEffect(() => {
+    if (!pressed) return undefined;
+    if (conn.LastSyncAt && conn.LastSyncAt !== heard) { setPressed(0); return undefined; }
+    if (Date.now() - pressed > READ_WAIT_MS) { setPressed(0); return undefined; }
+    const id = setTimeout(reload, 3000);
+    return () => clearTimeout(id);
+  }, [pressed, conn.LastSyncAt, heard, reload]);
+  const press = async () => {
+    setHeard(conn.LastSyncAt || "");
+    const r = await run(() => api.post("/api/ingest/poll"), { ok: "", lead: "Sync didn't start — " });
+    if (r.ok) setPressed(Date.now());
+  };
+  const got = readSaid(conn.LastRead, mail ? "thread" : "chat");
+  // ...a check after the last read that brought something found nothing new: said, with what the last one did
+  const fresh = !pressed && heard && conn.LastSyncAt !== heard;
+  const after = fresh && !(conn.LastRead?.at >= heard) ? `Nothing new${got ? ` - the last sync brought in ${got}` : ""}.` : got ? `Last sync: ${got}.` : "";
+  if (!sync.show) return null;
+  return (
+    <Box data-tq-sync-now="" sx={{ display: "flex", flexDirection: "column", gap: 0.5, flexBasis: "100%", alignItems: "flex-start" }}>
+      <Typography variant="body2" data-tq-sync-ask="" sx={{ color: DIM }}>{syncAsk({ what, readsBack: conn.ReadsBack, lastAt: conn.LastSyncAt })}</Typography>
+      {/* the reason sits on a wrapper: a disabled button takes no hover, so its own title never shows */}
+      <Box component="span" title={sync.why} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
+        <Button size="small" variant="contained" disableElevation onClick={press} disabled={!!pressed || !sync.ok}
+          startIcon={pressed ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <SyncIcon sx={{ fontSize: 14 }} />}
+          sx={{ color: "#fff", background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{pressed ? "Syncing…" : btnLabel("sync_now")}</Button>
+      </Box>
+      {after && !pressed && <Typography variant="body2" data-tq-sync-got="" sx={{ color: INK }}>{after}</Typography>}
+      {note}
+    </Box>
+  );
+}
+
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
   useLocale();
   // EVERY FIELD SAVES ITSELF (ConnectorDraft.jsx): every control below draws from the draft and stages into it, and the draft saves it
@@ -2959,8 +3014,6 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     if (r.ok) setNewSrc("");
     reload();
   };
-  // the telegram flow says "hit Sync now" - so the button has to BE here, not on another tab
-  const [srcSync, setSrcSync] = useState(false);
   // the Outlook card leads with the sign-in; the tenant-app fields (an admin's road) fold
   // away unless they are already what this card runs on
   const [adminFields, setAdminFields] = useState(!MS_SIGNIN.includes(conn.Type) || (!!cfg.client_id && !!conn.HasSecret && cfg.auth !== "user"));
@@ -2983,12 +3036,6 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const late = shownFields.filter(isPollField), early = shownFields.filter((f) => !isPollField(f));
   const need = early.filter((f) => !isOptional(f)), maybe = early.filter(isOptional);
   const [advanced, setAdvanced] = useState(false);
-  const syncHere = async () => {
-    setSrcSync(true);
-    const r = await run(() => api.post("/api/ingest/poll"), { ok: "Syncing — new items appear in a minute", lead: "Sync didn't start — ", localize: true });
-    if (r.ok) setTimeout(() => { setSrcSync(false); reload(); }, 3000);
-    else setSrcSync(false);
-  };
   const toggleSource = (s) => draft.ctx.stageSource({ SourceId: s.SourceId, Active: !s.Active });
   // a source removed AT ONCE (the owner, 2026-10-21): "Removed <address> - Undo" under the list puts it back as it was
   const removeSrc = async (s) => { await run(() => removeNow(() => api.delete(`/api/sources/${s.SourceId}`), "source", s.Address), { ok: "", lead: "Not removed — ", localize: true }); reload(); };
@@ -3090,20 +3137,14 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         {conn.Type === "telegram" && (
           <>
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1, maxWidth: 560 }}>
-              {t("No chat id to type: message your bot (or add it to a group), hit {sync}, and the chat appears below with its id — switched off. Flip on the chats that are yours; every other chat stays out, because a public bot can be messaged by anyone. The field at the bottom is only for an id you already know.", { sync: t(btnLabel("sync_now")) })}
+              No chat id to type: <b>message your bot</b> (or add it to a group), press <b>{btnLabel("sync_now")}</b> under Enable, and the
+              chat appears below with its id — switched off. Flip on the chats that are yours; every other
+              chat stays out, because a public bot can be messaged by anyone. The field at the bottom is only
+              for an id you already know.
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1, flexWrap: "wrap" }}>
               <Typography variant="caption" sx={{ color: FAINT }}>Your private chat with the Assistant, and the chats that reach your coding agents, are set on</Typography>
               <PhoneChatsLink onNavigate={onNavigate} />
-            </Box>
-            {/* one line at any width: wrapped on a phone, it shrank to one line as "Syncing…" and the list under it jumped */}
-            {/* the reason sits on a wrapper: a disabled button takes no hover, so its own title never shows */}
-            <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex", maxWidth: "100%", mb: 1 }}>
-              <Button size="small" variant="outlined" onClick={syncHere} disabled={srcSync || (sync.show && !sync.ok)} sx={{ maxWidth: "100%" }}
-                startIcon={srcSync ? <CircularProgress size={11} /> : <SyncIcon sx={{ fontSize: 14 }} />}>
-                <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {srcSync ? t("Syncing…") : t("Sync now — pull in chats that messaged the bot")}</Box>
-              </Button>
             </Box>
           </>
         )}
@@ -3165,15 +3206,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           </Typography>)}
         {/* another model answers this card's calls (brainroute.fell_line): the bell's own line, said where the card is */}
         {isAI && conn.FellBack && <Typography data-tq-fell-back="" variant="body2" sx={{ color: "var(--tq-warn, #7a5a1f)", flexBasis: "100%" }}>{conn.FellBack}</Typography>}
-        {/* the last step of a setup should be the first sync - not a wait for the ten-minute clock. It is there once the SERVER has the
-            card on (syncState), and greyed - the reason in its hover - while a box or a pick is still saving an edit it would not read */}
-        {sync.show && !isAI && (
-          <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
-            <Button size="small" variant="contained" disableElevation onClick={syncHere} disabled={srcSync || !sync.ok} data-tq-sync-now=""
-              startIcon={srcSync ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <SyncIcon sx={{ fontSize: 14 }} />}
-              sx={{ color: "#fff", background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{srcSync ? t("Syncing…") : btnLabel("sync_now")}</Button>
-          </Box>
-        )}
+        {/* the last step of a setup should be the first sync - not a wait for the ten-minute clock */}
+        {!isAI && <SyncNow conn={conn} mine={mine} sync={sync} reload={reload} />}
       </Box>
     )},
   ];
@@ -3288,7 +3322,18 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           ))}
         </Stepper>
       )}
-      {tab === "Guide" && <Steps steps={conn.Type === "jira" && (cfg.deployment || "cloud") === "data_center" ? (m.howtoDC || m.howto || []) : (m.howto || [])} />}
+      {/* WHAT ITS AGENT RUNS ON (harness.line): every API brain's agent works through Codex or OpenCode - picked here, saved as picked. ALWAYS
+          IN SIGHT (the owner, 2026-11-22: "I still don't see on HIPAA AI the harness section"): it stood inside Credentials, and a card whose key
+          was in opened on a later step, so the choice was never drawn */}
+      {tab === "Setup" && conn.Harness && (
+        <Box data-tq-harness-section="" sx={{ mt: 2, pt: 1.5, borderTop: `1px solid ${BORDER}`, maxWidth: 460 }}>
+          <TextField select size="small" label="Its agent runs on" value={cfg.harness || conn.Harness.harness} data-tq-harness=""
+            onChange={(e) => setCfg({ ...cfg, harness: e.target.value })} InputProps={{ endAdornment: boxes.tick("harness") }}
+            sx={{ bgcolor: "var(--tq-panel, #fff)", minWidth: 260 }} helperText={conn.Harness.line}>
+            {conn.Harness.choices.map((c) => <MenuItem key={c.value} value={c.value} sx={{ fontSize: 13 }}>{c.label}</MenuItem>)}</TextField>
+        </Box>
+      )}
+      {tab === "Guide" && <Steps steps={m.howto || []} />}
       {/* ...nor a sign-in card (Outlook, Teams, Gmail): under its one-button sign-in, a greyed Get AI to set it up and its Connect an AI
           were two more things to read for nothing (the setup sweep, 2026-10-28) */}
       {!NO_AI_WALK.includes(conn.Type) && <AiSetup conn={conn}
@@ -3586,7 +3631,7 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
 const CLOUD_MODES = [
   ["report", "report only — selectable under Reports, never polled"],
   ["feed", "feed — new items show up to read, never become work"],
-  ["tasks", "tasks — new items go through triage and can become work"],
+  ["tasks", "tasks — new items are sorted and can become work"],
   ["off", "off — ignored entirely"],
 ];
 // prefix -> (short type label, filter pill label). The prefix IS the type, so one place
@@ -4016,7 +4061,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
 /* What a connection IS to the hub. Three independent jobs - a system can do all three,
    or just be something the agents are allowed to touch. */
 const ROLE_META = {
-  trigger: ["Inbound trigger — creates work", "Poll it for new items, run them through triage, open tasks and draft replies. This is what turns a connection into work (mail, chats, GitHub issues…)."],
+  trigger: ["Inbound trigger — creates work", "Poll it for new items, sort them, open tasks and draft replies. This is what turns a connection into work (mail, chats, GitHub issues…)."],
   feed: ["Feed — shows, never assigns", "Check it and show every new item to read, but stop there: no sorting, no AI, no task. Good for GitHub issues or a chatty channel you want to SEE without being handed."],
   report: ["Report source", "Selectable under Reports: query it on a schedule and put the (optionally AI-summarized) result under Reports on your work rail."],
   tool: ["Agent tool", "Named for the agents in SOUL.md as a system they may use — pull data from it, create and update things in it while working a task."],
@@ -4032,7 +4077,7 @@ const GITHUB_PERMS = [
   ["agents_push", "Agents may push / deploy",
    "On: agents push and deploy as the work needs. Off (default): commits stay local for your review - you push - and only a task whose ask explicitly says to push may. Force-pushes and archived repositories stay forbidden either way."],
   ["reply_comments", "Reply to issue/PR authors",
-   "On: questions from GitHub get a drafted reply, finished work drafts a closing note, and approving one posts it as a PUBLIC comment on the issue/PR. Off (default): GitHub items never get reply drafts - questions file with their triage reason, finished work just closes with its report, and nothing is ever posted to a public thread on your behalf."],
+   "On: questions from GitHub get a drafted reply, finished work drafts a closing note, and approving one posts it as a PUBLIC comment on the issue/PR. Off (default): GitHub items never get reply drafts - questions are filed with the reason they were sorted there, finished work just closes with its report, and nothing is ever posted to a public thread on your behalf."],
 ];
 
 // REPLIES ON THIS CARD (the owner, 2026-11-08: "do replying back new source as well"): a reply you Send on a task this card filed goes
@@ -4165,7 +4210,7 @@ const GithubCloseout = ({ conn, mine, reload }) => {
       ))}
       {mine.filter((s) => s.Active).length > 0 && (
         <Box sx={{ mt: 1.5 }}>
-          <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>{t("PER REPOSITORY — WHERE ONE DIFFERS")}</Typography>
+          <Typography variant="caption" sx={{ color: FAINT, fontSize: 10 }}>Per repository — where one differs</Typography>
           {mine.filter((s) => s.Active).map((s) => {
             const own = JSON.parse(s.ConfigJson || "{}").closeout || {};
             const val = (k) => (own[k] === undefined ? "" : k === "anyway" ? (own[k] ? "on" : "off") : own[k]);
@@ -4293,9 +4338,9 @@ const RoleRow = ({ on, onToggle, label, desc }) => (
    Read is the safe floor and the default for every tracker - a connection only gains a verb
    when the owner hands it over. */
 const SCOPE_META = {
-  read: ["Read only", "Look, never touch: list, fetch, search, query. Nothing upstream changes; any change an agent wants becomes a proposal you approve on the task."],
-  write: ["Read and write", "The everyday work as well: create, update, comment, assign, complete, send. No deleting, no closing, no running code."],
-  admin: ["Full authority", "Everything, including the destructive and the structural: delete, close, archive, manage access, run scripts on a box - what a CLI agent with full permissions can already do. Every connection starts here; narrow it when you want to."],
+  read: [ACCESS.read, "Look, never touch: list, fetch, search, query. Nothing upstream changes; any change an agent wants becomes a proposal you approve on the task."],
+  write: [ACCESS.write, "The everyday work as well: create, update, comment, assign, complete, send. No deleting, no closing, no running code."],
+  admin: [ACCESS.admin, "Everything, including the destructive and the structural: delete, close, archive, manage access, run scripts on a box - what a CLI agent with full permissions can already do. Every connection starts here; narrow it when you want to."],
 };
 const SCOPE_KEYS = ["read", "write", "admin"];
 
@@ -4321,7 +4366,7 @@ const AuthorityRow = ({ conn, reload }) => {
           <Radio checked={(current || fallback) === s} disabled={busy} onChange={() => set(s)} sx={{ mt: -0.75 }} />
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>
-              {t(SCOPE_META[s][0])}{!current && fallback === s ? t(" — default") : ""}
+              {SCOPE_META[s][0]}
             </Typography>
             <Typography variant="body2" sx={{ color: DIM }}>{t(SCOPE_META[s][1])}</Typography>
           </Box>
@@ -4461,7 +4506,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
   useLocale();
   const [st, setSt] = useState(null);
   const kicked = useRef(false);
-  const startBridge = useCallback(async () => { try { await api.post(`/api/connectors/${conn.ConnectorId}/wa/bridge/start`); } catch { /* status polling shows the failure */ } }, [conn.ConnectorId]);
+  const start = useCallback(async () => { try { await startBridge(conn.ConnectorId); } catch { /* status polling shows the failure */ } }, [conn.ConnectorId]);
   useEffect(() => {
     let alive = true, wasConnected = null;
     const tick = async () => {
@@ -4475,7 +4520,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
         // Node is there and the bridge is not: start it, once per visit - the owner opened this card to pair. Not one stopped on purpose
         // (manager.held): a Remove stopped it, and starting it here put the card straight back up (TQ-1320) - Start bridge is the way back
         // ...Node or not: Start sets up Taskuary's own Node first (#278 - "just install in background and get it to work")
-        if (data.bridge === false && !data.manager?.held && !kicked.current && !["installing", "starting", "failed"].includes(data.manager?.phase)) { kicked.current = true; startBridge(); }
+        if (data.bridge === false && !data.manager?.held && !kicked.current && !["installing", "starting", "failed"].includes(data.manager?.phase)) { kicked.current = true; start(); }
         setTimeout(tick, data.connected ? 30000 : data.bridge === false ? (data.node ? 3000 : 6000) : 4000);
       // A STATUS WE COULD NOT READ IS NOT "NODE IS MISSING". Faking {bridge:false} here sent the owner
       // off to install Node they already had, because the app was restarting or busy for a moment.
@@ -4483,7 +4528,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
     };
     tick();
     return () => { alive = false; };
-  }, [conn.ConnectorId, reload, startBridge, onStatus]);
+  }, [conn.ConnectorId, reload, start, onStatus]);
   // ROOM HELD FOR IT WHILE IT IS READ (the 2026-10-19 UI walk, G8): nothing was drawn until the bridge answered, and then the box
   // pushed the rest of the card ~250px down under the owner's eyes. The box is there from the first frame, at about the height of
   // the steps and QR it will hold - the unpaired box, which is the one a person opens this card to see.
@@ -4503,71 +4548,33 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
       </Typography>
     </Box>
   );
-  const phase = st.manager?.phase, busy = ["installing", "starting"].includes(phase);
-  const reconnect = st.reconnect || {};
-  const stepNo = st.connected ? 4 : st.bridge === false ? (st.node ? 2 : 1) : 3;
+  const pair = waPair(st), reconnect = st.reconnect || {};
   const StepLine = ({ n, label, state }) => (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5 }}>
+    <Box data-tq-wa-step={state} sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5 }}>
       <Box sx={{ width: 18, height: 18, borderRadius: "50%", fontSize: 11, fontWeight: 600, display: "grid", placeItems: "center",
         bgcolor: state === "done" ? "#47654a" : state === "now" ? "#55697a" : "var(--tq-inset, #e6e2dc)", color: state === "todo" ? DIM : "#fff" }}>{state === "done" ? "✓" : n}</Box>
       <Typography variant="body2" sx={{ fontSize: 13, fontWeight: state === "now" ? 700 : 500, color: state === "todo" ? DIM : INK }}>{label}</Typography>
-      {state === "now" && busy && <CircularProgress size={11} sx={{ color: DIM }} />}
+      {state === "now" && pair.busy && <CircularProgress size={11} sx={{ color: DIM }} />}
     </Box>
   );
-  const stateOf = (n) => (n < stepNo ? "done" : n === stepNo ? "now" : "todo");
+  const stateOf = (n) => (n < pair.step ? "done" : n === pair.step ? "now" : "todo");
   return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2, display: "flex", gap: 2, alignItems: "flex-start", flexWrap: "wrap" }}>
       <Box sx={{ flex: 1, minWidth: 240 }}>
-        <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Pair with your phone")}</Typography>
-        {!st.connected && (
-          <Box sx={{ mb: 1 }}>
-            <StepLine n={1} label={phase === "installing" && !st.node ? (st.manager?.detail || t("Setting up Node.js")) : t("Node.js on this computer (Taskuary sets it up)")} state={stateOf(1)} />
-            <StepLine n={2} label={t(phase === "installing" ? "Fetching the bridge (a minute or two, first time only)" : "The bridge is running")} state={stateOf(2)} />
-            <StepLine n={3} label={t("Scan the QR from your phone")} state={stateOf(3)} />
-          </Box>
-        )}
-        {/* the bridge's own controls, whatever state it is in. A bridge that wedged, or one started before
-            the code on disk changed, is fixed HERE - the log's "start it: cd taskuary/whatsapp && node bridge.mjs"
-            sent people to a shell for a button's worth of work. The pairing survives a restart: it lives in
-            the auth folder, not the process. */}
-        <Box sx={{ display: "flex", gap: 1, mt: 0.75, mb: 0.75, flexWrap: "wrap", alignItems: "center" }}>
-          <Button size="small" variant="outlined" startIcon={<RestartAltIcon sx={{ fontSize: 15 }} />} disabled={busy}
-            title={t("Stop the running bridge (ours, or one started by hand - found by its port) and start it again from the code on disk. You stay paired.")}
-            onClick={async () => { try { await api.post(`/api/connectors/${conn.ConnectorId}/wa/bridge/restart`); } catch { /* status polling shows the outcome */ } }}>
-            {t("Restart bridge")}
-          </Button>
-          {st.bridge === false && !busy && phase !== "failed" && (
-            <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>{t("Start bridge")}</Button>
-          )}
-          {/* connected or logged out: the card's own status line (Restart bridge is already beside it, so only Pair again) */}
-          {st.connected || st.logged_out ? <WaStatusLine st={st} cid={conn.ConnectorId} onTurnedAway={onTurnedAway} fixes={["pair"]} /> : (
-            <Typography variant="caption" sx={{ color: FAINT }}>
-              {t(reconnect.paused ? "automatic reconnect paused" : st.bridge === false ? "bridge not running" : "bridge up, not connected")}{st.manager?.phase ? ` · ${st.manager.phase}` : ""}
-            </Typography>)}
-        </Box>
+        <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>Pair with your phone</Typography>
+        {!st.connected && <Box sx={{ mb: 1 }}>{pair.steps.map((label, i) => <StepLine key={i} n={i + 1} label={label} state={stateOf(i + 1)} />)}</Box>}
+        {/* ONE LINE AND ONE BUTTON, whatever state the bridge is in (waStatus.waPair) - the same line the card's Enable step says. A bridge that
+            wedged is fixed HERE: the log's "start it: cd taskuary/whatsapp && node bridge.mjs" sent people to a shell for a button's worth of
+            work. The pairing survives a restart: it lives in the auth folder, not the process. */}
+        <Box sx={{ mt: 0.75, mb: 0.75 }}><WaStatusLine st={st} cid={conn.ConnectorId} onTurnedAway={onTurnedAway} /></Box>
         {reconnect.paused && reconnect.reason !== "logged out" && (
           <Alert severity="warning" sx={{ mb: 1, fontSize: 12.5 }}>
             {t("The WhatsApp connection kept dropping, so Taskuary stopped retrying before WhatsApp could flood your phone with linked-device sync notices. Check the network, then click Restart bridge once.")}
           </Alert>
         )}
         {st.connected ? (
-          <Box sx={{ mt: 0.5 }}>
-            <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {t("Paired")}{st.me ? t(" as {name}", { name: st.me }) : ""}{st.phone ? ` · ${st.phone}` : ""} {t("— the bridge is connected. Test, then enable.")}</Typography>
-          </Box>
-        ) : st.bridge === false ? (
-          <Box>
-            <Typography variant="caption" sx={{ color: phase === "failed" ? "var(--tq-danger, #a33)" : DIM, lineHeight: 1.5, display: "block", mb: 0.75 }}>
-              {phase === "installing" ? (st.node ? t("Fetching the bridge's dependency (Baileys, not bundled on purpose). The QR appears here the moment the bridge is up.")
-                : t("{detail} - the bridge starts by itself once it is done.", { detail: st.manager?.detail || t("Setting up Node.js") }))
-                : phase === "failed" ? t("The bridge could not start: {detail}", { detail: st.manager.detail })
-                : st.manager?.held ? t("The bridge is stopped and this computer is unpaired. Start bridge to pair a phone again.")
-                : t("Starting the bridge…")}
-            </Typography>
-            {phase === "failed" && (
-              <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>{t(btnLabel("try_again"))}</Button>
-            )}
-          </Box>
-        ) : st.pairing_code ? (
+          <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600, mt: 0.5 }}>✓ Paired{st.me ? ` as ${st.me}` : ""}{st.phone ? ` · ${st.phone}` : ""}. Test, then enable.</Typography>
+        ) : st.bridge === false ? null : st.pairing_code ? (
           <Typography variant="body2" sx={{ color: INK, mt: 0.5 }}>
             {t("Enter this code on your phone — WhatsApp → Linked devices → Link a device → Link with phone number:")}
             <Box component="span" sx={{ ...mono, fontSize: 22, fontWeight: 600, letterSpacing: 3, display: "block", mt: 0.5 }}>{st.pairing_code}</Box>
@@ -4689,8 +4696,8 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
         </Box>
         <PhoneChatsLink onNavigate={onNavigate} />
       </Box>
-      <Typography variant="overline" sx={{ color: DIM, letterSpacing: 1.4, fontSize: 10, fontWeight: 600, display: "block" }}>
-        {t("WHAT COMES IN")}
+      <Typography variant="overline" sx={{ color: DIM, fontSize: 11.5, fontWeight: 600, display: "block" }}>
+        What comes in
       </Typography>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>
         {t("Chats reachable through this paired account. Groups are loaded from WhatsApp; direct chats appear once Taskuary or the bridge has seen them. Switch a chat on and it comes in; a group joins the funnel only when you switch it on here.")}

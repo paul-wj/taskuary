@@ -79,21 +79,57 @@ def agent_signed(store, rv: dict, text: str, msg: dict = None) -> str:
     """An agent's draft as it is filed: the agent's own sign-off ("Best,\\nAlex Doyle") taken off and the saved block put on once -
     the drafter's own road (responder.signed). It was filed as written, and the box put the block under the agent's name: signed
     twice (walk 2026-10-29). Chat: the owner's name lines off, nothing on (outbox)."""
-    from .responder import signed, strip_signoff, own_lines
+    from .responder import chat_said, own_names, signed
     text = str(text or '').strip()
     if not text: return text
-    if is_email(store, rv, msg): return signed(text, for_review(store, rv, msg))
-    return strip_signoff(text, own_lines(store)) or text
+    if is_email(store, rv, msg): return signed(text, for_review(store, rv, msg), own_names(store))
+    return chat_said(store, text)
 
 
 def told(store) -> str:
     """THE AGENT IS TOLD HOW ITS EMAILS ARE SIGNED, up front (the recorded walk, 2026-11-11: asked to "sign it Alex" it wrote that, the card
-    showed the saved block, and it warned the owner to check the card): one sentence where it is told how to reply - '' with nothing saved."""
+    showed the saved block, and it warned the owner to check the card): one sentence for every agent that can draft an email - '' with
+    the switch off."""
     from .responder import signature_for
     from . import words
+    # ...AND A SIGN-OFF HE ASKS FOR BECOMES THE SAVED ONE (the walk, 2026-11-21: told "I sign every email 'Best, Alex'", Codex withdrew its own
+    # card when the signer put "Alex Doyle" back, and left the email as prose with nothing to press): kept through remember (keep), never fought
     sig = ' / '.join(l.strip() for l in signature_for(store).splitlines() if l.strip())
     return (f'HOW AN EMAIL IS SIGNED: Taskuary puts the owner\'s saved signature ("{sig[:200]}") under every email and takes your own sign-off '
-            f"off; asked for another, say the draft carries the saved one - theirs to edit before sending, or to change in {words.name('replies')}.") if sig else ''
+            f"off. When he tells you how he signs, keep it with remember, section signature, `note` the block itself as it goes under an email - its lines on lines of their own, never a sentence about it: it becomes the saved one ({words.name('replies')}) "
+            "for every email, the drafts waiting too.") if sig else ''
+
+
+SIG_LINES, SIG_WIDTH = 6, 70          # a sign-off block's shape: name, title, company, a phone, a line or two more
+def keep(store, sig: str, actor: str = 'owner') -> str:
+    """HOW THE OWNER SIGNS, SAID TO ANY AGENT OR THE ASSISTANT, IS THE SAVED SIGNATURE (the walk, 2026-11-21: kept as a memory line, it never
+    reached a card - the signer reads Settings' Email signature, not the memory): the block signature_for puts under every email, its lines
+    as given ("Best,\nAlex"). The one it replaces is kept in the audit row."""
+    block = '\n'.join(l.strip() for l in str(sig or '').replace('\\n', '\n').strip().strip('"\'').splitlines() if l.strip())
+    if not block: raise ValueError('say the signature, as it goes under an email')
+    # ...AND ONLY A SIGN-OFF BLOCK IS ONE (round 4, 2026-11-22: "Training spend requires sign-off from Marcus Reed (...). Email signature: Alex."
+    # became the signature under every email, the fact kept nowhere): a few short lines, by their shape - a sentence goes to memory instead
+    lines = block.splitlines()
+    if len(lines) > SIG_LINES or any(len(l) > SIG_WIDTH for l in lines):
+        raise ValueError(f'not kept as the signature: a signature is the short block that goes under an email ("Best," then "Alex" on its own '
+                         f'line) - at most {SIG_LINES} lines of {SIG_WIDTH} characters. Keep just that block with section signature, and any '
+                         'other fact with remember in its own section')
+    was = str(store.get_setting('email_signature') or '')
+    # ...AND THE DRAFTS WAITING FOR HIS SEND CARRY IT TOO (the fix1 walk, 2026-11-21: told the old draft kept the old sign-off, the agent asked
+    # him "tell me if you want it set up again"): each email still unsent that ends with the block it had is re-signed - plain code, the
+    # signer's own road. One he wrote his own ending on is left as he wrote it
+    from .responder import own_names, signed
+    waiting = [r for r in store._rows("SELECT * FROM review WHERE Status IN ('pending','held') AND Kind<>'action' AND IFNULL(DraftText,'')<>''")
+               if is_email(store, r)]
+    olds = {r['ReviewId']: for_review(store, r) for r in waiting}
+    store.set_setting('email_signature', block, actor)
+    moved = []
+    for r in waiting:
+        old, new, text = olds[r['ReviewId']], for_review(store, r), str(r['DraftText']).rstrip()
+        if not old or not new or old == new or not text.endswith(old.strip()): continue
+        store.save_review_draft(r['ReviewId'], signed(text, new, (*own_names(store), *old.splitlines()))); moved.append(r['ReviewId'])
+    store.audit('setting', 0, 'signature_kept', actor, detail={'before': was, 'after': block, 'resigned': moved})
+    return block
 
 
 def suggest(store, mailbox: str = None) -> str:

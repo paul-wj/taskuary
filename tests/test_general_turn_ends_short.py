@@ -109,6 +109,9 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
         self.assertEqual(len(seen['prompts']), 2)                     # told once, by the one wake
         for want in ('asked the owner for a password', 'you do not need the password', '[[TASKUARY-SIGNIN:'): self.assertIn(want, seen['prompts'][1])
         self.assertIn(browserview.SIGNIN_LINE, browserview.offer())  # ...the same words its prompt offers the browser with
+        # ...and never told one is saved (design round 6, D8: "Taskuary will sign it in with your saved details", with nothing saved): the vault's
+        # answer is Taskuary's own line to say
+        self.assertIn("whether one is saved is not yours to know", browserview.SIGNIN_LINE)
         bodies = [str(c['Body']) for c in s.list_comments(tid)]
         self.assertTrue(any('using the browser' in b for b in bodies)); self.assertFalse(any('TASKUARY: your last answer' in b for b in bodies))
         self.assertIn('asks_secret', hooks.ENDED_SYSTEM)
@@ -277,6 +280,20 @@ class TheTurnsOwnRecordAnswersFirstTests(unittest.TestCase):
         hooks.judge_ended(s, tid, 'g8', said, brain=brain, wait=True, then=lambda *a: woke.append(a), summ={'drafted': [{'review': 7}]},
                           jobs=[{'kind': 'shell'}])
         self.assertEqual(len(woke), 1)
+
+
+    def test_a_turn_whose_summary_left_a_step_on_him_asks_no_model(self):
+        """The walk, 2026-11-21: on the Codex road each turn-end read was a whole `codex` session of its own beside the turn. A turn whose own
+        summary left a step on the owner (its on_you) is one where he moves next - a stored fact, so no model is asked and nobody is woken."""
+        s = MemoryStore(); tid = researcher(s)
+        said = 'The lease summary is above. Confirm which party holds the break.'
+        ws.record(s, tid, 'g9', 'turn_end', text=said, source='api')
+        woke, asked = [], []
+        brain = lambda *a, **k: asked.append(1) or json.dumps({'unfinished': True, 'why': 'its own check'})
+        hooks.judge_ended(s, tid, 'g9', said, brain=brain, wait=True, then=lambda *a: woke.append(a), summ={'did': 'Summarised the lease', 'on_you': ['Confirm which party holds the break']})
+        self.assertEqual((woke, asked), ([], []))
+        hooks.judge_ended(s, tid, 'g9', said + ' ', brain=brain, wait=True, then=lambda *a: woke.append(a), summ={'did': 'Summarised the lease', 'on_you': []})
+        self.assertEqual(len(asked), 1, 'nothing on him: the model still reads it')
 
 
 class AnOwnersAskAnsweredWithNothingTests(unittest.TestCase):

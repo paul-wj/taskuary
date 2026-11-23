@@ -4,10 +4,14 @@ the audit log is a Buzz-style tamper-evident hash chain (each row hashes the pre
 """
 import contextlib, contextvars, copy, hashlib, json, os, re, sqlite3, sys, threading, time, uuid
 from datetime import datetime, timedelta
+import weakref
 from loguru import logger
 from . import vault
 from .inboxes import TYPES as INBOXES, NAMES as INBOX_NAMES     # the helpdesks and newer trackers: seeded and triggering like the rest
 from .apireads import types as _read_types                     # a vendor's REST API read (apireads.json): each row a card
+def _posts() -> set:
+    from .connectorcatalog import cards
+    return {c['type'] for c in cards() for a in c.get('actions') or [] if a.get('road') == 'run_tool'}
 from .kinds import SHOWN, shown as shown_agent   # the name a chip says for whoever works a task: Taskuary, never the profile
 
 # WHO HELD THE STORE, AND FOR HOW LONG (2026-10-23): three freezes in a day left a log where unrelated requests all finished in
@@ -44,6 +48,25 @@ def lock_wait_meter():
     m = [0.0]; tok = _LOCK_WAITED.set(m)
     try: yield m
     finally: _LOCK_WAITED.reset(tok)
+
+
+class _Writer(sqlite3.Connection):
+    """THE STORE'S WRITER, CLOSED ONE WAY ONLY (the release runs, 2026-11-19: a background job of the chat log mid-statement on a store whose
+    connection a test's cleanup closed - an access violation, twice): however its close() is reached - store.close(), a test closing `cx`, a
+    teardown - its store is marked closing, the chat log's worker lets go of it first (chatlog.let_go), and the close waits for the store's
+    lock, so it never lands under a statement another thread is running."""
+    _owner = None
+    def close(self):
+        st = o() if (o := getattr(self, '_owner', None)) else None
+        if st is None: return super().close()
+        st._closing = True
+        # ...waiting for the worker's job only where this thread does not hold the store's lock: a job at work may need it to finish, and a
+        # close under the lock (store.close, a caller's own hold) would wait out let_go's timeout on every close (the release run's 20 min)
+        if not st.lock._is_owned():
+            try:
+                from . import chatlog; chatlog.let_go(st)
+            except Exception: pass
+        with st.lock: st._closed = True; return super().close()
 
 
 class _TimedLock:
@@ -85,6 +108,8 @@ class _TimedLock:
 # what is committed; only the thread that holds the writer's lock (its own open transaction) reads through the writer.
 _OFF_WRITER, _ON_WRITER = threading.local(), threading.local()
 _HELD = threading.local()        # held_settings(): (the store, {name: its row}) for this thread while a build holds them
+# ...and A WRITE TO WHAT IS HELD lets go of it, whoever wrote it (_exec): the statement's own target table, read off its grammar
+_HELD_TABLES = re.compile(r'^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+(?:setting|doc)\b', re.I)
 READERS_KEPT = 16      # reader connections kept open for reuse: a request pool's worth of threads reading at once
 
 _LIVE_UNSET = object()
@@ -126,7 +151,25 @@ GENESIS = '0' * 64
 OWN_CHANNELS = ('report', 'assistant')
 TASK_COLS = ('Title', 'Summary', 'Kind', 'Status', 'Priority', 'Assignee', 'Source', 'SourceRef', 'Tags', 'RemindAt', 'AskedVia', 'DueAt',
              'DoneWhen', 'ParentId', 'OriginBase', 'TrustedThrough', 'Origin', 'OriginWhy', 'WatchedAt', 'WatchBack', 'ThreadJson',
-             'CheckBackAt', 'CheckBackWhat')
+             'CheckBackAt', 'CheckBackWhat', 'Files')
+# ATTACHMENTS ARE A FIELD (the design loop, 2026-11-20): what the owner attached to a line of his (comment.Files), to the ask that made a task
+# (task.Files) or to a note kept for a coding agent (waitroom.Files) is a JSON list of paths beside his words - never a block at the end of them,
+# which every door wrote and ~40 readers parsed: a door that wrote it slightly differently lost his files from his bubble. The block is built
+# only where a prompt needs it (general.with_files)
+def files_json(files) -> str | None:
+    "The list of paths as the Files column keeps it - None for none."
+    got = [str(f) for f in (files or []) if str(f or '').strip()]
+    return json.dumps(got) if got else None
+def files_of(row) -> list:
+    "The paths a row's Files column keeps - [] for none. The one reader of the column (general.his_line reads a line by it)."
+    try: got = json.loads((row or {}).get('Files') or '[]')
+    except (TypeError, ValueError): return []
+    return [str(f) for f in got] if isinstance(got, list) else []
+_LEGACY_FILES = re.compile(r'\n\nATTACHED (?:IMAGES|FILES) \(read these files\)\n(.+)\Z', re.S)
+def _legacy_split(body) -> tuple:
+    "A row written before the field: (its words, its files) out of the block at its end - read once, by the migration (_files_out)."
+    b = str(body or ''); m = _LEGACY_FILES.search(b)
+    return (b[:m.start()], [x.strip() for x in m.group(1).splitlines() if x.strip()]) if m else (b, [])
 MSG_COLS = ('TaskId', 'ExternalId', 'ConversationId', 'Channel', 'SourceName', 'Subject',
             'FromName', 'FromEmail', 'SentAt', 'BodyText', 'SourceLink', 'Status', 'Direction', 'RecipientsJson',
             'MailMetaJson', 'OwnText', 'TriageTitle', 'RankValue', 'RankWhy', 'SenderClass', 'MeetJson', 'HeaderClass')
@@ -180,7 +223,7 @@ ARTIFACT_COLS = ('TaskId', 'Name', 'ContentType', 'Size', 'Path', 'Kind', 'Creat
 # Both list_reviews (the queue) and pending_review (the funnel's "is a draft already
 # waiting?") read these, so a review cannot be gone from one and live to the other.
 _REVIEW_FROM = ('FROM review rv LEFT JOIN task t ON t.TaskId=rv.TaskId '
-                'LEFT JOIN message m ON m.MessageId=rv.MessageId')
+                'LEFT JOIN message m ON m.MessageId=COALESCE(rv.AnswersMid, rv.MessageId)')     # the message it ANSWERS (C2)
 _NOT_ORPHAN = '(rv.TaskId IS NULL OR t.TaskId IS NOT NULL)'
 # ...the comment kinds that are prompt machinery, not something said on the task (Store.list_comments): a kept line, a line put back in the
 # owner's box, a turn's summary JSON, and a brief - a user turn filed by Taskuary (general.BRIEF_ACTOR) - each its own ActorType already
@@ -519,7 +562,7 @@ CREATE TABLE IF NOT EXISTS task (TaskId INTEGER PRIMARY KEY, Title TEXT, Summary
   Assignee TEXT, Source TEXT DEFAULT 'manual', SourceRef TEXT, Tags TEXT,
   CreatedBy TEXT, CreatedAt TEXT, UpdatedBy TEXT, UpdatedAt TEXT, ClosedAt TEXT, RemindAt TEXT,
   AskedVia TEXT, AskedTold TEXT, AskedToldAt TEXT, AskedWatch TEXT, AskedSeenMid INTEGER, RemindVia TEXT, RemindOwed TEXT,
-  AskedWatchAt TEXT, AskedNudgedAt TEXT, DueAt TEXT, DueSaid TEXT, DueRaised TEXT, DoneWhen TEXT, ParentId INTEGER);
+  AskedWatchAt TEXT, AskedNudgedAt TEXT, DueAt TEXT, DueSaid TEXT, DueRaised TEXT, DoneWhen TEXT, ParentId INTEGER, Files TEXT);
 CREATE TABLE IF NOT EXISTS message (MessageId INTEGER PRIMARY KEY, TaskId INTEGER, ExternalId TEXT,
   ConversationId TEXT, Channel TEXT, SourceName TEXT, Subject TEXT, FromName TEXT, FromEmail TEXT,
   SentAt TEXT, BodyText TEXT, SourceLink TEXT, Status TEXT DEFAULT 'routed', CreatedAt TEXT,
@@ -540,7 +583,7 @@ CREATE TABLE IF NOT EXISTS route (RouteId INTEGER PRIMARY KEY, MessageId INTEGER
   Decision TEXT, Score REAL, Reason TEXT, CandidatesJson TEXT, RoutedBy TEXT, CreatedAt TEXT,
   RawOutput TEXT, ParseError TEXT, VerdictJson TEXT);
 CREATE TABLE IF NOT EXISTS comment (CommentId INTEGER PRIMARY KEY, TaskId INTEGER, Actor TEXT,
-  ActorType TEXT, Body TEXT, CreatedAt TEXT, LineId TEXT);
+  ActorType TEXT, Body TEXT, CreatedAt TEXT, LineId TEXT, Files TEXT);
 CREATE TABLE IF NOT EXISTS audit (Id INTEGER PRIMARY KEY, EntityType TEXT, EntityId INTEGER,
   Action TEXT, Actor TEXT, ActorType TEXT, RunId INTEGER, Detail TEXT, PrevHash TEXT, RowHash TEXT, CreatedAt TEXT);
 CREATE TABLE IF NOT EXISTS agent (AgentId INTEGER PRIMARY KEY, Name TEXT UNIQUE, Kind TEXT,
@@ -600,7 +643,7 @@ CREATE TABLE IF NOT EXISTS batch_item (ItemId INTEGER PRIMARY KEY, TaskId INTEGE
   EndedWhy TEXT, Sha TEXT, Propose TEXT, CreatedAt TEXT, UpdatedAt TEXT, UNIQUE(TaskId, ConversationId));
 CREATE INDEX IF NOT EXISTS idx_batch_item_conv ON batch_item(ConversationId);
 CREATE TABLE IF NOT EXISTS waitroom (WId INTEGER PRIMARY KEY, TaskId INTEGER, Note TEXT, CreatedBy TEXT,
-  CreatedAt TEXT, DeliveredAt TEXT, How TEXT);
+  CreatedAt TEXT, DeliveredAt TEXT, How TEXT, Files TEXT);
 -- WHAT THE AGENT HEARD, AND WHEN (conversation.py): one row per input handed to a task's agent - his line (by the name it was sent under), a
 -- message that came in, a press - and one per turn begun. An input is in it once: that is the chat's "told once", kept by the key.
 CREATE TABLE IF NOT EXISTS heard (HId INTEGER PRIMARY KEY, TaskId INTEGER, Kind TEXT, Ref TEXT, At REAL, Grp INTEGER, Seq INTEGER, Sid TEXT,
@@ -609,6 +652,13 @@ CREATE TABLE IF NOT EXISTS heard (HId INTEGER PRIMARY KEY, TaskId INTEGER, Kind 
 -- draw the same order, and what is new only ever goes under it
 -- ...and a card, the turn it was first drawn in (`Host`): it goes down to a later turn that left it again, never back up
 CREATE TABLE IF NOT EXISTS shown (TaskId INTEGER, Key TEXT, Seq INTEGER, Host TEXT, UNIQUE(TaskId, Key));
+-- ONE LOG PER TASK (chatlog.py): each thing the chat draws, appended once, at the place it gets then (`Id`) - nothing renumbers, re-sorts or
+-- re-dates it; what can change (a turn's state, a card pressed) is updated in place (`State`, `Body`, `Rev`). At most one card waits per task
+CREATE TABLE IF NOT EXISTS chatlog (Id INTEGER PRIMARY KEY, TaskId INTEGER NOT NULL, Key TEXT NOT NULL, Kind TEXT NOT NULL, Parent INTEGER,
+  At REAL NOT NULL, Src TEXT, Body TEXT NOT NULL, State TEXT, Rev INTEGER NOT NULL DEFAULT 0, UNIQUE(TaskId, Key));
+CREATE INDEX IF NOT EXISTS idx_chatlog ON chatlog(TaskId, Id);
+CREATE UNIQUE INDEX IF NOT EXISTS one_live_card ON chatlog(TaskId) WHERE Kind='card' AND State='pending';
+CREATE TABLE IF NOT EXISTS chatlog_task (TaskId INTEGER PRIMARY KEY, Rev INTEGER NOT NULL DEFAULT 0, Migrated TEXT);
 -- The agent wall (blackboard.py): what one agent leaves for the next one in the same
 -- checkout. Derived facts (who holds which file) are read off git and the run trace and are
 -- never stored; this is the part only the agent knows - what it is doing, what it found, what
@@ -921,7 +971,7 @@ DEFAULT_SETTINGS = {'attach_threshold': '0.42',
                     # with, members of a tracker's project (senders._item_known). Prior incoming mail is never a rule here.
                     'trust_own_domain': '1', 'trust_sent_history': '1', 'trust_non_email': '1', 'trust_trackers': '1',
                     'auto_sessions': '4',           # unattended agent sessions at once; the rest queue
-                    'auto_sessions_light': '5',     # quick answers / subagents that count as one of those (ingest.agent_load)
+                    'auto_sessions_light': '5',     # subagents that count as one of those (ingest.agent_load)
                     'triage_ai': '',      # '' = first active AI connector | connector:<id> | cli:<agent>
                     'startup_sync_days': '3',       # backfill window when the app starts: catch what arrived while it was shut
                     # minutes between background polls while the app is OPEN. The Timeline said
@@ -1112,6 +1162,8 @@ DEFAULT_ROLES = {'outlook': 'trigger,tool', 'teams': 'trigger,tool', 'slack': 't
                  **dict.fromkeys(INBOXES, 'trigger'),
                  # ...and the ones that are both (HubSpot, Salesforce, DocuSign, Webex, WooCommerce, BigCommerce...): work comes in, and agents read the same API
                  **{t: 'trigger,report,tool' for t in INBOXES if t in _read_types()},
+                 # ...and one whose card posts (a catalogue act on a tool - Reddit's): an agent proposes the post through it
+                 **{t: 'trigger,tool' for t in INBOXES if t not in _read_types() and t in _posts()},
                  # speech to text: no role - the funnel and the prompt box ask the first active one
                  'gemini_stt': '', 'groq_stt': '', 'openai_stt': '', 'deepgram': '', 'elevenlabs_stt': '', 'stt_server': '', 'local_whisper': '',
                  'assemblyai': '', 'speechmatics': '', 'gladia': '', 'azure_speech': '', 'amazon_transcribe': '',
@@ -1151,7 +1203,9 @@ class SQLiteStore:
         # timeout= is sqlite's lock wait in seconds; WAL below is what actually lets a
         # Timeline read proceed while a poll is writing. :memory: cannot WAL (it has
         # nowhere to put the -wal file), so tests keep the default journal.
-        self.cx = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
+        self.cx = sqlite3.connect(path, check_same_thread=False, timeout=5.0, factory=_Writer)
+        try: self.cx._owner = weakref.ref(self)
+        except AttributeError: pass               # ...a plain connection a caller opened in its place (a test's own connect) closes as plain
         self.cx.row_factory = sqlite3.Row
         # SQLite's own LOWER()/LIKE fold ASCII only, so "muller" finds "MULLER" and "muller" does
         # not find "MULLER" once it is spelt MULLER with an umlaut. Search folds both the column
@@ -1254,6 +1308,10 @@ class SQLiteStore:
             # reply-needed, the reason is shown beside it with a retry, never mistaken for a draft
             # the name the page gave a line it sent (general.wait_line): the page knows its own line by it, never by its words
             if 'LineId' not in {r[1] for r in self.cx.execute('PRAGMA table_info(comment)')}: self.cx.execute('ALTER TABLE comment ADD COLUMN LineId TEXT')
+            # ...and what he attached, beside his words (files_json): a line's, a task's ask's, a note kept for a coding agent's
+            for tbl in ('comment', 'task', 'waitroom'):
+                if 'Files' not in {r[1] for r in self.cx.execute(f'PRAGMA table_info({tbl})')}: self.cx.execute(f'ALTER TABLE {tbl} ADD COLUMN Files TEXT')
+            self._files_out()
             if 'Host' not in {r[1] for r in self.cx.execute('PRAGMA table_info(shown)')}: self.cx.execute('ALTER TABLE shown ADD COLUMN Host TEXT')
             rvcols ={r[1] for r in self.cx.execute('PRAGMA table_info(review)')}
             if 'DraftError' not in rvcols:
@@ -1714,6 +1772,10 @@ class SQLiteStore:
                                 (t, n, DEFAULT_ROLES.get(t, ''), t))
             for t, r in DEFAULT_ROLES.items():        # dbs from before roles existed
                 self.cx.execute('UPDATE connector SET Roles=? WHERE Type=? AND Roles IS NULL', (r, t))
+            # Reddit's card became an agent tool when it learned to post: one from before, an inbox alone, gains the role once
+            if self.cx.execute("SELECT 1 FROM setting WHERE Name='reddit_tool_role'").fetchone() is None:
+                self.cx.execute("UPDATE connector SET Roles='trigger,tool' WHERE Type='reddit' AND Roles='trigger'")
+                self.cx.execute("INSERT OR REPLACE INTO setting (Name, Value) VALUES ('reddit_tool_role','1')")
             # Product rename without touching a name the owner customised.
             self.cx.execute("UPDATE connector SET Name='Company Hub' WHERE Type='handbook' AND Name='Company handbook'")
             # SECRETS ARE SEALED (vault.py): a database from before kept them as text - seal those in place, once each
@@ -2222,7 +2284,12 @@ class SQLiteStore:
         r = self._rows(q, p); return r[0] if r else None
     def _exec(self, q, p=()):
         with self.lock, self._undone():
-            cur = self.cx.execute(q, p); self.cx.commit(); self._writes += 1; return cur.lastrowid
+            cur = self.cx.execute(q, p); self.cx.commit(); self._writes += 1
+        # EVERY WRITER OF A HELD SETTING OR DOCUMENT, ONE ROAD (robustness review, 2026-11-18): this thread's hold (held_settings) lets go
+        # once the write is in - a writer that dropped its own key first and then read the old value back (save_doc's line diff) held it
+        # stale, and one that wrote the table directly dropped nothing
+        if (held := getattr(_HELD, 'settings', None)) is not None and held[0] is self and _HELD_TABLES.match(q): held[1].clear()
+        return cur.lastrowid
     # A WRITE THAT FAILS LEAVES NOTHING OPEN (2026-10-26): another process held the database 5s, one INSERT met "database is
     # locked", and the transaction sqlite3 had opened for it stayed open on the writer - every BEGIN IMMEDIATE after it failed
     # with "cannot start a transaction within a transaction" until a restart, the rail's reads with them, and Next said "still
@@ -2372,7 +2439,7 @@ class SQLiteStore:
         # id and one of them hit the primary key (audit 2026-09-02)
         # one of the three priorities, whatever word the caller used (processing_order.level, 2026-10-25) - regular when it gave none
         from .processing_order import level
-        fields = {**fields, 'Priority': level(fields.get('Priority'))}
+        fields = {**fields, 'Priority': level(fields.get('Priority')), **({'Files': files_json(fields['Files'])} if 'Files' in fields else {})}
         with self.idlock:
             tid = self._insert('task', {**fields, 'TaskId': self._next_task_id() if numbered else self._next_internal_id()},
                                 TASK_COLS + ('TaskId',), {'CreatedBy': actor, 'CreatedAt': _now()})
@@ -2420,6 +2487,7 @@ class SQLiteStore:
         if 'Priority' in fields:
             from .processing_order import level
             fields = {**fields, 'Priority': level(fields['Priority'])}
+        if 'Files' in fields and not isinstance(fields['Files'], (str, type(None))): fields = {**fields, 'Files': files_json(fields['Files'])}
         cols = [c for c in TASK_COLS if c in fields]
         if not cols: return
         was_row = (self._one('SELECT Status, Assignee, DueAt, Tags FROM task WHERE TaskId=?', (task_id,)) or {}) if 'Status' in fields else {}
@@ -2440,7 +2508,10 @@ class SQLiteStore:
             # a closed task waits on nobody: their later line is judged as any line on a closed thread (ingest._reopen)
             # ...and a closed task is watched by nobody (watch.py): Mark done ends a watch like any task
             # ...and checked back on by nobody: a check-back is the agent's, and a closed task has none at work (checkback.py)
-            self._exec('UPDATE task SET WaitingOn=NULL, WatchedAt=NULL, WatchBack=NULL, CheckBackAt=NULL, CheckBackWhat=NULL WHERE TaskId=?', (task_id,))
+            self._exec('UPDATE task SET WaitingOn=NULL, WatchedAt=NULL, WatchBack=NULL WHERE TaskId=?', (task_id,))
+            # ...BUT A CHECK-BACK OUTLIVES MARK DONE (the owner, 2026-11-20): "Checks back Sat 8 AM" was cancelled by the close it promised to
+            # come back after - at its time the agent checks, and the task comes back with what it found (checkback.due). Let it go ends it
+            if fields.get('Status') == 'dropped': self._exec('UPDATE task SET CheckBackAt=NULL, CheckBackWhat=NULL WHERE TaskId=?', (task_id,))
             self._exec("UPDATE review SET Status='superseded', DecidedBy=?, DecidedAt=? "
                        "WHERE TaskId=? AND Status='pending'", (actor, _now(), task_id))
             # ...and so does the Advisor idea the task was MADE from: left open, 96 ideas outlived their closed tasks
@@ -3038,7 +3109,9 @@ class SQLiteStore:
             # the promise kept working a closed task, and a reply drafted on it waited where no page shows one. Kept open, and said
             from . import buttons, proposals, workerstate as ws
             live = ws.live_work(self, t['TaskId'])
-            if not live and not proposals.owed(self, t['TaskId']): self.update_task(t['TaskId'], {'Status': 'done'}, 'promise')
+            if not live and not proposals.owed(self, t['TaskId']):
+                from .concierge import close_task
+                close_task(self, t['TaskId'], 'promise', save=False)
             else: self.add_comment(t['TaskId'], 'promise', 'agent', 'Your sent mail delivered this promise. It stays open - '
                                    + (live[0] if live else 'something on it still waits on you') + f" - {buttons.label('close')} when it is finished.")
         if t:                                           # delivered: the ledger row resolves now, not at the sweep
@@ -3116,16 +3189,14 @@ class SQLiteStore:
         summary = f"You told {who} on {str(m.get('SentAt') or '')[:10]}" + (f" re \"{subj}\"" if subj else '') + f" you would {what}."
         tid = self.create_task({'Title': what[:1].upper() + what[1:], 'Summary': summary, 'Kind': 'task', 'Status': 'open', 'Assignee': 'owner',
                                 'Source': m.get('Channel') or 'email', 'SourceRef': f'promise:{mid}', 'DueAt': due or None}, 'promise')
-        self._exec('UPDATE message SET TaskId=? WHERE MessageId=? AND TaskId IS NULL', (tid, mid))
+        self.arrive(mid, tid, free=True)
         from . import outcomes
         outcomes.record(self, 'promise.made', 'task', tid, 'promise', facts={'mid': mid, 'due': due})   # the ledger: kept, kept late, late?
         return tid
     def sent_onto_task(self, mid: int, tid: int, why: str) -> bool:
         """The owner's own sent message, on no task yet, put on the open task the model read it as part of - so the thread is that
         task's and the other side's reply follows it there (store.task_for_conversation). False when it found a task meanwhile."""
-        with self.lock:
-            cur = self.cx.execute('UPDATE message SET TaskId=? WHERE MessageId=? AND TaskId IS NULL', (tid, mid)); self.cx.commit(); self._writes += 1
-        if cur.rowcount != 1: return False
+        if not self.arrive(mid, tid, free=True): return False       # ...nor while triage still reads it: it decides first
         self.add_route(mid, tid, 'attach', None, why, [], 'sentjudge')
         return True
     def open_promises(self, since, before='9999', conversation_id=None):
@@ -4209,6 +4280,11 @@ class SQLiteStore:
         file open on Windows and its temporary directory cannot be removed. Under the store's lock: a background thread
         mid-query (the reply watch's judge, 2026-10-11) had its connection closed beneath it and the process died with an
         access violation - after this, a late reader gets sqlite's "closed database" error instead."""
+        self._closing = True                      # ...no new background job starts on it from here
+        if not self.lock._is_owned():             # ...and the chat log's own worker lets go of it first, never waited for under the lock (_Writer.close)
+            try:
+                from . import chatlog; chatlog.let_go(self)
+            except Exception as e: logger.warning(f'store: the chat log worker was not let go before close - {e}')
         with self.lock, self._rail_lock:
             with self._readers_lock: self._closed, readers, self._readers = True, self._readers, []
             for cx in (self._rail_cx, self.cx, *readers):
@@ -5030,20 +5106,28 @@ class SQLiteStore:
         self._poke('feed-changed', message_id=mid)
     def update_message_body(self, mid, body): self._exec('UPDATE message SET BodyText=? WHERE MessageId=?', (body, mid))   # a voice note, transcribed later
     def get_message(self, mid): return self._one('SELECT * FROM message WHERE MessageId=?', (mid,))
-    def place_message(self, mid, task_id, status, title=None):
-        """A row that was shown first and judged later lands where the judgement puts it (ingest.drain).
-
-        `title` is the verdict's own line, which did not exist when the row was first shown: a
-        deferred row is written before triage has said anything about it."""
-        if title:
-            self._exec('UPDATE message SET TaskId=?, Status=?, TriageTitle=? WHERE MessageId=?', (task_id, status, title, mid))
-        else:
-            self._exec('UPDATE message SET TaskId=?, Status=? WHERE MessageId=?', (task_id, status, mid))
+    def arrive(self, mid, task_id, status=None, title=None, *, free: bool = False, decided: bool = False) -> bool:
+        """WHERE A MESSAGE IS - THE ONE WRITER OF message.TaskId (spec B, one arrival road). Triage decides first: while a row is still
+        'triaging' only a placement that `decided` it lands - triage's own verdict (ingest._land, its retry and error paths) or the owner's
+        own hand (promote, split, move). Any other road - the sent-mail judge's join, an idea's sources, a promise - is refused, so a
+        message is never on a task and on the rail as "triage is deciding" at once (two mails in one poll, a join while triage read).
+        `status` None keeps the row's; `title` is the verdict's own line; `free` places only a row no task holds yet. -> placed?"""
+        sets, args = ['TaskId=?'], [task_id]
+        if status is not None: sets.append('Status=?'); args.append(status)
+        if title: sets.append('TriageTitle=?'); args.append(title)
+        where = 'MessageId=?' + (' AND TaskId IS NULL' if free else '') + ('' if decided else " AND Status!='triaging'")
+        with self.lock:
+            cur = self.cx.execute(f"UPDATE message SET {', '.join(sets)} WHERE {where}", (*args, mid)); self.cx.commit(); self._writes += 1
+        if cur.rowcount != 1: return False
         if task_id is not None:
             self._bump_snapshots()
             self._poke('feed-changed', 'task-changed', message_id=mid, task_id=task_id)
         else:
             self._poke('feed-changed', message_id=mid)
+        return True
+    # the two old names, kept for the tests that set rows up by hand: each is arrive, decided - no road of the app calls them
+    def place_message(self, mid, task_id, status, title=None): self.arrive(mid, task_id, status, title, decided=True)
+    def attach_message(self, mid, task_id): self.arrive(mid, task_id, 'routed', decided=True)
     def claim_retriage(self, mid: int) -> bool:
         """Atomically move one failed row back into triage: a message in the `error` state (linked
         to a task or not), or a legacy failure still stored as a taskless `filed` row.
@@ -5249,10 +5333,6 @@ class SQLiteStore:
     def set_message_rank(self, mid, value: float, why: str, actor: str):
         """Where in the judging queue this arrival sits, and the words it got there by."""
         self._exec('UPDATE message SET RankValue=?, RankWhy=? WHERE MessageId=?', (float(value), str(why or ''), mid))
-    def attach_message(self, mid, task_id):
-        self._exec("UPDATE message SET TaskId=?, Status='routed' WHERE MessageId=?", (task_id, mid))
-        self._bump_snapshots()
-        self._poke('feed-changed', 'task-changed', message_id=mid, task_id=task_id)
     # What was ON the mail: the screenshot of the spreadsheet, the invoice PDF. The bytes live on
     # disk (`Path`) - a database that grows by 8MB a mail is a database nobody backs up.
     def add_attachment(self, fields): return self._insert('attachment', fields, ATT_COLS, {'CreatedAt': _now()})
@@ -5368,9 +5448,37 @@ class SQLiteStore:
             except Exception: continue
         return out
     def list_routes(self, task_id): return self._rows('SELECT * FROM route WHERE TaskId=? ORDER BY RouteId', (task_id,))
-    def add_comment(self, task_id, actor, actor_type, body, line_id=None):
-        return self._exec('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt,LineId) VALUES (?,?,?,?,?,?)',
-                          (task_id, actor, actor_type, body, _now(), line_id))
+    def _files_out(self):
+        "Rows written before the Files field: the block at the end of a line's words, a task's ask or a kept note moved into its Files, once."
+        for tbl, key, col in (('comment', 'CommentId', 'Body'), ('task', 'TaskId', 'Summary'), ('waitroom', 'WId', 'Note')):
+            for k, v in self.cx.execute(f"SELECT {key}, {col} FROM {tbl} WHERE Files IS NULL AND {col} LIKE '%ATTACHED %(read these files)%'").fetchall():
+                words, files = _legacy_split(v)
+                if files: self.cx.execute(f'UPDATE {tbl} SET {col}=?, Files=? WHERE {key}=?', (words, files_json(files), k))
+        # ...and a line kept for a turn kept its files in its own JSON (general.wait_line)
+        for k, v in self.cx.execute("SELECT CommentId, Body FROM comment WHERE Files IS NULL AND ActorType='assistant_waiting' AND Body LIKE '%\"files\": [\"%'").fetchall():
+            try: got = json.loads(v or '{}')
+            except ValueError: continue
+            if isinstance(got, dict) and got.get('files'):
+                self.cx.execute('UPDATE comment SET Body=?, Files=? WHERE CommentId=?',
+                                (json.dumps({n: x for n, x in got.items() if n != 'files'}), files_json(got['files']), k))
+    def add_comment(self, task_id, actor, actor_type, body, line_id=None, files=None):
+        "`files`: what he attached to this line of his - kept beside its words (files_json), never written into them."
+        cid = self._exec('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt,LineId,Files) VALUES (?,?,?,?,?,?,?)',
+                         (task_id, actor, actor_type, body, at := _now(), line_id, fj := files_json(files)))
+        # ...an answer filed ends its turn in the chat's log, in place (chatlog.answered: the one door every answer road goes through)
+        if actor_type == 'assistant_agent' and task_id:
+            from . import chatlog
+            chatlog.answered(self, task_id, cid, actor, body, at)
+        elif actor_type == 'assistant_summary' and task_id:
+            from . import chatlog                    # ...and its summary goes with the turn whose answer it sums up, in place
+            chatlog.summarized(self, task_id, body)
+        elif line_id and task_id:
+            from . import chatlog
+            chatlog.filed(self, task_id, line_id, {'Body': body, 'ActorType': actor_type, 'CreatedAt': at, 'Files': fj})
+        elif actor_type == 'assistant_user' and actor in ('owner', 'you') and task_id:
+            from . import chatlog                    # ...a line of his filed with no name to hear it by: his line where it is filed
+            chatlog.put(self, task_id, 'line', f'c:{cid}', {'at': at, **chatlog.his({'Body': body, 'Files': fj})}, src=f'comment:{cid}')
+        return cid
     def add_comment_once(self, task_id, actor, actor_type, body):
         """Append a turn unless it is already the last turn on this task.
 
@@ -5384,11 +5492,8 @@ class SQLiteStore:
                 (task_id,)).fetchone()
             if last and last['Actor'] == actor and last['ActorType'] == actor_type and last['Body'] == body:
                 return last['CommentId']
-            cur = self.cx.execute(
-                'INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt) VALUES (?,?,?,?,?)',
-                (task_id, actor, actor_type, body, _now()))
-            self.cx.commit(); self._writes += 1
-            return cur.lastrowid
+            # ...through add_comment's own door, so an answer filed this way is in the chat's log as one filed there (the demo's line after Send)
+            return self.add_comment(task_id, actor, actor_type, body)
     def list_comments(self, task_id, internal: bool = False):
         """The task's comments, oldest first. PROMPT MACHINERY IS NOT A COMMENT (the owner, 2026-11-08): a brief Taskuary handed an agent ("THIS
         TASK IS A REPLY OWED..."), a turn's summary JSON, a line kept for a turn - each its own ActorType already (is_internal) - stays out of
@@ -5397,7 +5502,7 @@ class SQLiteStore:
         rows = self._rows('SELECT * FROM comment WHERE TaskId=? ORDER BY CommentId', (task_id,))
         return rows if internal else [c for c in rows if not is_internal(c)]
     def drop_comment(self, comment_id): self._exec('DELETE FROM comment WHERE CommentId=?', (comment_id,))
-    def take_lines(self, task_id, kind, as_kind, words=str, ids=None) -> list:
+    def take_lines(self, task_id, kind, as_kind, words=lambda r: {'text': r['Body'], 'files': files_of(r)}, ids=None) -> list:
         """THE OWNER'S LINES KEPT FOR A TURN, taken by it (general.send_prompt): each `kind` row moved to the END of the conversation as an
         `as_kind` row - its words read out of the kept body by `words`, the time it was typed kept - so the conversation reads in the order the
         agent read it. In one step under the lock: two turns never take one line. [the rows as they waited], oldest first."""
@@ -5406,8 +5511,9 @@ class SQLiteStore:
                    if ids is None or r['CommentId'] in ids]       # `ids`: only the lines a session was handed - one kept since waits for its turn
             for r in got:
                 self.cx.execute('DELETE FROM comment WHERE CommentId=?', (r['CommentId'],))
-                self.cx.execute('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt,LineId) VALUES (?,?,?,?,?,?)',
-                                (task_id, r['Actor'], as_kind, words(r['Body']), r['CreatedAt'], r.get('LineId')))
+                w = words(r)              # ...{'text', 'files'} of the kept row: his words as the Body, his files beside them
+                self.cx.execute('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt,LineId,Files) VALUES (?,?,?,?,?,?,?)',
+                                (task_id, r['Actor'], as_kind, w['text'], r['CreatedAt'], r.get('LineId'), files_json(w['files'])))
             if got: self.cx.commit(); self._writes += 1
         if got: self._poke('task-changed', task_id=task_id)
         return got
@@ -5446,9 +5552,13 @@ class SQLiteStore:
             row = self.cx.execute('SELECT RowHash FROM audit ORDER BY Id DESC LIMIT 1').fetchone()
             prev = (row['RowHash'] if row and row['RowHash'] else None) or GENESIS
             rh = chain_hash(prev, _audit_payload(et, eid, action, actor, actor_type, run_id, d))
-            self.cx.execute('INSERT INTO audit (EntityType,EntityId,Action,Actor,ActorType,RunId,Detail,PrevHash,RowHash,CreatedAt) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                            (et, eid, action, actor, actor_type, run_id, d, prev, rh, _now()))
+            aid = self.cx.execute('INSERT INTO audit (EntityType,EntityId,Action,Actor,ActorType,RunId,Detail,PrevHash,RowHash,CreatedAt) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                  (et, eid, action, actor, actor_type, run_id, d, prev, rh, _now())).lastrowid
             self.cx.commit()
+        # ...HIS PRESS ON A TASK is a line of its chat from the moment he makes it (chatlog.pressed: the one hook for every press road)
+        if et == 'task' and eid and actor in ('owner', 'you'):
+            from . import chatlog
+            chatlog.pressed(self, int(eid), aid, action)
     # ── what went wrong, and what happened (lookups.py: errors.list, activity.list) ──
     def audit_since(self, since, limit=400) -> list:
         return self._rows('SELECT EntityType, EntityId, Action, Actor, ActorType, Detail, CreatedAt FROM audit WHERE CreatedAt>=? '
@@ -5489,8 +5599,9 @@ class SQLiteStore:
         # ...new mail's reopen is said twice, by the write ('reopened') and then by its door ('reopen', ingest._reopen): one reopen
         said = self._rows("SELECT Action, CreatedAt FROM audit WHERE EntityType='task' AND EntityId IN (?,?) AND Action IN ('reopen','reopened') "
                           "ORDER BY Id", (tid, str(tid)))
+        # ...whichever of the two was written first (general.reopen writes its door's row before the store's own)
         rs = [{'what': 'reopened', 'at': str(r['CreatedAt'] or '')} for i, r in enumerate(said)
-              if not (r['Action'] == 'reopen' and i and said[i - 1]['Action'] == 'reopened')]
+              if not (r['Action'] == 'reopen' and ((i and said[i - 1]['Action'] == 'reopened') or (i + 1 < len(said) and said[i + 1]['Action'] == 'reopened')))]
         # ...in turn: a task is closed, then opened, then closed - the clock is to the second, and a Reopen and the next close can share one
         ev, want = [], 'closed'
         while cs or rs:
@@ -5607,8 +5718,8 @@ class SQLiteStore:
         return self._rows('SELECT * FROM learned_history' + (' WHERE Key=?' if key else '') + ' ORDER BY Id', (key,) if key else ())
 
     # the waiting room (waitroom.py): owner notes queued on a task while its agent works
-    def add_waiting(self, task_id, note, actor):
-        return self._exec('INSERT INTO waitroom (TaskId, Note, CreatedBy, CreatedAt) VALUES (?,?,?,?)', (task_id, note, actor, _now()))
+    def add_waiting(self, task_id, note, actor, files=None):
+        return self._exec('INSERT INTO waitroom (TaskId, Note, CreatedBy, CreatedAt, Files) VALUES (?,?,?,?,?)', (task_id, note, actor, _now(), files_json(files)))
     def waiting_notes(self, task_id): return self._rows('SELECT * FROM waitroom WHERE TaskId=? AND DeliveredAt IS NULL ORDER BY WId', (task_id,))
     def waitroom(self, task_id, limit=40):
         return self._rows('SELECT * FROM waitroom WHERE TaskId=? ORDER BY WId DESC LIMIT ?', (task_id, limit))[::-1]
@@ -5624,8 +5735,12 @@ class SQLiteStore:
 
     # reviews (orphans - reviews whose task is gone - never surface)
     def _poke_review(self, review):
-        """A review changes both places that render it: its message and its task."""
+        """A review changes both places that render it: its message and its task - and its card in the task's chat log is written HERE, at
+        the source, as it changes (chatlog.advance: every road that raises, presses or settles a review comes through here)."""
         if not review: return
+        if review.get('TaskId'):                # ...raised, pressed, sent, withdrawn, set aside or failed: its card says so where it stood
+            from . import chatlog                # ...put by the log's own worker, never under what this write's caller holds (advance_soon)
+            chatlog.advance_soon(self, review['TaskId'], review.get('ReviewId'))
         kinds = []
         if review.get('MessageId'): kinds.append('feed-changed')
         if review.get('TaskId'): kinds.append('task-changed')
@@ -5687,13 +5802,19 @@ class SQLiteStore:
         pending reviews less any reply draft the thread has moved past (proposals.written_past - the one rule the chat greys it by and the
         task's state reads). A road that DECIDES about a pending row (what his own line may have answered, an item that ended upstream)
         reads list_reviews: the row is still pending there until its agent hears the newer message."""
-        from . import proposals
+        return self._stands(self.list_reviews('pending'))
+    def _stands(self, rows) -> list:
+        """THE ONE RULE FOR WHAT WAITS ON HIS PRESS, over pending review rows: less any reply draft the thread has moved past
+        (proposals.written_past - the one rule the chat greys it by), any card that waits behind another on its task (cardqueue: one
+        stands at a time, on every surface) and an obsolete read request. waiting_reviews (every task) and waiting_on_owner (one) read it."""
         from . import cardqueue
-        past, held = {}, {}
-        gone = lambda r: bool(r.get('TaskId')) and r['ReviewId'] in (past.get(r['TaskId']) if r['TaskId'] in past else past.setdefault(r['TaskId'], proposals.written_past(self, r['TaskId'])))
-        # ...nor a card that waits behind another on its task (cardqueue): one stands at a time, on every surface
-        waits = lambda r: bool(r.get('TaskId')) and r['ReviewId'] in (held[r['TaskId']] if r['TaskId'] in held else held.setdefault(r['TaskId'], cardqueue.held(self, r['TaskId'])))
-        return [r for r in self.list_reviews('pending') if not gone(r) and not waits(r)]
+        off = {}
+        gone = lambda t: off[t] if t in off else off.setdefault(t, self.off_table(t))
+        return [r for r in rows if not (r.get('TaskId') and r['ReviewId'] in gone(r['TaskId'])) and not cardqueue.obsolete_read(self, r.get('TaskId'), r)]
+    def off_table(self, tid) -> set:
+        "The pending review ids on task `tid` that do not stand for his press: a draft the thread moved past, a card waiting behind another."
+        from . import cardqueue, proposals
+        return proposals.written_past(self, tid) | cardqueue.held(self, tid)
     @contextlib.contextmanager
     def review_delivery_edit(self, rid):
         """Exclude send claims while attachment bytes/envelopes change, even in another process."""
@@ -5840,26 +5961,31 @@ class SQLiteStore:
             self.cx.commit(); self._writes += 1
         if cur.rowcount: self._review_changed(rid)
         return bool(cur.rowcount)
+    def restore_review(self, rid) -> bool:
+        "A card the conversation set aside, live again (proposals.restore_set_aside) - never one that went or that he decided."
+        with self.lock:
+            cur = self.cx.execute("UPDATE review SET Status='pending', FinalText=NULL, DecidedBy=NULL, DecidedAt=NULL, DecideNote=NULL "
+                                  "WHERE ReviewId=? AND Status='superseded' AND DeliveryClaim IS NULL", (rid,))
+            self.cx.commit(); self._writes += 1
+        if cur.rowcount: self._review_changed(rid)
+        return bool(cur.rowcount)
     def pending_review(self, task_id, kind=None, live_only=True):
-        """The task's live pending review, by the SAME visibility rule the queue uses: a draft the
-        owner can no longer see is not one to re-draft into or treat as already-answered. Pass
-        live_only=False only to reach a row deliberately - housekeeping, not the funnel."""
+        """The task's newest pending review ROW, for a road that DECIDES about it - re-draft into it, answer it, retire it, dismiss it on a
+        close. It is NOT what waits on his press: a draft held behind another card or one the thread moved past is still found here.
+        Whatever is SHOWN or LIT for him asks waiting_on_owner (the one rule, _stands). live_only=False reaches a row the queue hides."""
         q = f"SELECT rv.* {_REVIEW_FROM} WHERE rv.TaskId=? AND rv.Status='pending'"
         if kind:      q += ' AND rv.Kind=?'
         else:         q += " AND rv.Kind<>'slot'"             # a task's emails (slots.py) are never its reply
         if live_only: q += f' AND {_NOT_ORPHAN} AND {_VISIBLE_PENDING}'
         return self._one(q + ' ORDER BY rv.ReviewId DESC LIMIT 1', (task_id, kind) if kind else (task_id,))
-    def waiting_on_owner(self, task_id):
-        """The newest thing on the task waiting for the owner's press - a reply draft, one of its emails (slots.py) or a proposal - by
-        the queue's visibility rule. pending_review leaves the emails out (they are never the reply), so "is anything waiting on you"
-        asked of it read an agent's unsent email as nothing: the task said "agent done" and went to Reports (the product audit, 2026-11-08)."""
-        # ...never a reply draft the thread has moved past (proposals.written_past - the one rule the chat greys it by): it is not the one to
-        # press, whether or not an agent has heard the newer message yet
-        # ...nor one that waits its turn behind another (cardqueue): the one that stands is what waits on him
-        from . import cardqueue, proposals
-        past = proposals.written_past(self, task_id) | cardqueue.held(self, task_id)
-        return next((r for r in self._rows(f"SELECT rv.* {_REVIEW_FROM} WHERE rv.TaskId=? AND rv.Status='pending' AND {_NOT_ORPHAN} AND {_VISIBLE_PENDING} "
-                                           "ORDER BY rv.ReviewId DESC", (task_id,)) if r['ReviewId'] not in past), None)
+    def waiting_on_owner(self, task_id, kinds=()):
+        """WHAT WAITS ON HIS PRESS ON THIS TASK - the newest card that stands (_stands: never one held behind another, never one the thread
+        moved past): a reply draft, one of its emails (slots.py), a proposal. `kinds` narrows it (('draft', 'draft_reply'): the reply).
+        Every surface that shows or lights a card asks this - the pill, the rail, the desk's lit Send, the phone, the Assistant - so none of
+        them names a card another one holds back (the audit, 2026-11-19: the desk lit Send on a reply the queue held)."""
+        rows = self._rows(f"SELECT rv.* {_REVIEW_FROM} WHERE rv.TaskId=? AND rv.Status='pending' AND {_NOT_ORPHAN} AND {_VISIBLE_PENDING} "
+                          "ORDER BY rv.ReviewId DESC", (task_id,))
+        return next(iter(self._stands([r for r in rows if not kinds or r['Kind'] in kinds])), None)
     def sent_reply(self, message_id=None, task_id=None):
         """The newest reply that actually passed the send gate for this message/task.
 
@@ -5988,6 +6114,14 @@ class SQLiteStore:
         "An act's press that failed: kept on the review, which still waits - with who pressed and when, as a failed send keeps them (finish_review_delivery)."
         self._exec("UPDATE review SET ActError=?, DecidedBy=?, DecidedAt=? WHERE ReviewId=? AND Status IN ('pending','held','superseded')", (str(error or '')[:300] or None, by, _now(), rid))
         self._review_changed(rid)
+    def review_overcome(self, rid, final, note) -> bool:
+        "An act's press that failed, done since by a later step (browsergate.overcome): settled as done, with what came of it - its error gone."
+        with self.lock:
+            cur = self.cx.execute("UPDATE review SET Status='approved', FinalText=?, ActError=NULL, DecideNote=? WHERE ReviewId=? AND Kind='action' "
+                                  "AND Status IN ('pending','held','superseded')", (final, note, rid))
+            self.cx.commit(); self._writes += 1
+        if cur.rowcount: self._review_changed(rid)
+        return bool(cur.rowcount)
     def set_review_sid(self, rid, sid):
         self._exec('UPDATE review SET DraftSid=? WHERE ReviewId=?', (sid, rid)); self._review_changed(rid)
     def save_review_draft(self, rid, draft):
@@ -6211,7 +6345,7 @@ class SQLiteStore:
         return [dict(r) for r in got[1]]
     # A REFRESH TOKEN KEPT IN ConfigJson IS SEALED LIKE THE Secret COLUMN: the Gmail card's Google calendar sign-in (googlecal.py,
     # 2026-10-26) keeps its token there beside the App Password, and a copy of taskuary.db must not carry it in the clear either
-    SEALED_CONFIG = ('google_refresh_token',)
+    SEALED_CONFIG = ('google_refresh_token', 'totp_key')      # ...and a card's authenticator key (Reddit's two-factor sign-in, totp.py)
     @classmethod
     def _opened(cls, r):
         """A with_secret row carries the secret itself: the column holds it sealed (vault.py) - and so do SEALED_CONFIG keys."""
@@ -6264,7 +6398,14 @@ class SQLiteStore:
             # nothing to change is not "UPDATE connector SET  WHERE" - a syntax error that failed the chat's Create (2026-10-06)
             if cols: self._exec(f"UPDATE connector SET {','.join(f'{c}=?' for c in cols)} WHERE ConnectorId=?", [fields[c] for c in cols] + [cid])
             return cid
-        return self._insert('connector', fields, ('Type', 'Name', 'ConfigJson', 'Secret', 'Active', 'Roles', 'Scope'))
+        # A NEW CARD NEVER TAKES A REMOVED ONE'S ID: SQLite gives the highest id again once its row is deleted, and a card added after a
+        # Remove got the removed card's id - its sources still named it, and Undo wrote the removed card's sign-in over the new one. The id
+        # is past every one a source or a removed card's Undo still names, in the one statement that inserts it.
+        d = {k: fields[k] for k in cols}
+        return self._exec(f"INSERT INTO connector (ConnectorId, {','.join(d)}) VALUES (1 + MAX("
+                          "COALESCE((SELECT MAX(ConnectorId) FROM connector), 0), COALESCE((SELECT MAX(ConnectorId) FROM source), 0), "
+                          "COALESCE((SELECT MAX(CAST(json_extract(DataJson, '$.cid') AS INTEGER)) FROM deleted WHERE Kind='connection'), 0)), "
+                          f"{','.join('?' * len(d))})", list(d.values()))
     def reset_connector(self, cid):
         """'Remove connection': wipe creds/config/test state, deactivate it and its sources."""
         vault.forget((self._one('SELECT Secret FROM connector WHERE ConnectorId=?', (cid,)) or {}).get('Secret'))
@@ -6363,7 +6504,6 @@ class SQLiteStore:
         # A write that says what the row already says - the same value from the same writer - changes nothing, so it moves no stamp and
         # empties no cache: a setting rewritten on a loop (a pane's size, a router note) used to throw the whole pile away each time
         # (2026-11-09). str() as SQLite keeps it: a number written as 3 reads back '3' only through the TEXT column's affinity.
-        if (held := getattr(_HELD, 'settings', None)) is not None and held[0] is self: held[1].pop(name, None)   # its own write, read fresh
         was = self._one('SELECT Value, UpdatedBy FROM setting WHERE Name=?', (name,))
         if was is not None and was['UpdatedBy'] == actor and (was['Value'] == value or (value is not None and was['Value'] == str(value))): return
         self._exec('INSERT INTO setting (Name, Value, UpdatedBy) VALUES (?,?,?) ON CONFLICT(Name) DO UPDATE SET Value=?, UpdatedBy=?',
@@ -6652,7 +6792,13 @@ class SQLiteStore:
     def get_doc(self, name):
         """The document AS WRITTEN - placeholders and all. This is what the editor loads and saves;
         every consumer that feeds a doc to an AI wants `doc()` instead."""
-        r = self._one('SELECT Content FROM doc WHERE Name=?', (name,)); return r['Content'] if r else None
+        # ...held with the settings (held_settings) while a read holds them: the owner's name is read from SOUL.md by every reader of a task's page
+        held = getattr(_HELD, 'settings', None)
+        if held is not None and held[0] is self:
+            if ('doc', name) not in held[1]: held[1][('doc', name)] = self._one('SELECT Content FROM doc WHERE Name=?', (name,))
+            r = held[1][('doc', name)]
+        else: r = self._one('SELECT Content FROM doc WHERE Name=?', (name,))
+        return r['Content'] if r else None
     def doc_owner(self, name):
         """Who last wrote it - 'template' means nobody has, and the shipped text still flows in."""
         r = self._one('SELECT UpdatedBy FROM doc WHERE Name=?', (name,)); return r['UpdatedBy'] if r else None

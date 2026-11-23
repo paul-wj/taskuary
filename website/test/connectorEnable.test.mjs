@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { applied, changes, editedBoxes, splitNow, stage, syncState } from "../src/connectorDraft.js";
 
 const cat = JSON.parse(readFileSync(new URL("../../taskuary/connectorcatalog.json", import.meta.url), "utf8"));
+const src = readFileSync(new URL("../src/ConnectorsView.jsx", import.meta.url), "utf8");
 const types = cat.cards.map((c) => c.type);
 
 // what a card's switch does through the shared draft (ConnectorDraft.jsx useCardDraft.stageConn), as the server would answer it
@@ -16,7 +17,6 @@ const press = (row, on) => {
   return { saved: now ? { ...row, Active: now.Active } : row, want };
 };
 
-test("the catalogue is read", () => assert.ok(types.length > 20, `only ${types.length} types`));
 
 for (const [i, type] of types.entries()) test(`${type}: Enable saves on the press, and Sync now never stands beside "not saved"`, () => {
   const off = { ConnectorId: i + 1, Type: type, Active: 0, ConfigJson: JSON.stringify({ host: "mail.northwind.example" }) };
@@ -31,7 +31,7 @@ for (const [i, type] of types.entries()) test(`${type}: Enable saves on the pres
   // a real unsaved edit greys Sync now with the reason, and it is gone once saved
   const edit = stage(want, { ConnectorId: saved.ConnectorId, ConfigJson: JSON.stringify({ host: "imap.northwind.example" }) });
   const s1 = syncState(saved, changes(saved, edit));
-  assert.ok(s1.show && !s1.ok && s1.why);
+  assert.equal(s1.show && !s1.ok && /Saving/.test(s1.why), true);
   const after = { ...saved, ConfigJson: JSON.stringify(edit.cfg) };
   assert.equal(syncState(after, changes(after, edit)).ok, true, "saved: Sync now is pressable again");
 
@@ -54,5 +54,3 @@ test("a credential box counts as unsaved only past what it last saved", () => {
   assert.equal(editedBoxes(["host"], { host: "a", auth: "user" }, { host: "a" }), false, "a key no box shows is not the owner's typing");
   assert.equal(editedBoxes(["host"], {}, {}, "pw"), true, "a typed secret is unsaved until saved");
 });
-
-

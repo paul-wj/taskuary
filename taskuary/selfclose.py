@@ -178,12 +178,11 @@ def declare(store, tid: int, summary: str = '', agent: str = 'agent', no_reply: 
         store.add_comment(tid, agent, 'agent', f'{DONE_SAID}{line}' if line else 'The agent says it is finished.')
         return {'closed': False, 'why': OWNER_ENDS}
     # ...NOR WHILE ANYTHING ELSE ON IT IS STILL WORKING (the owner, 2026-11-01: "If anything still working never close the task
-    # automatically"): another session open on it, a quick call, a routine, a write-up - the word is filed and the task stays open.
+    # automatically"): another session open on it, a routine, a write-up - the word is filed and the task stays open.
     # `sid` is the asker's own session (TASKUARY_SID); an older CLI that sends none is taken to be the task's one live session
     from . import workerstate as ws
     me = sid or getattr(term.session_for(tid), 'sid', None) or ''
-    # ...and a quick session's own turn is the asker too: its close can land before the turn that filed it lets go (quickwork.again)
-    live = ws.live_work(store, tid, but=me, skip=('quick',) if getattr(term.SESSIONS.get(me), 'quick', False) else ())
+    live = ws.live_work(store, tid, but=me)
     if live:
         store.add_comment(tid, agent, 'agent', f'{DONE_SAID}{line}' if line else 'The agent says it is finished.')
         return {'closed': False, 'why': f"{'; '.join(live)} - the task stays open and the owner completes it"}
@@ -315,13 +314,13 @@ CARD_SAID = ('A reply, an email or an act you set up is its card under your answ
              'what it is, to whom, its words, the file it carries, that it waits and that nothing went. Say none of that or what it replaced, and never '
              'retell its content in other words. Add only what the card cannot say - what you will do after the press, an assumption in it (a '
              'guessed address, a picked date), the one question - in one short line, or nothing. Raise your cards in the order they should '
-             "happen: each waits for the owner's press before the next is shown, and you hear each outcome. Many of one act (25 emails, 40 issues "
-             'to close) go as ONE card, in one call with `items`.')
+             'happen; what stands on his screen is told you at the head of every turn. Many of one act (25 emails, 40 issues to close) go as '
+             'ONE card, in one call with `items`.')
 # ...AND A ROUTINE'S OWN EMAIL IS NO CARD (slots.routine_sends, the owner 2026-11-17: "routines should send on their own too"): it went at
 # once, and its agent was told the card "shows ... that it waits and that nothing went" - so it said nothing went (the tools stress round)
 def card_said(out: dict) -> str:
     "How a draft that stood is spoken of, on every road (the draft tools, `taskuary --draft`): sent at once, failed to go, or its card."
-    if out.get('sent'): return ("It went at once - a routine's own email is sent without a press, so there is no card: say in a few words that "
+    if out.get('sent'): return ("It went at once - a routine's email to what its owner saved into it is sent without a press, so there is no card: say in a few words that "
                                 "it was sent, and to whom.")
     if out.get('send_error'): return (f"It did not go ({out['send_error']}), so it stands as its card for the owner's Send - say that in one "
                                       f"line. {CARD_SAID}")
@@ -344,10 +343,10 @@ NEVER_CLOSES = ('Taskuary did not close the task - closing it is the owner\'s, w
                 'the task. Never say you closed, marked done or reopened it.')
 def owner_closes_line() -> str:
     from .buttons import label
-    # ...and never while a card of its own waits (the real Codex walk, 2026-11-16: "Ready for Mark done" over the email card still waiting for Send)
-    return (f'ENDING THE TASK: the owner closes it with {label("close")} - none of your steps closes it, so never say you closed, marked done or '
-            f'reopened it; when the work is complete and no card you set up still waits for their press, say it is ready for {label("close")} - '
-            f'never that you could not close it. '
+    # ...and never names the close at all (design round 4, 2026-11-19: "Ready for Mark done" ended answers on three AIs - this line taught it):
+    # the page lights the button when the work is done, so the answer ends on the result
+    return (f'ENDING THE TASK: the owner closes it with {label("close")}, which the page lights for them once your work is done - none of your '
+            f'steps closes it, so never say you closed, marked done or reopened it, and never name the button or the close: end on the result. '
             # ...and where what it drafts is (the owner, 2026-11-05: a draft said to be in a section that no longer exists): earlier turns of the
             # conversation may still name another screen - the page they were written for is gone
             f'WHERE YOUR DRAFTS ARE: this task is one chat - no other screen or tab, whatever an earlier turn said. {CARD_SAID} '
@@ -383,16 +382,18 @@ REPLY_LINE = (f'REPLYING FOR THE OWNER: the answer the person who asked will get
 # is Task 3.5's). Not `SUMMARY:`, which the brief already uses as the task-summary label.
 SUMMARY_OPEN, SUMMARY_CLOSE = '[[TASKUARY-SUMMARY]]', '[[/TASKUARY-SUMMARY]]'
 AFTER_PRESS = ('send', 'handoff')
-SUMMARY_LINE = (f'ENDING EVERY TURN: close with {SUMMARY_OPEN}{{"about": "<two or three plain sentences from the whole thread: which '
+from .buttons import label as _label
+RETRY_LABEL = _label('try_again')          # the button a summary's `retry` draws
+SUMMARY_LINE = (f'ENDING EVERY TURN: close with {SUMMARY_OPEN}{{"name": "<the task in three to six words, as a to-do list names it>", "about": "<two or three plain sentences from the whole thread: which '
                 f'conversation, what about, who asked, for whom, why - naming only people it shows in that role>", "did": "<the RESULT ITSELF '
                 f'first (the path, link, figure or name), then what you did; any part unmet or unchecked>", "on_you": ["<a step for what they '
                 f'asked that only they can take, a line each with why, said nowhere in your words above; [] when nothing_left>"],"nothing_left": <true only when the goal '
-                f'is met and you checked it>, "answer_is_result": <true when your words above ARE what was asked>, "after_press": <"handoff" only if '
-                f'you carry on once the owner hands this to a person - that press wakes you once, as any press on your card does>}}'
-                f'{SUMMARY_CLOSE} - valid JSON, plain words, no secret, "you" to the owner. A card you set up and a question you ask are never an on_you step. A draft\'s Send card IS the confirmation: never '
-                f'ask "shall I send?", "anyone to copy?", "does this look right?" or say "check it before you press Send" unless something real '
-                f'is uncertain - then name it. Needing the owner: a sentence or two on what you got and what is unsure, and ask '
-                f'(through [[TASKUARY-ASK]]) only the question you cannot go on without. When their newest message CORRECTS you, add "corrections": '
+                f'is met and you checked it>, "answer_is_result": <true when your words above ARE what was asked>, "after_press": <"send" only if a step of '
+                f'your own is left after the owner presses what you set up (deploy once he approves the merge; his Send finishing the job is not one) - that press wakes you once; "handoff" '
+                f'only if you carry on once he hands this to a person; else leave it out: a press with nothing after it never wakes you>, "retry": <true when what '
+                f'stopped you may work on another try (a page that did not load, a site that did not answer): Taskuary puts a {RETRY_LABEL} button under '
+                f'your turn - never ask the owner to send a message to try again>}}'
+                f'{SUMMARY_CLOSE} - valid JSON, plain words, no secret, "you" to the owner. A card you set up and a question you ask are never an on_you step. When their newest message CORRECTS you, add "corrections": '
                 f'[{{"kind": "redraft" (their words for the draft) or "ask" (you misread the task), "review": <the draft\'s id or null>, '
                 f'"said": "<the correction, in their words>"}}], never shown. When what came in needs nothing from you or them - judged from '
                 f'the thread, not its wording; in a group chat banter, a question already answered, a reply that would only say "ok" or '
@@ -429,10 +430,13 @@ def summary_marker(text: str, letters=()) -> tuple:
     from .store import ON_YOU_MAX, by_sentence
     flat = lambda x, n: by_sentence(without_letters(' '.join(str(x or '').split()), letters), n)
     out = {'about': flat(j.get('about'), 600), 'did': flat(j.get('did'), 600), 'nothing_left': j.get('nothing_left') is True}
+    if (name := ' '.join(str(j.get('name') or '').split())[:80]): out['name'] = name
     # ...and the agent's own say on whether its prose is the deliverable (GeneralWorkspace: agentSummary.answerShown) - kept only when it said
     if isinstance(j.get('answer_is_result'), bool): out['answer_is_result'] = j['answer_is_result']
     # ...and the one press it waits on to carry on (general.follow_up): that press starts its next turn
     if j.get('after_press') in AFTER_PRESS: out['after_press'] = j['after_press']
+    # ...and that what stopped it is worth another go: the page draws Try again under the turn (GeneralWorkspace), his press the go-ahead
+    if j.get('retry') is True: out['retry'] = True
     if isinstance(j.get('on_you'), list): out['on_you'] = list(dict.fromkeys(x for x in (flat(o, ON_YOU_MAX) for o in j['on_you'] if isinstance(o, str)) if x))[:6]
     if cs := [{'kind': c['kind'], 'review': c['review'] if isinstance(c.get('review'), int) else None, 'said': ' '.join(c['said'].split())[:1000]}
               for c in j.get('corrections') or [] if isinstance(c, dict) and c.get('kind') in ('redraft', 'ask') and isinstance(c.get('said'), str) and c['said'].strip()]:
@@ -518,10 +522,13 @@ def attach_markers(text: str) -> tuple:
 # draft standing under its newest turn, reading as the answer to the correction. Every turn is told it answers the NEWEST message, read
 # against all before it, what is pending and what already went (general.latest_block) - and how to take a draft back: this marker, on a road
 # with no shell, or `taskuary --withdraw-draft` / the withdraw_draft tool (verdicts.withdraw). The model judges; no word list does
-LATEST_LINE = ('LATEST MESSAGE WINS: answer the newest message against the whole conversation, never an earlier ask again; when the '
-               'thread changed (someone answered, plans or facts moved), re-plan - maybe no reply, new research, corrected drafts, or '
-               'nothing. Replace a pending draft with a corrected one or withdraw it (why, one line), never leave it standing as this answer; '
-               'never draft again what already went out below.')
+# ...AND A NEWER MESSAGE NEVER RETIRES WHAT IS STILL OWED (the walk, 2026-11-19: asked for three caterer options, then "did you hear back?",
+# the agent called the options "no longer needed" and drafted only "Not yet" - "never an earlier ask again" read as dropping it)
+LATEST_LINE = ('LATEST MESSAGE WINS: answer the newest message against the whole conversation - an ask it corrects or one already answered '
+               'is never answered again, but a newer message never retires what is still owed to its sender: answer that, then the new '
+               'question. When the thread changed (someone answered, plans or facts moved), re-plan - maybe no reply, new research, corrected '
+               'drafts, or nothing. Replace a pending draft with a corrected one or withdraw it (why, one line), never leave it standing as '
+               'this answer; never draft again what already went out below.')
 # ...A TURN NO MESSAGE STARTED (agent walk 2, 2026-11-10): woken by the owner's Send, the agent was handed the line it had answered a minute
 # before as "THE NEWEST MESSAGE", under "your answer is to the newest message" - and answered "What is left here?" a second time. A turn
 # Taskuary starts on an answered task (a press, a result that came back, a check-back) is told nothing new was said (general.latest_block)
@@ -613,7 +620,7 @@ TICK_CHAT_LINE = (f'TO-DOS HERE: you have no shell, so `taskuary --tick` is not 
 
 
 # ...and a session that HAS the tick tool (an AI card whose Taskuary toolbox answered) is told the tool, never "you have no shell"
-TICK_TOOL_LINE = ("TO-DOS HERE: when you finish one of the checklist's to-dos, tick it with the tick tool - its id is in brackets after it. "
+TICK_TOOL_LINE = ("TO-DOS HERE: when you finish one of the checklist's to-dos, tick it with the tick tool, its id - in brackets after it - as `item`. "
                   'Only what you actually did.')
 
 
@@ -632,13 +639,9 @@ def tick_markers(text: str) -> tuple:
 # it?" over the Send card that already asks it, while the summary line said the card IS the confirmation - the two now say one thing
 ASK_MARKER = '[[TASKUARY-ASK]]'
 _ASK_RE = re.compile(r'\[\[\s*TASKUARY[-_ ]?ASK\s*\]\]\s*:?\s*(.*)', re.I | re.S)
-ASK_LINE = (f'ASKING THE OWNER: when you cannot continue without their answer - a fact or a decision only they can give - end your reply with a final line: '
-            f'{ASK_MARKER} <the exact question> - that line is the question they see, so do not ask it in your words above it too. '
-            f'The owner answers it in their own words. One a turn: the question the rest hangs on, '
-            f'with your recommended answer in it. '
-            f'Only for a real blocker, never for a rhetorical question, and never for permission to do what a card already asks: a draft\'s '
-            f'Send, a post\'s Post, an Approve is that question, asked once. And never after you have answered: a part you could not '
-            f'do is said in the answer (what you could not check and what would let you), not asked as a question.')
+ASK_LINE = (f'ASKING THE OWNER: a real blocker - a fact or a decision only they can give - is one question, asked once in your own words, with '
+            f'your recommended answer; end the reply with {ASK_MARKER} on its own line, which only marks that you wait on him. Never ask for '
+            f'permission to do what a card already asks (its Send, Post or Approve is that question).')
 
 
 def without_ask(text: str) -> str:
@@ -683,30 +686,87 @@ def turn_marker(text: str) -> tuple:
 _DONE_LINE = re.compile(r'[ \t]*\[\[\s*TASKUARY[-_ ]?DONE\s*\]\][^\n]*', re.I)
 
 
+# EVERY TAG TASKUARY TOLD AN AGENT TO WRITE, out of what the owner reads (the 2026-11-18 walk: "[[TASKUARY-FULL-AGENT]] Paying on ... needs a
+# browser" stood in his chat - the quick lane's hand-on mark, written by a turn of the same session the quick road no longer read). The
+# markers a turn acts on are read first, each by its own road; this is the last word on what is left: the [[TASKUARY-...]] tags, the Hub's
+# <TASKUARY-HUB>...</TASKUARY-HUB> with what it carries, and a bare TASKUARY-PROPOSE (proposals.MARK)
+_TAG = re.compile(r'<\s*TASKUARY-HUB[^>]*>.*?<\s*/\s*TASKUARY-HUB[^>]*>|\[\[\s*/?\s*TASKUARY[^\]]*\]\][ 	]*|<\s*/?\s*TASKUARY[^>]*>|TASKUARY-PROPOSE', re.I | re.S)
+def unmark(text) -> str:
+    "Every Taskuary tag out: words for the owner."
+    return _TAG.sub('', str(text or '')).strip()
+
+
+# A TURN STORED AS ONE CALL'S RAW OBJECT (until 2026-11-13 a quick answer was one JSON object, and a few were filed whole, fenced or cut
+# short - the owner, 2026-11-03): a database still holds them, and they read back as the report they hold wherever the chat is read
+RAW = re.compile(r'^\s*(?:```(?:json)?\s*)?\{\s*"(?:report|draft|question|done|escalate|why)"\s*:', re.I)
+def is_raw(text) -> bool: return bool(RAW.match(str(text or '')))
+
+_REPORT = re.compile(r'"report"\s*:\s*"((?:[^"\\]|\\.)*)', re.S)
+def report_of(text) -> str:
+    "The report a raw stored answer holds - or the text as it is, when it is not one."
+    t = str(text or '')
+    if not is_raw(t): return t
+    clean = lambda x: unmark(for_screen(draft_markers(reply_marker(str(x or ''))[0])[0]))
+    body = re.sub(r'^\s*```(?:json)?\s*|\s*```\s*$', '', t)
+    try: d = json.loads(body)
+    except ValueError: d = None
+    if isinstance(d, dict) and d.get('report'): return clean(d['report'])
+    m = _REPORT.search(body)                       # cut short: the report as far as it got, its last escape whole or dropped
+    if not m: return ''
+    try: return clean(json.loads('"' + re.sub(r'\\u?[0-9a-fA-F]{0,3}$|\\$', '', m.group(1)) + '"'))
+    except ValueError: return clean(m.group(1).replace('\\n', '\n'))
+
+
 def for_screen(text: str) -> str:
     """A progress line as the owner reads it: no ask marker, no attach lines, no done line, and no reply block - the reply is shown
     once, as the answer. A CLI's final text streams in as a progress line too, so the box drew the markers and the answer twice
     (2026-10-15); a done line left in kept the last paragraph from matching the answer, so it was drawn twice again (walk 2026-10-29)."""
     # ...and no show line: its file is drawn under the answer, and left in it kept the answer drawn twice again (stress test 2026-11-02)
     # ...and no summary block: it is the turn's three parts, drawn under the answer from the row it is filed as (Task 3.5)
-    return show_markers(attach_markers(_DONE_LINE.sub('', without_summary(_REPLY_RE.sub('', without_ask(text)))))[0])[0].strip()
+    return unmark(show_markers(attach_markers(_DONE_LINE.sub('', without_summary(_REPLY_RE.sub('', without_ask(text)))))[0])[0])
 
 
 _ASK_ONE = re.compile(r'\[\[\s*TASKUARY[-_ ]?ASK\s*\]\]\s*:?', re.I)
+_ASK_TAIL = re.compile(r'\[\[\s*TASKUARY[-_ ]?ASK\s*\]\][^\n]*', re.I)          # a marker and the rest of its line: its question, if any
 
 
 def ask_markers(text: str) -> tuple:
     """(cleaned reply, [(question, choices)]) - EVERY marker, in order (the owner, 2026-09-28: a regular agent's three
     questions reached the card as one; the first marker swallowed the rest as its own choices)."""
-    t = str(text or '')
-    cuts = [m for m in _ASK_ONE.finditer(t)]
+    t = without_summary(str(text or ''))
+    cuts = [m for m in _ASK_TAIL.finditer(t)]
     if not cuts: return text, []
-    asks = []
-    for i, m in enumerate(cuts):
-        seg = t[m.end(): cuts[i + 1].start() if i + 1 < len(cuts) else len(t)]
-        parts = [' '.join(p.split()) for p in seg.split('|')]
-        if parts and parts[0]: asks.append((parts[0][:600], [p[:120] for p in parts[1:] if p]))
-    return t[:cuts[0].start()].rstrip(), asks
+    asks, prev = [], 0
+    for m in cuts:
+        # ...ONE GRAMMAR (the agent audit, 2026-11-22: words written after the marker - "Meanwhile I drafted the agenda..." - were recorded as the
+        # question, and cut from the answer): the question is what the marker's own line says after it, its choices split by '|' - or, where
+        # the marker stands bare (ASK_LINE: asked in its own words), the paragraph above it. What follows on later lines is the answer's
+        parts = [' '.join(p.split()) for p in _ASK_ONE.sub('', m.group(0), 1).split('|')]
+        q = parts[0] or ' '.join((re.split(r'\n\s*\n', t[prev:m.start()].strip()) or [''])[-1].split())
+        if q: asks.append((q[:600], [p[:120] for p in parts[1:] if p]))
+        prev = m.end()
+    return re.sub(r'\n{3,}', '\n\n', _ASK_TAIL.sub('', t)).strip(), asks
+
+
+def carried(earlier: str, last: str) -> str:
+    """What the turn wrote FOR THE APP before its last message, which that message does not carry: a question (its paragraph and its marker),
+    a reply or draft block, a tick, attach, show, withdraw, done, sign-in or hand-over line - and its summary where the last message has none.
+    The answer is the last message (acp.prompt); read off it alone, a question asked before one more tool call was never recorded, and the
+    turn read "agent done" over it (the agent audit, 2026-11-22). One reader of markers (general._file) then reads them all."""
+    e, out = str(earlier or ''), []
+    held = lambda x: x.strip() and x.strip() not in str(last or '')
+    for rx in (_REPLY_RE, _DRAFT_RE): out += [m.group(0) for m in rx.finditer(e) if held(m.group(0))]
+    if not _SUMMARY_RE.search(str(last or '')): out += [m.group(0) for m in _SUMMARY_RE.finditer(e)][-1:]
+    for rx in (_ATTACH_RE, _SHOW_RE, _TICK_RE, _WITHDRAW_RE, _DONE_LINE, _SIGNIN_RE, _TURN_RE):
+        out += [m.group(0).strip() for m in rx.finditer(e) if held(m.group(0))]
+    # ...a question: the marker's own line, and the paragraph above it where the marker stands bare (ASK_LINE: asked in its own words)
+    bare = without_summary(e)
+    for m in _ASK_LINE.finditer(bare):
+        asked = _ASK_ONE.sub('', m.group(0)).strip(' :\t')
+        above = '' if asked else (re.split(r'\n\s*\n', bare[:m.start()].strip()) or [''])[-1]
+        if held(q := '\n'.join(x for x in (above, m.group(0).strip()) if x)): out.append(q)
+    return '\n\n'.join(out)
+_ASK_LINE = re.compile(r'[^\n]*\[\[\s*TASKUARY[-_ ]?ASK\s*\]\][^\n]*', re.I)
 
 
 def asked_inline(text: str) -> tuple:

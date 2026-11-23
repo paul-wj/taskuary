@@ -330,7 +330,9 @@ def test_omp_nonzero_exit_is_not_a_success_even_with_an_answer():
     events = _events({'type': 'session', 'id': 's'},
                      {'type': 'message_end', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'partial'}], 'stopReason': 'stop'}},
                      {'type': 'agent_end', 'messages': [], 'isTerminal': True, 'yielded': True})
-    with pytest.raises(RuntimeError, match='exit 1'): _run(events, returncode=1)
+    with pytest.raises(agents.OmpTurnError) as failed: _run(events, returncode=1)
+    assert failed.value.session_id == 's'
+    assert not agents.availability_failure(failed.value)
 
 
 def test_omp_custom_headless_flags_keep_json_and_background_wait():

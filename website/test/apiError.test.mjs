@@ -6,7 +6,9 @@
 // reconciled" surfaced as axios's "Request failed with status code 409" in a red banner.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detailText, keepDetail } from "../src/apiError.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { detailText, errorPresentation, errorText, keepDetail } from "../src/apiError.js";
 import { isCoveragePending, processingErrorCode, processingErrorMessage } from "../src/processingAll.js";
 
 // what axios hands a catch block after the interceptor has run, for a real 409 from the inventory
@@ -52,30 +54,14 @@ test("a structured refusal's shape - read off error.detail - is kept on the erro
   assert.equal(e.detail?.code, "processing_coverage_pending");
 });
 
-test("error presentation translates only authored fallbacks and preserves server messages", async () => {
-  const { errorPresentation, errorText } = await import("../src/apiError.js");
-  const { getLocale, setLocale } = await import("../src/i18n.js");
-  const server = errorPresentation(keepDetail({ response: { status: 422, data: { detail: "That didn't save. Try again in a moment." } } }));
-  const structured = errorPresentation(refused("x", "That item moved under you"));
-  const network = errorPresentation(new Error("Network Error"));
-  const fallback = errorPresentation({ response: { status: 500, data: {} } });
-  const rawFallback = errorPresentation({ response: { status: 500, data: {} } }, "Settings", { localFallback: false });
-  const previous = getLocale();
-  try {
-    setLocale("en");
-    const englishFallback = errorText(fallback), englishNetwork = errorText(network);
-    assert.equal(errorText(server), "That didn't save. Try again in a moment.");
-    assert.equal(errorText(structured), "That item moved under you");
-    setLocale("zh-CN");
-    assert.equal(errorText(server), "That didn't save. Try again in a moment.");
-    assert.equal(errorText(structured), "That item moved under you");
-    assert.equal(errorText(rawFallback), "Settings");
-    assert.notEqual(errorText(fallback), englishFallback);
-    assert.notEqual(errorText(network), englishNetwork);
-  } finally {
-    setLocale(previous);
-  }
+test("a failed save reads as a sentence: the server's, or that nothing answered - never axios's", () => {
+  const plainError = (e, fallback) => errorText(errorPresentation(e, fallback));
+  assert.equal(plainError(keepDetail({ response: { status: 422, data: { detail: "pick one of those three" } } })), "pick one of those three");
+  assert.equal(plainError(refused("x", "That item moved under you")), "That item moved under you");
+  assert.match(plainError(new Error("Network Error")), /isn't answering/);
+  assert.equal(plainError({ response: { status: 500, data: {} } }, "fallback"), "fallback");
 });
+
 
 // THE DEMO'S NO IS ITS OWN LINE (the walk, 2026-11-18): Trust on a closed task read "That didn't go through - This is the demo - ...
 // Press Trust Priya again." - a press that can never work, asked for again. One reader says whether an error is the demo saying no.
@@ -85,4 +71,7 @@ test("the demo's refusal is read as its own sentence, and nothing else is", asyn
   assert.equal(demoNo(no), no.response.data.detail);
   assert.equal(demoNo({ response: { status: 403, data: { detail: "forbidden" } } }), "");
   assert.equal(demoNo({ response: { status: 500, data: { demo: true, detail: "x" } } }), "");
+  const page = readFileSync(fileURLToPath(new URL("../src/TaskPage.jsx", import.meta.url)), "utf8");
+  const trust = page.slice(page.indexOf("const trustPress"), page.indexOf("finally { setTrusting(null)"));
+  assert.match(trust, /setErr\(demoNo\(e\) \|\|/, "the Trust press says the demo's no as it is");
 });

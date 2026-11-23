@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { noteKey, noteOf, notePath, saveNote } from "../src/checklist.js";
 
 // A NOTE ON ONE TO-DO (the owner, 2026-10-20): kept with the box, shown under its words, edited inline - no dialog.
@@ -28,4 +29,3 @@ test("Enter saves, Escape leaves it as it was, anything else types", () => {
   assert.equal(noteKey(ev("Enter", true), h), false);
   assert.deepEqual(did, ["save", "cancel"]);
 });
-

@@ -10,7 +10,7 @@ Ref actions there are UI Automation calls that neither move the mouse nor take f
 
 WHAT KEEPS IT SAFE, the browser's rules applied to the desktop:
 - OFF BY DEFAULT. Its connector card is seeded off (store.py); off, or not installed, no agent is told of it and every act of
-  agent-desktop in one of our sessions is refused by the shell hook (hooks.browser).
+  agent-desktop in one of our sessions is refused where it runs (gatecmd).
 - ONLY ON A TASK MARKED "needs desktop" (WANTS, the owner 2026-10-31): the card on is not enough - an unmarked task's agent is told
   nothing and its acts are refused.
 - NEVER ON A STRANGER'S TASK: a stranger's words do not get the owner's desktop to drive, as they do not get the browser.
@@ -22,8 +22,8 @@ WHAT KEEPS IT SAFE, the browser's rules applied to the desktop:
 - With no AI connected, plain typing (set-value, type) with no line break passes and every other act waits.
 - The sign-in vault is the browser's alone: agents are told never to type a password into an app and to hand a sign-in to the owner.
 
-What this does not cover, said as browsergate says it: Codex, Devin and Copilot sessions (their hooks cannot refuse a call, so their
-agents are told to ask first); a session whose hook could not reach Taskuary; and an agent that drives the desktop some other way.
+Every act is caught at the command, on every AI (gatecmd: the `agent-desktop` first on a task session's PATH is Taskuary's). What this
+does not cover, said as browsergate says it: an agent that drives the desktop some other way than that command.
 """
 import json, re, subprocess, tempfile
 from pathlib import Path
@@ -44,6 +44,11 @@ HELD = 'Taskuary held this for the owner'
 
 
 # ── is it here, and is it on ──────────────────────────────────────────────────────────────────────────────────────────────
+def _unsure() -> str:
+    from .say import HELD
+    return HELD['unsure_undo']          # his words for the judge's doubt (say.owner), never "the AI could not tell"
+
+
 def path() -> str:
     from . import pathcache
     return pathcache.which(EXE) or ''
@@ -137,13 +142,9 @@ HOLD_LINE = ('WHEN THE WORK ENDS AT A PRESS THAT CAN\'T BE UNDONE (send, pay, or
              'saving, change a setting): set everything up in the app first, then run the command for that last press as you would. It is '
              'HELD for the owner: Taskuary refuses it and tells them it is ready in the app for them to press there. Then end your turn and run '
              'no desktop command until their next message - never try the same act another way. ')
-ASK_FIRST_LINE = ('TASKUARY CANNOT HOLD YOUR DESKTOP COMMANDS ON THIS AI: nothing stops a press once you run it. So when the work ends at a '
-                  'press that would send, pay, order, submit for real, post, delete or cancel, NEVER press it: set everything up in the app, '
-                  'end your turn with one line - "It\'s ready in <the app>; press it there." - and wait for the owner\'s next message. Never '
-                  'tell the owner Taskuary will hold it. ')
 
 
-def brief(held: bool = True) -> str:
+def brief() -> str:
     "What an agent with the owner's desktop needs to know: how to drive it, and where the line is."
     return ('THE OWNER\'S DESKTOP APPS are yours to read and operate with `agent-desktop` (the owner turned it on) - for a desktop app that '
             'has no connector and no web page: prefer a connector, then the browser, then this. It reads the app\'s real UI through '
@@ -156,7 +157,7 @@ def brief(held: bool = True) -> str:
             '`ok` and the exit code, retry only when error.disposition.retry is "safe". Never type a password, code or card number '
             'into an app, never read the clipboard for one, and never touch Taskuary\'s own window: a sign-in is the owner\'s - end '
             'your turn and say what they need to do. Snapshots can hold private text: never paste one into a reply, a file or a post. '
-            + (HOLD_LINE if held else ASK_FIRST_LINE))
+            + HOLD_LINE)
 
 
 # ── which part of a shell command is a desktop act ────────────────────────────────────────────────────────────────────────
@@ -256,8 +257,14 @@ def _verdict(v: dict | None, w: str) -> dict:
     if v is None: return {'hold': True, 'what': w, 'why': "the AI's answer could not be read, so it waits for you"}
     said, app = ' '.join(str(v.get('what') or '').split())[:200] or w, ' '.join(str(v.get('app') or '').split())[:60]
     if v['irreversible']: return {'hold': True, 'what': said, 'why': "it can't be undone", **({'app': app} if app else {})}
-    if not v['sure']: return {'hold': True, 'what': said, 'why': 'the AI could not tell whether it can be undone', **({'app': app} if app else {})}
+    if not v['sure']: return {'hold': True, 'what': said, 'why': _unsure(), **({'app': app} if app else {})}
     return {'hold': False, 'what': said, 'why': ''}
+
+
+def key(act: dict, ctl: dict, v: dict) -> str:
+    "What makes two desktop presses the same decision (actrule.key): the app, the verb and the control it names - its command where it names none."
+    on_ = f"{ctl.get('role') or ''} {ctl.get('name') or ''}".strip() or ' '.join(act.get('args') or [])
+    return f"desktop|{_app(act, v).lower()}|{act.get('verb') or ''} {on_}"
 
 
 # ── the hook's answer ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -284,14 +291,24 @@ def check(store, tid: int, sid: str, cmd: str, brain=None) -> dict:
     if not wanted(store.get_task(tid)):
         return _deny('This task is not marked "needs desktop", so it does not drive the owner\'s desktop. Say in one line that the owner can '
                      'mark it "needs desktop" if the work needs a desktop app, and what you would have done there.')
-    for a, v in zip(todo, judge(store, todo, [control(a) for a in todo], brain)):
+    ctls = [control(a) for a in todo]
+    for a, c, v in zip(todo, ctls, judge(store, todo, ctls, brain)):
         if not v['hold']: continue
         if not a['args']: return _deny(f'{HELD}: a desktop command it could not read. Run each agent-desktop command on its own line.')
+        # ...THE ONE RULE (actrule.decide), as the browser's: the same press on the same control of the same app he already approved on this
+        # task runs; one he dismissed since his last line is his no, never a second card
+        from . import actrule
+        step = {'what': v['what'], 'why': v['why'], 'key': key(a, c, v)}
+        how, told = actrule.decide(store, tid, [step])
+        if how == 'approved':
+            if told: store.add_comment_once(tid, 'taskuary', 'agent', told)
+            continue
+        if how == 'dismissed': return _deny(told)
         if watched(tid, sid): return ready(store, tid, sid, a, v)
         if not _pending(store, tid, sid, a['args']):
             from . import proposals
             proposals.queue(store, tid, {'action': 'desktop_act', 'sid': str(sid), 'args': a['args'], 'command': ' '.join([EXE, *a['args']]),
-                                         'what': v['what'], 'why': v['why']}, 'agent')
+                                         'what': v['what'], 'why': v['why'], 'keys': [step['key']]}, 'agent')
             store.audit('task', tid, 'desktop_act_held', 'taskuary', 'system', {'verb': a['verb'], 'why': v['why']})
         from .selfclose import CARD_TAIL
         return _deny(f"{HELD}: {v['what']} ({v['why']}). Once they approve it, Taskuary runs this exact command and tells you what happened. "
@@ -341,6 +358,8 @@ def perform(store, tid: int, p: dict, run=None) -> dict:
     """The owner's yes: run the held command as it was. A control gone since makes agent-desktop refuse its ref (STALE_REF) - said
     as "nothing was done", never retried on a guess. `run`: the runner (tests stand one in)."""
     from .browsergate import _tell, NEXT
+    from . import actrule
+    actrule.remember(store, tid, p.get('keys'), 'approved')       # his yes to this press on this control stands for the task
     args = list(p.get('args') or [])
     if not args: raise RuntimeError('this held act names no desktop command')
     if not on(store): raise RuntimeError('Agent Desktop is off on this computer now - nothing was done. Turn it on under Connections, and '

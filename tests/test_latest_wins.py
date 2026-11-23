@@ -11,7 +11,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import general, selfclose, server, wrapup
+from taskuary import cardqueue, general, selfclose, server, wrapup
 from taskuary.store import MemoryStore
 
 SENT = 'Hi Gail - the October list is attached.'
@@ -56,21 +56,20 @@ def test_a_correction_after_a_pending_draft_names_the_newest_message_and_the_dra
     # ...and each rule ONCE, in the startup context (selfclose.DRAFTS_ONCE): the turn carries the facts under a short head
     assert selfclose.DRAFTS_ONCE in system and selfclose.LATEST_LINE not in turn and selfclose.LATEST_HEAD in turn and 'THE NEWEST MESSAGE' not in system
     assert 'THE NEWEST MESSAGE - from the owner (in this chat)' in turn and FIX in turn
-    assert 'THE DRAFT WAITING NOW (to Gail Moreno, drafted at 02:48 PM' in turn and f'rv{rid}' not in turn and 'BEFORE the newest message' in turn
+    assert 'THE DRAFT WAITING NOW (to Gail Moreno, drafted at 2:48 PM' in turn and f'rv{rid}' not in turn and 'BEFORE the newest message' in turn
     assert OLD in turn and selfclose.WITHDRAW_LINE in system and selfclose.WITHDRAW_LINE not in turn
 
 
 def test_already_sent_replies_are_in_the_turns_context():
     s = MemoryStore(); tid, *_ = the_owners_day(s)
     _, turn = general._prompt(s, tid)
-    assert 'ALREADY SENT ON THIS TASK - never draft these again' in turn
-    line = next(l for l in turn.split('ALREADY SENT ON THIS TASK')[1].splitlines() if SENT in l)
-    assert 'to Gail Moreno' in line and line.startswith('- 06:10 PM')
+    line = next(l for l in turn.split(cardqueue.SCREEN_HEAD)[1].splitlines() if SENT in l)
+    assert 'to gail@northwind.example' in line and line.startswith('- Sent 6:10 PM')
 
 def test_a_resumed_turn_carries_the_draft_and_the_sent_but_not_a_bare_answer():
     s = MemoryStore(); tid, *_ = the_owners_day(s)
     b = general.latest_block(s, tid, resumed=True)
-    assert 'THE DRAFT WAITING NOW' in b and 'ALREADY SENT ON THIS TASK' in b
+    assert 'THE DRAFT WAITING NOW' in b and '- Sent ' in b.split(cardqueue.SCREEN_HEAD)[1]
     t = s.create_task({'Title': 'x', 'Kind': 'general', 'Status': 'open'}, 'owner')
     s.add_comment(t, 'owner', general.USER_TYPE, 'hi'); s.add_comment(t, 'assistant', general.ASSISTANT_TYPE, 'Hello.')
     assert general.latest_block(s, t) and not general.latest_block(s, t, resumed=True)    # the CLI has the chat; its turn is the newest
@@ -84,7 +83,7 @@ def test_a_turn_no_message_started_is_not_handed_the_answered_one_as_newest():
     at(s, 'comment', 'CommentId', s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Fixed - the November list is drafted.'), '2026-11-06 15:23:00')
     b = general.latest_block(s, tid)                    # ...the owner's Send wakes it: nobody said anything new
     assert 'THE NEWEST MESSAGE' not in b and selfclose.LATEST_LINE not in b and 'BEFORE the newest message' not in b
-    assert selfclose.NO_NEW_LINE in b and f'THE LAST MESSAGE, WHICH YOU ANSWERED - from the owner (in this chat), at 03:22 PM' in b and FIX in b
+    assert selfclose.NO_NEW_LINE in b and f'THE LAST MESSAGE, WHICH YOU ANSWERED - from the owner (in this chat), at 3:22 PM' in b and FIX in b
     # ...a mail that joins after that answer is new, until the turn Taskuary starts on it has answered
     m = s.add_message({'TaskId': tid, 'ExternalId': 'g-2', 'ConversationId': 'conv-g', 'Channel': 'email', 'FromName': 'Gail Moreno',
                        'FromEmail': 'gail@northwind.example', 'BodyText': 'Actually I need the December one.', 'Status': 'routed'})
@@ -191,8 +190,9 @@ def test_the_owners_presses_since_the_last_turn_are_in_the_turns_context():
     s.audit('task', tid, 'continue-work', 'owner'); s.audit('task', tid, 'woke', 'assistant')      # the turn itself; not the owner's
     did = [x.split(': ', 1)[1] for x in general.owner_did(s, tid)]
     monday = f"set a reminder for {general.clock_of('2026-11-10 09:00:00')} - put away until then"
-    assert sorted(did) == sorted([f'approved (sent, if it sends) rv{rid} (the email to Gail)', monday,
-                                  'changed its priority from regular to urgent']), did
+    assert sorted(did) == sorted([monday, 'changed its priority from regular to urgent']), did
+    # ...and the card he pressed is said once, by what stands (cardqueue.screen), never a second time as a press
+    assert f'- Sent ' in (b := general.latest_block(s, tid, resumed=True)) and f'rv{rid}, the email' in b, b
     assert 'WHAT THE OWNER DID SINCE YOUR LAST TURN' in general.latest_block(s, tid, resumed=True)
     # ...and each press is the owner's own line in the chat, at its time - a line, never a turn (the owner, 2026-11-08)
     lines = [m for m in general.shown_history(s, tid) if m.get('press')]
@@ -209,8 +209,8 @@ def test_a_coding_turn_is_told_what_any_agent_s_turn_is():
     s._exec("UPDATE worker_event SET CreatedAt='2000-01-01 00:00:00' WHERE TaskId=?", (tid,))
     rid = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'Reason': 'the reply to Ray', 'DraftText': 'Hi Ray - fixed.'})
     s.decide_review(rid, 'approved', 'Hi Ray - fixed.', 'owner')
-    assert [x.split(': ', 1)[1] for x in general.owner_did(s, tid)] == [f'approved (sent, if it sends) rv{rid} (the reply to Ray)']
-    assert 'WHAT THE OWNER DID SINCE YOUR LAST TURN' in general.turn_facts(s, tid, resumed=True)
+    assert general.owner_did(s, tid) == [], 'a card of the line is the screen fact\'s'
+    assert f'rv{rid}, the email' in general.turn_facts(s, tid, resumed=True).split(cardqueue.SCREEN_HEAD)[1].split('- Sent ')[1]
 
 
 def test_what_the_owner_did_is_told_as_lines_already_in_his_chat_never_to_say_again():
@@ -325,3 +325,30 @@ def test_the_owners_line_this_turn_carries_is_not_quoted_in_its_facts_as_well():
     assert note not in facts and general.OWN_BELOW in facts
     assert general._prompt(s, tid)[1].count(note) == 1, 'a fresh turn: the conversation ends on it, and the facts point there'
 
+
+
+def test_a_newer_message_never_retires_what_is_still_owed_to_its_sender():
+    """The walk, 2026-11-19: asked for three caterer options, then "did you hear back from any caterers?" before the reply went - the agent
+    called the options "no longer needed" and drafted only "Not yet". Where every chat agent is told how messages stand (LATEST_LINE), one
+    sentence: what is owed stays owed, answered first; the turn the thread change starts says the same once (ingest.REPLAN points at it).
+    The live shape runs through the real doors in the audit corpus (audit_scenarios.w_owed_answer)."""
+    from taskuary import ingest
+    assert 'never an earlier ask again' not in selfclose.LATEST_LINE
+    assert 'a newer message never retires what is still owed to its sender: answer that, then the new question' in selfclose.LATEST_LINE
+    assert 'it may need no reply any more' not in ingest.REPLAN and 'LATEST MESSAGE WINS' in ingest.REPLAN
+
+
+def test_a_withdraw_marker_never_takes_back_the_letter_its_own_turn_wrote():
+    """WALK 8 (2026-11-20): a reply raised empty waited for his times; the next turn's propose_reply filled that very card, then the turn ended
+    with [[TASKUARY-WITHDRAW which=rv<n>]] for "the earlier draft" - its own new letter. The chat said "drafted for your Send" over no card."""
+    s = MemoryStore(); tid, _, _, rid = the_owners_day(s)
+    s._exec("UPDATE review SET DraftText='' WHERE ReviewId=?", (rid,))
+    summ = f"{selfclose.SUMMARY_OPEN}{json.dumps({'did': 'Drafted it'})}{selfclose.SUMMARY_CLOSE}"
+    def turn(system, user, **kw):
+        assert wrapup.agent_reply(s, tid, 'Hi Gail, the November list is attached. Alex', 'assistant')['review_id'] == rid
+        return f"[[TASKUARY-WITHDRAW which=rv{rid}: replaced by the new letter]]\nThe reply is drafted for your Send.\n{summ}"
+    with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')): sess = general.GeneralSession(s, tid)
+    with mock.patch.object(general.llm_mod, 'build_llm', return_value=turn), mock.patch('taskuary.hooks.judge_ended'), \
+            mock.patch('taskuary.proposals.set_aside_drafts', return_value=[]):
+        sess.send_prompt('the November one, please')
+    assert s.get_review(rid)['Status'] == 'pending', 'the card it just wrote still stands'

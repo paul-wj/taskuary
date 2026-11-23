@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { BURST_MS, burstsNow, pieceAt, piecesOf } from "../src/allDone.js";
+
 
 // REACHING CLEAR (the owner, 2026-11-06): confetti once, on the way from rows to none - never on a reload or a rail already clear
 test("the burst plays only on the way from rows to none", () => {

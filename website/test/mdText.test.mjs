@@ -2,6 +2,7 @@
 // was only a fenced ascii diagram read as prose - every line a paragraph, the boxes in pieces (2026-10-06).
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { linkRefs, looksMd, refNumber, refParts } from "../src/mdText.js";
 
 // A TASK NAMED IN AN ANSWER OPENS (the owner, 2026-10-28): a bare ref becomes a link to it; one already a link, in code or in an address does not
@@ -9,6 +10,9 @@ test("a bare task ref in an answer becomes its link, nothing else does", () => {
   assert.equal(linkRefs("TQ-1173, the reconciliation, is next."), "[TQ-1173](#task=1173), the reconciliation, is next.");
   assert.equal(linkRefs("See [TQ-0002](#task=2)."), "See [TQ-0002](#task=2).");
   assert.equal(linkRefs("run `open TQ-0005` and TQ-0006"), "run `open TQ-0005` and [TQ-0006](#task=6)");
+  // ...and a link the answer named in words keeps them: the page never puts "open TQ-0007 →" in their place (design round 4, 2026-11-19)
+  const md = fs.readFileSync(new URL("../src/md.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(md, /open TQ-\$\{/);
   assert.equal(linkRefs("/outputs/TQ-0007/report.md"), "/outputs/TQ-0007/report.md");
   assert.equal(refNumber("TQ-0042"), 42);
   assert.equal(refNumber("nope"), 0);
@@ -25,10 +29,12 @@ test("a chat answer with a bare web address is drawn as markdown, so the address
   assert.ok(chatMd("Here it is: https://nodejs.org/en/download"));
   assert.ok(chatMd("**bold**"));
   for (const s of ["Morning, Dana. Two are waiting on you.", "the http header", "", null]) assert.ok(!chatMd(s), String(s));
+  assert.match(fs.readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8"), /chatMd\(text\) \? <Md text=\{text\} onTask=/);
 });
 
 test("a task's ref is one word in a table cell", () => {
   assert.deepEqual(refParts("TQ-0001 and TQ-12"), ["", "TQ-0001", " and ", "TQ-12", ""]);
   assert.deepEqual(refParts("no ref here"), ["no ref here"]);
+  const md = fs.readFileSync(new URL("../src/md.jsx", import.meta.url), "utf8");
+  assert.match(md, /td: Td/); assert.match(md, /"& \.ref": \{ whiteSpace: "nowrap" \}/);
 });
-

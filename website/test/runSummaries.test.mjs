@@ -3,6 +3,7 @@
 // 2026-10-15). Every run, newest first, by its last words; everything else behind one Full transcript.
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { lastWords, runHeads, runsOf } from "../src/agentRecord.js";
 
 test("a run's last words are its last message, without the prompt box the screen read along with it", () => {
@@ -59,5 +60,3 @@ test("runs read latest first, the earlier ones below it newest first, none dropp
   assert.deepEqual(runHeads(sessions, "c").map((r) => r.s.sid), ["b", "a"]);
   assert.deepEqual(runHeads([]), []);
 });
-
-

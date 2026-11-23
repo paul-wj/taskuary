@@ -144,7 +144,7 @@ def session_env(agent: str = '', task_id=None, cwd: str = '', sid: str = None, s
     """What a CLI needs to know about ITSELF. `taskuary --note "..."` inside an agent's terminal
     should not have to be told which agent or which task it is - the session already knows, so
     it says so in the environment."""
-    from . import config, guard
+    from . import config, gatecmd, guard
     srv = config.load()['server']
     host = '127.0.0.1' if srv.get('host') in ('0.0.0.0', '::', '', None) else srv.get('host')
     out = {k: str(v) for k, v in (('TASKUARY_AGENT', agent), ('TASKUARY_TASK', task_id or ''),
@@ -164,7 +164,8 @@ def session_env(agent: str = '', task_id=None, cwd: str = '', sid: str = None, s
     if tok: out[guard.AGENT_ENV] = tok
     # the token is shared by every session; this says which task is THIS one's (guard.owns_task)
     if tok and str(task_id or '').isdigit(): out[guard.TASK_ENV] = guard.task_proof(srv, task_id)
-    if task_id and (d := own_command()): out['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
+    # ...and the browser and desktop presses held at the command, whatever AI runs it (gatecmd): its folder first, then `taskuary`'s
+    if task_id: out['PATH'] = os.pathsep.join(d for d in (gatecmd.folder(), own_command(), os.environ.get('PATH', '')) if d)
     return stranger_env(out, task_id, srv) if stranger else out
 
 
@@ -892,7 +893,7 @@ def _stranger_msg(store, m: dict) -> str:
     return (f"FROM {m.get('FromName') or m.get('FromEmail') or m.get('Channel')} ({m.get('SentAt') or ''}), subject \"{m.get('Subject') or ''}\":\n"
             f"{m.get('BodyText') or ''}" + (f"\nFILES: {files}" if files else ''))
 
-def resume_seed(instruction: str = '', store=None, tid: int = None) -> str:
+def resume_seed(instruction: str = '', store=None, tid: int = None, pressed: bool = True) -> str:
     """What a reopened conversation is told. Not seed_text's dossier: the CLI still holds the task,
     the messages and what it already did - repeating them invites it to start the job again.
 
@@ -905,7 +906,9 @@ def resume_seed(instruction: str = '', store=None, tid: int = None) -> str:
     # THE OWNER'S WORDS LEAD (the owner, 2026-09-27: "i wrote message but it did not show up in prompt"): appended after
     # the canned paragraph they read as part of it, and the pane showed a wall of our text with theirs as its last words
     note = str(instruction or '').strip()
-    parts = ([f'FROM THE OWNER: {note}'] if note else []) + [RESUME_PROMPT]
+    # ...RESUME'S WORDS ONLY FOR HIS RESUME (`pressed`; the coding hammer, 2026-11-18): a line he typed after the agent died reopened it told
+    # "The owner chose Resume ... restate that one question and wait" - nobody had pressed it, and his line is the turn
+    parts = ([f'FROM THE OWNER: {note}'] if note else []) + ([RESUME_PROMPT] if pressed or not note else [])
     if store is not None and tid:
         try:
             from . import context as ctx
@@ -1889,15 +1892,17 @@ def with_fence_rule(rules: str) -> str:
     if not rules: return rules
     if FENCE_OPEN not in rules: rules = f'{rules} {FENCE_LINE}'
     if '--tick' not in rules: rules = f'{rules} {TICK_LINE}'
-    from .agenttools import SHOW_RULE, TOOLS_LINE, VERIFY_RULE
+    from .agenttools import OWNER_FACT_RULE, SHOW_RULE, TOOLS_LINE, VERIFY_RULE
     if 'Taskuary tools' not in rules: rules = f'{rules} {TOOLS_LINE}'      # the toolbox (2026-10-25): an owner's copy from before it still hears of it
     if 'unless the show tool returned it' not in rules: rules = f'{rules} {SHOW_RULE}'      # ...and how a file reaches them (2026-11-09)
     if 'Claim an effect' not in rules and 'effect you did not verify' not in rules: rules = f'{rules} {VERIFY_RULE}'
+    if 'fact about the owner' not in rules: rules = f'{rules} {OWNER_FACT_RULE}'
     if 'one final file' not in rules:                   # one file per thing asked (2026-10-28): an owner's copy from before it hears it too
         from .outputs import ONE_FILE
         rules = f'{rules} Files you make: {ONE_FILE}'
-    from .outputs import ENV, WHERE
+    from .outputs import ENV, FIGURES, WHERE
     if ENV not in rules: rules = f'{rules} {WHERE}'     # ...and WHERE they go: the one folder the task page serves (outputs.py)
+    if FIGURES not in rules: rules = f'{rules} {FIGURES}'      # ...computed, never typed (the walk, 2026-11-22: one deck, two totals)
     return rules if 'Big results' in rules else f'{rules} {BIG_LINE}'
 
 
@@ -1986,16 +1991,14 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     # repo's agents are deliberately absent - awareness costs prompt tokens, so it is spent
     # only where a collision is physically possible.
     from . import browserview as _bv
-    # the hold is promised only to a CLI whose hook can refuse (llm.HOLDS_CLI): Codex was told "held" and paid (2026-10-25)
-    from .llm import HOLDS_CLI
     # ...told it is OPEN only when there is a page to open it on (last_page) that the owner has a part on; else offered, launched by its
     # first navigate (on_demand)
     from .general import page_needs_owner
     if _bv.wanted(t) and shutil.which('agent-browser'):
-        parts.append(_bv.brief(held=not cli or cli_named({'cmd': cli}) in HOLDS_CLI, open_now=bool(_bv.last_page(tid)) and bool(page_needs_owner(store, tid))))
+        parts.append(_bv.brief(open_now=bool(_bv.last_page(tid)) and bool(page_needs_owner(store, tid))))
     # ...and the owner's desktop apps, once Agent Desktop is on and the task is marked "needs desktop" - never on a stranger's task
     # (agentdesktop.py; its hook refuses there too)
-    if not stranger and _ad.on(store) and _ad.wanted(store.get_task(tid)): parts.append(_ad.brief(held=not cli or cli_named({'cmd': cli}) in HOLDS_CLI))
+    if not stranger and _ad.on(store) and _ad.wanted(store.get_task(tid)): parts.append(_ad.brief())
     from . import blackboard as bb
     # the overlap model would read a stranger's title and summary, and its sentence would land in this prompt
     aware = bb.briefing(store, cwd, exclude_tid=tid, assess_for=None if stranger else tid) if cwd else ''
@@ -2428,6 +2431,7 @@ def start_on_task(store, tid: int, agent: str = '', model: str = None, instructi
     `quiet` reopens a `resume`d conversation with nothing typed into it: the agent is back where it stopped, at its prompt
     (server.resume_asking - an agent a restart cut off while it asked the owner gets back to waiting, and does nothing new)."""
     import json
+    from . import workerstate as ws
     t = store.get_task(tid)
     if not t: raise ValueError(f'no task {tid}')
     # ...A FILE HE ATTACHED TO THE START IS THE TASK'S (outputs.take_in_text, as a line's and a New task's are): Start and Restart name it in
@@ -2517,7 +2521,7 @@ def start_on_task(store, tid: int, agent: str = '', model: str = None, instructi
             term = open_session(store, agent, tid, repo, continued_cwd, 0, 0, actor,
                                 model if i == 0 else None, resume=resume,
                                 brain=candidate or None,
-                                seed_fn=(None if quiet else lambda here: resume_seed(instruction, store, tid)) if resume else
+                                seed_fn=(None if quiet else lambda here: resume_seed(instruction, store, tid, pressed=not ws.ours(actor))) if resume else
                                         (lambda here, r=repo, c=candidate: seed_text(store, tid, instruction, r, here, instruction_theirs,
                                                                             cli=c or cli_named(json.loads(row.get('Config') or '{}')))))
             chosen = candidate or cli_named(json.loads(row.get('Config') or '{}'))
@@ -2634,6 +2638,8 @@ def stable_phase_of(t, now: float = None) -> str:
     if typing_into(t): return 'working'
     at = time.time() if now is None else float(now)
     raw = _observed_phase(t)
+    # ...and WHEN ITS SCREEN LAST SHOWED A TURN AT WORK (general.owed): a pane that showed his line's turn and is back at its prompt has answered
+    if raw == 'working': t.worked_at = at
     # A PANE LAUNCHED ON ITS PROMPT IS AT WORK UNTIL ITS CLI SHOWS IT WORKING (the recorded flood, 2026-11-11): the prompt rides the command
     # line, so nothing is typed and nothing waits to be accepted - and while the CLI was still coming up its screen read as the bare prompt.
     # The waiting room typed thirty of his lines and notes into it half a minute before its first turn; none reached the agent, and the
@@ -2956,6 +2962,13 @@ def type_into(t, text: str, done=None, brief: bool = False):
     # the note an approved step hands the agent drew as the owner's bubble. Only what the owner typed, or what came in on the task's thread,
     # is an input; over ACP the prompt is marked Taskuary's, on a pty it is kept as a seed the record reads as a brief (sessionrecord.mark_briefs)
     if is_acp(t): return t.prompt(text, brief=True, done=done) if brief else t.say(text, done=done)    # a prompt, never keystrokes
+    # ...AND A CHAT TAKES A PROMPT, NEVER KEYSTROKES (the HIPAA walk, 2026-11-21): typed into a chat agent's composer, Taskuary's word of a
+    # sign-up it had approved was sent as the owner's own line - a "You" bubble speaking of him in the third person, its marker and all
+    if hasattr(t, 'send_prompt'):
+        def told():
+            try: t.send_prompt(text, brief=True) if brief else t.send_prompt(text); done and done(True)
+            except Exception as e: logger.warning(f"task {getattr(t, 'task_id', '?')}: the words did not reach its agent - {e}"); done and done(False)
+        return threading.Thread(target=told, daemon=True, name='told').start()
     if brief and (tid := getattr(t, 'task_id', None)):
         from . import sessionrecord as _sr
         _sr.keep_seed(tid, text)

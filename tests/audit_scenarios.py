@@ -10,7 +10,7 @@ the REAL routes on a temp store, with the agent's turn spoken by a stand-in of e
 
 After every step `snap` reads what the page reads (the chat payload, the task page's one lit move) and what the agent's next turn is told
 (general.turn_facts), normalized so two backends doing the same thing read the same. tests/test_audit_scenarios.py runs every scenario on every
-backend and holds the snapshots to the parity rule and the goal rules (`broken`). The replay sheet for the page is REPLAY in this file.
+backend and holds the snapshots to the goal rules (`broken`). The replay sheet for the page is REPLAY in this file.
 Invented people only (CLAUDE.md)."""
 import contextlib, json, os, re, shutil, subprocess, sys, threading, time
 from pathlib import Path
@@ -70,9 +70,12 @@ class Run:
     def at_work(self, *calls, secs=40, label: str = None) -> str:
         """The agent's next turn begun and still at work: waits for its prompt (whatever started it) and makes `calls` [(tool, {args})] - no
         answer yet, so what the owner presses meanwhile lands on a turn under way (`label` snaps it there). -> the prompt it was given."""
+        from fake_director import read_when_ready
         inp = self.d / f'{self.k}.in'
-        assert until(inp.is_file, secs), f'{self.backend}: turn {self.k} never started (no prompt reached the agent)'
-        prompt = inp.read_text(encoding='utf-8'); self.prompts.append(prompt); self.told.append((len(self.snaps), prompt))
+        ready = until(lambda: (prompt,) if (prompt := read_when_ready(inp)) is not None else None, secs)
+        assert ready, f'{self.backend}: turn {self.k} never started (no prompt reached the agent)'
+        (prompt,) = ready
+        self.prompts.append(prompt); self.told.append((len(self.snaps), prompt))
         self.systems.append((self.d / 'system.txt').read_text(encoding='utf-8') if (self.d / 'system.txt').is_file() else '')   # a CLI's own, for a real turn
         was = {r['ReviewId'] for r in self.s._rows('SELECT ReviewId FROM review WHERE TaskId=?', (self.tid,))}
         pace()
@@ -119,12 +122,12 @@ class Run:
         from taskuary import codingchat, general
         return getattr(general.session_for(self.tid) or codingchat._live(self.tid), 'sid', '')
 
-    def hand_over(self):
-        "The agent's press held on its page and handed to the owner, as the browser hook does mid-turn (browsergate.hand_over)."
-        from taskuary import browsergate
-        self.mp.setattr(browsergate, 'gone', lambda sid: False)          # ...the page it was handed on is up (the browser view)
-        return browsergate.hand_over(self.s, self.tid, self.sid(), {'verb': 'click'}, {'url': 'https://portal.example/vendors/77', 'open': True},
-                                     {'what': 'Save on the vendor record', 'why': 'it changes the record on the portal'}, 'portal.example', watch=None)
+    def held(self):
+        "The agent's press held where it runs and put on the task as one card in the chat, as the browser gate does mid-turn (browsergate._check)."
+        from taskuary import proposals
+        return proposals.queue(self.s, self.tid, {'action': 'browser_act', 'sid': self.sid(), 'args': ['click', '@e9'], 'command': 'agent-browser click @e9',
+                                                  'url': 'https://portal.example/vendors/77', 'site': 'portal.example', 'what': 'Save on the vendor record',
+                                                  'why': 'it changes the record on the portal'}, 'agent')
 
     def asking_id(self) -> str:
         from taskuary import workerstate as ws
@@ -221,10 +224,15 @@ class Run:
         self.snap(label or f'task: {title}')
         return self.tid
 
-    def type(self, text, label=None):
-        "The owner types a line in the task's box - the one road (general.take_line) - and the page reads at once."
+    def upload(self, name: str, data: bytes) -> str:
+        "A file the owner drops on the box, saved by the one door every box uses (/api/prompt-file) -> the path the page then names."
+        r = self.c.post('/api/prompt-file', content=data, headers={'X-File-Name': name}); assert r.status_code < 300, r.text[:200]
+        return r.json()['path']
+
+    def type(self, text, label=None, attach=None):
+        "The owner types a line in the task's box - the one road (general.take_line) - and the page reads at once. `attach`: paths the box saved (upload)."
         self.typed.append(text); pace()
-        threading.Thread(target=lambda: self.c.post(f'/api/tasks/{self.tid}/assistant/messages', json={'text': text}, timeout=120), daemon=True).start()
+        threading.Thread(target=lambda: self.c.post(f'/api/tasks/{self.tid}/assistant/messages', json={'text': text, **({'attachments': attach} if attach else {})}, timeout=120), daemon=True).start()
         assert until(lambda: text in self.payload()['lines'] or text in [w for w in self.payload()['waiting']], 10), f'{self.backend}: his line was kept'
         self.snap(label or f'type: {text[:40]}')
 
@@ -288,7 +296,8 @@ class Run:
                         'error': r.get('ActError') or (r.get('DeliveryState') if r.get('DeliveryState') in ('failed', 'unknown') else ''),
                         'note': r.get('DecideNote') or ''})
         # ...and a coding task's landing question (landing.state): the Push card, its own door (/landing), no review row
-        land = (self.c.get(f'/api/tasks/{self.tid}/landing').json() or {}).get('data') if (self.s.get_task(self.tid) or {}).get('Kind') == 'coding' else None
+        # ...on any task whose work is in a checkout: a general agent's in one the owner named too (landing.adopt)
+        land = (self.c.get(f'/api/tasks/{self.tid}/landing').json() or {}).get('data')
         if land and (land.get('ask') or land.get('landed') or land.get('passed')):
             out.append({'id': 'land', 'kind': 'land', 'status': 'approved' if land.get('landed') else 'pending', 'text': land.get('line') or '',
                         'turn': None, 'named': False, 'passed': bool(land.get('passed')), 'error': '', 'note': ''})
@@ -331,11 +340,13 @@ def world(backend: str, tmp: Path, monkeypatch):
     from taskuary.store import MemoryStore
     d = tmp / 'director'; d.mkdir(); (tmp / 'artifacts').mkdir()
     monkeypatch.setenv('FAKE_DIRECTOR', str(d))
-    from fake_director import MARK
-    MARK.write_text(str(d), encoding='utf-8')
+    from fake_director import marker
     monkeypatch.setattr(session_artifacts, 'root', lambda: tmp / 'artifacts')
     from taskuary import config                       # ...a home of its own: a task's files (outputs.folder) never outlive the scenario
-    (tmp / 'home').mkdir(); monkeypatch.setattr(config, 'home', lambda: tmp / 'home')
+    home = tmp / 'home'; home.mkdir()
+    monkeypatch.setattr(config, 'home', lambda: home)
+    mark = marker(os.environ['TASKUARY_HOME'])
+    mark.write_text(str(d), encoding='utf-8')
     s = MemoryStore()
     s.set_setting('owner_email', ME, 't'); s.set_setting('owner_name', 'Alex Doyle', 't')
     monkeypatch.setattr(general, 'idle_for', lambda: 3600)
@@ -343,8 +354,7 @@ def world(backend: str, tmp: Path, monkeypatch):
     real = next(c.cell_contents for c in general.start_session.__closure__ or () if getattr(c.cell_contents, '__name__', '') == 'start_session') \
         if general.start_session.__closure__ else general.start_session
     monkeypatch.setattr(general, 'start_session', real)
-    from taskuary import clis, quickwork
-    monkeypatch.setattr(quickwork, 'takes', lambda store, tid: False)
+    from taskuary import clis
     if backend == 'coding':
         repo = tmp / 'ledger'; repo.mkdir()
         (repo / 'totals.py').write_text('def total(a, tax):\n    return a + tax\n', encoding='utf-8')
@@ -414,10 +424,10 @@ def world(backend: str, tmp: Path, monkeypatch):
             try: t.close()
             except Exception: pass
             terminal.SESSIONS.pop(k, None)
-    funnel.invalidate(); MARK.unlink(missing_ok=True)
+    funnel.invalidate(); mark.unlink(missing_ok=True)
 
 
-# ── the goal rules and the parity rule ───────────────────────────────────────────────────────────────────────────────────────────────
+# ── the goal rules ───────────────────────────────────────────────────────────────────────────────────────────────
 SENDS = ('draft', 'draft_reply', 'slot')         # a letter's card: drawn only once it has words (agentSummary.pendingReply)
 def live(c) -> bool: return c['status'] in ('pending', 'held') and not c['passed'] and (bool(c['text']) or c['kind'] not in SENDS)
 
@@ -441,10 +451,21 @@ def broken(r: Run) -> list:
         # ...and the ask that opened a task he made, where no typed line did (conversation.items: the first thing in its chat)
         ls = s['lines'][1:] if s['lines'][:1] == [getattr(r, 'asked', None)] and r.asked not in r.typed else s['lines']
         if ls != r.typed[:len(ls)] or [x for x in ls if x not in r.typed]: say('v', i, f"lines {s['lines']} != typed {r.typed}")
-        # (vii) told the truth: no draft told as waiting that is not, no unsent card told as unsent that went
-        for rid in re.findall(r'^- rv(\d+):', s['told'].split('ALSO SET UP AND NOT SENT')[-1], re.M) * ('ALSO SET UP' in s['told']):
+        # (vii) told the truth: what the agent is told stands on his screen is what the page draws (cardqueue.screen) - a card told as waiting
+        # waits, one told as greyed is no longer pressable, one told as sent or done went
+        from taskuary.cardqueue import SCREEN_HEAD
+        want = {'Waiting': lambda c: c['status'] == 'pending' and not c['passed'], 'Not on his screen yet': lambda c: c['status'] == 'pending' and not c['passed'],
+                'Greyed': lambda c: c['passed'] or c['status'] == 'pending', 'Sent': lambda c: c['status'] in ('approved', 'edited', 'sent'),
+                'Done': lambda c: c['status'] in ('approved', 'edited', 'sent')}
+        for told, rid in re.findall(r'^- (Waiting|Not on his screen yet|Greyed|Sent|Done)[^\n]*?: rv(\d+)', s['told'].split(SCREEN_HEAD)[-1], re.M) * (SCREEN_HEAD in s['told']):
             c = next((c for c in s['cards'] if c['id'] == int(rid)), None)
-            if not c or c['status'] not in ('pending', 'held'): say('vii', i, f"told rv{rid} waits, but it is {c and c['status']}")
+            if not c or not want[told](c): say('vii', i, f"told rv{rid} is {told!r}, but it is {c and c['status']}")
+    # (vii) ...and each fact once: a press that woke the agent carried the screen fact in its note, and the turn's facts said it again above it
+    from taskuary.cardqueue import SCREEN_HEAD
+    for k, p in enumerate(r.prompts):
+        # ...(a fresh conversation's head quotes the turn's own words over the task on purpose - general.prompt_parts' lead - and is not counted)
+        p = re.sub(r"(?:TASKUARY'S WORDS ON THIS TURN|THE OWNER'S ASK)[^\n]*:\n.*?\n\nTASK TQ-", 'TASK TQ-', p, count=1, flags=re.S)
+        if p.count(SCREEN_HEAD) > 1: out.append(f'(vii) turn {k + 1} is told what stands on his screen {p.count(SCREEN_HEAD)} times')
     # (iii) a card stands in the turn that raised it, from its first answer on, and never moves
     # ...BUT A RUN IS ONE TURN'S WORK (conversation.items, the owner 2026-11-13): a turn Taskuary woke with no line of his between - a press's
     # outcome handed back (general.approved, general.failed) - goes on from the one before it, and what still waits stands at the run's end
@@ -457,9 +478,15 @@ def broken(r: Run) -> list:
         if c['id'] in r.raised and c['turn'] is not None and c['turn'] != r.raised[c['id']] and (r.raised[c['id']], c['turn']) not in went:
             out.append(f"(iii) rv{c['id']} raised in turn {r.raised[c['id']] + 1} is drawn in turn {c['turn'] + 1} ({'named' if c['named'] else 'by time'})")
         if moved: out.append(f"(iii) rv{c['id']} moved between turns: {[t for t in turns if t is not None]}")
-    # ...and THE THING TO PRESS IS RIGHT ABOVE THE BOX (the owner, 2026-11-11): a waiting card's live copy stands under the newest answer
+    # ...and THE THING TO PRESS IS RIGHT ABOVE THE BOX (the owner, 2026-11-11): a waiting card's live copy stands under the newest answer - of
+    # what he said since: the log never moves a card (chatlog, SPEC D), so answers Taskuary woke with no line of his between (a failed send told
+    # back) go on under it, and a line of his greys it (proposals.move_on)
+    first = {}
+    for i, s in enumerate(ss):
+        for c in s['cards']: first.setdefault(c['id'], i)
     for i, s in enumerate(ss):
         for c in s['cards']:
+            if len(s['lines']) == len(ss[first[c['id']]]['lines']): continue
             if c['status'] == 'pending' and c.get('at') is not None and s['said'] and not s['working'] and c['at'] < len(s['said']) - 1:
                 say('iii', i, f"rv{c['id']} waits under answer {c['at'] + 1} of {len(s['said'])}")
     # (iv) a press leaves one trace where it was made (a line, or its card's own state) and reaches the agent once
@@ -469,34 +496,11 @@ def broken(r: Run) -> list:
         lines = len(b['events']) - len(a['events'])
         moved = [c['id'] for c in b['cards'] if (c['id'], c['status'], c['error']) not in {(x['id'], x['status'], x['error']) for x in a['cards']}] + ['ask'] * (a['asking'] != b['asking'])
         if lines > 1 or not (lines or moved): say('iv', i, f"the press left {lines} line(s) and moved cards {moved}")
+    # ...and a press line once drawn stays: Remind me's waited by the box for a turn its own press stopped, and was gone once it stopped
+    for i in range(1, len(ss)):
+        if len(ss[i]['events']) < len(ss[i - 1]['events']): say('iv', i, f"a press line went: {ss[i - 1]['events']} -> {ss[i]['events']}")
     # (vi) nothing left the computer without a press: every send is a Send that went
     if len(r.sent) > len([i for i in r.pressed if 'send' in ss[i]['step'] or 'Approve' in ss[i]['step']]): out.append(f"(vi) {len(r.sent)} sends for fewer presses")
-    return out
-
-
-# ...BUT FOR WHAT IS THE BACKEND'S OWN: the instant a press or a mail lands, whether its start is up yet or its stop has bitten (a CLI is killed
-# under its turn at once, an AI card's call runs out before it is dropped) - the steps right after one read `working`, the chip, the status and
-# the row's light by the backend's clock
-OWN = ('arrive', 'Remind me', 'a monitor', 'a stranger', 'a known', 'Erin writes', 'a second', 'arrives to', 'press Trust')       # ...Trust starts the agent
-def normal(s: dict) -> dict:
-    "A snapshot as two backends must read alike: what the page draws and lights, the cards by kind and place."
-    kind = lambda k: 'reply' if k in ('draft', 'draft_reply') else k
-    own = s['step'].startswith(OWN)
-    # ...HIS LINES AS THE PAGE DRAWS THEM, taken by a turn or waiting for one, in order: the moment a turn takes one is the backend's clock (a chat
-    # takes it in the request, a coding adapter once it is up), and so is the task's status on the press that starts it. An empty answer draws nothing
-    return {'step': s['step'], 'his': s['lines'] + s['waiting'], 'said': [x for x in s['said'] if x.strip()], 'events': s['events'],
-            'working': None if own else s['working'], 'asking': s['asking'], 'cards': [(kind(c['kind']), c['status'], c.get('at'), c['passed']) for c in s['cards'] if live(c) or c['status'] != 'pending'],
-            'status': None if own or s['step'].startswith('type') else s['status'], 'chip': None if own else s['chip'], 'lit': None if own else s['lit'], 'told': sorted(set(re.findall(r'^([A-Z][A-Z \'-]{6,}?)(?: -|:|\()', s['told'], re.M)))}
-
-
-def parity(snaps: dict) -> list:
-    "Where backends read differently on the same scenario ({backend: its snapshots}): ['step: field cli=... coding=...']."
-    out, base = [], next(iter(snaps))
-    for b, ss in snaps.items():
-        if b == base: continue
-        for x, y in zip(map(normal, snaps[base]), map(normal, ss)):
-            out += [f"{x['step'][:36]!r}: {k} {base}={x[k]!r} {b}={y[k]!r}" for k in x if x[k] != y[k]]
-        if len(snaps[base]) != len(ss): out.append(f'{b} took {len(ss)} steps, {base} {len(snaps[base])}')
     return out
 
 
@@ -560,13 +564,18 @@ def c_bug_pushed(r: Run):
 
 @on('cli', 'acp')
 def d_page_step(r: Run):
-    "(d) 'log in to the portal and tell me what is wrong' -> a page step handed over -> the owner types instead -> raised again -> pressed -> answered."
+    "(d) 'log in to the portal and tell me what is wrong' -> a held Save, one card in the chat -> the owner types instead -> held again -> approved -> answered."
     r.task('Check the vendor record on the portal')
     r.type('log in to the portal and tell me what is wrong with the vendor record')
-    r.turn('Signed in and found the record: the bank details are missing. Saving the fix is your press on the page.', r.hand_over)
+    r.turn('Signed in and found the record: the bank details are missing. Saving the fix waits for your press.', r.held)
     r.type('what did you change on it?')
-    r.turn('I filled the bank details from the invoice; nothing is saved yet - the Save is yours on the page again.', r.hand_over)
-    r.press(f'/api/tasks/{r.tid}/worker/answer', {'request_id': r.asking_id(), 'text': '', 'press': True}, label='press Done')
+    r.turn('I filled the bank details from the invoice; nothing is saved yet - the Save waits for your press.', r.held)
+    from taskuary import browsergate
+    # ...the page itself stood in: the press runs the act and the agent is told, as browsergate.perform tells it
+    r.mp.setattr(browsergate, '_run', lambda sid, a, w, t, **k: (0, 'Done'))
+    r.mp.setattr(browsergate, 'address', lambda sid, st=None: 'https://portal.example/vendors/77')
+    r.mp.setattr('taskuary.browserview.state', lambda sid, fresh=False: {'open': True, 'url': 'https://portal.example/vendors/77'})
+    r.send(label='press Approve')
     r.turn('Saved: the record now shows the bank details. Nothing else was wrong with it.')
 
 
@@ -799,9 +808,108 @@ def t_send_at_work(r: Run):
     assert not [x for x in r.payload()['said'] if 'stopped' in x], 'no turn reads as failed'
 
 
+def v_attachments(r: Run):
+    "(v) A picture and a PDF dropped on the box with his line -> the agent is told where each is, and can read it from where it runs."
+    r.task('Look over the October pack')
+    pic = r.upload('totals.png', b'\x89PNG\r\n\x1a\n' + b'0' * 64)
+    pdf = r.upload('october-report.pdf', b'%PDF-1.4 the October numbers')
+    r.type('here is the pack - tell me what stands out', attach=[pic, pdf])
+    prompt = r.at_work()
+    for name in ('totals.png', 'october-report.pdf'):
+        named = [x for x in re.findall(r"((?:[A-Za-z]:)?[\\/][^\s'\"]*" + re.escape(name) + ')', prompt)]     # ...a Windows path too (C:\...)
+        assert named, f'{r.backend}: the agent is told where {name} is: {prompt!r}'
+        assert all(os.access(x, os.R_OK) and Path(x).is_file() for x in named), f'{r.backend}: {name} is readable at the path it was told: {named}'
+        # ...in the task's own folder: under attachments/ an agent's Read is refused as Taskuary's own data (acpgate), whatever it was told
+        assert not [x for x in named if '/attachments/' in x.replace('\\', '/')], f'{r.backend}: {name} is named where its Read is refused: {named}'
+        r.extra.append((name, named))
+    r.answer('The pack reads fine; the PDF totals match the picture.')
+
+
+@on('cli', 'acp', 'api')            # ...a mail's reply owed: a coding task's chat is not that road (OPEN_PARITY j)
+def w_owed_answer(r: Run):
+    """(w) A sender asks for three options, then writes "did you hear back?" before the reply went (the walk, 2026-11-19: the agent called the
+    options "no longer needed" and drafted only "Not yet") -> the agent's next turn is told the options it drafted, so the one reply answers
+    what is still owed, then the new question."""
+    r.arrive({'intent': 'reply_only', 'kind': 'task', 'title': 'Gail asks for three caterers'}, from_name='Gail Moreno', from_email='gail@northwind.example',
+             body='Can you find catering for the 40 of us? Three options with prices.')
+    r.turn('Three caterers with prices - the reply to Gail waits for your Send.',
+           ('propose_reply', {'text': 'Hi Gail - three options for 40: Harbor Kitchen $780, Elm Street Catering $1,050, Bluebird from $1,200.'}))
+    r.arrive({'intent': 'reply_only', 'kind': 'task', 'refines': False}, from_name='Gail Moreno', from_email='gail@northwind.example',
+             body='Quick one - did you hear back from any caterers?', label='arrive again: Gail asks before the reply went')
+    prompt = r.at_work(('propose_reply', {'text': 'Hi Gail - three options for 40: Harbor Kitchen $780, Elm Street Catering $1,050, Bluebird from $1,200. '
+                                                  'None of them has written back yet.'}))
+    # ...what is owed reaches the agent with the new question: the options it drafted, as he sees them
+    assert 'Harbor Kitchen' in prompt, f'{r.backend}: the turn after her second mail is told what it still owes her: {prompt[-1500:]!r}'
+    r.answer('One reply to Gail: the three options, then that no caterer has answered yet.')
+    r.send()
+    r.turn('Gail has the options and the answer.')
+    assert any('Harbor Kitchen' in x['body'] and 'written back' in x['body'] for x in r.sent), r.sent
+
+
+def his_checkout(r: Run, remote: bool) -> Path:
+    "The ledger checkout he names, its own commit made; with `remote` a bare origin beside it. Developer mode as a fresh store has it: off."
+    from taskuary import agents
+    r.mp.setattr(agents, 'developer_mode', agents.developer_mode.real)
+    # ...one place on every backend: the path is in his words, which two backends must read alike (parity)
+    import tempfile
+    home = Path(tempfile.gettempdir()) / f'tq-audit-checkout-{int(remote)}'
+    if home.exists(): shutil.rmtree(home, onerror=lambda f, p, e: (os.chmod(p, 0o700), f(p)))     # ...git's objects are read-only on Windows
+    repo = home / 'his-ledger'; repo.mkdir(parents=True)
+    (repo / 'totals.py').write_text('def total(a):\n    return sum(a)\n', encoding='utf-8')
+    # ...each commit stamped as it is on every backend, so its sha - said in the press's line - is one (parity); the fix's after the task began
+    git = lambda *a, at='2001-01-01T09:00:00 +0000': subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Alex Doyle', '-c', f'user.email={ME}', *a], check=True,
+                                                                    capture_output=True, text=True, env={**os.environ, 'GIT_AUTHOR_DATE': at, 'GIT_COMMITTER_DATE': at}).stdout
+    git('init', '-q', '-b', 'master'); git('add', '.'); git('commit', '-qm', 'start')
+    if remote:
+        subprocess.run(['git', '-C', str(r.tmp), 'init', '-q', '--bare', 'his-origin.git'], check=True, capture_output=True)
+        git('remote', 'add', 'origin', str(r.tmp / 'his-origin.git')); git('push', '-q', 'origin', 'master')
+    r.repo, r.hisgit = repo, git
+    return repo
+
+
+def his_fix(r: Run):
+    "The agent's own hands in his checkout: the fix, committed there."
+    (r.repo / 'totals.py').write_text('def total(a):\n    return round(sum(a), 2)\n', encoding='utf-8')
+    r.hisgit('commit', '-qam', 'Round totals to cents', at='2099-01-01T09:00:00 +0000')
+
+
+@on('cli', 'acp')
+def x_named_checkout_pushed(r: Run):
+    """(x) A general agent fixes a bug in a checkout he named in his ask -> ONE Push card naming it -> press -> on the remote -> the agent is told.
+    Recorded on both CLIs, design round 5: the fix committed, then a raw shell card in the agent's own folder, or "only you can grant that folder
+    access in Settings -> Agents" - a dead end on the push."""
+    repo = his_checkout(r, remote=True)
+    r.task('Fix the ledger rounding')
+    r.type(f'fix the rounding bug in the ledger totals - my checkout is at {repo}. Push it once I say so.')
+    r.at_work(lambda: his_fix(r), ('propose', {'action': 'push', 'why': 'the rounding fix, one commit on master'}))
+    assert 'ERROR' not in r.results[-1], r.results[-1]
+    r.answer('Fixed and committed in your checkout: totals now round to cents. Press Push and I check it reached origin.')
+    land = r.c.get(f'/api/tasks/{r.tid}/landing').json()['data']
+    assert land['ask'] and [a['how'] for a in land['answers']] == ['push'] and land['name'] == 'his-ledger', land
+    r.press(f'/api/tasks/{r.tid}/landing', {'how': 'push'}, label='press Push')
+    assert r.hisgit('rev-parse', 'master') == subprocess.run(['git', '-C', str(r.tmp / 'his-origin.git'), 'rev-parse', 'master'],
+                                                             capture_output=True, text=True).stdout, 'the press pushed his fix'
+    prompt = r.turn('It is on origin/master - the rounding fix is pushed.')
+    assert 'Pushed 1 commit to origin/master' in prompt, prompt[-600:]
+
+
+@on('cli', 'acp')
+def y_named_checkout_no_remote(r: Run):
+    "(y) The same fix in a checkout with no remote -> no button anywhere: the card and the agent both say there is no remote, and it asks for one."
+    repo = his_checkout(r, remote=False)
+    r.task('Fix the ledger rounding')
+    r.type(f'fix the rounding bug in the ledger totals - my checkout is at {repo}. Push it once I say so.')
+    r.at_work(lambda: his_fix(r), ('propose', {'action': 'push', 'cwd': str(repo), 'why': 'the rounding fix'}))
+    assert 'no remote to push to' in r.results[-1] and 'git remote add origin' in r.results[-1], r.results[-1]
+    r.answer(f'Fixed and committed in your checkout, but it has no remote to push to.\n{ASK} What is the address of the ledger repository to push to?')
+    land = r.c.get(f'/api/tasks/{r.tid}/landing').json()['data']
+    assert land['noRemote'] and not land['ask'] and 'no remote to push to' in land['line'], land
+
+
 SCENARIOS = {k: f for k, f in [('a', a_question_answered), ('b', b_email_rewritten), ('c', c_bug_pushed), ('d', d_page_step), ('e', e_three_asks),
                                ('f', f_ci_notice), ('g', g_invite_clash), ('h', h_steered_mail), ('i', i_late_answer), ('j', j_answered_outside),
                                ('k', k_send_fails), ('l', l_no_connector), ('m', m_remind_while_working), ('n', n_full_house), ('o', o_silent_turn),
                                ('p', p_break_out), ('q', q_save_routine), ('r', r_monitor_notice), ('s', s_send_close_at_work), ('t', t_send_at_work),
-                               ('u', u_stranger_twice)]}
+                               ('u', u_stranger_twice), ('v', v_attachments), ('w', w_owed_answer),
+                               ('x', x_named_checkout_pushed), ('y', y_named_checkout_no_remote)]}
 def runs_on(name, backend) -> bool: return backend in getattr(SCENARIOS[name], 'on', BACKENDS)

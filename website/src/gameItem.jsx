@@ -112,7 +112,7 @@ function AgentSaid({ tid }) {
     api.get(`/api/tasks/${tid}/worker`).then(({ data }) => live && setSaid(String(data?.said || "").trim())).catch(() => live && setSaid(""));
     return () => { live = false; };
   }, [tid]);
-  return said ? <><Label>{t("WHAT IT SAID LAST")}</Label><Reading text={said} cap={120} /></> : null;
+  return said ? <><Label>What it said last</Label><Reading text={said} cap={120} /></> : null;
 }
 
 // an agent's filed report, from the task's comments - what it found, in its own words
@@ -127,7 +127,7 @@ function FinalReport({ tid }) {
     }).catch((e) => live && setText({ error: e }));
     return () => { live = false; };
   }, [tid]);
-  return text == null ? null : <><Label>{t("ITS FINAL REPORT")}</Label><Reading text={text === false ? t("No report was filed on this task.") : text.error ? displayError(text.error) : text} /></>;
+  return text == null ? null : <><Label>Its final report</Label><Reading text={text} /></>;
 }
 
 // the draft behind "ready to send": edit it, send it, or tell the assistant how to rewrite it
@@ -200,7 +200,7 @@ const receiptError = (done, fallbackReason) => {
   return error;
 };
 export const handOver = async (item, o, onRepo) => {
-  const { data: p } = await api.post("/api/concierge/propose", { verb: o.verb, key: item.key, table: true, exact: true, text: o.text || null,
+  const { data: p } = await api.post("/api/concierge/propose", { verb: o.verb, key: item.key, table: true, exact: true, text: o.text || null, files: o.files || [],
     agent: o.agent || null, brain: o.brain || null, pick: o.pick || null, model: o.model || null });
   if (!p?.id) throw new Error(p?.say || "it did not start");
   let res, fallbackReason = false;
@@ -339,7 +339,7 @@ export function ItemInspector({ item, agents, busy, play, onOpenTask, onNavigate
         : working ? t("Back at it - nothing for you until it stops.") : item.why}</Typography>
       {item.tid && !working && <AgentSaid tid={item.tid} />}
       {!item.paused && !!item.request_id && (item.choices || []).length > 0 && <>
-        <Label>{t("ITS QUESTION - PICK ONE")}</Label>
+        <Label>Its question - pick one</Label>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }} onClick={(e) => e.stopPropagation()}>
           {item.choices.map((c) => <Btn key={c} kind="mint" disabled={!!busy}
             onClick={() => play("answer", item.key, () => api.post(`/api/tasks/${item.tid}/worker/answer`, { request_id: item.request_id, text: c }))}>{c} · +60</Btn>)}

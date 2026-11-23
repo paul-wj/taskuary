@@ -5,7 +5,7 @@ config and opens SQLite at import time.  The guards below are deliberately test-
 code does not gain a pytest switch and a unit test can still replace a guarded boundary with its
 own fake.  Real local services are reachable only after a test registers its ephemeral port.
 """
-import hashlib, os, platform, shutil, socket, subprocess, sys, tempfile, threading, time, uuid
+import hashlib, os, platform, shlex, shutil, socket, subprocess, sys, tempfile, threading, time, uuid
 from contextlib import asynccontextmanager
 from contextlib import ExitStack
 from pathlib import Path
@@ -249,12 +249,12 @@ def isolated_runtime_boundaries():
             return _blocked('PTY worker', command)
         return real_term_init(self, argv, *args, **kwargs)
 
-    def guarded_start_session(store, tid, connector_id=None, model=None, actor='owner', pick=None, quick=False):
+    def guarded_start_session(store, tid, connector_id=None, model=None, actor='owner', pick=None):
         # the router's UNATTENDED assistant start (ingest._start_general, PW-069) is a process boundary
         # like a PTY: a test that wants it supplies a fake general.start_session. An owner-opened
         # session is ordinary test fixture and passes through.
         if actor == 'router': return _blocked('unattended assistant session', f'task {tid}')
-        return real_start_session(store, tid, connector_id, model, actor, pick, quick)
+        return real_start_session(store, tid, connector_id, model, actor, pick)
 
     def guarded_drain_later(store, delay=2.0):
         # A failed-start retry is a real background Timer and can otherwise fire against a later
@@ -415,8 +415,17 @@ def isolated_runtime_boundaries():
                 return False
         return True
 
+    def shell_git(argv):
+        "A held step's replay (shellgate.run_): `bash -c 'git ...'` with nothing but one git line is judged as that git argv, by the same rules."
+        command = [str(x) for x in (argv if isinstance(argv, (list, tuple)) else [argv])]
+        if len(command) != 3 or Path(command[0]).name.lower() not in ('bash', 'bash.exe') or command[1] != '-c': return None
+        if any(c in command[2] for c in ';&|`$<>()\n'): return None
+        try: inner = shlex.split(command[2])
+        except ValueError: return None
+        return inner if inner[:1] == ['git'] else None
+
     def allowed_process(argv, kwargs) -> bool:
-        return reviewed_python(argv) or git_allowed(argv, kwargs)
+        return reviewed_python(argv) or git_allowed(argv, kwargs) or bool((g := shell_git(argv)) and git_allowed(g, kwargs))
 
     def guarded_popen(argv, *args, **kwargs):
         if allowed_process(argv, kwargs): return real_popen(argv, *args, **kwargs)
@@ -456,7 +465,7 @@ def isolated_runtime_boundaries():
                  mock.patch.object(server, 'reports_forever', stopped('report scheduler')), \
                  mock.patch.object(server, 'quick_forever', stopped('chat poll scheduler')), \
                  mock.patch.object(server, 'doorway_forever', stopped('assistant doorway')), \
-                 mock.patch.object(server, '_warm_reads', stopped("the page's first reads made ahead")), \
+                 mock.patch.object(server, '_warm_reads', stopped("the page's first reads made ahead")),                  mock.patch.object(server, 'slim_records', stopped('agent records slimmed')),                  mock.patch.object(server, 'prime_adapters', stopped("the agents' adapters primed")), \
                  mock.patch.object(server, 'share_start', stopped('share port')), \
                  mock.patch.object(server, 'resume_asking', stopped('asking agents resumed')),                  mock.patch.object(server, 'close_orphan_browsers', stopped('orphan browsers closed')), \
                  mock.patch.object(blackboard, 'schedule_due', stopped('dispatch retry scheduler')), \
@@ -505,18 +514,32 @@ def isolated_runtime_boundaries():
 
 
 def pytest_configure(config):
-    # a run of the audit corpus that was interrupted leaves its director's mark beside the stand-ins, and every stand-in agent of every
-    # later run then waits on a director that is not there (an hour of false reproductions, 2026-11-11) - a session starts without it
-    Path(__file__).with_name('.fake-director').unlink(missing_ok=True)
     config.addinivalue_line('markers', 'acp: the test drives the ACP road itself, so it keeps clis.ADAPTERS (no_real_acp_adapters)')
     config.addinivalue_line('markers', 'real_chrome: the test drives browserview.real_chrome itself, its spawn stood in for (no_real_chrome)')
+
+
+@pytest.fixture(autouse=True)
+def no_stop_left_over():
+    """general.STOPPED_AT keeps a turn's stop by task number (a stop is heard once a turn, 2026-11-22): each test's tasks number from 1 again,
+    so one test's stop read as the next one's already heard."""
+    from taskuary import general
+    general.STOPPED_AT.clear(); yield
+
+
+@pytest.fixture(autouse=True)
+def no_adapter_priming(monkeypatch):
+    "A server a test starts never launches the real ACP adapters to warm them (agents.prime_adapters)."
+    from taskuary import agents
+    monkeypatch.setattr(agents, 'prime_adapters', lambda *a, **k: [])
 
 
 @pytest.fixture(autouse=True)
 def no_real_acp_adapters(request, monkeypatch):
     """The ACP road (agents._acp_road) launches claude and codex through npm adapters (clis.ADAPTERS): a test driving a fake `claude`
     would fetch and start the real adapter instead - minutes on CI, and the argv road's own behaviour never tested. Only the ACP
-    road's own tests see the adapters."""
+    road's own tests see the adapters - and no test fetches Taskuary's own copy of one (acpadapter.keep_soon: a real npm install)."""
+    from taskuary import acpadapter
+    monkeypatch.setattr(acpadapter, 'keep_soon', lambda *a, **k: False)
     if request.module.__name__.rsplit('.', 1)[-1] in ('test_acp_road',) or request.node.get_closest_marker('acp'): return
     from taskuary import clis
     monkeypatch.setattr(clis, 'ADAPTERS', {})
@@ -670,7 +693,27 @@ def no_opening_carryover():
     """general.OPENING holds a task an agent is opening on: a reply writer's NEEDS hands the task on holding it until the start lets
     go (ingest.agent_on_reply `opening`) - and with `_spawn` patched the start never runs, so the next test's task 1 read as live."""
     from taskuary import general
-    before = set(general.OPENING); yield; general.OPENING.intersection_update(before)
+    general.OPENING.clear(); yield; general.OPENING.clear()      # ...each test starts with no task opening (a stand-in of the test before may still be)
+
+
+@pytest.fixture(autouse=True)
+def no_handed_carryover():
+    """general.HANDED counts the inputs handed to a task's agent whose pass has not ended (general.hand) - a test whose told turn ran on a
+    stand-in thread that never let go left the next test's task 1 "agent working", and the rail, which reads the one task state
+    (funnel.one_state), drew every row of it at work (the release CI, 2026-11-20)."""
+    from taskuary import general
+    marks = (general.HANDED, general._IN_FLIGHT, general.PRESSED)
+    for m in marks: m.clear()                 # ...a stand-in's thread of the test before can still be letting go: each test starts with none
+    yield
+    for m in marks: m.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_card_harness():
+    """An API card's agent runs on its harness CLI (harness.py) - found on this machine, or installed for it. A test's card keeps its own
+    loop and starts no install; tests/test_harness.py turns it on over stand-in CLIs."""
+    from taskuary import harness
+    harness.ON = False; yield; harness.ON = True
 
 
 @pytest.fixture(autouse=True)
@@ -817,6 +860,9 @@ def the_basic_flow(request):
         prev.setdefault(store, {})
         key = int(tid)
         bad.extend(f'task {tid}: {b}' for b in conversation.flow_breaks(got, prev[store].get(key)) if f'task {tid}: {b}' not in bad)
+        # ...AND NOTHING THE STORE MADE IS MISSING FROM IT (chatlog.missing: the permanent compare, naming the road that made it)
+        from taskuary import chatlog
+        bad.extend(f'task {tid}: {b}' for b in chatlog.missing(store, key, got) if f'task {tid}: {b}' not in bad)
         if os.environ.get('FLOW_DUMP'): print('LIST', tid, [(x['id'], x.get('state', ''), [(c['id'], c['status']) for c in x.get('cards') or []]) for x in got['items']], got.get('working'))
         prev[store][key] = got
         return got
@@ -844,3 +890,20 @@ def no_real_chrome(request, monkeypatch):
     from taskuary import browserview
     monkeypatch.setattr(browserview, 'real_chrome', lambda sid: 0)
     monkeypatch.setattr(browserview, 'chrome_up', lambda sid: True)
+
+
+@pytest.fixture(autouse=True)
+def no_spare_left_running():
+    "A one-shot's next spare (clipool.spare_turn) is a real process: none outlives the test that started it."
+    yield
+    from taskuary import clipool
+    with clipool._LOCK: gone = list(clipool._SPARES.values()); clipool._SPARES.clear()
+    for lv in gone: lv.close()
+
+
+@pytest.fixture(autouse=True)
+def no_connector_left_running():
+    "A connector started ahead (agents._acp_ready) is a real process: none outlives the test that started it."
+    yield
+    from taskuary import agents
+    agents._close_spares()

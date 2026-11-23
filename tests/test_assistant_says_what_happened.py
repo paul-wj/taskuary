@@ -37,17 +37,12 @@ def test_the_walk_is_thirty_asks_and_every_family_has_a_failure(walk):
             'handoff', 'email', 'search'} <= fams
 
 
-@pytest.mark.parametrize('family,fault', [('redraft', 'drafter returns nothing'), ('redraft', 'drafter returns the same words'),
-                                          ('redraft', 'drafter times out'), ('reply', 'drafter returns nothing')])
-def test_a_draft_that_did_not_change_never_wears_the_tick(walk, family, fault):
-    r = next(r for r in walk if r['ask'].family == family and r['ask'].note == fault)
-    assert '✓' not in r['said'] and '✗' in r['said'], r['said']
-    assert r['claim'] == 'failed'
-
-
-def test_a_rewrite_that_landed_says_so_from_the_box(walk):
-    r = next(r for r in walk if r['ask'].family == 'redraft' and not r['ask'].note)
-    assert r['did'] and '✓ Rewrote the draft on TQ-0004' in r['said']
+def test_a_reply_or_a_rewrite_opens_its_task_and_claims_no_draft(walk):
+    """The owner, 2026-11-18: the Assistant "should just open the task, not do anything on the tasks" - on the desk "reply to this" and
+    "rewrite the draft" open the task, its agent drafts there; the line says it opened it, never that a draft was written or rewritten."""
+    rs = [r for r in walk if r['ask'].family in ('reply', 'redraft')]
+    assert rs
+    for r in rs: assert r['said'].startswith('Opened TQ-') and '✓' not in r['said'] and 'draft' not in r['said'].lower(), r['said']
 
 
 # ---- operations: what an act promised is looked at after it ran ---------------------------------------------------------------------
@@ -121,7 +116,11 @@ def say(s, call, key=None):
 
 def test_a_note_the_store_refused_is_said_plainly_and_kept_as_a_cross(s):
     t = task(s)
-    with mock.patch.object(s, 'add_comment', side_effect=RuntimeError('disk I/O error')):
+    real = s.add_comment
+    def refused(tid, actor, kind, body, *a, **k):          # ...the store refuses the note itself; the Assistant's own receipt still files (add_comment_once)
+        if 'waiting on the vendor' in str(body): raise RuntimeError('disk I/O error')
+        return real(tid, actor, kind, body, *a, **k)
+    with concierge.delivering(concierge.PHONE), mock.patch.object(s, 'add_comment', side_effect=refused):   # a note is written only by phone
         out = say(s, {'kind': 'task.comment', 'params': {'ref': f'TQ-{t:04d}', 'text': 'waiting on the vendor'}})
     assert out['say'].startswith('Not done - disk I/O error') and out['failed'] == 'task.comment'
     assert not any('Added a note' in (c.get('Body') or '') for c in s.list_comments(general.dock_task(s)[0]['TaskId']))
@@ -157,6 +156,21 @@ def test_an_agent_is_said_on_it_only_when_it_started(s):
         with mock.patch.object(concierge, '_label_on', return_value='Send to agent'):
             out = concierge._start_agent(s, general.dock_task(s)[0]['TaskId'], it, it, 'regular_agent', 'find the 4,180')
     assert 'on it now' not in out['say'] and 'did not start' in out['say'], out['say']
+
+
+def test_a_start_that_did_not_happen_says_the_state_that_held_it(s):
+    # the walks, 2026-11-18: "Not done - the agent on TQ-0005 did not start" - it was waiting on the owner's Trust, and started the moment he
+    # gave it. The line reads what held the start, from the same state the start read: a stranger's hold, else the reason the task keeps
+    from taskuary import ingest, origin
+    t = task(s)
+    held = {'line': origin.HELD_LINE.format(who='Payworth Billing (billing@payworth.example)'), 'person': 'Trust Payworth', 'org': None,
+            'who': 'Payworth Billing', 'mids': [1]}
+    with mock.patch.object(origin, 'hold', return_value=held):
+        out = run(s, 'dispatch.prepare', t, {'kind': 'general'}, lambda: {'started': False, 'taskId': t})
+    assert out['status'] == 'error' and out['error'].startswith('You have not trusted Payworth Billing') and 'did not start' not in out['error'], out
+    t2 = task(s); ingest.not_started(s, t2, 'the agents are switched off under Settings')
+    out = run(s, 'dispatch.prepare', t2, {'kind': 'general'}, lambda: {'started': False, 'taskId': t2})
+    assert 'the agents are switched off under Settings' in out['error'], out
 
 
 def test_a_start_the_door_refused_says_its_reason(s):

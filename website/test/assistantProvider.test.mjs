@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { pickFor } from "../src/assistantProvider.js";
+
 
 const cli = { id: "cli:claude", label: "Claude Code", type: "cli", model: "" };
 const api = { id: "connector:21", label: "Work model (API)", type: "openai", model: "gpt-test" };
@@ -24,5 +27,3 @@ test("an older server, or a pick that no longer exists, still lands on something
   assert.equal(pickFor({ providers: [] }), null);
   assert.equal(pickFor(null), null);
 });
-
-

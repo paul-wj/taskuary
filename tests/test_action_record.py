@@ -72,10 +72,12 @@ class EveryPressOfTheOwnersIsSaidInWords(Acts):
 
     def test_the_x_on_a_turn_is_one_press_whatever_agent_works_it(self):
         # ...a general chat's turn stopped read "cancelled" as a failure, a coding one's nothing at all (the side-by-side walk, 2026-11-11)
-        chat = SimpleNamespace(stop=lambda: True)
+        chat = SimpleNamespace(stop=lambda: True); general.STOPPED_AT.clear()      # ...each test's task numbers start again at 1
         with mock.patch.object(general, 'session_for', return_value=chat): self.assertTrue(general.stop_turn(self.s, self.tid))
+        general.STOPPED_AT.clear()                     # ...another turn, on another agent: its own stop (a stop is heard once a turn)
         with mock.patch.object(general, 'session_for', return_value=None), mock.patch.object(term, 'cancel_turn', return_value=True):
             self.assertTrue(general.stop_turn(self.s, self.tid))
+        general.STOPPED_AT.clear()
         with mock.patch.object(general, 'session_for', return_value=None), mock.patch.object(term, 'cancel_turn', return_value=False):
             self.assertFalse(general.stop_turn(self.s, self.tid), 'nothing at work: nothing stopped, nothing said')
         self.assertEqual(self.lines(), ['You stopped the agent.', 'You stopped the agent.'])
@@ -100,8 +102,8 @@ class EveryPressOfTheOwnersIsSaidInWords(Acts):
         # Approve on rv1"). What a card's press did is that card's
         self.assertEqual(self.lines(), [], 'the pressed card says it - no line of its own beside it')
         self.answered()
-        [did] = general.owner_did(self.s, self.tid)
-        self.assertIn(f"pressed Approve on rv{q['reviewId']} and it was done", did)
+        self.assertEqual(general.owner_did(self.s, self.tid), [], 'said once, by the card as it stands')
+        self.assertIn(f": rv{q['reviewId']}, ", general.turn_facts(self.s, self.tid).split('- Done ')[1])
 
     def test_a_pull_request_opened_or_a_push_made_by_their_own_press_says_what_it_was(self):
         "The task's own Publish (server /land) writes ci's rows in the owner's name: with no phrase they read \"You pr opened.\"."
@@ -130,7 +132,7 @@ class AMarkThatWasRefusedIsHeard(Acts):
     """A mark in an answer is read once its turn is over, so nothing answers the agent that wrote it. A refused one was a line on the task
     it never saw - under an answer reading "Proposed - it waits on the task for your yes" (the stress round, 2026-11-10)."""
     MARK = proposals.MARK + ' ' + json.dumps({'action': 'open_pr', 'why': 'the fix is ready'})
-    WHY = 'open_pr is not permitted - the owner has that switch off'
+    WHY = 'open_pr is not permitted - ' + proposals.switch_off('agent_push_enabled')
 
     def test_its_reason_goes_back_to_the_caller_and_into_the_agents_next_turn(self):
         self.answered(); miss = []
@@ -202,10 +204,10 @@ class APressThatFailed(Acts):
 
     def test_where_no_agent_could_be_told_it_is_said_with_the_owners_next_line(self):
         self.answered(); rv = self.action({'action': 'comment_issue', 'body': 'Fixed.'})
-        with mock.patch.object(general, 'tell', return_value=''): self.fail(rv)
-        did = ' | '.join(general.owner_did(self.s, self.tid))
-        self.assertIn(f"rv{rv['ReviewId']}", did); self.assertIn('IT FAILED', did); self.assertIn('the token may not comment', did)
-        self.assertIn('set the corrected one up as a new card', did)
+        with mock.patch.object(general, 'to_agent', return_value=''): self.fail(rv)
+        did = general.turn_facts(self.s, self.tid).split('- Failed ')[1]
+        self.assertIn(f"rv{rv['ReviewId']}", did); self.assertIn('nothing went', did); self.assertIn('the token may not comment', did)
+        self.assertIn('raised again only as a new card', general.turn_facts(self.s, self.tid))
 
     def test_a_held_step_that_failed_says_so_on_its_row(self):
         sg.check(self.s, self.tid, 'run1', 'git push origin fix-export', 'Bash', HELD)
@@ -228,7 +230,7 @@ class APressARestartCut(Acts):
             try: verdicts.decide(self.s, rv, 'approve')
             except Gone: pass
         with mock.patch.object(proposals, '_run', run), mock.patch.object(proposals, 'validate', return_value=(True, 'comment')), \
-                mock.patch.object(general, 'tell', return_value=''):
+                mock.patch.object(general, 'to_agent', return_value=''):
             t = threading.Thread(target=press, daemon=True); t.start()
             self.assertTrue(going.wait(5))
             term.recover_after_restart(self.s)                # what the next start reads: the act under way, its process gone
@@ -246,8 +248,8 @@ class APressARestartCut(Acts):
     def test_its_agent_hears_it_may_have_gone_never_that_nothing_was_done(self):
         self.answered(); rv = self.action({'action': 'comment_issue', 'body': 'Fixed.'})
         self.cut(rv)
-        did = ' | '.join(general.owner_did(self.s, self.tid))
-        self.assertIn(f"rv{rv['ReviewId']}", did); self.assertIn('MAY have been done', did)
+        did = general.turn_facts(self.s, self.tid)
+        self.assertIn(f"rv{rv['ReviewId']}", did); self.assertIn('it MAY have been done', did)
         self.assertNotIn('nothing of it was done', did)
 
     def test_a_press_that_finished_before_the_restart_is_not_cut(self):
@@ -329,8 +331,49 @@ class APartThatIsAnotherJob(Acts):
         self.assertEqual(([i['id'] for i in self.s.task_checklist(new)], [i['id'] for i in self.s.task_checklist(self.tid)]), (['b2'], ['a1']))
         self.assertEqual(self.s.get_task(new)['Title'], 'Renew the parking permits')
         self.answered()
-        self.assertEqual([d.split(': ', 1)[1].split(' (')[0] for d in general.owner_did(self.s, self.tid)], [f"pressed Approve on rv{rv['ReviewId']} and it was done"],
-                         'its agent hears the press - once, by its card')
+        self.assertEqual(general.owner_did(self.s, self.tid), [], 'its agent hears the press - once, by its card')
+        self.assertIn(f": rv{rv['ReviewId']}, ", general.turn_facts(self.s, self.tid).split('- Done ')[1])
+
+    def test_a_part_an_open_task_already_is_goes_there_and_its_agent_is_told(self):
+        """The owner's live app, 2026-11-18: a chat had made a coding task for adding a daily rate to the bed boards; the next day an agent
+        on another task broke "the bed board" out into a brand-new coding task - two open tasks, one job. The model reads the open tasks
+        first, as triage reads every message (ingest.same_work); the same work gets the part and its agent hears it - no second task."""
+        there = Factory(self.s).task('Add a daily rate to the bed boards', kind='coding')
+        self.ask = {**self.ask, 'title': 'Bed board daily rate', 'summary': 'Paula wants the daily rate column on the bed board.'}
+        rv, _ = self.queue()
+        seen, told = [], []
+        def judge(store, msg, llm, *a, **k): seen.append(msg['body']); return {'intent': 'task', 'same_as': there}, {}
+        had = len(self.s.list_tasks(None))
+        with mock.patch('taskuary.llm.build_llm', return_value=lambda *a, **k: ''), mock.patch('taskuary.ingest.judge', judge),              mock.patch.object(general, 'to_agent', lambda st, tid, text, actor='owner', **k: told.append((tid, text)) or 'told'):
+            out = verdicts.decide(self.s, rv, 'approve')
+        self.assertTrue(out['ok'], out)
+        self.assertEqual(len(self.s.list_tasks(None)), had, 'no second task')
+        self.assertIn('Bed board daily rate', seen[0])                                       # triage read the part as it reads a message
+        self.assertEqual((out['result']['task'], [m['MessageId'] for m in self.s.list_messages(there)]), (there, [self.other]))
+        self.assertIn('b2', [i['id'] for i in self.s.task_checklist(there)])
+        moved = [w for t, w in told if t == there]                       # ...the task that pressed it hears its own approval, as ever
+        self.assertEqual(len(moved), 1); self.assertIn('Bed board daily rate', moved[0])
+
+    def test_a_joined_part_reaches_its_agent_as_taskuarys_words_never_a_line_in_the_owners_name(self):
+        """Only his words are his (the coordinator, 2026-11-18): the joined part rode take_line, the road of a line he types, and the receiving
+        chat drew "Moved here from TQ-x ..." under You. It is Taskuary's note, by general.to_agent - into its agent's next prompt."""
+        from taskuary import waitroom, workerstate
+        there = Factory(self.s).task('Add a daily rate to the bed boards', kind='coding')
+        self.ask = {**self.ask, 'title': 'Bed board daily rate'}
+        rv, _ = self.queue()
+        with mock.patch('taskuary.llm.build_llm', return_value=lambda *a, **k: ''), mock.patch('taskuary.ingest.judge', return_value=({'intent': 'task', 'same_as': there}, {})),              mock.patch.object(workerstate, '_live', lambda tid: tid == there), mock.patch.object(waitroom, 'deliver', return_value={'delivered': 0}):
+            self.assertTrue(verdicts.decide(self.s, rv, 'approve')['ok'])
+        self.assertEqual(general.waiting_lines(self.s, there), [], 'no line kept in his name')
+        self.assertFalse([c for c in self.s.list_comments(there, internal=True) if c.get('ActorType') == general.USER_TYPE])
+        notes = self.s.waiting_notes(there)
+        self.assertEqual([n['CreatedBy'] for n in notes], ['router']); self.assertIn('Bed board daily rate', notes[0]['Note'])
+
+    def test_a_part_the_model_reads_as_other_work_is_a_task_of_its_own(self):
+        Factory(self.s).task('Add a daily rate to the bed boards', kind='coding')
+        rv, _ = self.queue()
+        with mock.patch('taskuary.ingest.same_work', return_value=None):
+            out = verdicts.decide(self.s, rv, 'approve')
+        self.assertEqual(self.s.get_task(out['result']['task'])['Title'], 'Renew the parking permits')
 
     def test_what_is_not_on_the_task_is_refused_with_the_way_on(self):
         for kw, said in (({'messages': ['m99999'], 'items': []}, 'not on this task'), ({'messages': [], 'items': []}, 'needs what goes'),
@@ -397,12 +440,64 @@ def test_a_yes_its_agent_was_handed_is_said_once_not_again_under_what_the_owner_
     handed is said by that handing alone; one nobody was told of is still said there."""
     s = MemoryStore()
     tid = s.create_task({'Title': 'Post the Payworth notice', 'Kind': 'general', 'Status': 'open'}, 'owner')
-    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Set up the post - press Approve.')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Set up the post - press Approve, then I share its link with Erin.')
+    s.add_comment(tid, 'assistant', general.SUMMARY_TYPE, json.dumps({'did': 'Set up the post.', 'after_press': 'send'}))
     told, kept = [], s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': '{}', 'Reason': 'post it'})
     time.sleep(1.1)
     s.decide_review(kept, 'approved', '{}', 'owner')
-    assert any(f'rv{kept}' in d for d in general.owner_did(s, tid)), 'not handed to anyone yet: said under what the owner did'
-    with mock.patch.object(general, 'tell', side_effect=lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('told')) or 'told'):
+    assert f': rv{kept}, ' in general.turn_facts(s, tid).split('- Done ')[1], 'not handed to anyone yet: said as it stands'
+    with mock.patch.object(general, 'to_agent', side_effect=lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('told')) or 'told'):
         assert general.approved(s, tid, 'Approve', 'post - {"url": "https://social.example/p/1"}', review=kept) == 'told'
     assert len(told) == 1 and 'went through' in told[0]
-    assert not any(f'rv{kept}' in d for d in general.owner_did(s, tid)), 'handed once - never a second time in the prompt'
+    assert not any(f'rv{kept}' in d for d in general.owner_did(s, tid)), 'handed once - never a second time as a press'
+
+
+# HIS FILE ON A CARD IS HIS PRESS (a walk, 2026-11-18): the bar's Attach put the owner's sheet on the agent's reply draft, he typed a line, the
+# draft greyed, and the agent - never told - rebuilt the sheet from the mail and attached its own copy as "the full export". The file is kept
+# in the task's folder, where the agent's attach finds it by name, and the press is a line in the chat and in what its agent hears next
+class AFileOnACardIsAPress(Acts):
+    def test_the_owners_file_on_a_reply_card_is_said_and_kept_where_the_agent_attaches_from(self):
+        from pathlib import Path
+        from taskuary import outputs
+        rid = self.s.add_review({'TaskId': self.tid, 'Kind': 'draft_reply', 'DraftText': 'Hi Paula, the totals.', 'Status': 'pending',
+                                 'Deliver': json.dumps({'kind': 'reply', 'to': ['paula@northwind.example']})})
+        self.answered()
+        verdicts.attach(self.s, rid, 'october-spend.csv', b'vendor,amount\nTrainly,9100\n', 'owner')
+        self.assertEqual(outputs.named(self.tid, 'october-spend.csv').read_bytes(), b'vendor,amount\nTrainly,9100\n')
+        self.assertEqual([m['content'][0]['text'] for m in general.press_lines(self.s, self.tid)], ['You attached october-spend.csv to the reply.'])
+        [did] = general.owner_did(self.s, self.tid)
+        self.assertIn('attached october-spend.csv to the reply', did)
+
+    def test_the_agents_own_attach_is_no_press(self):
+        rid = self.s.add_review({'TaskId': self.tid, 'Kind': 'draft_reply', 'DraftText': 'x', 'Status': 'pending',
+                                 'Deliver': json.dumps({'kind': 'reply', 'to': ['paula@northwind.example']})})
+        verdicts.attach(self.s, rid, 'made.csv', b'a,b\n', 'agent')
+        self.assertEqual(general.press_lines(self.s, self.tid), [])
+
+
+def test_a_press_with_nothing_after_it_never_wakes_its_agent_and_is_said_once_in_its_next_turn():
+    """The owner, 2026-11-22: "only wake agent where there is next steps" - woken by every Send, the agent said "I've sent the email to Gail"
+    under the card that already read Sent. An agent at rest that said nothing comes after the press is not handed it; its next turn's
+    WHAT THE OWNER DID says it, once."""
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Reply to Gail', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Drafted the reply to Gail.')
+    s.add_comment(tid, 'assistant', general.SUMMARY_TYPE, json.dumps({'did': 'Drafted the reply to Gail.'}))
+    kept = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': '{}', 'Reason': 'reply'})
+    time.sleep(1.1); s.decide_review(kept, 'approved', '{}', 'owner')
+    with mock.patch.object(general, 'to_agent') as to:
+        assert general.approved(s, tid, 'Send', 'reply to gail@northwind.example', review=kept) == ''
+    to.assert_not_called()
+    assert general.turn_facts(s, tid).count(f'rv{kept}') == 1, 'said once, in what its next turn is told'
+
+
+def test_try_again_is_a_press_its_agent_hears_never_his_own_line():
+    "The owner, 2026-11-22 (\"yes fix\"): Try again sent \"Try again.\" as his own typed line. It is a press: Taskuary's words, said so."
+    from taskuary import server
+    s = MemoryStore(); tid = s.create_task({'Title': 'Look up the copper price', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    with mock.patch.object(server, 'store', s), mock.patch.object(general, 'to_agent', return_value='woke') as to:
+        assert server.try_again(tid) == {'ok': True, 'how': 'woke'}
+    said, kw = to.call_args.args[2], to.call_args.kwargs
+    assert said.startswith(general.AGAIN_PRESS) and kw.get('frm', 'taskuary') == 'taskuary'
+    with mock.patch.object(server, 'store', s), mock.patch.object(general, 'to_agent', return_value=''):
+        assert server.try_again(tid)['ok'] is False

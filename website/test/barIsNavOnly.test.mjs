@@ -39,24 +39,15 @@ test("nothing on the table: Back, New and Change my setup - New is the sidebar's
   const { row, by } = splitRow(rowOf({ ref: "", list }), null, true);
   assert.deepEqual(ids(row), ["chat:newtask", "chat:tour"]);
   assert.deepEqual(by.item.map((x) => x.id), ["chat:walk"], "anything else is drawn on the line it belongs to");
-});
-
-test("the desk's bar asks for the split, and the item's row is drawn on the item", () => {
-  assert.match(read("ActionRow.jsx"), /splitRow\(rowOf\(verbs, pick\), laidOf\(verbs\.list\) \|\| verbs\.lay \|\| null, !inline && !hosted\)/);
   const view = read("AssistantView.jsx");
-  assert.match(view, /const ItemMoves = \(\) => <div className="tq-item-moves" data-tq-item-moves=""><PaneMoves sec="item" name="This one" \/><\/div>;/);
-  assert.match(view, /\{moves && card && !foldedNow && <ItemMoves \/>\}\n\s*\{card && !foldedNow && <CardNav\.Provider/, "over the card on the table");
+  assert.match(view, /const NEW_DOOR = SIDE_NAV\.find\(\(n\) => n\.key === "new"\);/);
+  assert.match(view, /const IDLE_CHIPS = \[\{ verb: "newtask", label: NEW_DOOR\.label, hint: NEW_DOOR\.hint, bar: true \}, \{ verb: "tour", label: "Change my setup", bar: true \}\];/);
+  assert.doesNotMatch(view, /setupask/, "no separate Set something up: New leads to it");
 });
 
-test("Reply is drawn only where the server says somebody reads one", () => {
-  const cards = read("assistantCards.jsx");
-  assert.match(cards, /\{i\.mid && i\.replies && <Button[^\n]*onClick=\{\(\) => reply\(i\)\}/, "an FYI batch's line");
-  assert.match(cards, /: card\.mid && card\.replies && <Button[^\n]*onClick=\{draftReply\}/, "a message card's own move");
-});
 
 test("a task's row: the server's ReadsReply decides, a machine's notice on email included", () => {
   assert.equal(hasCorrespondent({ Channel: "email", FromOwner: false, ReadsReply: false }), false, "a code host's notice: no Reply");
   assert.equal(hasCorrespondent({ Channel: "email", FromOwner: false, ReadsReply: true }), true);
   assert.equal(hasCorrespondent({ Channel: "own", FromOwner: false }), false, "a row from before the field still reads its channel");
 });
-

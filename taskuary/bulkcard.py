@@ -12,6 +12,9 @@ import json, threading, time, uuid
 from loguru import logger
 
 KEY = 'batch:'                 # setting: batch:<key> -> the run's state
+# HOW MANY IS MANY (design round 5, I4; the owner: "I have 2 emails to send, should we send this one?" - one card at a time for a few, the bulk
+# card for many): fewer than this raised in one call stand one at a time in the line of cards (agenttools._many)
+MANY = 5
 YES = 'approve'
 LEFT = 'left out by you'      # a row he unticked: closed, never done
 _CLAIM = threading.Lock()      # a press claims the card's run (run)
@@ -125,12 +128,12 @@ def summary(store, key: str, st: dict) -> str:
 
 
 def told(store, key: str, st: dict, actor: str = 'owner') -> str:
-    "Its agent hears the whole run once, by the one road (general.tell) - and nothing is said of it again with his next line."
+    "Its agent hears the whole run once, by the one road (general.to_agent) - and nothing is said of it again with his next line."
     from . import general
-    from .cardqueue import says
+    from .cardqueue import screen
     def heard(how):
         for rid in st.get('rows', {}): store.audit('review', int(rid), general.TOLD, actor, 'system', {'task': st['tid'], 'how': how, 'batch': key})
     # ...with what still waits in the line behind it, as a yes, a failure or a no on one card tells it (general.approved / failed, said_no)
     if not st.get('tid'): return ''
-    line = says(store, st['tid'], pressed=True)
-    return general.tell(store, st['tid'], summary(store, key, st) + (f' {line}' if line else ''), actor, heard=heard)
+    line = screen(store, st['tid'])
+    return general.to_agent(store, st['tid'], summary(store, key, st) + (f'\n\n{line}' if line else ''), actor, heard=heard)

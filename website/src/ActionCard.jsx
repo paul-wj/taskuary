@@ -12,13 +12,17 @@ import api from "./api.js";
 import { openAppLink } from "./appLinks.js";
 import { attUrl } from "./fileSave.js";
 import { FileDialog } from "./PublishedPages.jsx";
-import { actionFor, changed, choiceOf, fieldsOf, pressable, stateOf, textKey, valuesOf, wordsOf } from "./actionCard.js";
+import { actionFor, changed, choiceOf, fieldsOf, pressable, stateOf, textKey, valuesOf, viaBrowserSaid, wordsOf } from "./actionCard.js";
 import { outputRow } from "./taskOutputs.js";
-import { hint } from "./buttons.js";
+import { hint, label as btn } from "./buttons.js";
 import { failLine, landed, press } from "./press.js";
+import { asLive, MovedPast } from "./PassedCard.jsx";
+import { MdLine } from "./md.jsx";
+import { initialsOf } from "./profileAvatar.js";
 import { ACCENT, ALERT_INK, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 
-const initials = (s) => String(s || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "in";
+// ...by the one rule a face reads (profileAvatar.initialsOf): words, never marks - "X (Twitter)" drew "X(" (design round 6, D3)
+const initials = (s) => (String(s || "").trim() ? initialsOf(s) : "in");
 // ...a post's picture is a preview at a glance, not half the screen (the owner, 2026-11-05): its press opens it whole (FileDialog)
 const IMG_MAX = 180;
 // ...as wide as the pick it shows, its chevron beside it - sized to its longest choice, "Anyone" stood a word's gap from its own arrow - and
@@ -26,7 +30,9 @@ const IMG_MAX = 180;
 const PICK = { font: "inherit", fontSize: 11.5, color: INK, border: 0, background: "transparent", padding: 0, cursor: "pointer", outline: 0,
   fieldSizing: "content", borderRadius: "4px", "&:focus-visible": { outline: `2px solid ${ACCENT}`, outlineOffset: 1 } };
 
-export default function ActionCard({ row: given, tid, live = true, onChanged }) {
+// `past`: the chat moved past it - drawn as it stood while it waited, its buttons greyed (MovedPast)
+export default function ActionCard({ row: was, tid, live = true, onChanged, past = false }) {
+  const given = past ? asLive(was) : was;
   // ...A PRESS ANSWERED IS THE CARD'S STATE AT ONCE (the card round, 2026-11-18: Dismiss lit Post and Dismiss again for a beat before "dismissed",
   // a failed post lit them again before its error was kept - the press was over, the row it reads not yet read again): the status the server
   // answered with stands over a row that still says pending, until that row says it too
@@ -36,7 +42,7 @@ export default function ActionCard({ row: given, tid, live = true, onChanged }) 
   const answered = !!settled && given?.Status === "pending", row = answered && settled.mine ? { ...given, Status: settled.Status, ActError: settled.ActError || given.ActError } : given;
   const held = answered && !settled.mine ? "held" : "";
   const p = row?.post || {}, act = actionFor(p.type), st = stateOf(row, live), tk = textKey(act);
-  const [text, setText] = useState(String(p[tk] || "")), [vals, setVals] = useState(() => valuesOf(act, p));
+  const [text, setText] = useState(String(p[tk] || "")), [vals, setVals] = useState(() => valuesOf(act, p)), [copied, setCopied] = useState(false);
   const [pressing, setBusy] = useState(""), [err, setErr] = useState(""), [viewing, setViewing] = useState(null);
   // ...gone by THIS card's press: said in the words of what he picked ("Saved as a draft"), with its link, until the row says what went. One
   // gone from another window (`already`) is never said in this window's words: that edit was not what went (the card round, 2026-11-18)
@@ -47,7 +53,9 @@ export default function ActionCard({ row: given, tid, live = true, onChanged }) 
   // said "Post now" over the agent's words for a beat, then "Save as draft" over his: the card round, 2026-11-18)
   const shown = done ? { ...p, ...vals, [tk]: text } : p;
   const fields = fieldsOf(act, shown, !!st.live && !done), post = act.kind === "post", w = wordsOf(act, done || st.live ? vals : p);
-  const img = fields.find((f) => f.type === "image" && f.value), pic = img ? outputRow(tid ?? row?.TaskId, img.value) : null;
+  // ...EVERY POST CARRIES ITS PICTURE (the owner, 2026-11-20): one its network takes no upload for is shown all the same, to save and add by hand
+  const img = fields.find((f) => f.type === "image" && f.value) || (p.image ? { key: "image", value: p.image, manual: true } : null);
+  const pic = img ? outputRow(tid ?? row?.TaskId, img.value) : null;
   const max = fields.find((f) => f.key === tk)?.max, over = max && text.length > max;
   const go = done?.url || st.url, gone = !!done || st.done;
   // ...a press that failed before this card was drawn is still said on it: the review keeps it (store.review_act_failed), not the press
@@ -64,6 +72,14 @@ export default function ActionCard({ row: given, tid, live = true, onChanged }) 
     if (o.kind !== "error") onChanged?.();
     setBusy("");
   };
+  const viaBrowser = async () => {
+    setBusy("browser"); setErr("");
+    try { const { data } = await api.post(`/api/reviews/${row.ReviewId}/via-browser`, { final_text: text });
+      if (data?.ok) setSettled({ Status: data.status || "approved", mine: true, browser: true }); else setErr(data?.why || "It could not be handed over.");
+      onChanged?.(); }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || "It could not be handed over."); }
+    setBusy("");
+  };
   // ...a choice reads as its label; while it waits, the label is the pick itself - no box around it
   const choice = (f) => f.editable
     ? <Box component="select" key={f.key} data-tq-act-choice={f.key} aria-label={f.label} value={String(vals[f.key])} disabled={!!busy}
@@ -73,7 +89,7 @@ export default function ActionCard({ row: given, tid, live = true, onChanged }) 
   const meta = [row?.network, ...fields.filter((f) => f.type === "choice").map(choice)].filter(Boolean);
   // ...a `heading` line is the act's own title, drawn bold over its words (a GitHub issue's title), never "Title ..." in the header
   const lines = fields.filter((f) => f.type === "line" && f.value && !f.heading), heads = fields.filter((f) => f.heading && f.value);
-  return (
+  return (<MovedPast on={past}>
     <Box data-tq-act={row?.ReviewId} data-tq-act-kind={act.kind} data-tq-act-state={gone ? "done" : st.live ? "waiting" : "not-done"}
       sx={{ mt: 1, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: "var(--tq-panel, #fff)", overflow: "hidden" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.5, pt: 1.25, pb: 0.75 }}>
@@ -93,13 +109,26 @@ export default function ActionCard({ row: given, tid, live = true, onChanged }) 
         : <Typography data-tq-act-text="" sx={{ px: 1.5, py: 0.5, fontSize: 13.5, lineHeight: 1.5, color: gone ? INK : DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{shown[tk]}</Typography>}
       {pic && <Box component="img" data-tq-act-image={img.value} src={attUrl(pic)} alt={p.alt || pic.name} onClick={() => setViewing(pic)}
         sx={{ display: "block", width: "100%", height: IMG_MAX, objectFit: "contain",   /* its room from the first frame: a picture landing grew the card 2 -> 180 px (2026-11-12) */ bgcolor: "var(--tq-canvas, #f6f4f1)", mt: 0.75, cursor: "zoom-in", borderTop: `1px solid ${BORDER}`, borderBottom: `1px solid ${BORDER}` }} />}
+      {pic && img.manual && !gone && <Typography data-tq-act-image-manual="" sx={{ px: 1.5, pt: 0.5, fontSize: 11.5, color: FAINT }}>
+        {`${row?.network || "This network"} gets the words from here - open the picture to save it, and add it yourself`}</Typography>}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.5, py: 1, flexWrap: "wrap" }}>
-        {gone ? <Typography data-tq-act-done="" sx={{ fontSize: 13, color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {done ? w.done : st.said}
+        {gone ? <Typography data-tq-act-done="" sx={{ fontSize: 13, color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {done ? (done.browser ? viaBrowserSaid(row?.network) : w.done) : st.said}
           {go && <> · <a href={go} target="_blank" rel="noopener noreferrer" style={{ color: "var(--tq-link, #55697a)" }}>See it on {row?.network}<OpenInNewIcon sx={{ fontSize: 12, ml: 0.25, verticalAlign: "-1px" }} /></a></>}</Typography>
           : st.live && row?.connect ? <>
-            {/* ...its network not connected (outbound.connect_fix, the owner 2026-11-08): said, and Connect opens that card - the post waits */}
-            <Button size="small" variant="contained" disableElevation data-tq-act-connect="" onClick={() => openAppLink(row.connect.href)}>{row.connect.label}</Button>
-            <Typography data-tq-not-connected="" sx={{ fontSize: 11.5, color: FAINT }}>{row.connect.says}</Typography></>
+            {/* ...a post on a network not connected goes up through the agent's browser at his press (the owner, 2026-11-22: "card first, sign-in
+                at the press"); Connect beside it opens that card instead (outbound.connect_fix, 2026-11-08) */}
+            {post && <Button size="small" variant="contained" disableElevation data-tq-act-browser="" disabled={!!busy || !text.trim() || !!over} onClick={viaBrowser}
+              startIcon={busy === "browser" ? <CircularProgress size={12} color="inherit" /> : null}>{busy === "browser" ? "Handing it over…" : "Post via the browser"}</Button>}
+            <Button size="small" variant={post ? "text" : "contained"} disableElevation data-tq-act-connect="" onClick={() => openAppLink(row.connect.href)}>{row.connect.label}</Button>
+            {/* ...and the draft copy-ready beside it: never a press that can only fail (the judge's look, 2026-11-20) */}
+            <Button size="small" data-tq-act-copy="" disabled={!text.trim()} title={hint("copy")}
+              onClick={() => { try { navigator.clipboard?.writeText(text); setCopied(true); } catch { /* the words stay on the card */ } }}>
+              {copied ? `✓ ${btn("copy", "done") || "Copied"}` : btn("copy")}</Button>
+            {/* ...and its Dismiss, as every card has (walk 8, 2026-11-20: a Connect card had none, and the cards queued behind it never came) */}
+            <Button size="small" disabled={!!busy} onClick={() => decide("reject")} data-tq-act-dismiss="">Dismiss</Button>
+            {/* ...a post's line says the press above it, never "copy it to post it yourself" under Post via the browser (the goal walk, 2026-11-22) */}
+            <Typography data-tq-not-connected="" sx={{ fontSize: 11.5, color: FAINT }}>{row.connect.says}{post ? ` - Post via the browser has the agent put it up there, and its last Post waits for you`
+              : row.connect.waits ? ` - ${row.connect.waits}` : ""}</Typography></>
           : st.live ? <>
             <Button size="small" variant="contained" disableElevation data-tq-act-press="" disabled={!!busy || !pressable(act, p, text) || !!over} onClick={() => decide("approve")}
               title={act.note || hint("approve", post ? "post" : "action")} startIcon={busy === "approve" ? <CircularProgress size={12} color="inherit" /> : null}>
@@ -109,8 +138,9 @@ export default function ActionCard({ row: given, tid, live = true, onChanged }) 
             {over && <Typography sx={{ fontSize: 11.5, color: ALERT_INK }}>{text.length} of {max} characters</Typography>}</>
           : <Typography sx={{ fontSize: 12.5, color: FAINT }}>{st.said}</Typography>}
       </Box>
-      {failed && <Typography role="alert" sx={{ px: 1.5, pb: 1, fontSize: 12.5, color: ALERT_INK }}>{failed}</Typography>}
+      {/* ...with the way past it pressable (connectorcatalog.not_signed_in: "[open its card](#connector=linkedin)") - design round 6, D8 */}
+      {failed && <Typography role="alert" sx={{ px: 1.5, pb: 1, fontSize: 12.5, color: ALERT_INK }}><MdLine text={failed} /></Typography>}
       <FileDialog file={viewing} onClose={() => setViewing(null)} />
-    </Box>
+    </Box></MovedPast>
   );
 }

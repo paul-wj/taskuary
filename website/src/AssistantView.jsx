@@ -23,7 +23,6 @@ import CloseIcon from "@mui/icons-material/Close";
 import CloseFullscreenIcon from "@mui/icons-material/CloseFullscreen";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import ViewSidebarIcon from "@mui/icons-material/ViewSidebar";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import api from "./api.js";
 import { DEMO_SAID, demoNo } from "./apiError.js";
 import { runOperation } from "./taskOps.js";
@@ -35,7 +34,7 @@ import { burstsNow } from "./allDone.js";
 import { loadGeneral } from "./lazyGeneral.js";
 // the static demo's guided journey: nothing outside the demo build ever draws it, so nothing there fetches it
 const DemoJourney = DEMO ? lazyView(() => import("./DemoJourney.jsx")) : () => null;
-import { BACK, advisedIn, aimed, navEnd, navOff, onPressed, onPressing, press as pressRow, walkMove, leaveRow, rowNow, rowDrawable, rowReady, rowTable, useHosted, useRowHold, useRowVerbs, useVerbs } from "./actionRow.js";
+import { BACK, advisedIn, aimed, navEnd, onPressed, onPressing, press as pressRow, walkMove, leaveRow, rowNow, rowDrawable, rowReady, rowTable, useHosted, useRowHold, useRowVerbs, useVerbs } from "./actionRow.js";
 import { forgetTasks, heldTask, notePile, pageRead, prefetchTask, recRead, watchReads, watchRecs } from "./taskDetail.js";
 import { readLists } from "./connectorLists.js";
 import { ALL_LABELS, VERBS, hint as btnHint, howFar, label as btn, liveVerb, verbOfRow } from "./buttons.js";
@@ -65,7 +64,7 @@ import { ALERT, DIM, FAINT, INK, LEVEL_COLOR, LEVEL_TINT, PRIORITY_COLOR, ROLES 
 import { dangerLine } from "./strangerLine.js";
 import { railShort } from "./batchItems.js";
 import ProposalCard from "./ProposalCard.jsx";
-import { adviceRead, backToWork, isIdea, overChat, ownPick, tableOf, tableWords, workWords, workedOn } from "./tableState.js";
+import { adviceRead, isIdea, overChat, ownPick, tableOf, tableWords } from "./tableState.js";
 import { ReportLink } from "./BugReportDialog.jsx";
 import { openBugReport, shownError } from "./bugReportOpen.js";
 import { AgentSteps } from "./AgentStepRows.jsx";
@@ -74,11 +73,11 @@ import { SlotPicker } from "./CalendarPick.jsx";
 import ContinueBox from "./ContinueBox.jsx";
 import { AgentAsk } from "./RunForm.jsx";
 import CloseNote from "./CloseNote.jsx";
-import { AttachImage, ImageTray, usePromptImages, useSendWhenUp, withImages } from "./promptImages.jsx";
+import { AttachImage, ImageTray, usePromptImages, useSendWhenUp } from "./promptImages.jsx";
 import { handToItem } from "./ItemSections.jsx";
 import { afterCancel, afterConfirm, afterExecute, holdsProposal, markExecuted, proposalSay } from "./proposalCard.js";
-import { LEVEL_META, LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, stillLeaving, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, liveBrowseId, lastActIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelHint, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, tableItemOf, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
-import { FYI_PAGE, ageHover, subLine, answersTo, awayFromClear, closedElsewhere, coveredByReload, fyiHasRoom, fyiTail, heldSince, latestLine, pileRows, pinOf, rowKeys, sameRow, sentChips } from "./funnelPile.js";
+import { LEVEL_META, LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, withOpened, stillLeaving, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, liveBrowseId, pastView, lastActIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, tableItemOf, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
+import { FYI_PAGE, ageHover, subLine, answersTo, awayFromClear, closedElsewhere, coveredByReload, fyiHasRoom, fyiTail, heldSince, latestLine, levelHint, pileRows, pinOf, rowKeys, sameRow, sentChips } from "./funnelPile.js";
 import { railStatus, rowWhy } from "./railStatus.js";
 import { UndoLine } from "./Removed.jsx";
 import { StatusLogo } from "./StatusMark.jsx";
@@ -87,7 +86,7 @@ import { actReceipt, lineKeys, mergeDurableTurns, nextBadge, pickLine, placeLine
 import { lightOf, litAfter, litOn, litPick, litPull } from "./assistantLight.js";
 import * as pageView from "./pageView.js";
 import DigestText from "./DigestText.jsx";
-import { canGoBack, firstAppLink, linkName, onStep, openAppLink, recordPlace } from "./appLinks.js";
+import { canGoBack, firstAppLink, linkName, navBack, onBackTo, onStep, openAppLink, recordPlace } from "./appLinks.js";
 import { goStraight } from "./SetupWithAi.jsx";
 import { BOARD, hashFor, opensTask } from "./canvasLinks.js";
 import { canSend, cannotStart, useCapabilities } from "./capabilities.js";
@@ -96,13 +95,12 @@ import { CONNECT_AI, connectAi } from "./ConnectAi.jsx";
 // FirstRun, the walk's workspace and the browse cards are drawn after the pile or a click, never on the first frame: out of the entry chunk
 const FirstRun = lazyView(() => import("./FirstRun.jsx"));
 import SetupSteps from "./SetupSteps.jsx";
-import SetupLine from "./SetupLine.jsx";
 import { BriefCard, CardNav, DashboardCard, DayOpener, onYouCount, FyisCard, IdeaCard, MeetingCard, MessageCard, ReplyCard, ReportCard, SetupCard, SourceMark, WalkCard, walkTitle, sourceColor } from "./assistantCards.jsx";
 import { summarize } from "./walkSummary.js";
 import { refreshToday, useCalendarToday } from "./calendarToday.js";
 import { onFirstRun, readFirstRun } from "./firstRunState.js";
 import FeedView from "./FeedView.jsx";
-import { MORE_PX, backAt, dueWord, holdsNew, levelOf, placed, pressOnto, pulledRow, withWalk } from "./funnelPile.js";
+import { MORE_PX, SECTION_WORDS, backAt, dueWord, holdsNew, levelOf, madeRow, placed, pressOnto, pulledRow, rowOfTask, withWalk } from "./funnelPile.js";
 import { STAYS, dropHeld, ghostsOf, keepHeld, movedEntry } from "./movedFyi.js";
 import { isImportant, level as priorityOf } from "./priority.js";
 import { age, ago, band, bandUntil, plural } from "./timeWords.js";
@@ -215,8 +213,7 @@ const speak = (text) => {
 // the pile's key for a Timeline row, so any row on the rail can be pulled into the chat - the same
 // key the pipe itself carries, so the server puts the same item on the table either way
 export const keyForRow = (r) => r.ReviewStatus === "pending" && r.ReviewId ? `review:${r.ReviewId}`
-  : r.AgentWaiting && r.TaskId ? `agent:${r.TaskId}` : !r.MessageId && r.TaskId ? `task:${r.TaskId}`   // a search hit on a task: never msg:undefined
-  : r.Channel === "report" ? `report:${r.MessageId}` : `msg:${r.MessageId}`;
+  : r.AgentWaiting && r.TaskId ? `agent:${r.TaskId}` : r.Channel === "report" ? `report:${r.MessageId}` : `msg:${r.MessageId}`;
 
 // THE DAY'S ROOM, HELD (2026-10-20): the meetings, the counts and the since-line land moments after the Walk row draws, and
 // each pushed it down under a reaching pointer. While any of them is still loading, the region above the row keeps the height
@@ -248,12 +245,15 @@ function DayHold({ loading, children }) {
 // WHAT ALREADY HAPPENED, under the tiles that say what waits (the row-bot comparison, 2026-10-07): the mail read and filed,
 // the reports that ran, the agents that finished, and what was learned this week - counted on the server, no model, so the
 // opening screen never waits on one. Nothing to say says nothing.
+// ...ITS LAST ANSWER IS KEPT for the next time the card is drawn: drawn anew with nothing read - every trip home by the logo - it said the day was
+// still being counted ("Counting…") for the beat its read took, between two frames that said "What's open" (the hammer round, 2026-11-18)
+let sinceKept = null;
 function SinceBlock({ onOpen, onReading }) {
   useLocale();
-  const [d, setD] = useState(null);
+  const [d, setD] = useState(() => sinceKept);
   const [open, setOpen] = useState(false);
-  const [writing, setWriting] = useState(null);
-  const read = useCallback(() => api.get("/api/since").then(({ data }) => { setD(data); return data; }), []);
+  const [writing, setWriting] = useState("");
+  const read = useCallback(() => api.get("/api/since").then(({ data }) => { sinceKept = data; setD(data); return data; }), []);
   useEffect(() => { let live = true; read().catch(() => {}); return () => { live = false; }; }, [read]);
   // read once on mount, it kept the counts from before the startup catch-up had read a message (B5, 2026-10-11)
   useEffect(() => onLive(["arrive"], () => { read().catch(() => {}); }), [read]);
@@ -763,8 +763,8 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
               {...pressable(() => onSection(level))}>
               {/* each band its own SUBTLE tint (the owner, 2026-09-28: "now all the pills are the same. make them subtly
                   different") */}
-              <span className={`lvl-${level}`}>{levelLabel(level)}</span>
-              {folds && <i className="fold" title={open ? t("Collapse {section}", { section: levelLabel(level) }) : t("Show all {count}", { count: rows.length + extra })} aria-expanded={open}
+              <span className={`lvl-${level}`}>{SECTION_WORDS[level] || levelLabel(level)}</span>
+              {folds && <i className="fold" title={open ? `Collapse ${levelLabel(level)}` : `Show all ${rows.length + extra}`} aria-expanded={open}
                 {...pressable((e) => { e.stopPropagation(); if (!open && extra) onMoreFyi?.(); setOpened((cur) => {
                   const next = new Set(cur);
                   if (next.has(level)) next.delete(level); else next.add(level);
@@ -820,7 +820,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                     // late step's while the goal's own is still ahead (`slipped_at`, 2026-11-08: "slipped Dec 23" on Nov 8 read as nonsense)
                     : goal ? (i.kind === "goal_slipped" ? [t(meta.word), dueWord(i.slipped_at || i.due)].filter(Boolean).join(" ") : "") : "";
                 return (
-                  <div key={i.key} className={cls} data-tq-key={i.key} data-tq-urgent={urgentDot ? "" : undefined} data-tq-important={imp ? "" : undefined}
+                  <div key={i.key} className={cls} data-tq-key={i.key} data-tq-tid={i.tid || undefined} data-tq-opened={i.opened ? "" : undefined} data-tq-urgent={urgentDot ? "" : undefined} data-tq-important={imp ? "" : undefined}
                     style={{ top }}>
                     {/* For later counts DOWN to when it comes back, in the same short form the age column uses */}
                     {/* ...every other row says its ARRIVAL, never a new age for a reply - and no "+N" for one either: what came in since is
@@ -861,8 +861,8 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                           data-tq-jira={jiraStatusText(i)} data-tq-jira-tone={jiraStatusTone(i) || undefined}
                           title={jiraStatusTip(i)}>{jiraStatusText(i)}</span>}
                         {/* NO WORKSTREAM CHIP ON THE RAIL (the owner, 2026-11-08: "little card taskuary AI .... on rail. hate that") - the task's own page still says it */}
-                        {/* ONE FYI ROW PER EMAIL THREAD (trust audit P2, 2026-10-28): the newest mail speaks, the rest are its "+N" */}
-                        {i.thread_n > 0 && <span className="tq-pile-ref" data-tq-thread-n={i.thread_n} title={t("{count} more on this thread - it opens on all of them", { count: i.thread_n })}>+{i.thread_n}</span>}
+                        {/* NO "+N" FOR NEW REPLIES (the owner, 2026-10-26), on the phone neither. ONE FYI ROW PER EMAIL THREAD (trust audit P2, 2026-10-28): the newest mail speaks; the rest are counted in their own words */}
+                        {i.thread_n > 0 && <span className="tq-pile-steps" data-tq-thread-n={i.thread_n} title="it opens on all of them">· {i.thread_n} more on the thread</span>}
                         {/* a goal's row is "🎯 title · 2 of 5 steps" - its count, never its TQ number (the owner, 2026-10-21) */}
                         {goal && Number.isInteger(i.steps) && i.steps > 0 && <span className="tq-pile-steps">· {t("{done} of {total} steps", { done: i.steps_done || 0, total: i.steps })}</span>}
                         {/* ...and WHEN IT IS DUE, in its words (the owner, 2026-10-28): "Dec 11" in the age column read as an age. It gives
@@ -1009,10 +1009,8 @@ function Line({ m, lastBrief = false, live, last, moves = false, actions, fresh,
   // BROWSING (the canvas redesign, 2026-09-29): Connections, Settings, Reports or Hub, walked by clicks on this line
   // ...and one put down is a ROW of the walk like a folded task: the same .tq-msg column, mark gutter and .tq-fold card - as a full-width
   // browse line it ran edge to edge, wider than every task row around it, with no icon (the owner's screenshot, 2026-11-09)
-  if (m.role === "browse" && canvas?.browsing !== m.id) return (
-    <div className="tq-msg tq-browse-fold" data-tq-browse-line={m.area}><div className="avatar"><AssistantMark /></div><div className="body">
-      <CanvasBrowse area={m.area} state={m.state || {}} live={false} onReopen={() => actions.browse(m.area, m.state)} /></div></div>
-  );
+  // ...one put down is not drawn: the page that replaced it is the view (funnelPile.pastView)
+  if (m.role === "browse" && canvas?.browsing !== m.id) return null;
   if (m.role === "browse") return (
     <div className="tq-browse-line tq-canvas-live" data-tq-browse-line={m.area}>
       <CanvasBrowse area={m.area} state={m.state || {}} live={canvas?.browsing === m.id}
@@ -1443,14 +1441,26 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   const pin = useRef(false);            // the card on the table is held at the top of the view (keepTable below)
   // how the next address is written (recordPlace): "push" once the owner goes somewhere, "replace" for the walk and the server
   const navHow = useRef("replace");
+  // ...and whether the place now asked for came from the address itself (Back, Forward, a link): that one is never a step of its own
+  const urlStep = useRef(false), lastPlace = useRef("");
+  // ...and the task Back, Forward or a link ASKED for, until the table is on it: while it loads the table still shows the task he left, and
+  // read against the address that was a move to write - walk 5, 2026-11-19: Back landed on the closed task, its slow open had not drawn yet,
+  // and the task he was on was pushed again over it, so the arrow seemed to do nothing and the next Back skipped the closed task
+  const urlWant = useRef("");
+  // ...set the moment the address moves by Back or Forward (a popstate), however busy the page is: until the table reaches that address,
+  // nothing is written over it (the in-flight close of walk 5: the landing wrote the drawn task again over the Back he had pressed)
+  // byUrl: the open the address asked for is under way (its move may start only once the page is free) - not a move of his own
+  const popped = useRef(false), byUrl = useRef(false);
+  useEffect(() => { const on = () => { popped.current = true; }; window.addEventListener("popstate", on); return () => window.removeEventListener("popstate", on); }, []);
   const cardRef = useRef(null);
   // every move of the table made HERE, counted: a server word read before one is older than it (readChat, loadPile)
-  const tableMoves = useRef(0);
+  const tableMoves = useRef(0), seenItems = useRef(new Map());
   // THE WALK HAS ONE OWNER (railwalk, 2026-10-30): which row comes next, which is above and what leaving one does are the server's - the
   // page sends the row it has on screen and draws the answer. `leftKey`: the row a press just left, so its own Advisor read is not made
   const leftKey = useRef(null), pickedRef = useRef(false);
   // `ahead`: the answer filling in the row its press drew (landed) - the stamp stays the press's own, see there
   const putOnTable = useCallback((card, how = "pile", ahead = false) => {
+    if (card?.tid && how !== "card") seenItems.current.set(String(card.tid), card);       // ...what a revisit draws at once (pull)
     if (how !== "sync") tableMoves.current += 1;
     if (how !== "view") {
       const item = how === "card" ? null : card || null;
@@ -1461,7 +1471,10 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       if (card) openCardRef.current = null;
     }
     if (how !== "sync") pin.current = true;
-    else navHow.current = "replace";
+    // ...and a sync never takes back a step a move has yet to write (the redesign walk, 2026-11-19): Mark done's move to the next task was
+    // a step, a rail sync landed before the address was written and made it a replace - the closed task's place was gone, Back went "home"
+    // with the next task still drawn, and the arrow and the bar's Back went out with nothing behind them
+    else if (navHow.current !== "push") navHow.current = "replace";
   }, []);
   // THE TASK'S OWN RECOMMENDED MOVE (the owner, 2026-11-09: "the agents while running should recommend actions, no assistant" / "assistant/
   // advisor should only be on rail"): on every row but an idea, the one filled button is the field its task and its rail item are served
@@ -1507,8 +1520,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     const stop = new AbortController(); stopRef.current = stop;
     const plain = async () => {
       const endpoint = body.mode === "open" ? "/api/concierge/open" : "/api/concierge/say";
-      return (await api.post(endpoint, body.mode === "say" ? { text: body.text, key: body.key, context_mid: body.context_mid, images: body.images || [], ...(body.view ? { view: body.view } : {}),
-          ...(body.react ? { react: body.react } : {}) } : {})).data;
+      return (await api.post(endpoint, body.mode === "say" ? { text: body.text, key: body.key, context_mid: body.context_mid, images: body.images || [], ...(body.view ? { view: body.view } : {}) } : {})).data;
     };
     // The public demo is intentionally a local script. Do not even attempt the streaming AI
     // endpoint: its invented threads should never look like a model is working behind the page.
@@ -1942,6 +1954,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // grows - a reload drew the chat, then the task view, 285px at once, and the observer's "within 240px of the end" let go of it, so
   // the answer the reload was for sat under the fold (the 2026-10-19 UI walk)
   const stuck = useRef(false);
+  const anchor = useRef(null);          // where the card on the table last stood for him, once the pin let go (the observer below)
   // ...unless a line was said AFTER the view (the owner, 2026-10-28: a phone's answer sat under the chat box): a one-line answer under
   // a tall view is less than toEnd's 48px, and putting the view's top up put the answer below the fold
   // ...and the "…" of a move in flight is no line said (the owner, 2026-11-05: "try to smooth"): read as one after the card, a Send and close or
@@ -1999,18 +2012,39 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   useEffect(() => {
     const el = bodyRef.current, inner = el?.firstElementChild;
     if (!el || !inner || typeof ResizeObserver === "undefined") return undefined;
-    const ro = new ResizeObserver(() => { if (keepTable()) return; if (!holdBottom.current && (stuck.current || el.scrollHeight - el.scrollTop - el.clientHeight < 240) && el.querySelector(".tq-msg:not(.tq-welcome-msg)")) toEnd(el); });
+    // ...AND THE CARD ON THE TABLE STAYS WHERE HE SEES IT (walks 2, 4 and 5, 2026-11-19: the task dropped to mid-screen under the cards put down
+    // before it - recorded on a scratch app: a line put in above it pushed it down 54px, and the card shrinking for a beat let the body clamp
+    // and it never came back). Once the pin has let go, what grows, shrinks or comes in above it moves nothing: its top is held at the place
+    // it last stood for him - set by the pin, the end, or his own scroll - and put back there whenever the body can
+    const liveOf = () => [...el.querySelectorAll(".tq-canvas-live, .tq-live-card")].pop() || null;
+    const offOf = (c) => c.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    const remember = () => { const c = liveOf(); anchor.current = c ? { el: c, off: offOf(c) } : null; };
+    const hold = () => {
+      const a = anchor.current, c = liveOf();
+      if (!a || !c || a.el !== c || saidAfter(c, lastSaid(el))) return false;
+      const d = offOf(c) - a.off;
+      if (Math.abs(d) > 1) placeAt(el, el.scrollTop + d);
+      return true;
+    };
+    const ro = new ResizeObserver(() => {
+      if (keepTable()) { remember(); return; }
+      if (hold()) return;
+      if (!holdBottom.current && (stuck.current || el.scrollHeight - el.scrollTop - el.clientHeight < 240) && el.querySelector(".tq-msg:not(.tq-welcome-msg)")) toEnd(el);
+      remember();
+    });
     ro.observe(inner);
-    // the owner's own scroll is theirs: the pin lets go, and so does the end - until they scroll back down to it
-    const own = () => { pin.current = false; stuck.current = false; };
-    const atEnd = () => { if (el.scrollHeight - el.scrollTop - el.clientHeight < 4) stuck.current = true; };
+    // the owner's own scroll is theirs: the pin lets go, and so does the end - until they scroll back down to it - and where he scrolled to
+    // is where the card is held from then on
+    let byHim = 0;
+    const own = () => { pin.current = false; stuck.current = false; byHim = Date.now(); };
+    const atEnd = () => { if (el.scrollHeight - el.scrollTop - el.clientHeight < 4) stuck.current = true; if (Date.now() - byHim < 1000) remember(); };
     el.addEventListener("wheel", own, { passive: true }); el.addEventListener("touchmove", own, { passive: true });
     el.addEventListener("scroll", atEnd, { passive: true });
     // ...and so is the owner's KEYBOARD (the 2026-10-19 UI walk): a card filled in by Tab and Enter snapped back to its top on Save -
     // 588px up, the button just pressed gone - because only a wheel or a finger let go of the pin. A key pressed in the thread, or
     // focus the keyboard moved into it (a Tab from the box below), is the owner working there; focus the app moves itself is not.
     let keyAt = 0;
-    const key = () => { keyAt = Date.now(); }, typed = () => { pin.current = false; };
+    const key = () => { keyAt = Date.now(); }, typed = () => { pin.current = false; byHim = Date.now(); };
     const tabbed = () => { if (Date.now() - keyAt < 800) pin.current = false; };
     // the scrollbar: a press on the body itself, not on a line in it. A press ON a line is the owner working there, as a key is: a
     // Connections step header or switch snapped the card back to its top on every click, the thing pressed gone (the UI audit, 2026-10-21)
@@ -2054,7 +2088,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // THE ANSWER, DRAWN (railwalk, 2026-10-30): every walk move comes back as one Answer - the row, its words and chips, the rail as the
   // move left it - and this is the one place it is drawn. ONE COPY PER ITEM (2026-10-19 UI walk): an item opened again - from search, the
   // Board, the rail - moves its line to the end (placeLine), never a second
-  const belowRef = useRef(null);        // { id, key } of the row a walk press drew before its answer (surface, landed)
+  const belowRef = useRef(null);        // { id, key, tid } of the row a walk press drew before its answer (surface, landed)
+  const drawnAhead = useRef(null);      // ...the line pull drew this beat, before the messages hold it (surface's `pre`)
   // `off`: the owner has drawn another row since this move went out (pull) - its answer fills the line it drew where it stands, the rail with it,
   // and never takes the table back from the row the owner is on now
   const landed = useCallback((data, off = false) => {
@@ -2065,8 +2100,11 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     // ...the row a press drew ahead (surface) IS this line when it is the same row - its id kept, so the view in it stays mounted - and
     // comes down when the answer brought another
     const below = belowRef.current; belowRef.current = null;
+    // ...the SAME ROW by key, or by its task where one side named it `task:N` (New, Back, a link - pull): New's own row came back under its rail
+    // key, and the task view was built twice in its first second - its buttons out, then in, then out again (goal walk, 2026-11-22)
+    const same = !!below && !!card && (card.key === below.key || (!!below.tid && card.tid === below.tid));
     if (off) {
-      if (below) setMsgs((m) => (card?.key === below.key ? m.map((x) => (x.id === below.id ? { ...x, text: data.say, options: data.options || [], chips: data.chips || [], card, ahead: false } : x))
+      if (below) setMsgs((m) => (same ? m.map((x) => (x.id === below.id ? { ...x, text: data.say, options: data.options || [], chips: data.chips || [], card, ahead: false } : x))
         : m.filter((x) => x.id !== below.id)));
       if (data.pile) holdPile(data.pile); else loadPile(true);
       return;
@@ -2074,12 +2112,12 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     // ...a link to a REMOVED task (`gone`) puts down the card that was on the table (trust audit S4, 2026-10-28): it stood under "That task
     // was removed", its buttons on the row, as if it were the task the link named
     if (data.gone && !card && currentRef.current?.key) { setExpanded(false); setFoldedKey(currentRef.current.key); }
-    const id = below && card?.key === below.key ? below.id : `a${Date.now()}`;
+    const id = same ? below.id : `a${Date.now()}`;
     setMsgs((m) => placeLine(below ? m.filter((x) => x.id !== below.id) : m, { id, role: "assistant", text: data.say, options: data.options || [], chips: data.chips || [], card }));
     // ...and its Advisor read, sent at the press, holds for the answer: the row comes back a revision on - the press's own write (shown, so
     // seen), which the Advisor does not judge by - and that move read it again, two GETs a Next (CI, 2026-11-01). Anything else that
     // moves it says so on its own (the `advice` event, a wake)
-    putOnTable(card, "pile", !!below && card?.key === below.key);
+    putOnTable(card, "pile", same);
     if (card) setFoldedKey((k) => (k === card.key ? null : k));   // the row a close kept (a Send kept open) is back on the table, open
     say(data.say);
     // the turn brought the rail as it left it: hold that, with the new table excluded. Nothing along
@@ -2113,7 +2151,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     const drawn0 = rowsDrawn.current;
     setBusy(true); setErr(""); setFlight({ from: key && key === currentRef.current?.key ? null : currentRef.current?.key || null });
     pickedRef.current = !!key;
-    if (!key) navHow.current = "replace";            // the walk's Next is a stream, not a stack: the address follows, Back does not
+    navHow.current = "push";                         // every move is a step of the one list both Backs walk (appLinks.navBack), Next too
+    if (!byUrl.current) { urlWant.current = ""; popped.current = false; }    // ...a move of his own: no address request waits any more
     const optimisticId = asUser ? `u${Date.now()}` : null;
     if (optimisticId) setMsgs((m) => pickLine(m, { id: optimisticId, role: "user", text: asUser, pick: key || undefined }));
     // the row the press moves FROM: the one on the table, or the one the press names
@@ -2158,17 +2197,24 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     // ...`off`: the table is no longer this press's to draw on - a row the owner drew over it since, or (away) before it came in
     const was = currentRef.current, off = () => away || rowsDrawn.current !== drawn0;
     // ...a row a rail click drew over the move before this one (pull) is this press's own line: filled in place, never drawn twice
-    const pre = key ? [...msgsRef.current].reverse().find((x) => x.ahead && x.card?.key === key) : null;
-    belowRef.current = pre ? { id: pre.id, key } : null;
+    // ...and the line drawn this same beat (pull's ahead: New's own row), which the messages read here hold only from the next render - New's
+    // task was built twice in its first second, its answer finding no line to fill (goal walk, 2026-11-22)
+    const fresh = drawnAhead.current; drawnAhead.current = null;
+    const pre = !key ? null : [...msgsRef.current].reverse().find((x) => x.ahead && x.card?.key === key) || (fresh?.card?.key === key ? fresh : null);
+    belowRef.current = pre ? { id: pre.id, key, tid: pre.card?.tid } : null;
     // ...the row drawn ahead taken down, the table back on the row the press left (a failed press, a Back that found the top) - unless the
     // owner has drawn another row since, or drew this one himself (pre: it stays, under the error)
     const undraw = () => { const a = belowRef.current; belowRef.current = null; if (a && !pre) { setMsgs((m) => m.filter((x) => x.id !== a.id)); if (!off()) putOnTable(was); } };
     if (belowItem && !pre) {
       const id = `a${Date.now()}`;
-      belowRef.current = { id, key: belowItem.key };
+      belowRef.current = { id, key: belowItem.key, tid: belowItem.tid };
       setMsgs((m) => [...m, { id, role: "assistant", text: "", options: [], chips: [], card: belowItem, ahead: true }]);
       putOnTable(belowItem);
       if (how === "back") setFoldedKey((k) => (k === belowItem.key ? null : k));   // ...Back onto a row a close kept folded opens it
+      // ...AND ITS PLACE IS A STEP FROM THE PRESS, not from the answer (reproduced on a scratch app, walk 5 2026-11-19): Mark done on a task whose
+      // agent is written up first answers seconds later, the address kept naming the closed task while the next one was drawn, and a Back
+      // pressed meanwhile skipped the closed task and left the drawn one on screen
+      else if (belowItem.tid && !byUrl.current) { recordPlace(`#task=${belowItem.tid}`, "push"); lastPlace.current = `#task=${belowItem.tid}`; navHow.current = "replace"; }
     }
     // ...AND WHAT IT READS LEAVES THE RAIL AT THE PRESS (rule 4): Next on a row the walk says it reads (walk.reads - a report, an idea, an fyi),
     // a batch's "All read, next" (a settle). Held to the answer, a slow one kept a read batch in the FYI heading's count and a passed idea on
@@ -2285,9 +2331,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // and no word, the words left sitting in the box. The line is drawn at once and goes when the table is free (the effect beside
   // openLater), about what is then on it - the task that was coming up. A picture still waits in its tray, the words with it.
   const askLater = useRef([]), sending = useRef(null);
-  // `how.react`: WHAT THE OWNER JUST DID ON THE PAGE, inside a conversation they started about it (pageView.onReact - the owner, 2026-10-30:
-  // "it will know if you change something in the screen ... say i see you changed this"): no line of theirs is drawn, nothing they are
-  // typing is touched, the window is not opened - a shut one counts the answer on its pill. Dropped, never held, while a turn is running
   // A LINE THE PAGE SAYS ONCE THE ACT HAPPENED, KEPT (the owner, 2026-11-03: the reply lines vanished on a reload): drawn here, and kept in the
   // conversation as the receipt it is (concierge.keep_line) - a reload draws it again, the next turn's model reads what was done, and the read
   // after this one knows it by its words (mergeDurableTurns)
@@ -2296,12 +2339,10 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     api.post("/api/concierge/line", { text, status }).catch(() => {});
   };
   const send = async (line, held = false, how = {}) => {
-    const react = how.react || "";
     // a picture alone is a line too: "what is this?" is what it means
     const images = line == null ? pics.paths : [];
     const t = String(line ?? (heard ? `${text} ${heard}` : text)).trim() || (images.length ? "What is this?" : "");
     if (!t || pics.busy) return;
-    if (react && (busy || resetting || turnFlight.current)) return;
     if (busy || resetting || turnFlight.current) {
       // ...but never a second copy: Enter twice in one tick reaches here with the line already going (`sending`)
       if (resetting || images.length || t === sending.current || askLater.current.includes(t)) return;
@@ -2313,20 +2354,19 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     }
     turnFlight.current = answering.current = true; sending.current = t; const drawn0 = rowsDrawn.current;
     if (line == null) { micRef.current?.cancel(); setHeard(""); }   // a send ends the dictation: its words went with the line
-    if (!react) { setText(""); setLit(null); }
+    setText(""); setLit(null);
     setBusy(true); setErr("");
     // THE PAGE ON SCREEN GOES WITH A LINE THE OWNER ASKED (pageView.context - the owner, 2026-10-30: "it reads the screen when the owner asks
     // it something about what is on it"): its fields and buttons, a secret as its state only. Asking about it starts the conversation the
     // page's own edits are heard in
     const view = how.view !== undefined ? how.view : pageView.context();
-    if (view && !react) pageView.startSession(view, !!how.door);
     // ...a TYPED line opens the window (it was typed in its box); a line sent for a press elsewhere never does - the window opens only by
     // the owner's own hand or for an error (the owner, 2026-10-28: "when the walk-through ended, the chat reopened by itself")
     if (winOnRef.current && line == null) setPopOpen(true);
     const shots = line == null ? pics.imgs : [];
     if (images.length) pics.clear();
     // ...a held line is on screen already: it is let go, not drawn twice
-    if (!react) setMsgs((m) => { const i = held ? m.findIndex((x) => x.heldAsk && x.text === t) : -1;
+    setMsgs((m) => { const i = held ? m.findIndex((x) => x.heldAsk && x.text === t) : -1;
       return i >= 0 ? m.map((x, j) => (j === i ? { ...x, heldAsk: false } : x)) : [...m, { id: `u${Date.now()}`, role: "user", text: t, shots }]; });
     try {
       // a card browsed open is what "this" means - not the item folded above it (the final review)
@@ -2341,9 +2381,9 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       // set up Any mailbox (IMAP)" was answered with that task's story (TQ-1251)
       // ...and NOW NO PAGE CARRIES THE TASK UNDER IT (the owner, 2026-11-05): with Settings, Connections, Reports, the Hub or New on the canvas
       // the question is about that page alone - its view goes, the task beneath does not
-      const subject = how.door || browsing ? null : tableKey || current || cardRef.current;
+      const subject = browsing ? null : tableKey || current || cardRef.current;
       const ask = () => turn({ mode: "say", text: t, key: subject, context_mid: currentItem?.mid && subject === current ? currentItem.mid : null,
-                               open_card: openCardRef.current, images, ...(view ? { view } : {}), ...(react ? { react } : {}) });
+                               open_card: openCardRef.current, images, ...(view ? { view } : {}) });
       const data = await ask().catch(async (e) => { if (!isCoveragePending(e)) throw e; await new Promise((r) => setTimeout(r, 1200)); return ask(); });
       if (data.context_update && noticedRef.current !== data.context_update) {   // not already said by the stream event
         setMsgs((m) => [...m, { id: `context${Date.now()}`, role: "assistant", text: data.context_update }]);
@@ -2368,14 +2408,12 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
         // ...but IN THE CHAT POP-UP a turn that only acted still ends on words (actReceipt): there is no card in it to wear the badge, and the
         // owner's line stood alone over the task (2026-10-27). A drafted reply (`decision`) writes its own receipt
         else if (winOnRef.current && !data.context_update && !data.decision) { const r = actReceipt(data, tableKey || current); receipt(r.text, r.status); }
-        // WHAT IT DOES ON THE PAGE, run there through the page's own buttons (pageView.run): each act a step on this answer as it lands - a
-        // send lit for the owner, never pressed; the owner's own hand on the page drops the rest. What the page answered (a Test) is heard next
+        // WHAT IT BRINGS UP ON THE PAGE (pageView.run): a page opened, a thing pointed at - each a step on this answer as it lands. Nothing is
+        // filled or pressed there (the owner, 2026-11-18: "it should just open the task, not do anything on the tasks")
         if (ops.length) {
-          const { result, steps } = await pageView.run(ops, (steps) => setMsgs((m) => m.map((x) => (x.id === aid ? { ...x, steps } : x))));
+          const { steps } = await pageView.run(ops, (steps) => setMsgs((m) => m.map((x) => (x.id === aid ? { ...x, steps } : x))));
           // ...and the steps are kept on the answer's own line, so a reload draws them again (concierge.keep_line)
           if (steps.length) api.post("/api/concierge/line", { text: data.say || "", steps }).catch(() => {});
-          const s = pageView.sessionNow();
-          if (result && s && s.auto < 3) setTimeout(() => reactRef.current?.({ kind: "result", text: `${result.action} ${result.ok ? "passed" : "failed"}${result.detail ? `: ${result.detail}` : ""}` }), 300);
         }
         // A TYPED PUT-DOWN WAS PRESSED (concierge._put_down - the owner, 2026-10-23: "it should collapse the task and write on it marked done
         // with note"): its card wears the button's badge, and on the table it is put down as the row's own press puts it down - folded, the
@@ -2404,7 +2442,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
         // on the work rail"), said in the chat window
         const opens = /^#?task=(\d+)$/.exec(page || "");
         if (opens) {
-          const n = Number(opens[1]), row = (pile?.items || []).find((i) => Number(i.tid) === n);
+          const n = Number(opens[1]), row = rowOfTask(pile?.items, n);
           pressRowRef.current?.(n);
           { const ref = row?.ref || `TQ-${String(n).padStart(4, "0")}`; receipt(row?.title ? t("Opened {ref} - {title}.", { ref, title: row.title }) : t("Opened {ref}.", { ref })); }
         } else if (page) {
@@ -2444,17 +2482,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // ...and a line the bell hands over (askAssistant.js), sent as if typed - or left in the box while a turn is running, never dropped
   const askRef = useRef(null);
   askRef.current = (t, how = {}) => (busy || resetting || turnFlight.current ? setText(t) : send(t, false, how));
-  // THE PAGE'S OWN EDITS, HEARD WHILE HELPING (pageView.onReact - the owner, 2026-10-30: "inside a conversation the owner started about that
-  // page, it notices the owner's own edits"): one turn per settled edit, Save or Test answer - never while a turn runs or the owner is typing
-  // in the chat box, and at most 3 in a row before the owner says something again. Outside a conversation about the page: silence
-  const reactRef = useRef(null);
-  reactRef.current = (ev) => {
-    const s = pageView.sessionNow();
-    if (!s || busy || resetting || turnFlight.current || text.trim() || s.auto >= 3) return;
-    s.auto += 1;
-    send(ev.text, false, { react: ev.text });
-  };
-  useEffect(() => pageView.onReact((ev) => reactRef.current?.(ev)), []);
   // ...the page's acts reach the canvas the way a click does: an area brought up by its sidebar's road, a task's row lit by the Advisor's fill
   const lightRef = useRef(null);
   lightRef.current = (rowId, label) => {
@@ -2468,21 +2495,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     pageView.setLighter((rowId, label) => lightRef.current?.(rowId, label));
     return () => { pageView.setOpener(null); pageView.setLighter(null); };
   }, []);
-  // THE DOORS (pageView.openHelp): "Get AI to set it up", "Set up with AI", "Fix with AI" open this window and ask - the page they were
-  // pressed on goes with the ask, and is what the conversation is about. No Board task: the chat is the record (the owner, 2026-10-30)
-  useEffect(() => {
-    const help = (e) => {
-      const line = String(e.detail?.line || "").trim(); if (!line) return;
-      if (!e.detail?.quiet) setPopOpen(true);
-      setTimeout(() => askRef.current?.(line, { door: true }), Number(e.detail?.wait ?? 350));    // ...after the page it opened has drawn
-    };
-    // ...and a card's walk left open from before is said here once, folded, its steps under it (aisetup.move_walk)
-    // ...and a door whose work went to an agent (a playbook's build) says where it is, the window opened by that press
-    const earlier = (e) => { const r = e.detail || {}; if (!r.title) return;
-      setMsgs((m) => [...m, { id: `a${Date.now()}`, role: "assistant", text: r.title, ...(r.title_i18n ? { text_i18n: r.title_i18n } : {}), steps: r.steps || [] }]); if (r.open) setPopOpen(true); };
-    window.addEventListener(pageView.HELP, help); window.addEventListener(pageView.EARLIER, earlier);
-    return () => { window.removeEventListener(pageView.HELP, help); window.removeEventListener(pageView.EARLIER, earlier); };
-  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const on = () => { const t = takeAsk(); if (!t) return; setPopOpen(true); askRef.current(t); };   // ...open, as the doors do: the bell asked into a closed window
     on(); window.addEventListener("tq-ask", on);
@@ -2684,14 +2696,14 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     // ...A REPORT THE SAME (the owner, 2026-11-16: "report or dashboard or fyi they should all work the same ... it requires user prompt on what
     // they want to know about it"): his words start the task, its Came from the report and the agent working - never an empty task waiting on him
     if (handToItem(item.key, { verb: v, items: [{ key: item.key, title: item.title || item.ref || "this item" }],
-      start: (o) => startOnItem(item, { verb: o.verb, text: withImages(o.text, o.files) }) })) { setAgentOn(null); return; }
+      start: (o) => startOnItem(item, { verb: o.verb, text: o.text, files: o.files }) })) { setAgentOn(null); return; }
     setAgentOn({ item, coding });
   };
   // ...and its Start: the hand-off's own proposal, carrying what was said and the agent chosen (concierge.propose_direct), run at
   // once - the box was the confirmation. The walk then does what a hand-off always did: the task opens, working (runProposal)
   const startOnItem = async (item, o) => {
     const { data } = await api.post("/api/concierge/propose", { verb: o.verb, key: item.key, table: true, exact: true, text: o.text || null,
-      agent: o.agent || null, brain: o.brain || null, pick: o.pick || null, model: o.model || null, press: true });
+      agent: o.agent || null, brain: o.brain || null, pick: o.pick || null, model: o.model || null, files: o.files || [], press: true });
     if (!data?.id) throw new Error(data?.say || "It did not start.");
     setAgentOn(null);
     await runProposal({ ...data, key: data.key || item.key });
@@ -3148,22 +3160,25 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // (the owner, 2026-11-03), and its move goes once that one is in - whose answer then fills its own line and leaves the table alone (landed
   // `off`). A rail click mid-pull was refused as busy and did nothing at all. The latest ask wins; one queued before it is dropped.
   const pullRef = useRef(null), pressRowRef = useRef(null);   // ...pressRowRef: a rail row pressed by number (railPress, below)
-  // BACK: the row directly above the one on the table, even when the walk did not start at the top (rule 3) - the server's to say
-  // (walk.above) and to move to (railwalk.back). It reads nothing and passes nothing: the row it leaves stays exactly as it was
-  // ...greyed, and refused, while a move is out (the owner, 2026-11-03): it draws its row at its press as Next does
-  const goBack = () => {
-    if (resetting || busy || turnFlight.current || deferredChat.current.size || !backTo) return undefined;
-    navHow.current = "replace";
-    setRailOpen(false); if (old) setOld(null); browseDown();
-    return surface(null, null, null, false, "back");
-  };
   // `made`: the row of a task New just made (funnelPile.madeRow), which no rail row holds yet - drawn at the press as a rail row is
-  const pull = (key, asUser, made = null) => {
-    const row = (pileRef.current?.items || []).find((i) => i.key === key && !i.settling) || (made?.key === key ? made : null);
+  const pull = (asked, asUser, made = null) => {
+    // ...ONE ROAD TO A TASK (the owner, 2026-11-20: "Back is really slow"): Back, Forward, a link and search ask for `task:N`, which no rail row
+    // is keyed by - so nothing was drawn at the press and the table waited for the server's whole read (~800 ms against ~300 for the same task
+    // pressed on the rail). The task's own rail row is the one asked for, drawn at once and filled in place, as a rail press does
+    const tidOf = /^task:(\d+)$/.exec(asked || "")?.[1];
+    const railRow = (pileRef.current?.items || []).find((i) => (i.key === asked || (tidOf && String(i.tid) === tidOf)) && !i.settling);
+    // ...and A TASK OFF THE RAIL (closed, done) that this page has had on its table is drawn at once from what it last held, filled in place
+    // as its read comes (the owner, 2026-11-20: "revisits never wait") - only a first-ever open waits for the server
+    const seen = !railRow && tidOf && seenItems.current.get(tidOf);
+    // ...the press's own row first (made - a search hit knows if the task is closed), and a kept copy is drawn on the table only: it is the
+    // task as it stood when last seen, so it lends no rail row (offRail) - Search drew a closed task's old open row for a beat (owner, live)
+    const row = railRow || (made?.key === asked ? made : null) || (seen ? { ...seen, key: asked, offRail: true } : null);
+    const key = row?.key || asked;
     const ahead = () => {
       rowsDrawn.current += 1; setRailOpen(false); browseDown(); setExpanded(false);
-      const id = `a${Date.now()}`, was = openLater.current?.key;
-      setMsgs((m) => [...m.filter((x) => !(x.ahead && x.card?.key === was)), { id, role: "assistant", text: "", options: [], chips: [], card: row, ahead: true }]);
+      const id = `a${Date.now()}`, was = openLater.current?.key, line = { id, role: "assistant", text: "", options: [], chips: [], card: row, ahead: true };
+      drawnAhead.current = line;
+      setMsgs((m) => [...m.filter((x) => !(x.ahead && x.card?.key === was)), line]);
       putOnTable(row); setFoldedKey((k) => (k === row.key ? null : k));
     };
     if (!resetting && (busy || turnFlight.current)) {
@@ -3178,12 +3193,15 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     // ...but New's own press, opening the task it just made, keeps the card up - its button spinning - until that task is on the table
     // (holdsNew): put down at the press, the task it was opened over came back under the "…" (the owner, 2026-11-09)
     const held = !made && holdsNew(msgsRef.current, browsingRef.current, pileRef.current?.items, key);
-    if (made && row !== currentRef.current && key !== currentRef.current?.key) ahead();
+    if ((made || seen) && row !== currentRef.current && key !== currentRef.current?.key) ahead();
     setRailOpen(false); if (old) setOld(null); if (!held) browseDown();
     const going = surface(key, asUser || null);
     if (held) Promise.resolve(going).finally(() => browseDownRef.current?.());
   };
   pullRef.current = pull;
+  // ...AND BACK OPENS BY THE SAME ROAD, BEFORE ITS ADDRESS IS WRITTEN (appLinks.navBack): the task behind is pulled as a rail press pulls it,
+  // and the browser's step back then finds it on the table (the owner, 2026-11-20: every button opens the same)
+  useEffect(() => (active ? onBackTo((h) => { const m = /^#task=(\d+)$/.exec(h || ""); if (m) { prefetchTask(api, m[1]); byUrl.current = true; navHow.current = "replace"; pullRef.current?.(`task:${m[1]}`); } }) : undefined), [active]);
 
   // A MESSAGE ASKED FOR BY ID - a card's "<name>'s message ↗", an idea's "Based on", a #msg= link - is put on the table as ITS card, the
   // one the walk shows for it (funnel.item_for_key answers msg:N for any message, through its task's row when it has one). It opened a
@@ -3306,18 +3324,15 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // commit, before the paint - no frame shows the old task's buttons, and a press that fails gives them back in the frame it says so
   useLayoutEffect(() => { rowTable(table.key); leaveRow(flight?.from); }, [table.key, flight?.from]);
   // ...and what the rail's tag and the box say of it: a page over it is not it in view (tableWords)
+  // ...ONE BOX ON A TASK (the owner, 2026-11-22: "yes" - every task page had the task's "Message the agent..." and this "Ask..." under it):
+  // while a task is in view its own box is the only one; the Assistant's comes back on the rail, or over a page opened on top
+  // ...by the item's own task, whatever row opened it ("review:5", "processing:…" - the walk, 2026-11-22: "task:N" alone missed every row)
+  const taskInView = !!(currentItem?.tid || /^task:\d+$/.test(table.key || "")) && !table.place && !table.folded;
   const tableSays = tableWords(table, currentItem?.ref || (/^task:(\d+)$/.test(table.key || "") ? `TQ-${table.key.slice(5).padStart(4, "0")}` : ""));
   // THE ASSISTANT'S LIGHT OUTRANKS THE ADVISOR'S while its item is on the table: the owner asked for that act in words, and the Advisor's line
   // over it would name another button (assistantLight.js); it goes out at the next press or when the table moves on
   const litTable = { key: table.key, tid: currentItem?.tid ?? Number(/^task:(\d+)$/.exec(table.key || "")?.[1] || 0) };
   const litNow = litPick(lit, litTable);
-  // THE TASK YOU WERE WORKING ON, and the corner's way back to it from a page or another task (tableState.workedOn / backToWork)
-  const [worked, setWorked] = useState(null);
-  const inView = !!table.key && !table.folded && !table.place;
-  useEffect(() => {
-    const w = inView ? workedOn(table, { ...currentItem, tid: litTable.tid }) : null;
-    if (w) setWorked((was) => (was?.key === w.key && was.title === w.title ? was : w));
-  }, [table.key, inView, litTable.tid, currentItem?.title]);   // eslint-disable-line react-hooks/exhaustive-deps
   // the day typed with Remind me ("remind me Monday"): the walk's picker leads with it (assistantLight's light.day)
   const litDayRef = useRef(null); litDayRef.current = litNow?.verb === "defer" ? litNow.day || null : null;
   useEffect(() => { setLit((l) => litAfter(l, litTable)); }, [litTable.key, litTable.tid, lit]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -3355,26 +3370,23 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   useVerbs("floor", [{ id: "floor:next", group: "next", label: btn("next"), tone: "p", title: btnHint("next"),
     run: () => { setErr(""); surface(null, null); } }], hanging);
   // NAV: BACK BESIDE NEXT, NO NEXT ON THE LAST ONE (the owner, 2026-10-27: "on the first one no Back, like no Next on the last one"). Back
-  // stands while the walk has a row above the one on the table (walk.above); Next goes when it has nothing below it (walk.below)
+  // stands while there is a place to go back to (appLinks.navBack); Next goes when it has nothing below it (walk.below)
   const walkNow = walkOf(pile), onWalk = !!currentItem && !!walkNow && (walkNow.on === currentItem.key || (walkNow.members || []).includes(currentItem.key));
-  // ...and on a rail row below the top while the walk's word catches up (its answer in, its rail not yet), there is a row above: the server says
-  // which. Greyed while a move is out, as Next is (the owner, 2026-11-03: one move at a time)
-  const underTop = !!currentItem && items.some((i) => i.key === currentItem.key) && items[0]?.key !== currentItem.key;
-  // ...and AT THE WALK'S END, nothing on the table, Back goes to the last row it walked (railwalk.back from its end; the owner, 2026-11-09: Back is
-  // any task you were on) - greyed there, the bar was Back and nothing else that worked (the owner, 2026-11-10: "where is the button to start over?")
-  const walkEnd = !currentItem && !table.key && !table.place && !!walkNow?.ended && walkNow.above;
-  const backTo = !firstRun && !old && !walk && (table.speaks ? (onWalk ? walkNow.above : underTop ? "above" : null) : walkEnd || null), moving = busy || deferring || resetting;
+  // ...BACK IS THE ONE LIST OF PLACES HE WAS ON (the spec's part E, 2026-11-19): the bar's Back walked the rail's row above, the corner arrow the
+  // address - two Backs, two answers. Both step back over the places he and the walk moved through (appLinks.navBack)
+  const [canBack, setCanBack] = useState(canGoBack);
+  useEffect(() => onStep(() => setCanBack(canGoBack())), []);
+  const moving = busy || deferring || resetting;
   // ...and on a desk Back is ALWAYS on the bar, greyed where there is nowhere to go back to (the owner, 2026-10-29: the bar is Back and Next)
-  useVerbs("nav", [{ id: BACK, group: "back", label: btn("back"), title: btnHint("back"), disabled: !backTo || moving, why: moving ? "" : t("nothing above this one"),
-    run: () => backTo && goBack() }], !!backTo || (deskChat && !firstRun));
+  useVerbs("nav", [{ id: BACK, group: "back", label: btn("back"), title: btnHint("back"), disabled: !canBack || moving, why: moving ? "" : "nothing to go back to",
+    run: navBack }], canBack || (deskChat && !firstRun));
   const atEnd = !!current && table.speaks && onWalk && !walkNow.below;
   useEffect(() => { navEnd(atEnd); }, [atEnd]);
   useEffect(() => () => navEnd(false), []);
   const navOn = shown.find((x) => x.id === browsing)?.area || "";
-  // Settings and Connections have their own ← back to your tasks: the bar's Back and Next stand greyed under them (actionRow.navOff)
-  const ownBack = navOn === "settings" || navOn === "about" || navOn === "connections";   // ...and About you, Settings' own split (2026-11-06)
-  useEffect(() => { navOff(ownBack ? "Back to your tasks with ← at the top" : ""); }, [ownBack]);
-  useEffect(() => () => navOff(""), []);
+  // ...ONE INPUT ON A SCREEN (the design walk, 2026-11-20): New is a box of its own, and the Assistant's "Ask about this page..." stood under it -
+  // two places to type the same ask. While New is the page, its box is the one
+  const newOpen = navOn === "new";
   // WHAT THE PAGE ASKS THE CANVAS TO OPEN (TaskHubPage canvasReq): once each, and only once the chat has loaded - the
   // first load replaces the conversation, and a card posted before it would be wiped
   const doneReq = useRef(0);
@@ -3394,7 +3406,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       if (browsing) { setRailOpen(false); setFoldedKey(null); browseDownRef.current?.(); putOnTable(null, "view"); }
       navHow.current = "replace";
     }
-    else if (request.kind === "task") openTaskRef.current?.(request);
+    else if (request.kind === "task") { if (request.fromUrl) byUrl.current = true; openTaskRef.current?.(request); }
     else if (request.kind === "msg") openMsgRef.current?.(request.mid);   // #msg=N: that message's card (canvasLinks)
     else if (request.kind === "new") browseRef.current?.("new", request.state || {});     // #new-task: the New card in the conversation (addressed: Message them)
     // Back to the address with no place: the walk's own table, the page over it put down (appLinks.onPlace)
@@ -3402,7 +3414,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     // page headers stood in their place over a lone floor Next, one more for every trip (the 2026-10-25 sweep)
     else if (request.kind === "home") { setRailOpen(false); setFoldedKey(null); browseDownRef.current?.(); putOnTable(null, "view");
       setMsgs((m) => (m.length && m.every((x) => x.role === "browse") ? [] : m)); }
-    if (request.fromUrl) navHow.current = "replace";
+    if (request.fromUrl) { navHow.current = "replace"; urlStep.current = true; urlWant.current = request.kind === "task" && request.tid ? `#task=${request.tid}` : ""; }
   }, [request, state]);   // eslint-disable-line react-hooks/exhaustive-deps
   // A COLD LINK TO A TASK (#task=N in a new tab) draws that task first: the conversation came back with the walk's last item on
   // the table, which drew whole - its view and every read behind it - for the 0.6-1 s the link's own pull took, then gave way.
@@ -3435,15 +3447,24 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   useEffect(() => {
     if (request?.n && request.n !== reqSeen.current) { if (request.n === doneReq.current) reqSeen.current = request.n; return; }
     if (!active || !state || old || firstRun || busy) return;
-    recordPlace(placeHash, navHow.current); navHow.current = "replace";
+    // ...A MOVE FROM ONE TASK TO ANOTHER IS A STEP, whatever road moved the table (walk 2, 2026-11-19: Mark done moved to the next task by a road
+    // that never marked its step, the closed task's place was written over, and Back went "home" with the next task drawn and no Back left).
+    // Only a place the address itself asked for (Back, Forward, a link) is written in place
+    // ...read against the ADDRESS itself, which still names the task the table left (reproduced on a scratch app: the place the effect last
+    // wrote is missed whenever a turn or a request held it back, and a link-opened task was never one it wrote)
+    const at = window.location.hash || "", task = (h) => /^#task=\d+$/.test(h);
+    if (urlWant.current && placeHash !== urlWant.current && at === urlWant.current) return;     // ...the asked-for task is still on its way
+    if (popped.current && task(at) && placeHash !== at) return;                                  // ...the task Back went to, still on its way
+    popped.current = false; byUrl.current = false;
+    urlWant.current = "";
+    const moved = (task(placeHash) && task(at) && at !== placeHash) || (!!placeHash && !!lastPlace.current && placeHash !== lastPlace.current && !urlStep.current);
+    recordPlace(placeHash, moved ? "push" : navHow.current); navHow.current = "replace"; urlStep.current = false; lastPlace.current = placeHash;
   }, [placeHash, active, state, old, firstRun, busy, request]);   // eslint-disable-line react-hooks/exhaustive-deps
   // BACK IN THE WINDOW ITSELF (TQ-1187): the desktop window has no browser bar, so the step behind a page or task the owner opened is
   // a press away here - the browser's own Back, the road onPlace already takes. Only over a step of ours (appLinks.canGoBack)
-  const [canBack, setCanBack] = useState(canGoBack);
-  useEffect(() => onStep(() => setCanBack(canGoBack())), []);
-  const railPile = useMemo(() => ((leaving.length || continuingTid || readGone) && pile?.items
-    ? { ...pile, items: asPressed(pile.items, { leaving: leaving.map((x) => x.tid), continuing: continuingTid, read: readGone?.keys }) } : pile),
-    [pile, leaving, continuingTid, readGone]);
+  const railPile = useMemo(() => withOpened((leaving.length || continuingTid || readGone) && pile?.items
+    ? { ...pile, items: asPressed(pile.items, { leaving: leaving.map((x) => x.tid), continuing: continuingTid, read: readGone?.keys }) } : pile, currentItem),
+    [pile, leaving, continuingTid, readGone, currentItem]);
   useEffect(() => {                                   // the close has landed: the server's pile no longer has it, or has it For later
     if (leaving.length && pile?.items) setLeaving((l) => { const k = stillLeaving(l, pile); return k.length === l.length ? l : k; });
   }, [pile, leaving]);
@@ -3513,6 +3534,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   const keyOf = useMemo(() => lineKeys(shown), [shown]);
   const winLines = useMemo(() => (winOn ? shown.map((m, i) => [m, i]).filter(([m]) => talkLine(m)).slice(-60) : []), [winOn, shown]);
   const inWin = useMemo(() => new Set(winLines.map(([m]) => m.id)), [winLines]);
+  // ...and what the canvas does not draw at all: a page or an item already left (funnelPile.pastView)
+  const gone = useMemo(() => new Set(old ? [] : shown.filter((m, i) => pastView(m, i, { browsing, live: lastCardIdx })).map((m) => m.id)), [shown, browsing, lastCardIdx, old]);
   // ...a typed ask's dots, where its answer will land - never a walk move's (Next, a put-down, a row picked: `flight`), whose answer is the next
   // item on the canvas (the owner, 2026-10-30: "it's still a little buggy hitting next and not a task, mark done"): moved into the window, shut or
   // not, they left the canvas blank under the folded item for the length of the move
@@ -3555,8 +3578,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // ...ONLY ITS × AND ESC SHUT IT (the owner, 2026-10-28: "it randomly closes ... it closed when it responded. Make sure that never happens"):
   // the box's blur and a press on the row used to shut it unless a style read at that instant said the box stood over the canvas - one
   // read away from closing whenever an answer moved the focus (a lit button, a task opened, a page brought up). Nothing reads the focus now
-  const shutBox = () => { setBoxOpen(false); setEnding(false); if (mini) keepMini(null); composeRef.current?.blur(); };
-  const [ending, setEnding] = useState(false);     // the × asked "End this chat?" while it helps with a page (pageView session)
+  const shutBox = () => { setBoxOpen(false); if (mini) keepMini(null); composeRef.current?.blur(); };
   // ...MINIMIZE IS NOT × (the owner, 2026-10-28: the two did the same): it folds the window down to its head, a strip standing on the open box -
   // the title, what came since, expand; a press on the strip brings the whole window back. × is the pill again
   // ...HALF ITS HEIGHT, not a strip (the owner, 2026-10-29: "minimize should be half the size not a tiny bit open"): the newest lines
@@ -3595,8 +3617,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   const popLast = winLines[winLines.length - 1]?.[0];
   const [seen, setSeen] = useState(() => mini?.last ?? null);
   useEffect(() => { if (winFull && popLast) setSeen(popLast.id); }, [winFull, popLast?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
-  // ...but a press REFUSED, or one that failed, is said where it can be read: the window comes up for it (the error the owner must see)
-  useEffect(() => { if (popLast && /^[adrw]\d/.test(popLast.id) && (popLast.refused || (popLast.role === "receipt" && popLast.status === "error"))) setPopOpen(true); }, [popLast?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
   // ...and only ANSWERS to what he asked count (assistantTurns.unseenAnswers): nothing a task does raises it
   const unseen = useMemo(() => (winFull ? 0 : unseenAnswers(winLines.map(([m]) => m), seen)), [winFull, seen, winLines]);
   // ...and IT NEVER SHUTS BY ITSELF (the owner, 2026-10-27: "it disappeared when done? not sure what happened"): every turn ends on words
@@ -3604,7 +3624,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // ...and A PRESS THAT FAILED SAYS SO WHERE IT CAN BE READ (the 2026-10-28 flow walk): a Next whose request never got an answer wrote its
   // line under the task view, behind the canvas and the dock - the press looked unheard. The failure comes up in the window
   const popErr = winOn && !!err;
-  useEffect(() => { if (popErr) setPopOpen(true); }, [popErr, err]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!err) return undefined;
     const id = requestAnimationFrame(() => [...document.querySelectorAll("[data-tq-err-line]")].find((e) => e.getBoundingClientRect().height > 0)?.scrollIntoView?.({ block: "nearest" }));
@@ -3612,6 +3631,9 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   }, [err, popOpen]);
   // ...Esc shuts it while the focus is IN it (its box or its conversation) - an Esc on the task view, the rail or a menu is theirs: shutting
   // the window from anywhere was a close the owner never aimed at it. Not the Esc that shuts a menu or a dialog over it either
+  // ...AND IT OPENS BY HIS OWN HAND ONLY - a press on it, a key typed in it - never because it was focused (the walk, 2026-11-22: the move-on after
+  // Remind me focused the box, and the empty window stood over the next page and every page after)
+  const keyIn = (e) => { if (e.key === "Escape") return escShut(e); if (!["Tab", "Shift", "Control", "Alt", "Meta"].includes(e.key)) openBox(); };
   const escShut = (e) => { if (e.key === "Escape" && !e.defaultPrevented && !e.target?.closest?.(".MuiPopover-root, .MuiMenu-root, .MuiDialog-root")) { e.stopPropagation(); shutBox(); } };
   // ...TALL ENOUGH TO TALK IN (the owner, 2026-10-28: "it's too small, it should get a little taller"): a fixed height, the conversation
   // filling it - ~75% of the screen, at least 520px where there is room, never past the canvas's top (its foot stands 6px over the row's
@@ -3657,7 +3679,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
                 {/* an answer that hangs had no way out: New chat is refused while one is being written (dock/new 409) */}
                 {busy && answering.current && !DEMO && (
                   <button type="button" className="tq-chip" style={{ marginLeft: 8 }} title={t("Stops the answer being written and gives you the chat back.")}
-                    onClick={() => { api.post("/api/concierge/stop").catch(() => {}); stopRef.current?.abort(); pageView.stop(); }}>{t("Stop")}</button>
+                    onClick={() => { api.post("/api/concierge/stop").catch(() => {}); stopRef.current?.abort(); }}>{t("Stop")}</button>
                 )}
                 {busy && !!steps.length && <AgentSteps data={{ steps }} />}
                 {!!work.length && <div className="tq-work">{work.map((w, i) => <div key={i}>{w}</div>)}</div>}
@@ -3687,19 +3709,14 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   const newChatIcon = (attr) => <Tooltip title={t("New chat — archives this one")}><IconButton size="small" {...{ [attr]: "" }} onClick={newChat} disabled={busy || resetting}><EditNoteIcon sx={{ fontSize: 19, color: DIM }} /></IconButton></Tooltip>;
   // ...ONE PENCIL ON SCREEN (the owner, 2026-11-09: "drop pencil if it's a duplicate"): while the head's corner holds New chat, the pill's goes
   const headPencil = iconsInPill && !firstRun && !old;
-  // ...read against the task in view NOW, not the one the effect above last kept: on every Next and row click the corner drew "Back to" the task
-  // just left for a frame or three, then took it away (the rail walk, 2026-11-12)
-  const backWork = !firstRun && !old && !walk && backToWork(table, (inView && workedOn(table, { ...currentItem, tid: litTable.tid })) || worked, litTable.tid);
-  // ...the page put down over its own task, else that task pulled back by number (any task, on the rail or not)
-  const toWork = () => { if (!worked) return; if (table.place && table.key === worked.key) unfoldTable(); else pull(`task:${worked.tid}`, null); };   // ...never both: in the pill only while a task or page is open over the chat
   const ownIcons = <>
     <Tooltip title={t(speakOnState ? "Reading replies aloud — click to stop" : "Read replies aloud")}><IconButton size="small" className="tq-phone-hide" data-tq-speak="" onClick={toggleSpeak}>{speakOnState ? <VolumeUpIcon sx={{ fontSize: 18, color: "var(--tq-success, #526b53)" }} /> : <VolumeOffIcon sx={{ fontSize: 18, color: DIM }} />}</IconButton></Tooltip>
     <Tooltip title={t("Past chats")}><IconButton size="small" data-tq-past-chats="" onClick={openChats}><HistoryIcon sx={{ fontSize: 18, color: DIM }} /></IconButton></Tooltip>
     {!headPencil && newChatIcon("data-tq-new-chat")}</>;
   const composeBox = (
-    <div className="tq-compose-box" style={firstRun ? { display: "none" } : undefined} ref={boxRef} data-tq-open={boxWide ? "" : undefined}
+    <div className="tq-compose-box" style={firstRun || (taskInView && !boxWide) ? { display: "none" } : undefined} ref={boxRef} data-tq-open={boxWide ? "" : undefined}
     data-tq-continue={!boxWide && isMini && winLines.length ? "" : undefined} data-tq-grow={grow ? "" : undefined}
-    onMouseEnter={growIn} onMouseLeave={growOut} onFocus={openBox} onKeyDown={escShut}>
+    onMouseEnter={growIn} onMouseLeave={growOut} onPointerDown={openBox} onKeyDown={keyIn}>
     {!boxWide && unseen > 0 && <i className="tq-chat-unseen" data-tq-unseen={unseen} aria-label={t("{count} new in the chat", { count: unseen })}>{unseen}</i>}
     {/* THE FIELD: nothing of its own at rest (display: contents - the pill is the box); in the chat window it is the bordered
         field the words are typed in, tools and send inside it (the owner, 2026-10-28: "it does not look like a prompt input box?") */}
@@ -3753,19 +3770,15 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     <div className="tq-asst-col" style={{ position: "relative", flex: 1, minHeight: 0 }}>
       <div className="tq-chat-head">
         {/* no mark here: the top bar already carries the logo (the owner, 2026-10-06: "don't need it on top of the assistant") */}
-        {canBack && !!placeHash && !old && !firstRun && <Tooltip title={t("Back (Alt+←)")}><IconButton size="small" aria-label={t("Back")} onClick={() => window.history.back()} sx={{ ml: -0.75, mr: 0.25 }}><ArrowBackIcon sx={{ fontSize: 18, color: DIM }} /></IconButton></Tooltip>}
-        <div className="who" style={{ minWidth: 0 }}><b>{ASSISTANT_NAME}</b>{old && <span>{t("An earlier chat · {time}", { time: fmtDateTime(old.at) })}</span>}</div>
+        {/* ONE BACK ON A SCREEN (the design walk, 2026-11-20): the head's arrow and its "Back to TQ-..." chip were two more ways back beside the
+            bar's Back, which walks the same list of places (appLinks.navBack) - the bar's is the one */}
+        <div className="who" style={{ minWidth: 0 }}><b>{ASSISTANT_NAME}</b>{old && <span>An earlier chat · {fmtDateTime(old.at)}</span>}</div>
         <div className="grow" />
         <Tooltip title={t("Your work")}><IconButton size="small" onClick={() => setRailOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><ViewSidebarIcon sx={{ fontSize: 18, color: DIM }} /></IconButton></Tooltip>
         {/* ONE AI PICKER, THE COMPOSER'S (the owner, 2026-10-29): the header's own AI popover is gone - the model picker at the foot of
             the box chooses this chat's AI, a new chat starts on Settings -> AI defaults, and the default is changed there */}
         {/* ...and THE ASSISTANT'S OWN ICONS ARE IN ITS PILL on a desk while a task or page is open (the owner, 2026-11-06): over the task
             they read as the task's. On the home screen the pane is the Assistant's chat, and they are here, top right (overChat) */}
-        {/* THE WAY BACK, top right (the owner, 2026-11-09: "always a button on top corner when you are in settings or reports to go back to
-            the main task you were working on, or clear it with the pencil for new chat"): Back over a page or another task, and New chat */}
-        {backWork && <Tooltip title={`Back to ${worked.ref}${worked.title ? ` - ${worked.title}` : ""}`}>
-          <button type="button" className="tq-chip tq-back-work" data-tq-back-work={worked.tid} onClick={toWork}>
-            <ArrowBackIcon sx={{ fontSize: 14, mr: 0.5, verticalAlign: "-2px" }} />{workWords(worked)}</button></Tooltip>}
         {headPencil && newChatIcon("data-tq-new-chat-head")}
         {!iconsInPill && ownIcons}
       </div>
@@ -3835,8 +3848,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
                   actions={actions} fresh={tableItem} canvas={canvasState} />}
           </div>}
           {firstRun ? state && <div data-tq-setup-under={setupCovered.current ? "hidden" : ""} style={setupCovered.current ? { display: "none" } : undefined}>{welcome()}</div>
-            : state && !shown.some((m) => !inWin.has(m.id)) && (!busy || popOpen) && !starting && welcome()}
-          {!firstRun && shown.map((m, i) => inWin.has(m.id) ? null : <Line key={keyOf.get(m.id)} m={m} lastBrief={m.id === lastBriefId} live={!old && i === lastCardIdx} last={!old && i === lastSaidIdx} moves={!old && i === movesIdx} tableChips={tableChips} barHolds={barHolds} pageOver={pageOver}
+            : state && !shown.some((m) => !inWin.has(m.id) && !gone.has(m.id)) && (!busy || popOpen) && !starting && welcome()}
+          {!firstRun && shown.map((m, i) => inWin.has(m.id) || gone.has(m.id) ? null : <Line key={keyOf.get(m.id)} m={m} lastBrief={m.id === lastBriefId} live={!old && i === lastCardIdx} last={!old && i === lastSaidIdx} moves={!old && i === movesIdx} tableChips={tableChips} barHolds={barHolds} pageOver={pageOver}
                                      actions={actions} fresh={tableItem} canvas={old ? null : canvasState} />)}
           {/* CONTINUE, IN LINE (the owner, 2026-09-30): a card under the item, like New - the mic and pictures in it */}
           {!old && continueOn && (
@@ -3914,17 +3927,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
                   ? <Tooltip title={t("Expand the chat")}><IconButton size="small" aria-label={t("Expand the chat")} data-tq-box-expand="" onClick={(e) => { e.stopPropagation(); expand(); }}><OpenInFullIcon sx={{ fontSize: 15, color: DIM }} /></IconButton></Tooltip>
                   : <Tooltip title={t("Minimize - keeps this conversation")}><IconButton size="small" aria-label={t("Minimize the chat")} data-tq-box-mini="" onClick={minimize}><CloseFullscreenIcon sx={{ fontSize: 15, color: DIM }} /></IconButton></Tooltip>}
                 {/* ...its ×: the one way, with Esc, the window shuts to the pill - what is typed stays for the next time it opens */}
-                {/* ...and WHILE IT IS HELPING WITH A PAGE its × asks first (the owner, 2026-10-30: "the owner ends a session by closing the chat
-                    with its ×, which asks to confirm ending the chat") - yes ends the help and shuts the window; Esc only shuts it. A chat that only
-                    asked about the page, with no "with AI" door pressed, shuts as it always did - and stops hearing the page */}
-                <Tooltip title={t("Close (Esc)")}><IconButton size="small" aria-label={t("Close the chat")} data-tq-box-close="" onClick={(e) => { e.stopPropagation(); if (pageView.sessionNow()?.door) setEnding(true); else { pageView.endSession(); shutBox(); } }}><CloseIcon sx={{ fontSize: 16, color: DIM }} /></IconButton></Tooltip></div>
-              {ending && (
-                <div className="tq-chat-pop-end" data-tq-chat-end="" role="alertdialog" aria-label={t("End this chat?")}>
-                  <span>{t("End this chat? I stop helping with {page}.", { page: pageView.sessionNow()?.title || t("this page") })}</span>
-                  <button type="button" className="tq-chip" data-tq-chat-end-yes="" onClick={() => { pageView.stop(); pageView.endSession(); setEnding(false); shutBox(); }}>{t("End chat")}</button>
-                  <button type="button" className="tq-chip" onClick={() => setEnding(false)}>{t("Keep chatting")}</button>
-                </div>
-              )}
+                <Tooltip title="Close (Esc)"><IconButton size="small" aria-label="Close the chat" data-tq-box-close="" onClick={(e) => { e.stopPropagation(); shutBox(); }}><CloseIcon sx={{ fontSize: 16, color: DIM }} /></IconButton></Tooltip></div>
               <div className="tq-chat-pop-body" ref={popBodyRef}>
                 {!winLines.length && !popPending && !popErr && <p className="tq-chat-pop-empty">{browsing ? t("Ask about this page, or anything on your list.") : currentItem?.ref ? t("Ask about {ref}, or anything on your list.", { ref: currentItem.ref }) : t("Ask about anything on your list.")}</p>}
                 {winLines.map(([m, i]) => <Line key={m.id} m={m} lastBrief={m.id === lastBriefId} live={false} last={!old && i === lastSaidIdx} moves={!old && i === movesIdx} tableChips={tableChips} barHolds={barHolds} pageOver={pageOver}
@@ -3940,8 +3943,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
           {/* ONE PANEL, THREE LAYERS (the owner, 2026-10-13: "i thought there will be one border around all 3"): the Advisor's
               suggestion, the row whose filled button it picked, and the box - one border, the box its floor */}
           <div className={firstRun && !setupCard ? "tq-dock tq-setup-dock" : "tq-dock"}>
-          {/* ...setup's own line only while setup is in view: a task opened over it speaks for itself (tableOf's `over`, 2026-10-26) */}
-          {firstRun && !setupCard && <SetupLine />}
+          {/* ...setup says its own on the page, never in a bar over the row (the owner, 2026-11-20: "the advisor ideas on the top of the chat in
+              the setup is useless. remove it") */}
           {/* NO STRIP OVER THE ROW (the owner, 2026-10-26: "maybe keep the box but remove the advisor? not sure the advisor is really
               useful"): the pick is the row's one dark button and says nothing. IT IS THE TASK'S OWN (the owner, 2026-11-09: "assistant/advisor
               should only be on rail"), and an Advisor idea's row fills none (2026-11-15: "remove the entire advisor from buttons thing") -
@@ -3954,13 +3957,13 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
           {/* ...A PRESS ON THE ROW LANDS WHERE IT WAS AIMED (the overnight walk, 2026-10-26): a press that shut the wide box slid the lit button
               away under the pointer. The open box stands over the canvas now and nothing on the row shuts it, so the row never moves */}
           <div className="tq-dock-line">
-          {/* ...and during setup its line is the Advisor's (SetupLine): the move setup fills (FirstRun's tone) is the one lit - nothing
-              was, so the line said "pick it" over a plain Back and a greyed Next (2026-10-19) */}
+          {/* ...and during setup the move setup fills (FirstRun's tone) is the one lit - nothing was, so the page said "pick it" over a
+              plain Back and a greyed Next (2026-10-19) */}
           <ActionRow advised={stripPick || setupLit} hold={rowHold} early={rowEarly} />
-          {!chatApart && composeBox}
+          {!chatApart && !newOpen && composeBox}
           </div>
           </div>
-          {chatApart && <div className="tq-chat-unit" data-tq-chat-unit="">{composeBox}</div>}
+          {chatApart && !newOpen && <div className="tq-chat-unit" data-tq-chat-unit="">{composeBox}</div>}
           <Popover open={!!emojiEl} anchorEl={emojiEl} onClose={() => setEmojiEl(null)}
             anchorOrigin={{ vertical: "top", horizontal: "left" }} transformOrigin={{ vertical: "bottom", horizontal: "left" }}
             slotProps={{ paper: { sx: { p: 1.1, borderRadius: 2.5 } } }}>
@@ -4001,11 +4004,13 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     if (isCur || (table.folded && key === table.key)) { backToTable(key); return; }
     pull(key, null);
   };
-  // ...a task by number: its row when the rail holds it, else the task link's own road (a closed task is on no rail)
-  const pressRow = (n) => {
+  // ...a task by number: its row when the rail holds it, else the same pull with its row made at the press from the hit (madeRow, as New's) - by
+  // its link it went a hash round trip, the task left standing lit until the read came (a closed one searched while on another, 2026-11-19)
+  // ...and a Search hit on a task too (FeedView onPress): it pulled `task:N`, which no rail row is keyed by
+  const pressRow = (n, hit = null) => {
     prefetchTask(api, n);
-    const row = (pile?.items || []).find((i) => Number(i.tid) === Number(n) && i.lane !== "unjudged");
-    if (row) railPress(row.key); else openAppLink(`task=${n}`);
+    const row = rowOfTask(pile?.items, n);
+    if (row) railPress(row.key); else openTaskCard({ tid: n, row: hit ? madeRow(n, hit.title, ["done", "dropped"].includes(hit.status)) : null });
     return !!row;
   };
   pressRowRef.current = pressRow;
@@ -4026,7 +4031,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
         onPull={(key, asUser) => { if (asUser) pull(key, asUser); else railPress(key); }}
         onSection={walkSection} onMoreFyi={moreFyi} onCurrent={() => backToTable()} moved={movedTo} presses={presses} /></>}
       stage={chat}
-      onPull={(r, o) => pull(keyForRow(r), o?.quiet ? null : `Tell me about “${r.Subject || r.Title || "this"}”`)}
+      onPull={(r, o) => pull(keyForRow(r), o?.quiet ? null : `Tell me about “${r.Subject || r.Title || "this"}”`)} onPress={pressRow}
       railOnNarrow={railOpen} setupMode={firstRun} setupRail={firstRun ? <SetupSteps /> : null} />
     </>
   );

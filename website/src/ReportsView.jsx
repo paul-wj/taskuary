@@ -2,7 +2,9 @@
 // Connections tab, or an inline one), write the query, optionally an AI summary prompt,
 // preview the whole pipeline, schedule it - results land on the Timeline. Connections
 // stay pure connections; this tab is where reports are built and managed.
-import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { sectionOr } from "./browseSection.js";
+import { RowPressLine, useRowPress } from "./rowPress.jsx";
 import {
   Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress, Dialog,
   DialogContent, DialogTitle, IconButton, ListSubheader, Menu, MenuItem, Select, Step, StepButton, StepContent,
@@ -32,7 +34,7 @@ import { ChannelIcon, StatusDot, timeAgo, Crumb, Empty, FilterPills, SideRail } 
 import { RecentlyDeleted, UndoLine, removeNow } from "./Removed.jsx";
 import WorkflowEditor, { SchedulePicker, scheduleOf, withSchedule } from "./WorkflowEditor.jsx";
 import RunSteps from "./RunSteps.jsx";
-import { TYPE_LABELS, cronText, reportSchedule, startupText } from "./reportWords.js";
+import { TYPE_LABELS, useScheduleWords } from "./reportWords.js";
 import { asSteps, runWords } from "./workflowFlow.js";
 import { onDraftHanded, takeDraft } from "./draftHandoff.js";
 import { label as btnLabel } from "./buttons.js";
@@ -46,7 +48,8 @@ import { routeOfHash } from "./canvasLinks.js";
 import { NewPlaybook, PB_EMPTY, PB_OPEN, PlaybookDetail, PlaybookRow, RecentlyDeleted as PlaybooksDeleted, pbOpen, usePlaybooks } from "./PlaybookShelf.jsx";
 import { NEW_PB, takePlaybookAsk } from "./playbookOpen.js";
 import SetupWithAi, { onBuilt } from "./SetupWithAi.jsx";
-import { openHelp, useViewExtras, viewResult } from "./pageView.js";
+import { useViewExtras } from "./pageView.js";
+import { isDigest } from "./MorningDigest.jsx";
 
 const AI_FIELD = ["AI summary prompt (optional)", "ai_prompt", "multiline",
   "e.g. Summarize headcount by site. Flag anything under 70 and any day-over-day drop."];
@@ -205,7 +208,7 @@ export const FIELDS = {
   alchemy_wallet: [["wallet address", "address", "text", "0x..."],
     ["Alchemy networks", "networks", "text", "eth-mainnet,base-mainnet"], AI_FIELD],
 };
-export { cronText, TYPE_LABELS };
+export { TYPE_LABELS };
 
 
 /* The picker was 21 flat entries in the order the registry happens to list them, which is not a
@@ -409,7 +412,11 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
   const [draftNote, setDraftNote] = useState(null);
   // a NEW report's first save remounts its editor on its new id: what it said and where it stood ride across
   const [carry, setCarry] = useState(null);
-  const [running, setRunning] = useState(null);
+  // ...a row's press said on that row (rowPress): Run now reads "Running…" there until its own last run moves on, and a failure stays there
+  const lastRef = useRef({}); lastRef.current = lastRuns;
+  const runSig = (r) => (r ? `${r.run_id || ""}|${r.at || ""}` : "");
+  const press = useRowPress({ landed: useCallback((sid, before) => runSig(lastRef.current[sid]) !== before, []), reload: load });
+  useEffect(() => { press.check(); }, [lastRuns]);   // eslint-disable-line react-hooks/exhaustive-deps
   const [fixRun, setFixRun] = useState(null);     // {sid, runId}: Fix with AI pressed on a run in the list - the editor takes it
   const [routeAsk, setRouteAsk] = useState(null); // {sid, line, to, how}: the Assistant's "send it to ..." - the builder fills its box once
   useEffect(() => {
@@ -438,20 +445,19 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     return onDraftHanded(take);
   }, []);
   const runNow = async (sid) => {
-    setRunning(sid); setNote(null);
+    press.start(sid, runSig(lastRuns[sid]));
     try {
       const { data } = await api.post(`/api/reports/${sid}/rerun`);
       // a workflow run IS a task: open it where the agent and its browser can be watched (the owner, 2026-10-08)
-      if (data.task_id) { setNote({ sid, ok: true, detail: uiMessage("{title} started as {ref} — opening it.", { title: data.title || uiMessage("Routine"), ref: data.ref }) }); openAppLink(`task=${data.task_id}`); }
-      // where a report lands is its own routing, and a failure is the bell's alone (reports.run_lands)
-      else setNote({ sid, ok: true, detail: uiMessage("{title} is running in the background — you can leave this tab. {lands}", { title: data.title || uiMessage("Report"), lands: data.lands || uiMessage("If it fails, the bell says why.") }) });
-    } catch (e) { setNote({ sid, ok: false, detail: e?.response?.data?.detail || uiMessage("report could not be queued") }); }
-    setRunning(null); load();
+      if (data.task_id) { press.done(sid); openAppLink(`task=${data.task_id}`); }
+      // ...a report runs in the background: its row reads Running… until its last run moves on, and that line says what came of it
+    } catch (e) { press.fail(sid, e?.response?.data?.detail || "It could not be started - press Run now again."); }
+    load();
   };
   // a report's clock, on or off - its row's switch and its builder's are this one road (the owner, 2026-11-02)
   const switchOn = async (s) => {
     try { await api.post("/api/sources", { SourceId: s.SourceId, Active: !s.Active }); }
-    catch (e) { setNote({ sid: s.SourceId, ok: false, detail: uiMessage("{title} could not be switched {state} — {error}. Try again.", { title: parse(s.ConfigJson).title || s.Address || uiMessage("report {id}", { id: s.SourceId }), state: uiMessage(s.Active ? "off" : "on"), error: e?.response?.data?.detail || uiMessage("the app did not answer") }) }); }
+    catch (e) { press.fail(s.SourceId, `It could not be switched ${s.Active ? "off" : "on"} - ${e?.response?.data?.detail || "the app did not answer"}. Try again.`); }
     load();
   };
   const syncNow = async () => {
@@ -494,8 +500,9 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
 
   /* Reports and workflows use the same durable scheduler rows, but they are not the same
      product concept. The rail says which is which; selecting either still opens it directly. */
-  const titleOf = (s) => parse(s.ConfigJson).title || s.Address || t("report {id}", { id: s.SourceId });
-  const reportSources = sources.filter((s) => !isWorkflowSource(s) && !isDashboardSource(s));
+  const titleOf = (s) => parse(s.ConfigJson).title || s.Address || `report ${s.SourceId}`;
+  // ...never the Morning digest: it opens the main screen, and its time and on/off are in Settings (the owner, 2026-11-22)
+  const reportSources = sources.filter((s) => !isWorkflowSource(s) && !isDashboardSource(s) && !isDigest(s));
   const workflowSources = sources.filter(isWorkflowSource);
   const dashboardSources = sources.filter(isDashboardSource);
   const railItems = [
@@ -517,7 +524,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
   const workflowOverview = bucketNow === "workflows";
   const dashOverview = bucketNow === "dashboards";
   const baseList = workflowOverview ? workflowSources : dashOverview ? dashboardSources : reportSources;
-  const list = (q ? sources : baseList).filter((s) => !q || titleOf(s).toLowerCase().includes(q.toLowerCase()));
+  const list = (q ? sources.filter((s) => !isDigest(s)) : baseList).filter((s) => !q || titleOf(s).toLowerCase().includes(q.toLowerCase()));
   const openId = typeof bucketNow === "number" ? bucketNow : null;
   const open = !q && (openId != null || ["new-report", "new-invoices", "new-agent", "draft", "new-dashboard", "draft-dashboard"].includes(bucketNow));
   const selectedSource = sources.find((s) => s.SourceId === openId);
@@ -535,9 +542,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
   const row = (s) => {
         const c = parse(s.ConfigJson);
         // both halves, not the first one: "on startup" alone hid the Monday cron behind it
-        const sched = [c.on_startup && startupText(c), c.cron && cronText(c.cron),
-          c.every_minutes && t("every {minutes}m", { minutes: c.every_minutes }), c.daily_at && t("daily {time}", { time: c.daily_at })]
-          .filter(Boolean).join(" + ");
+        const sched = c.on_startup || c.cron || c.every_minutes || c.daily_at ? s.ScheduleWords || "" : "";   // in the server's words
         // NO CLOCK IS A REPORT THAT STOPPED (D2, the owner 2026-09-28): it said "daily" and ran only by hand, so
         // it wears a red border and says so - a workflow is started by hand on purpose and is left alone
         const unscheduled = !sched && !workflowOverview;
@@ -554,9 +559,9 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
             <ChannelIcon channel={isWorkflowConfig(c) ? "workflow" : "report"} />
             <Box sx={{ flex: { xs: "1 1 calc(100% - 64px)", sm: 1 }, minWidth: 0 }}>
               <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }} noWrap>{c.title || s.Address}</Typography>
-              <Typography variant="caption" sx={{ ...mono, color: FAINT }}>
-                {asSteps(c) && c.flow.length ? t(c.flow.length === 1 ? "{count} step" : "{count} steps", { count: c.flow.length })
-                  : (c.sources || []).length > 1 ? t("{count} sources", { count: c.sources.length }) : (TYPE_LABELS[c.type] ? t(TYPE_LABELS[c.type]) : c.type || "rest")} · {sched || t("no schedule")}{s.LastPolledAt ? ` · ${t("ran {time}", { time: timeAgo(s.LastPolledAt) })}` : ` · ${t("never ran")}`}
+              <Typography variant="caption" sx={{ color: FAINT }}>
+                {asSteps(c) && c.flow.length ? plural(c.flow.length, "step")
+                  : (c.sources || []).length > 1 ? `${c.sources.length} sources` : (TYPE_LABELS[c.type] || c.type || "rest")} · {sched || "no schedule"}{s.LastPolledAt ? ` · ran ${timeAgo(s.LastPolledAt)}` : " · never ran"}
               </Typography>
               {unscheduled && <Typography variant="caption" sx={{ color: ALERT_INK, display: "block" }}>
                 {t("No schedule — it only runs when you press Run now. Give it one in step 3.")}</Typography>}
@@ -568,13 +573,14 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
             </Box>}
             {/* each named for its report (the everyday-asks audit, 2026-11-02): the Assistant reads the shelf by these names, and five
                 rows of "Run now" and a switch with no name at all left it nothing to tell the AP ageing's from the headcount's */}
-            <Button size="small" disabled={running === s.SourceId} aria-label={t("Run now: {name}", { name: c.title || s.Address })}
-              startIcon={running === s.SourceId ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 14 }} />}
-              onClick={(e) => { e.stopPropagation(); runNow(s.SourceId); }}>{t(running === s.SourceId ? "Running…" : "Run now")}</Button>
-            <Button size="small" aria-label={t("Edit: {name}", { name: c.title || s.Address })} onClick={() => openOne(s.SourceId)}>{t("Edit")}</Button>
-            <Switch checked={!!s.Active} onClick={(e) => e.stopPropagation()} inputProps={{ "aria-label": t("{name} on its clock", { name: c.title || s.Address }) }}
+            <Button size="small" disabled={press.running(s.SourceId)} aria-label={`Run now: ${c.title || s.Address}`}
+              startIcon={press.running(s.SourceId) ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 14 }} />}
+              onClick={(e) => { e.stopPropagation(); runNow(s.SourceId); }}>{press.running(s.SourceId) ? "Running…" : "Run now"}</Button>
+            <Button size="small" aria-label={`Edit: ${c.title || s.Address}`} onClick={() => openOne(s.SourceId)}>Edit</Button>
+            <Switch checked={!!s.Active} onClick={(e) => e.stopPropagation()} inputProps={{ "aria-label": `${c.title || s.Address} on its clock` }}
               onChange={() => switchOn(s)} />
           </Box>
+          <RowPressLine press={press.of(s.SourceId)} />
           {lastRuns[s.SourceId] && <LastRun r={lastRuns[s.SourceId]} sid={s.SourceId} onChanged={load}
             onFix={lastRuns[s.SourceId].run_id ? (runId) => { setFixRun({ sid: s.SourceId, runId }); openOne(s.SourceId); } : null} />}
           </Box>
@@ -618,7 +624,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         types={types} connectors={connectors} draft={selectedConfig} workflow={workflowOpen}
         reload={load} onBack={onBack} onSaved={saved(onSaved)} note={wizardNote} lastRun={lastRuns[openId]}
         carry={carried} onCarried={() => setCarry(null)}
-        onRun={() => runNow(openId)} running={running === openId} onSwitch={switchOn} said={note}
+        onRun={() => runNow(openId)} running={press.running(openId)} onSwitch={switchOn} said={press.of(openId)?.state === "failed" ? { sid: openId, ok: false, detail: press.of(openId).said } : null}
         routeAsk={routeAsk?.sid === openId ? routeAsk : browse && browseState.route && browseState.open === openId ? browseState.route : null}
         onRouteTaken={() => { setRouteAsk(null); if (browse && browseState.route) onBrowseState?.({ ...browseState, route: null }); }} />;
 
@@ -628,7 +634,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     // No shelf named (the sidebar, "Run a report or workflow") is the reports themselves: three chips over nothing was a page
     // with no list on it, one press short of what the door says
     const section = openSource && isWorkflowSource(openSource) ? "workflows" : openSource && isDashboardSource(openSource) ? "dashboards"
-      : browseState.section ?? "reports";
+      : sectionOr(browseState.section, ["reports", "dashboards", "workflows", "playbooks"]);
     const back = () => { setDraft(null); load(); pbs.load(); onBrowseState?.({ ...browseState, section, open: null }); };
     const pbSlug = pbOpen(browseState.open), pbBook = pbs.books.find((b) => b.slug === pbSlug);
     const sectionRows = section === "workflows" ? workflowSources : section === "reports" ? reportSources : section === "dashboards" ? dashboardSources : [];
@@ -692,15 +698,14 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
           ...(sectionRows.length && binKinds ? [{ key: "recently-deleted", node: <RecentlyDeleted kinds={binKinds} onRestored={load} /> }] : [])],
       detail: browseState.open != null && !missing ? (pbSlug != null ? <PlaybookDetail key={pbSlug} slug={pbSlug} onGone={back} />
         : wizard(back, (sid) => onBrowseState?.({ ...browseState, open: sid }))) : null,
-      onBack: back,
-      openLabel: pbSlug != null ? (pbSlug === "new" ? t("a new playbook being written (Reports - Playbooks)") : t('the playbook "{title}" (Reports - Playbooks), its words open', { title: pbBook?.title || pbSlug }))
-        : browseState.open === "new-report" ? t("a new report being set up (Reports)")
-        : section === "dashboards" && !openSource && browseState.open != null ? t("a new dashboard being set up (Reports - Dashboards)")
-        : openSource && section === "dashboards" ? t('the dashboard "{title}" (Reports - Dashboards), drawn with its buttons', { title: titleOf(openSource) })
-        : openSource ? (section === "workflows" ? t('the routine "{title}" (Routines), its steps open', { title: titleOf(openSource) })
-          : t('the report "{title}" (Reports), its editor open', { title: titleOf(openSource) })) : "",
-      empty: section === "playbooks" ? (pbs.err || (pbs.loaded ? t(PB_EMPTY) : t("Reading the playbooks…"))) : section === "dashboards" ? t(DASH.empty) : section === "workflows" ? t("No routines yet - + New routine describes one and sets it up.") : t("No reports yet - + New report walks you through one."),
-      note: missing ? t("That report (#{id}) is not here any more - these are the ones there are.", { id: browseState.open }) : "",
+      openLabel: pbSlug != null ? (pbSlug === "new" ? "a new playbook being written (Reports - Playbooks)" : `the playbook "${pbBook?.title || pbSlug}" (Reports - Playbooks), its words open`)
+        : browseState.open === "new-report" ? "a new report being set up (Reports)"
+        : section === "dashboards" && !openSource && browseState.open != null ? "a new dashboard being set up (Reports - Dashboards)"
+        : openSource && section === "dashboards" ? `the dashboard "${titleOf(openSource)}" (Reports - Dashboards), drawn with its buttons`
+        : openSource ? (section === "workflows" ? `the routine "${titleOf(openSource)}" (Routines), its steps open`
+          : `the report "${titleOf(openSource)}" (Reports), its editor open`) : "",
+      empty: section === "playbooks" ? (pbs.err || (pbs.loaded ? PB_EMPTY : "Reading the playbooks…")) : section === "dashboards" ? DASH.empty : section === "workflows" ? "No routines yet - + New routine describes one and sets it up." : "No reports yet - + New report walks you through one.",
+      note: missing ? `That report (#${browseState.open}) is not here any more - these are the ones there are.` : "",
     });
   }
 
@@ -726,7 +731,8 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         <Button size="small" variant={workflowOverview ? "contained" : "outlined"} disableElevation startIcon={<AddIcon sx={{ fontSize: 15 }} />}
           onClick={() => { setQ(""); setDraft(null); setBucket("new-agent"); }} sx={workflowOverview ? { background: GRADIENT } : {}}>{t("New routine")}</Button>
       </Box>
-      {note && <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, color: note.ok ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>{note.ok ? "✓" : "✗"} {displayMessage(note.detail)}</Typography>}
+      {/* ...Run due now's word, under the row of buttons it was pressed in - a row's own press is said on that row (rowPress) */}
+      {note && <Typography variant="body2" sx={{ mt: -1, mb: 1.5, fontSize: 12.5, color: note.ok ? DIM : "var(--tq-danger, #6b2733)" }}>{note.detail}</Typography>}
       <UndoLine kinds={["report", "workflow", "dashboard"]} onRestored={load} />
       {!workflowOverview && !dashOverview && <SetupWithAi kind="report" sx={{ mb: 2 }} onOpen={() => { setDraft(null); setBucket("new-report"); }} />}
       {dashOverview && <SetupWithAi kind="dashboard" sx={{ mb: 2 }} onOpen={() => { setDashDraft(null); setBucket("new-dashboard"); }} />}
@@ -842,7 +848,7 @@ function SavedReportSummary({ source, workflow = false }) {
         </Typography>
       </Box>
       <Typography variant="body2" sx={{ color: INK, lineHeight: 1.55, fontSize: 12.5 }}>
-        {t("Reads {reads}. Runs {schedule}.", { reads, schedule: reportSchedule(c) })}
+        Reads {reads}. Runs {source.ScheduleWords}.
       </Typography>
       <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.45, lineHeight: 1.5 }}>
         {t(c.ai_prompt ? "AI writes the summary. " : "Uses the source result as-is. ")}
@@ -865,6 +871,7 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
   const [batch, setBatch] = useState(null);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(carry?.msg || "");
+  const monthly = useScheduleWords({ cron: cfg.cron || "0 9 1 * *" });   // the cron typed, in the server's words
   useEffect(() => { if (carry) onCarried?.(); }, []);   // read once, at mount: the carry is spent
   const period = new Date().toISOString().slice(0, 7);
   const loadCustomers = useCallback(async () => {
@@ -928,16 +935,16 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
       <Crumb section={t("Routines")} onBack={onBack} title={cur ? cfg.title : t("New monthly invoice routine")} />
       {note && <Alert severity={note.severity} sx={{ mb: 1.5, fontSize: 12.5 }}>{note.text}</Alert>}
       <Box sx={{ ...card, p: 2, mb: 2 }}>
-        <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.4, fontSize: 10 }}>{t("ROUTINE SETUP")}</Typography>
-        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, mb: 0.4 }}>{t("Monthly invoices → Zoho drafts → Review")}</Typography>
-        <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>{t("The schedule starts a monthly checklist. You confirm amounts; Prepare creates drafts; approving each Review card sends it.")}</Typography>
+        <Typography variant="overline" sx={{ color: ACCENT2, fontSize: 10 }}>Routine setup</Typography>
+        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, mb: 0.4 }}>Monthly invoices → Zoho drafts → Review</Typography>
+        <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>The schedule starts a monthly checklist. You confirm amounts; Prepare creates drafts; approving each Review card sends it.</Typography>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(240px,1fr) 250px 220px" }, gap: 1 }}>
           <TextField size="small" label={t("routine title")} value={cfg.title || ""} onChange={(e) => setCfg({ ...cfg, title: e.target.value })} />
           <Select size="small" displayEmpty value={cfg.connector_id || ""} onChange={(e) => setCfg({ ...cfg, connector_id: e.target.value, customers: [] })}>
             <MenuItem value="" disabled>{t("Zoho Invoice connection")}</MenuItem>
             {zohoCards.map((c) => <MenuItem key={c.ConnectorId} value={c.ConnectorId}>{c.Name}{c.Active ? "" : ` — ${t("off")}`}</MenuItem>)}
           </Select>
-          <TextField size="small" label={t("monthly cron")} value={cfg.cron || ""} helperText={cronText(cfg.cron || "0 9 1 * *")}
+          <TextField size="small" label="monthly cron" value={cfg.cron || ""} helperText={monthly}
             onChange={(e) => setCfg({ ...cfg, cron: e.target.value })} />
         </Box>
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1 }}>{t("Customers included each month")}</Typography>
@@ -956,8 +963,8 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
       </Box>
       {cur && <Box sx={{ ...card, p: 2 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 1.5 }}>
-          <Box sx={{ flex: 1 }}><Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.4, fontSize: 10 }}>{t("MONTHLY BATCH")}</Typography>
-            <Typography sx={{ fontWeight: 600, color: INK }}>{batch ? `${batch.Period} · ${invoiceStatus(batch.Status)}` : t("No batch opened yet")}</Typography></Box>
+          <Box sx={{ flex: 1 }}><Typography variant="overline" sx={{ color: ACCENT2, fontSize: 10 }}>Monthly batch</Typography>
+            <Typography sx={{ fontWeight: 600, color: INK }}>{batch ? `${batch.Period} · ${String(batch.Status).replaceAll("_", " ")}` : "No batch opened yet"}</Typography></Box>
           {batches.length > 1 && <Select size="small" value={batch?.BatchId || ""} onChange={async (e) => setBatch((await api.get(`/api/invoice-batches/${e.target.value}`)).data)}>
             {batches.map((b) => <MenuItem key={b.BatchId} value={b.BatchId}>{b.Period} · {invoiceStatus(b.Status)}</MenuItem>)}</Select>}
           <Button variant="outlined" disabled={!!busy} onClick={openMonth}>{busy === "open" ? t("Opening…") : t("Open {period}", { period })}</Button>
@@ -1058,7 +1065,7 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
     <Box sx={{ mt: 2, ...card, p: 1.5, maxWidth: 720, bgcolor: "var(--tq-panel, #fffdf7)", borderColor: "var(--tq-border, #d8cfbe)" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.25 }}>
         <AutoAwesomeIcon sx={{ fontSize: 15, color: "var(--tq-link, #55697a)" }} />
-        <Typography variant="caption" sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600, flex: 1 }}>{t("ONE PROMPT THAT ROUTES EACH RUN")}</Typography>
+        <Typography variant="caption" sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600, flex: 1 }}>One prompt that routes each run</Typography>
       </Box>
       {drawn.map((line) => {
         const [how, when, r] = shownAs(line);
@@ -1189,8 +1196,8 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
       )}
       {replay && (
         <Box sx={{ mt: 1.2, pt: 1.2, borderTop: `1px solid ${BORDER}` }}>
-          <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.5, fontSize: 10, display: "block" }}>
-            {t("ON THE LAST RUNS THIS WOULD HAVE")}
+          <Typography variant="overline" sx={{ color: ACCENT2, fontSize: 11.5, display: "block" }}>
+            On the last runs this would have
           </Typography>
           {replay.error ? <Typography variant="caption" sx={{ color: "var(--tq-danger, #8c3b3b)" }}>{displayMessage(replay.error)}</Typography>
             : !replay.data?.length ? <Typography variant="caption" sx={{ color: FAINT }}>{t("This report has not run yet — there is nothing to replay.")}</Typography>
@@ -1665,8 +1672,8 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 somebody the first time you saved it would be the worst kind of surprise. */}
             <Box sx={{ mt: 2, ...card, p: 1.5, maxWidth: 720 }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.5, fontSize: 10, flex: 1 }}>
-                  {t("SEND IT SOMEWHERE (OPTIONAL)")}
+                <Typography variant="overline" sx={{ color: ACCENT2, fontSize: 10, flex: 1 }}>
+                  SEND IT SOMEWHERE (OPTIONAL)
                 </Typography>
                 <Switch size="small" checked={!!cfg.deliver}
                   onChange={(e) => setCfg({ ...cfg, deliver: e.target.checked ? { ...firstDest() } : undefined })} />
@@ -1712,8 +1719,8 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 and its chart. On by default; the run that became WORK is never retired. */}
             <Box sx={{ mt: 2, ...card, p: 1.5, maxWidth: 720 }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.5, fontSize: 10, flex: 1 }}>
-                  {t("RETIRE THE PREVIOUS RUN")}
+                <Typography variant="overline" sx={{ color: ACCENT2, fontSize: 11.5, flex: 1 }}>
+                  Retire the previous run
                 </Typography>
                 <Switch size="small" checked={cfg.expire !== false}
                   onChange={(e) => setCfg({ ...cfg, expire: e.target.checked })} />
@@ -1895,24 +1902,32 @@ function AwsPicker({ label, which, value, placeholder, service, onChange }) {
    One component for both callers, because they differ only in how many cards come back: a single
    card fills itself in, and the Assistant's Pipeline step gets the whole set of systems the ask
    needs plus the instruction to judge them by. */
-function SourceComposer({ typeHint, one, hint, onSources }) {
-  useLocale();
-  // ...A DOOR TO THE CHAT NOW (2026-10-30): "let AI fill this in" opens the Assistant on this setup, and the composer that wrote the cards
-  // is a field it fills here (pageView view extras) - the cards land through the same onSources, and what it asks back is heard next
-  const n = useId();
-  const what = one ? t("What the {type} card should return", { type: typeHint || t("source") }) : t(hint);
-  const fill = async (ask) => {
-    const { data } = await api.post("/api/reports/compose-sources", { ask: String(ask || ""), type: typeHint || undefined });
-    if (data.sources?.length) {
-      onSources(data.sources, data.ai_prompt || "");
-      viewResult({ action: "compose", ok: !data.error, detail: data.error || data.explain || (one ? "Filled it in." : "Added them.") });
-    } else viewResult({ action: "compose", ok: false, detail: data.questions?.length ? `It needs to know: ${data.questions.join(" ")}` : data.error || "It could not write that card." });
+function SourceComposer({ typeHint, one, hint, placeholder, onSources }) {
+  // ...HIS WORDS, IN ITS OWN BOX (the owner, 2026-11-18: the Assistant "should just open the task, not do anything"): "let AI fill this in"
+  // opened the side chat and posted "Fill in the mssql card with me" in his name. The box is on the card; what he types is what is asked
+  const [open, setOpen] = useState(false), [ask, setAsk] = useState(""), [busy, setBusy] = useState(false), [said, setSaid] = useState(null);
+  const fill = async () => {
+    if (!ask.trim() || busy) return;
+    setBusy(true); setSaid(null);
+    try {
+      const { data } = await api.post("/api/reports/compose-sources", { ask: ask.trim(), type: typeHint || undefined });
+      if (data.sources?.length) { onSources(data.sources, data.ai_prompt || ""); setSaid({ ok: true, text: data.explain || (one ? "Filled it in." : "Added them.") }); setOpen(false); setAsk(""); }
+      else setSaid({ ok: false, text: data.questions?.length ? `It needs to know: ${data.questions.join(" ")}` : data.error || "It could not write that card.", fix: data.fix });
+    } catch (e) { setSaid({ ok: false, text: e?.response?.data?.detail || "It could not write that card." }); }
+    finally { setBusy(false); }
   };
-  useViewExtras("reports", { fields: [{ key: `sources${n}`, label: what, value: "", set: fill, said: (v) => uiMessage("Asked for the cards: {request}", { request: String(v).length > 70 ? `${String(v).slice(0, 69)}…` : v }) }] });
   return (
-    // ...the button is a door to the chat, out of its view (data-tq-view-skip, 2026-11-02): the chat fills the cards through the field above
-    <Button size="small" data-tq-setup-ai="sources" data-tq-view-skip="" onClick={() => openHelp(one ? `Fill in the ${typeHint || "source"} card with me` : `Help me with this: ${hint}`)}
-      startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />} sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>{t("let AI fill this in")}</Button>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+      {open
+        ? <TextField size="small" autoFocus fullWidth multiline maxRows={4} label={one ? `What the ${typeHint || "source"} card should return` : hint} placeholder={placeholder}
+            value={ask} disabled={busy} onChange={(e) => setAsk(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); fill(); } if (e.key === "Escape") setOpen(false); }}
+            InputProps={{ endAdornment: <Button size="small" disabled={busy || !ask.trim()} onClick={fill}>{busy ? <CircularProgress size={12} /> : "Fill"}</Button> }} />
+        : <Button size="small" data-tq-setup-ai="sources" data-tq-view-skip="" onClick={() => setOpen(true)}
+            startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />} sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>let AI fill this in</Button>}
+      {said && <Typography variant="caption" sx={{ color: said.ok ? DIM : ALERT_INK }}>{said.text}
+        {said.fix?.href && <Button size="small" component="a" href={said.fix.href} sx={{ fontSize: 11.5, ml: 1, py: 0 }}>{said.fix.label || btnLabel("fix")}</Button>}</Typography>}
+    </Box>
   );
 }
 
@@ -2239,20 +2254,19 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
   const [hist, setHist] = useState(false);
   const rv = r.reviewed || null;
   const outcome = r.steps?.length ? (r.failed || r.steps.some((x) => x.status === "waiting") ? runWords(r.steps, true) : r.summary || runWords(r.steps))
-    : r.failed ? (r.error ? t("failed — {error}", { error: r.error }) : t("failed"))
-    : r.type === "assistant" ? (r.said ? t(r.said === 1 ? "posted {count} line" : "posted {count} lines", { count: r.said }) : t("nothing to say — no post"))
-    : r.subject ? t("filed: {subject}", { subject: r.subject }) : t("ran");
-  const systems = rv?.systems ?? 0;
-  const read = rv?.scope === "sources" ? [t(systems === 1 ? "{count} configured data source only" : "{count} configured data sources only", { count: systems })]
-    : rv ? [t("{count} sender/subject lines from the last two days", { count: rv.recent ?? rv.today ?? 0 }), t("{count} tasks closed this week", { count: rv.week ?? 0 }),
-      t("{count} open", { count: rv.open ?? 0 }), t("{count} already said", { count: rv.said ?? 0 }), Object.entries(rv.candidates || {}).map(([k, v]) => `${v} ${t(ideaCounted(k))}`).join(", ") || t("no candidates")] : [];
+    : r.failed ? `failed${r.error ? ` — ${r.error}` : ""}`
+    : r.type === "assistant" ? (r.said ? `posted ${plural(r.said, "line")}` : "nothing new to post")
+    : r.subject ? `filed: ${r.subject}` : "ran";
+  const read = rv?.scope === "sources" ? [`${plural(rv.systems ?? 0, "configured data source")} only`]
+    : rv ? [`${plural(rv.recent ?? rv.today ?? 0, "message")} from the last two days`, `${rv.week ?? 0} tasks closed this week`,
+      `${rv.open ?? 0} open`, `${rv.said ?? 0} already said`, Object.entries(rv.candidates || {}).map(([k, v]) => `${v} ${ideaCounted(k)}`).join(", ") || "no candidates"] : [];
   return (
     <Box sx={{ pl: embedded || flush ? 0 : 5.5, pr: embedded ? 0 : 1, pb: embedded || flush ? 0 : 1.25, mt: embedded ? 0 : flush ? 0.5 : -0.5 }}>
       {!embedded && (
       <Typography variant="caption" sx={{ color: r.failed ? "var(--tq-danger, #8a3646)" : FAINT, display: "block", lineHeight: 1.5 }}>
-        <Box component="span" sx={{ fontWeight: 600, color: r.failed ? "var(--tq-danger, #8a3646)" : DIM }}>{t("last run")}</Box>
-        {` · ${timeAgo(r.at)}${r.ms != null ? ` · ${(r.ms / 1000).toFixed(1)}s` : ""} · ${outcome}`}
-        {rv && ` · ${t("read {details}", { details: read.slice(0, 2).join(", ") })}`}
+        <Box component="span" sx={{ fontWeight: 600, color: r.failed ? "var(--tq-danger, #8a3646)" : DIM }}>last run</Box>
+        {` · ${timeAgo(r.at)} · ${outcome}`}
+        {rv && ` · read ${read.slice(0, 2).join(", ")}`}
         <Box component="span" onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
           sx={{ ml: 1, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
           {t(open ? "hide ↑" : "details ↓")}

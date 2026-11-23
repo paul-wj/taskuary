@@ -69,17 +69,24 @@ def can_set_up() -> bool:
     "No browser here yet, and Taskuary can fetch its own for this computer."
     from . import browserruntime as rt
     return not installed() and rt.can()
+# WHY IT FAILED, IN THE OWNER'S WORDS (the 2026-11-18 walks: "browser fixture blocked outbound socket connection to ('140.82.114.3', 443)" and
+# "go on with agent-browser" were read out to him three times). The raw detail a failure carries in brackets is folded into the log, and the
+# tool is "the browser" - the one road every set-up failure is said by, whoever tells it to him
+def plain_why(why) -> str:
+    s = str(why or '')
+    while (t := re.sub(r'\s*\([^()]*\)', '', s)) != s: s = t
+    return ' '.join(re.sub(r'\bagent-browser\b', 'the browser', s).split()).strip(' .-')
 def set_up(say=None) -> str:
     "Fetch Taskuary's own browser and wait for it, `say` hearing each step. '' once there is one, else why not - in words for the owner."
     if installed(): return ''
     from . import browserruntime as rt
     try: rt.ensure(say); return ''
-    except RuntimeError as e: return str(e)
+    except RuntimeError as e: logger.info(f'the browser could not be set up: {e}'); return plain_why(e)
 def set_up_soon() -> str:
     "The same, behind the turn. '' while the first try is under way, else why the last one failed - and a new try is begun either way."
     from . import browserruntime as rt
     was = rt._STATE['failed']; rt.start()
-    return '' if installed() else was
+    return '' if installed() else plain_why(was)
 
 
 def program() -> str:
@@ -87,8 +94,14 @@ def program() -> str:
     cmd.exe, which reads & | < > ^ in an argument as its own: the owner's address bar opened https://portal.example/?app=1&return=...
     as ?app=1 and ran `return=...` as a command, and the page sat on a white loading spinner (2026-11-03). An approved fill or eval
     with an & in it was cut the same way. The shim only starts the .exe beside it, so that is what is run."""
-    from . import browserruntime
-    p = shutil.which('agent-browser') or browserruntime.find()
+    from . import browserruntime, gatecmd
+    # ...the REAL one, never the agents' hold in front of it (gatecmd): Taskuary's own calls - the pane's address bar, an approved press -
+    # found the hold first on a PATH that carried it, and asked the server to approve the server (macOS CI hung on it, 2026-11-18)
+    p = shutil.which('agent-browser')
+    if p and gatecmd.is_gate(p):
+        p = next((x for d in os.environ.get('PATH', '').split(os.pathsep) if d
+                  and (x := shutil.which('agent-browser', path=d)) and not gatecmd.is_gate(x)), None)
+    p = p or browserruntime.find()
     if os.name == 'nt' and p.lower().endswith(('.cmd', '.bat')):
         import platform
         arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x64'
@@ -269,6 +282,9 @@ async def _relay(ws, sid: str, url: str):
                         continue
                     # ...an ack is not input: the page's ack of the frame it drew just before the fill still goes, or the stream stalls on it
                     if sid not in FILLING or _ACK.search(m): await up.send(m)
+            # ...the window follower rides beside the view and never ends it: it returns at once where another view follows the session,
+            # or where its Chrome does not answer - and taken as one of the view's own ends, that closed the stream as it opened (CI, 2026-11-19)
+            watch_windows(sid)                  # ...its windows followed while the browser is open (one watcher a session, never this view's)
             tasks = [asyncio.create_task(down()), asyncio.create_task(back())]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for t in pending: t.cancel()
@@ -278,6 +294,146 @@ async def _relay(ws, sid: str, url: str):
                     logger.debug(f'browser relay {sid} ended: {exc!r}')
     except (OSError, websockets.WebSocketException) as e:
         logger.debug(f'browser relay {sid} could not attach to {url}: {e}')
+
+
+# A WINDOW THE PAGE OPENS IS FOLLOWED (the owner, live 2026-11-19: "Continue with Google" on a site's sign-in did nothing he could see). A
+# sign-in with Google, a payment's 3-D Secure, a "share" button open a popup - a target of its own the screencast never showed, so the press
+# looked dead while the window waited off screen. While a view is open, a page target that appears is switched to - the pane shows it, and it is
+# a tab in its strip - and once it closes the view goes back to the tab it came from. A step he is typing a sign-in into is never moved
+FOLLOW_EVERY = 1.0
+def pages(sid: str) -> list:
+    "Session `sid`'s page targets as its own Chrome lists them - [] when it does not answer."
+    try: return [t for t in _devtools(sid, '/json/list') or [] if t.get('type') == 'page']
+    except Exception as e: logger.debug(f'browser {sid}: its tabs could not be listed - {e}'); return []      # ...unread: the callers say so
+
+
+def follow(sid: str, stop, every: float = FOLLOW_EVERY, switch=None) -> None:
+    "Follow each window session `sid`'s page opens, and come back when it closes, until `stop` is set. `switch`: the tab switch (tests)."
+    switch = switch or switch_tab
+    with _START_LOCKS_GUARD:                                # ...one follower a session, however many views watch it
+        if sid in _FOLLOWING: return
+        _FOLLOWING.add(sid)
+    try: _follow(sid, stop, every, switch)
+    except Exception as e: logger.debug(f'browser {sid}: stopped following its windows - {e}')      # never ends the view it rides on
+    finally: _FOLLOWING.discard(sid)
+
+
+_FOLLOWING = set()
+def left(sid: str, url: str) -> None:
+    "Grey the held steps of session `sid`'s task whose page its browser has left (browsergate.left_page)."
+    try:
+        from . import browsergate, server, terminal as hub_term
+        if (t := hub_term.get(sid)) and getattr(t, 'task_id', None): browsergate.left_page(server.store, t.task_id, sid, url)
+    except Exception as e: logger.debug(f'browser {sid}: its held steps were not checked against the page - {e}')
+
+
+# ...WHILE THE BROWSER IS OPEN, VIEWED OR NOT (the owner, 2026-11-19: "the browser must work like a regular user's; no dead ends"): a chat's
+# pane is drawn only once he is needed, so what makes him needed - a human check, a download - is watched from the browser's start, not the view's
+_WINDOWS = {}
+def watch_windows(sid: str) -> None:
+    "Follow session `sid`'s windows, human checks and downloads until close() - one watcher a session (follow's own guard)."
+    with _KEEP_LOCK:
+        if sid in _WINDOWS: return
+        stop = _WINDOWS[sid] = threading.Event()
+    threading.Thread(target=follow, args=(sid, stop), daemon=True, name=f'windows-{sid}').start()
+
+
+def _follow(sid, stop, every, switch) -> None:
+    known, came_from, was = {t['id'] for t in pages(sid)}, '', ''
+    files, checked = _downloaded(sid), {}
+    while not stop.wait(every):
+        human(sid, checked)
+        files = arrived(sid, files)
+        ts = pages(sid)
+        if not ts: continue
+        ids = {t['id'] for t in ts}
+        new = [t for t in ts if t['id'] not in known]
+        if new and sid not in FILLING:
+            came_from = came_from or active_tab(sid)
+            if switch(sid, new[-1]['id']): logger.info(f'browser {sid}: the page opened a window - the view follows it')
+            refused(sid, new[-1].get('url'))
+        elif came_from and active_tab(sid) not in ids and came_from in ids and sid not in FILLING:
+            switch(sid, came_from); came_from = ''                     # ...its window closed: back where it came from
+        for t in ts:
+            if t['id'] in known: refused(sid, t.get('url'))
+        # ...and a held step whose page the browser has just left greys at once, while he watches (browsergate.left_page)
+        on = next((str(t.get('url') or '') for t in ts if t['id'] == active_tab(sid)), '')
+        if on and on != was and not on.startswith('about:'): left(sid, on)
+        was, known = on or was, ids
+
+
+# A HUMAN CHECK IS HIS, AT ONCE (the owner, 2026-11-19: a Cloudflare "Verify you are human" stood on the page with nobody told - a dead end). It
+# is read off the page's structure - a frame of challenges.cloudflare.com (Turnstile) - never its words; one that clears by itself in a few
+# seconds is nobody's. Still there after HUMAN_AFTER, it is handed to him with the hand-over's own Your turn / I'm done, and the agent waits
+HUMAN_AFTER = 6.0
+HUMAN_WHAT = "The site asks you to show you're human: tick its box in the browser here, then press I'm done"
+_HUMAN_AT = re.compile(r'^https://challenges\.cloudflare\.com/', re.I)
+_HUMAN_SAID = set()
+def human(sid: str, seen: dict) -> bool:
+    "Hand session `sid`'s human check to the owner once it has stood HUMAN_AFTER seconds on a page (`seen`: page -> since). True when handed."
+    try: ts = _devtools(sid, '/json/list') or []
+    except Exception: return False
+    page = next((str(t.get('url') or '') for t in ts if t.get('type') == 'page' and t.get('id') == active_tab(sid)), '')
+    if not page or not any(t.get('type') == 'iframe' and _HUMAN_AT.match(str(t.get('url') or '')) for t in ts):
+        seen.clear(); return False
+    since = seen.setdefault(page, time.time())
+    if time.time() - since < HUMAN_AFTER or (sid, page) in _HUMAN_SAID: return False
+    _HUMAN_SAID.add((sid, page))
+    try:
+        from . import server, terminal as hub_term
+        from .browsergate import _tell
+        t = hub_term.get(sid)
+        if not (t and getattr(t, 'task_id', None)): return False
+        your_turn(server.store, t.task_id, sid, what=HUMAN_WHAT)
+        _tell(server.store, t.task_id, "The page shows a human check (\"Verify you are human\"). Taskuary has handed it to the owner on the page - "
+                                       "wait for it; you are told when they press I'm done, then go on from the page as it is.")
+        logger.info(f'browser {sid}: a human check was handed to the owner')
+        return True
+    except Exception as e: logger.warning(f'browser {sid}: a human check was not handed over - {e}'); return False
+
+
+# A FILE THE PAGE DOWNLOADS IS SAID WHERE IT LANDED (the owner, 2026-11-19): it went to the browser's downloads folder and the agent was told
+# only the folder in its brief - never that this click brought a file, or which. Each finished file is told by its path, and how to hand it on
+def _downloaded(sid: str) -> set:
+    try: return {p.name for p in downloads(sid).iterdir() if p.is_file() and not p.name.endswith(('.crdownload', '.tmp'))}
+    except OSError: return set()
+
+
+def arrived(sid: str, had: set) -> set:
+    "Tell session `sid`'s agent of each file finished since `had`. -> the files there now."
+    now = _downloaded(sid)
+    for n in sorted(now - had):
+        try:
+            from . import server, terminal as hub_term
+            from .browsergate import _tell
+            t = hub_term.get(sid)
+            if t and getattr(t, 'task_id', None):
+                _tell(server.store, t.task_id, f"The page downloaded a file: {downloads(sid) / n}. Read or use it from there; to give it to the owner, "
+                                               "copy it into your outputs folder or attach it.")
+        except Exception as e: logger.warning(f'browser {sid}: a download was not told - {e}')
+    return now
+
+
+# ...AND A SIGN-IN GOOGLE WILL NOT DO HERE IS SAID, WITH THE WAY PAST IT: Google turns down a browser it reads as automated ("This browser or
+# app may not be secure"), on a page of its own address (/signin/rejected) - read off that address, never its words. Said once per session
+_REFUSED_AT = re.compile(r'^https://accounts\.google\.com/(?:v\d/)?signin/rejected', re.I)
+_SAID_REFUSED = set()
+REFUSED_WHAT = ("Google won't sign in inside this browser. Sign in to the site with its own email and password instead - or use "
+                "Fill it in securely if your sign-in for it is saved")
+def refused(sid: str, url) -> bool:
+    "Say it to the owner and the agent when `url` is Google's own refusal of this browser; True when it was."
+    if not _REFUSED_AT.match(str(url or '')) or sid in _SAID_REFUSED: return False
+    _SAID_REFUSED.add(sid)
+    try:
+        from . import server, terminal as hub_term
+        t = hub_term.get(sid)
+        if t and getattr(t, 'task_id', None):
+            from .browsergate import _tell
+            your_turn(server.store, t.task_id, sid, what=REFUSED_WHAT)
+            _tell(server.store, t.task_id, "Google refused to sign in inside this browser (its page says the browser may not be secure). Use the "
+                                           "site's own email-and-password sign-in, or a saved sign-in; never try Google's sign-in again here.")
+    except Exception as e: logger.warning(f'browser {sid}: Google refused its sign-in and it was not said - {e}')
+    return True
 
 
 # SEVERAL SITES ARE TABS OF THE TASK'S ONE BROWSER (the owner, 2026-11-15: "you can open multiple sites on same window with tabs"). The view
@@ -440,10 +596,12 @@ def tab_url(sid: str) -> str:
     return next((str(t.get('url') or '') for t in (_devtools(sid, '/json/list') or []) if tab and t.get('id') == tab), '') if tab else ''
 
 
-def unstick(sid: str, since: float = None) -> bool:
-    "Stop every load of `sid`'s browser still pending STUCK seconds after `since` (default: its last command's start). True when one was."
+def unstick(sid: str, since: float = None, every: bool = False) -> bool:
+    """Stop every load of `sid`'s browser still pending STUCK seconds after `since` (default: its last command's start). True when one was.
+    `every`: stop every tab's load now - a form posted to its own address that never answers reads as no pending load (browsergate.outcome)."""
     began = _BEGAN.get(str(sid)) if since is None else since
-    if not began or time.time() - began < STUCK or not (ws := devtools_url(sid)): return False
+    if not every and (not began or time.time() - began < STUCK): return False
+    if not (ws := devtools_url(sid)): return False
     from . import signin
     stopped, cut = False, lambda u: str(u or '').split('#')[0]
     for t in [t for t in _devtools(sid, '/json/list') or [] if t.get('type') == 'page']:
@@ -452,9 +610,9 @@ def unstick(sid: str, since: float = None) -> bool:
             try:
                 h = c.call('Page.getNavigationHistory', timeout=3)
                 on = ((h.get('entries') or [])[h.get('currentIndex', -1)] or {}).get('url') if h.get('entries') else ''
-                if on and cut(on) != cut(t.get('url')):
+                if every or on and cut(on) != cut(t.get('url')):
                     c.call('Page.stopLoading', timeout=3); stopped = True
-                    logger.info(f'browser {sid}: a page left loading for {time.time() - began:.0f}s was stopped')
+                    logger.info(f'browser {sid}: a page left loading for {time.time() - (began or time.time()):.0f}s was stopped')
             finally: c.close()
         except Exception as e: logger.debug(f'browser {sid}: a tab could not be checked for a stuck load - {e}')
     return stopped
@@ -480,6 +638,7 @@ def close(sid: str, tid: int = None):
         except Exception as e: logger.debug(f'the last frame of {sid} was not kept: {e}')
         if tid: keep_frame(tid, sid)
         if (stop := _CLOCKS.pop(sid, None)): stop.set()
+        if (stop := _WINDOWS.pop(sid, None)): stop.set()
         if exe and _read(session_name(sid), 'stream'):
             _safe_keep(sid)                                        # what it holds now, whether or not agent-browser's own save on close works
             try: spawn.run([exe, '--session', session_name(sid), 'close'], env=_cli_env(sid), timeout=20, capture_output=True)
@@ -552,16 +711,14 @@ def last_frame(tid) -> dict | None:
 # with [[TASKUARY-YOURTURN: <what>]] (selfclose.turn_marker); the request it raises is drawn ON the browser view as "Your turn", the page
 # handed to the owner's mouse and keys. Their Done on the view is a press (browsergate.done): Taskuary tells the agent, chat or terminal alike.
 # A chat's ask carries Done as a choice for where no view is drawn; a terminal CLI's choices are a chooser answered by number, so its ask
-# carries none. TURN_BACK: the words a page left open from an older build still sends - read as their Done (browsergate.owner_said).
+# carries none.
 TURN_PREFIX = 'yourturn:'
 # ...worded as the view's button says it, so the line his press leaves says what he pressed (the overnight walk, 2026-11-11: the view's
 # "I'm done" left "You pressed Done")
 TURN_DONE = "I'm done"
-TURN_BACK = 'Done - I finished that in the browser. Look at the page as it is now and continue.'
 
 def your_turn(store, tid: int, sid: str, what: str = '', watch=...) -> str:
     "Record the agent's hand-over as an open request on the task, watched on its page. The request id - `yourturn:<hash>`. `watch`: tests."
-    from urllib.parse import urlsplit
     from . import terminal as term, workerstate as ws
     st = state(sid, fresh=True)
     # ...ON A PAGE. With no browser, or an empty tab, there is nothing to hand over: what the agent wants is said in words and answered
@@ -578,10 +735,9 @@ def your_turn(store, tid: int, sid: str, what: str = '', watch=...) -> str:
     from . import signin
     try: signing = signin.on_signin_page(sid)
     except Exception as e: signing = False; logger.debug(f'task {tid}: the page handed over could not be read for a sign-in - {e}')
-    if signing and (site := signin.needs(store, tid, sid, '').get('site')): return f'{signin.PREFIX}{site}'
-    try: host = urlsplit(str(st.get('url') or '')).hostname or ''
-    except ValueError: host = ''
-    host = host[4:] if host.startswith('www.') else host
+    # ...asked as the step the agent named (a human check on a sign-up page is not "sign in" - design round 5), the vault's road all the same
+    if signing and (site := signin.needs(store, tid, sid, '', what=what).get('site')): return f'{signin.PREFIX}{site}'
+    host = signin.site_name(st.get('url'), sid)                  # the one name of a site (signin.site_name): a bare address by its page's title
     text = f"Your turn in the browser{f' on {host}' if host else ''}: {what or 'the agent needs you to do a step on the page'}"
     rid = ws.fresh_id(store, tid, f'{TURN_PREFIX}{ws.request_id_for(text)}')
     chat = hasattr(term.SESSIONS.get(str(sid)), 'send_prompt')
@@ -762,14 +918,7 @@ def launch(sid: str, url: str) -> bool:
 # agent-browser against the browser that is then up.
 ASK_LINE = ('If `agent-browser open` cannot launch a browser from your shell, run `taskuary --browser <url>` instead - Taskuary opens the '
             'page for you - then go on with `agent-browser`. ')
-# ...AND ONE WHOSE CLI HAS NO HOOK IS TOLD THAT ROAD ALONE (the browser audit, 2026-11-15: told "if it cannot launch", Codex ran `agent-browser
-# open` first on every task, died in its sandbox and left "Auto-launch failed: CDP response channel closed" among the owner's steps)
 OPEN_HOOK = 'run `agent-browser open <url>` and it opens for you'
-OPEN_ASK = ('run `taskuary --browser <url>` and Taskuary opens it for you - your shell cannot launch a browser, so never start one with '
-            '`agent-browser open`; once it is up, `agent-browser` drives it')
-def opens_with(held: bool) -> str:
-    "How this session's agent opens its first page: a CLI with Taskuary's hook launches on `open`; one without asks Taskuary for it."
-    return OPEN_HOOK if held else OPEN_ASK
 def ask_open(sid: str, url: str) -> dict:
     "The agent asked for a page: launch the session's browser on it, or point the one already up at it. {url, launched} - ValueError says why not."
     u = (url or '').strip()
@@ -810,13 +959,21 @@ def cdp_port(sid: str) -> int:
         return _PORTS[str(sid)]
 
 def chrome_exe() -> str:
-    "The Chrome a session runs: the owner's AGENT_BROWSER_EXECUTABLE_PATH, else the newest one agent-browser installed; '' when none."
+    """The Chrome a session runs: the owner's AGENT_BROWSER_EXECUTABLE_PATH, else the Google Chrome installed on this computer, else the newest
+    one agent-browser installed; '' when none. ...THE INSTALLED ONE BEFORE agent-browser's "Chrome for Testing" (the owner, live 2026-11-19: "Continue
+    with Google" went nowhere): Google turns a sign-in down in that build, and an ordinary Chrome is what sites expect - run with a profile of its
+    own, never the owner's"""
     own = os.environ.get('AGENT_BROWSER_EXECUTABLE_PATH') or ''
     if own and os.path.isfile(own): return own
+    if (mine := installed_chrome()): return mine
     names = {'chrome.exe', 'chrome', 'Google Chrome for Testing'}
     for d in sorted((home() / 'browsers').glob('chrome-*'), key=lambda p: [int(x) for x in re.findall(r'\d+', p.name)] or [0], reverse=True):
         if (f := next((p for p in d.rglob('*') if p.name in names and p.is_file()), None)): return str(f)
-    # ...else a Chrome installed on this computer, as agent-browser itself falls back to one - run with a profile of its own, never the owner's
+    return ''
+
+
+def installed_chrome() -> str:
+    "A Chrome installed on this computer ('' when none)."
     roots = [os.environ.get(k) for k in ('LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)')]
     known = [os.path.join(r, 'Google', 'Chrome', 'Application', 'chrome.exe') for r in roots if r] +             ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'] + [shutil.which(n) or '' for n in ('google-chrome', 'chromium', 'chromium-browser')]
     return next((k for k in known if k and os.path.isfile(k)), '')
@@ -857,13 +1014,15 @@ def _spawn_chrome(argv: list, hidden: bool = True) -> int:
 # folder, and reading it back was a read outside the task (readgate), held - a file the agent fetched it could not open without a card for
 # all of Downloads. agent-browser does not apply its download path to a Chrome it attaches to (0.41.2, recorded on a real Chrome), so the
 # session's own profile names the folder before Chrome starts: Taskuary's scratch, which every task's agent reads freely
-def downloads() -> Path:
+def downloads(sid: str = '') -> Path:
+    "Where a browser's downloads land: Taskuary's scratch downloads folder - each session's in a folder of its own, so its agent hears its own."
     from . import config
-    return config.home() / 'scratch' / 'downloads'
+    d = config.home() / 'scratch' / 'downloads'
+    return d / re.sub(r'[^\w.-]', '_', str(sid)) if sid else d
 
 
-def _downloads_to(prof: Path) -> None:
-    f, d = prof / 'Default' / 'Preferences', downloads()
+def _downloads_to(prof: Path, sid: str = '') -> None:
+    f, d = prof / 'Default' / 'Preferences', downloads(sid)
     try:
         d.mkdir(parents=True, exist_ok=True); f.parent.mkdir(parents=True, exist_ok=True)
         try: p = json.loads(f.read_text(encoding='utf-8'))
@@ -885,7 +1044,7 @@ def real_chrome(sid: str) -> int | None:
     if _listening(port): return 0
     exe = chrome_exe()
     if not exe: logger.warning(f'no Chrome for the browser of {sid}'); return None
-    prof = _profile(sid); prof.mkdir(parents=True, exist_ok=True); _downloads_to(prof)
+    prof = _profile(sid); prof.mkdir(parents=True, exist_ok=True); _downloads_to(prof, sid)
     argv = [exe, f'--remote-debugging-port={port}', f'--user-data-dir={prof}', *CHROME_ARGS, 'about:blank']
     # ...and where its own desktop cannot be had or Chrome does not come up on it, the same Chrome with its window off the screen: a browser
     # that works beats one that is out of sight, and the log says which it was
@@ -918,7 +1077,7 @@ def start(sid: str, url: str = 'about:blank') -> bool:
     with _START_LOCKS_GUARD:
         lock = _START_LOCKS.setdefault(sid, threading.Lock())
     with lock:
-        if state(sid, fresh=True)['open']: return True             # the agent or mount got there first
+        if state(sid, fresh=True)['open']: watch_windows(sid); return True             # the agent or mount got there first
         # ...AND IT STAYS UP WHILE THE TASK IS OPEN. agent-browser shuts its daemon down after an hour
         # of inactivity by default, which is fine for a tool and wrong for a page someone is watching:
         # a walk left overnight at a half-finished ADP sign-in came back to a white pane, because the
@@ -946,7 +1105,7 @@ def start(sid: str, url: str = 'about:blank') -> bool:
             return False
         for _ in range(int(LAUNCH_WAIT / LAUNCH_POLL)):            # it has a Chrome to launch
             time.sleep(LAUNCH_POLL)
-            if state(sid, fresh=True)['open']: listed(sid, True, [_daemon_pid(sid)]); clock(sid); return True
+            if state(sid, fresh=True)['open']: listed(sid, True, [_daemon_pid(sid)]); clock(sid); watch_windows(sid); return True
         logger.warning(f'the browser for {sid} did not come up within {LAUNCH_WAIT:.0f}s')
         return False
 
@@ -1060,24 +1219,22 @@ def set_viewport(sid: str, w: int, h: int) -> bool:
 # WHAT THE BRIEF SAYS ABOUT ACTS THAT CAN'T BE UNDONE, by whether this session's hook can hold them (browsergate.py). It used to
 # promise "HELD for the owner's press" to every brain, and an agent said "nothing gets paid until you approve it" and then paid
 # (the owner's computer-use walk, 2026-10-25). Promise the hold only where there is one; everywhere else the agent asks first.
-# ...AND THE LAST PRESS IS THE OWNER'S, ON THE PAGE (the owner, 2026-11-05: "you hit pay in the browser instead of a generated ui"): work that
-# ends at a payment, a form or any button that can't be undone is filled in and left on that page for them (browsergate.hand_over).
-HOLD_LINE = ('WHEN THE WORK ENDS AT A PAYMENT, A FORM TO SUBMIT OR ANY BUTTON THAT CAN\'T BE UNDONE (pay, order, submit for real, send, post, '
-             'delete, cancel): fill in everything first, then run the command for that last button as you would. Taskuary refuses it with '
-             '"held for the owner" and puts that button in front of them as a card in this task - THEY press it, and you are told when '
-             'they have and what the page shows (or that they did not). Then end your turn in one short line and run no browser command '
-             'until you hear back; never try the same act another way, and never ask the owner in words whether to submit, register or pay, or to click it. ')
-ASK_FIRST_LINE = ('TASKUARY CANNOT HOLD YOUR BROWSER COMMANDS ON THIS AI: nothing stops a press once you run it. So when the work ends at a '
-                  'payment, a form to submit or any button that can\'t be undone (pay, order, submit for real, send, post, delete, cancel), '
-                  'NEVER press it: fill in everything, leave the page on that button and end your turn with a final line '
-                  '[[TASKUARY-YOURTURN: check it and press <the button\'s own words> on the page]] - the owner presses it themselves, and '
-                  'their "Done" is your next message. Never tell the owner Taskuary will hold it. ')
+# ...AND WHAT HE ASKED FOR IS HIS GO-AHEAD (the owner, 2026-11-17/18): the hold is for what he did not ask for, and for a big act - money, a
+# resource that lasts, a public post, a delete - which is always one card in the chat for his press (browsergate._verdict).
+# ...REVISED 2026-11-19 (the owner: "anything big like spending money or putting in private info should wait for user for now"): the hold is
+# the big step only - money, his own details, speaking for him, a delete - and a free sign-up with made-up details runs (browsergate.BIG)
+HOLD_LINE = ('PRESS WHAT THE WORK NEEDS YOURSELF - a free sign-up or trial with made-up details, a form, a search. A PAYMENT IS HIS: never '
+             'press Pay, Buy or Order and never type a card - leave the page on it and hand it to him with the your-turn marker. A press that '
+             'sends his own private details (his real phone, address, ID), speaks for him to others or deletes something of his is refused with "held for the owner" '
+             'and stands as one card in this chat: fill in everything first, run the command for that last button as you would, and when it is '
+             'held go on with the rest of the work - his press on the card runs it, and you are told what the page shows. Never try a held act '
+             'another way, and never ask him in words to approve or click it. ')
 # ...and a browser that did not come up is said, not hidden: the agent got no brief and answered "no browser here" or sent the owner
 # looking for a connector that does not exist (the 2026-10-02 live check's gap #2, still open on 2026-10-25)
-FAILED_LINE = ('THE BROWSER DID NOT OPEN for this task ({why}). Tell the owner so in one plain line - "The browser did not open: {why}" - '
-               'and that sending another message tries again. Do not offer a connector or another road instead, and do not act as if '
-               'this task never had a browser.')
-FAILED_WHY = f'agent-browser did not answer in {LAUNCH_WAIT:.0f} s'
+FAILED_LINE = ('THE BROWSER DID NOT OPEN for this task ({why}). Do everything the work allows without it, then tell the owner in one '
+               'plain line - "The browser did not open: {why}" - and set "retry": true in your summary - a Try again button is drawn under your answer for the owner; never tell them to send a message or ask again to retry. Do not offer a connector or another road instead, and do not '
+               'act as if this task never had a browser.')
+FAILED_WHY = f'the browser did not answer in {LAUNCH_WAIT:.0f} s'
 
 
 # ONLY TASKUARY'S BROWSER, AND A FAILURE SAID PLAINLY. Asked to sign the owner up for a webinar from a forwarded mail on a task nobody had
@@ -1087,8 +1244,8 @@ FAILED_WHY = f'agent-browser did not answer in {LAUNCH_WAIT:.0f} s'
 OWN_ONLY = ('Use ONLY this browser for web pages: never a browser tool of your own CLI or of another app (its own Chrome, a browser or '
             'computer-use plugin) - Taskuary cannot show those to the owner, hold their presses or sign them in, and they fail here. ')
 SAY_WHY = ('IF A STEP FAILS OR IS REFUSED, your answer says which step, what the browser or Taskuary said in its own words, and the one '
-           'thing the owner can do about it (sign in on the site in the browser pane, approve the held step on the task, send another '
-           'message to open the browser again) - never only that you could not. ')
+           'thing the owner can do about it (sign in on the site in the browser pane, approve the held step on the task; a step worth '
+           'another go: set "retry": true in your summary - a Try again button is drawn under your answer for the owner; never tell them to send a message or ask again to retry) - never only that you could not, and never a raw error, an address or a tool\'s name. ')
 OFFER_HEAD = ('NO BROWSER IS OPEN for this task yet, but Taskuary keeps one for you: if the work needs a web page - a link in a message to '
               'follow, a form to fill, a site to sign in to - {open}; the owner sees it only '
               'when Taskuary shows it to them. Searching and reading PUBLIC pages needs no browser: use your own web search and fetch for that. '
@@ -1097,21 +1254,22 @@ OFFER_HEAD = ('NO BROWSER IS OPEN for this task yet, but Taskuary keeps one for 
               # for it stood at the far end of the offer, under how to drive a browser it had not chosen to open)
               'What answers with a sign-in (a portal, an account) is never fetched from your shell: open it here from the start. '
               'NEVER use --session, --headed, profile listing, or launch Chrome separately. ')
-def offer_head(held: bool = True) -> str: return OFFER_HEAD.format(open=opens_with(held)) + (ASK_LINE if held else '')
-NOT_SET_UP = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET (agent-browser is not installed). Do not use a browser tool of your own CLI '
-              'or of another app instead - Taskuary cannot show those to the owner or hold their presses, and they fail here. If the work needs a web page, do what you can without it (read the message, find the link), then tell the owner in one line: '
-              '"The browser is not set up - install agent-browser under {where}, then ask me again." ')
+def offer_head() -> str: return OFFER_HEAD.format(open=OPEN_HOOK) + ASK_LINE
+NOT_SET_UP = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET. Do not use a browser tool of your own CLI or of another app instead - '
+              'Taskuary cannot show those to the owner or hold their presses, and they fail here. If the work needs a web page, do what you '
+              'can without it (read the message, find the link), then tell the owner in one line: "The browser is not set up on this '
+              'computer yet." - and set "retry": true in your summary - a Try again button is drawn under your answer for the owner; never tell them to send a message or ask again to retry. ')
 # ...AND A COMPUTER WITHOUT ONE IS GIVEN ONE, NOT A CHORE (the owner, 2026-11-09: "it asks for cli tool why??"). Taskuary fetches its own
 # browser (browserruntime) - behind the turn for a task that was only offered it, so the agent is told it is on its way; and when the
 # download could not be made, the real reason is the owner's line, never a settings page to go and install something on
 SETTING_UP = ('IT IS STILL BEING SET UP on this computer - a one-time download Taskuary started by itself, a few minutes. If `agent-browser` '
               'is not found when you run it, the download has not finished: do the rest of the work first, then wait a minute and try '
               'again, for up to five minutes. If it is still not there, tell the owner in one line: "The browser is still being set up on '
-              'this computer - ask me again in a few minutes." Never tell them to install anything. ')
+              'this computer." - and set "retry": true in your summary - a Try again button is drawn under your answer for the owner; never tell them to send a message or ask again to retry. Never tell them to install anything. ')
 NO_SET_UP = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET: Taskuary tried to set its own up and could not ({why}). Do not use a browser '
              'tool of your own CLI or of another app instead - Taskuary cannot show those to the owner or hold their presses, and they fail '
              'here. If the work needs a web page, do what you can without it, then tell the owner in one line: "The browser could not be '
-             'set up on this computer: {why}. Ask me again and Taskuary tries again." ')
+             'set up on this computer: {why}." - and set "retry": true in your summary - a Try again button is drawn under your answer for the owner; never tell them to send a message or ask again to retry. ')
 COMING = 'The browser is being set up on this computer (a one-time download) - try again in a few minutes'
 GETTING = 'Getting the browser ready on this computer - a one-time download; the agent goes on by itself once it is there.'
 # ...and a stranger's task (origin.py: a message on it is from someone the owner has not vouched for) gets no browser: a link in a
@@ -1126,10 +1284,15 @@ STRANGER_LINE = ('NO BROWSER ON THIS TASK: it carries a message from someone the
 TURN_LINE = ('NEVER SOLVE, CLICK OR WORK AROUND A CAPTCHA, an "I\'m not a robot" box, a puzzle or any other check that a human is at the '
              'page (a page that only says it is verifying you are human and never moves is one: never retry it) - not even to try - and never '
              'ask the owner whether you may. That, and any step only the owner can do on the page '
-             '(a sign-in or code you cannot type, a card number), is THEIRS: leave the page on it and end your turn with a final line '
+             '(a sign-in or code you cannot type, a card number), is THEIRS: leave the tab on that very page (open nothing else in it first - the page shown is the one they are told to use) and end your turn with a final line '
              '[[TASKUARY-YOURTURN: <what they need to do on the page, in a few words>]]. Taskuary shows them this page; '
              'they do it and hand it back, and their "Done" is your next message - then look at the page and go on. Run no browser '
-             'command until then. ')
+             'command until then. Hand them everything on the job that needs them at once: a fact only they have for another step (a '
+             'mobile number, a choice) goes in that same hand-over, to type in the chat while the page is theirs - never kept for after it. '
+             # ...AND AN ORDINARY STEP OF WHAT THEY ASKED IS THE AGENT'S (the owner's rulings 2026-11-17/19; the Codex walk, 2026-11-22: a sign-up he
+             # asked for handed him its terms box to tick)
+             'An ordinary step of the work they asked for - ticking the terms box of a sign-up, choosing its free plan, pressing its button - is yours: '
+             'run it; Taskuary itself holds for their press whatever spends their money or sends their own details. ')
 
 # ...each site in a tab of its own (the owner, 2026-11-15): the view beside the chat shows the tabs, and one tab walked from site to site
 # hid the others from him
@@ -1138,16 +1301,16 @@ TABS_LINE = ('WORK EACH SITE IN ITS OWN TAB of this one browser: `agent-browser 
 
 DOWNLOADS_LINE = 'A file the page downloads lands in {folder}; one the owner should have, copy into your outputs folder. '
 
-def brief(held: bool = True, open_now: bool = True) -> str:
+def brief(open_now: bool = True) -> str:
     """What an agent with a browser of its own needs to know. Longer than hint() on purpose -
     this only rides when the owner asked for a browser, so it can afford to say how to drive
-    it and where the line is. `held`: this session's own hook can refuse a browser act (browsergate).
+    it and where the line is (its presses are held where they run, gatecmd).
     `open_now`: the browser is already up; else it is OFFERED - opened by the agent's first `open`."""
     # ...and nobody is said to be watching it (the owner, 2026-11-05: hidden unless they are needed on it; 2026-11-10: "i cant see the screen")
     head = ('A BROWSER IS OPEN for this task. The owner sees it only when Taskuary shows it to them - never say it is on their screen. '
             'Drive the existing tab with `agent-browser` - it is already bound and restored, so '
             'NEVER use --session, --headed, profile listing, or launch Chrome separately. Navigate '
-            'with `agent-browser open <url>`. ') if open_now else offer_head(held)
+            'with `agent-browser open <url>`. ') if open_now else offer_head()
     return (head + OWN_ONLY + SAY_WHY + TABS_LINE + DOWNLOADS_LINE.format(folder=downloads()) +
             # POWERSHELL CALLS A SUCCESS AN ERROR. agent-browser writes its progress to stderr
             # ("[agent-browser] launched browser"), and Windows PowerShell 5.1 wraps any native
@@ -1193,7 +1356,7 @@ def brief(held: bool = True, open_now: bool = True) -> str:
             # text card, the owner had no page to do it on - the view hands them the page instead
             + TURN_LINE
             # WHAT CAN'T BE UNDONE WAITS FOR THE OWNER (browsergate.py, 2026-10-25): said up front, so a refusal is expected, not a wall
-            + (HOLD_LINE if held else ASK_FIRST_LINE) +
+            + HOLD_LINE +
             # THEN GET OUT OF THE WAY. Told to hand over the keyboard for an ADP sign-in, an agent
             # asked for the User ID and kept working the same tab anyway - snapshot, get url, read,
             # and `open` on the sign-in URL again (2026-09-15). What had actually blanked that page
@@ -1208,14 +1371,17 @@ def brief(held: bool = True, open_now: bool = True) -> str:
 # A BROWSER OFFERED IS A LINE, ITS RULES A GUIDE (2026-11-09, the owner: "the tools should be progressive disclosure"): the whole brief
 # rode on every task an agent MIGHT open a page on - 4,500 characters on a WhatsApp bug report. The offer keeps what must hold from the
 # first command (only this browser, no password or CAPTCHA, the last press) and names the guide; the rest is read when a page is needed.
-# A SIGN-UP (signin.new_account, the real-CLI walk 2026-11-16): nine forms were handed back for him to type a password into. One line,
-# read wherever the sign-in is told (the brief, the offer, the API agent's brief)
-SIGNUP_LINE = ("A SIGN-UP is the same: fill every box but the password, end your turn with [[TASKUARY-SIGNUP: <the site's domain>]] - Taskuary "
-               "types a strong password and keeps it; the owner presses the site's button, and fills any box only they can (a person check). ")
+# A SIGN-UP (signin.signup, design round 4, 2026-11-19): one command inside the turn - the marker that ended a turn per site took 25-35 minutes for
+# thirteen vendors, and a form the agent pressed itself lost its password. One line, read wherever the sign-in is told (the brief, the offer, the API
+# agent's brief)
+SIGNUP_LINE = ("A SIGN-UP: fill every box but the password, then run `agent-browser signup` - Taskuary makes a strong password, types it, keeps it "
+               "with the owner's saved sign-ins, sends the form and prints what the site answered; an account counts only where that says you are "
+               "signed in. A code the site emails is typed by Taskuary - never ask for it. ")
 SIGNIN_LINE = ("A SIGN-IN YOU HAVE NO PASSWORD FOR IS NOT A BLOCKER AND NEVER A QUESTION - you do not need the password. For a site with no "
                'connection among your systems, say so in one line, open its sign-in page in this browser, and end your turn with a final '
-               "line [[TASKUARY-SIGNIN: <the site's domain>]]: Taskuary types a saved sign-in, or shows the owner the page and keeps it for next "
-               'time, then tells you to go on - so never tell the owner to sign in. Never ask for a password or where one is kept, and never '
+               "line [[TASKUARY-SIGNIN: <the site's domain>]]: Taskuary types a saved sign-in where it keeps one, or shows the owner the page and "
+               'keeps it for next time, then tells you to go on - so never tell the owner to sign in, nor say which it will be: whether one is '
+               "saved is not yours to know, and Taskuary's own line says it. Never ask for a password or where one is kept, and never "
                'work a sign-in from your shell. '
                # ...AND A SIGN-UP (signin.new_account, 2026-11-16): nine forms were handed back for him to type a password into
                + SIGNUP_LINE)
@@ -1234,9 +1400,9 @@ GUIDE_LINE = ('Before your first browser command, read the guide `browser` (the 
               # password at all, and the one line that hands the page over
               + SIGNIN_LINE)
 
-def offer(held: bool = True) -> str:
+def offer() -> str:
     "The browser OFFERED, short: brief()'s head and the rules that hold from the first command, the rest in guide()."
-    return offer_head(held) + OWN_ONLY + GUIDE_LINE + (HOLD_LINE if held else ASK_FIRST_LINE)
+    return offer_head() + OWN_ONLY + GUIDE_LINE + HOLD_LINE
 
 def guide() -> str:
     "How to drive the browser - brief() without its head, and without the hold line, which the offer says for this session's own hook."

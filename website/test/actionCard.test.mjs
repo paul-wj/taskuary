@@ -61,18 +61,10 @@ test("a turn's files: placed or named, newest of a family, the helper script too
     row("fetch.py", "m2", "2026-11-05 10:00:00"), row("gas.png", "m2", "2026-11-05 10:04:00"), row("older.csv", "m1", "2026-11-05 09:00:00")];
   const got = turnFiles({ listed, id: "m2", tid: 5, skip: ["gas.png"] }).map((f) => f.path).sort();
   assert.deepEqual(got, ["chart.png", "fetch.py", "prices v2.csv"]);
-  assert.deepEqual(turnFiles({ listed, id: "m1", tid: 5, words: "See `/x/scratch/outputs/TQ-0005/chart.png`" }).map((f) => f.path).sort(), ["chart.png", "older.csv"]);
+  // ...and a file another turn made is drawn there, never again under an answer that only names it (the walk, 2026-11-18)
+  assert.deepEqual(turnFiles({ listed, id: "m1", tid: 5, words: "See `/x/scratch/outputs/TQ-0005/chart.png`" }).map((f) => f.path).sort(), ["older.csv"]);
 });
 
-// ...and the card leads Next steps, the action section; Close out never draws it a second time in the chat
-test("the action card leads Next steps and is drawn once", () => {
-  const s = read("AgentSummary.jsx");
-  const at = s.indexOf("\n      {lead}\n");
-  assert.ok(at > s.indexOf("<DraftHead />") && at < s.indexOf("<OnYou items={onYou} />"));
-  assert.match(read("TaskPage.jsx"), /const asks = proposals\.filter\(\(p\) => !isCardReview\(p\)\)/);
-  assert.match(read("ReviewDecision.jsx"), /act \? <ActionCard/);
-  assert.match(read("ActionCard.jsx"), /press\(api, row\.ReviewId, /);       // the one decide road, no second approval
-});
 
 test("a post whose press failed is over: no box, no button, its error the line", async () => {
   const { stateOf } = await import("../src/actionCard.js");
@@ -104,4 +96,13 @@ test("Close issue with no comment proposed can be pressed; a comment or a post t
   assert.ok(pressable(actionFor("github_issue"), { action: "run_tool", type: "github_issue", repo: "northwind/ledger", title: "Totals off" }, ""));
   assert.ok(!pressable(actionFor("jira_comment"), { action: "run_tool", type: "jira_comment", item: "NW-12" }, ""));
   assert.ok(!pressable(actionFor("linkedin_post"), { ...POST, text: "" }, ""));
+});
+
+// THE CARD'S FACE BY THE ONE RULE A FACE READS (design round 6, D3: the X card's avatar read "X(" - the first mark of "(Twitter)")
+test("a post card's avatar is the account's initials by profileAvatar's rule, never a bracket", async () => {
+  const { initialsOf } = await import("../src/profileAvatar.js");
+  assert.equal(initialsOf("X (Twitter)"), "X");
+  assert.equal(initialsOf("Northwind Social"), "NS");
+  const ac = readFileSync(new URL("../src/ActionCard.jsx", import.meta.url), "utf8");
+  assert.match(ac, /const initials = \(s\) => \(String\(s \|\| ""\)\.trim\(\) \? initialsOf\(s\) : "in"\);/);
 });

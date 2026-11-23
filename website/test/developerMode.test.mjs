@@ -3,9 +3,11 @@
 // and the same switch in Settings, which reads capabilities again so coding comes or goes on every screen.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import schema from "../../taskuary/settings_schema.json" with { type: "json" };
 import { doneOf, nextOf, prevOf } from "../src/setupSteps.js";
 
+const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 const OPTIONAL = ["dev", "github", "other"];
 const rail = (keys) => ({ rail: keys.map((key) => ({ key, done: false, open: true, optional: OPTIONAL.includes(key) })) });
 const OFF = rail(["ai", "mail", "about", "dev", "other", "finish"]), ON = rail(["ai", "mail", "about", "dev", "github", "other", "finish"]);
@@ -23,5 +25,7 @@ test("both are optional: Next never waits on them", () => {
 
 test("Settings: the switch is a schema knob in a group always shown, and saving it reads capabilities again", () => {
   const k = schema.knobs.developer_mode;
-  assert.equal(k.type, "switch"); assert.notEqual(k.group, "Coding agent", "the Coding agent group hides with coding");
+  assert.equal(k.label, "Developer mode"); assert.equal(k.type, "switch"); assert.notEqual(k.group, "Coding agent", "the Coding agent group hides with coding");
+  assert.match(k.desc, /Off: every job goes to a general agent\./);
+  assert.match(read("SettingsView.jsx"), /if \(ok && name === "developer_mode"\) refreshCapabilities\(\);/);
 });

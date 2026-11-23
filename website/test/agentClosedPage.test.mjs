@@ -3,7 +3,7 @@
 // list row, so it read the task's state from nothing: "stopped and saved", and Close out opened with advice for an open task.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AGENT, agentPhase, closedLine, focusStage, pageState, replyPhase } from "../src/taskLifecycle.js";
+import { AGENT, agentPhase, focusStage, pageState, replyPhase } from "../src/taskLifecycle.js";
 
 // what TaskPage computes, from the detail alone (no list row) or with one
 const opens = ({ listRow = null, detail }) => {
@@ -33,10 +33,4 @@ test("a task the owner closed with a reply still opens on Close out", () => {
     reviews: [{ ReviewId: 1, Kind: "draft_reply", Status: "sent", DraftText: "Done - thanks, Erin." }] };
   assert.equal(opens({ detail }).stage, "reply");
   assert.equal(opens({ listRow: { State: "closed" }, detail }).stage, "reply");
-});
-
-test("a closed task says who closed it and why, never the advice for an open one", () => {
-  assert.equal(closedLine({ Status: "done" }, agentClosed.closedWhy), agentClosed.closedWhy);
-  assert.ok(closedLine({ Status: "done" }, null));
-  assert.equal(closedLine({ Status: "open" }, agentClosed.closedWhy), null);
 });

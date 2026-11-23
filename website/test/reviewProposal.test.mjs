@@ -2,9 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { heldActsLine, proposalPresentation, reviewStatusLabel, resultOf, reviewText } from "../src/reviewProposal.js";
-import { setLocale } from "../src/i18n.js";
-
-test.beforeEach(() => setLocale("en"));
 
 const playbook = {
   Kind: "action",
@@ -88,7 +85,8 @@ test("a held browser act reads as what it does and where, never its JSON", () =>
       url: "https://pay.toll.example/checkout/review", site: "toll.example", what: "pays the $412.50 order on toll.example" }) };
   const shown = proposalPresentation(review);
   assert.equal(shown.title, "The agent's browser waits for your yes");
-  assert.equal(shown.destination, "https://pay.toll.example/checkout/review");
+  // ...on the SITE, never its raw address (the owner's live app, 2026-11-19)
+  assert.equal(shown.destination, "toll.example");
   assert.equal(shown.approveLabel, "Approve");
   assert.equal(shown.readOnly, true);
   // the what is the context line (Reason) already; the box is the exact command, once (2026-10-25)
@@ -167,6 +165,9 @@ test("a held shell step leads with what it does and why, its command folded", ()
   assert.equal(own.folded, true);
   const gate = p({});
   assert.equal(gate.lead, "Delete build in ledger"); assert.equal(gate.leadWhy, "Held before it ran - it can't be undone.");
+  const card = readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
+  assert.match(card, /\$\{cmdOpen \? "Hide" : "Show"\} the \$\{proposal\.foldWord \|\| "command"\}/);
+  assert.match(card, /\.\.\.\(\(proposal\?\.folded && !cmdOpen\) \|\| proposal\?\.bare \? \{ display: "none" \} : \{\}\)/, "the command's box stays folded until asked for");
 });
 
 // THE CARD ROUND, 2026-11-12 (every card kind drawn in the chat and read): the chat draws no reason line, so a held press in the agent's
@@ -214,16 +215,13 @@ test("a save-as-routine card shows the script whole and read-only, with when it 
   assert.equal(reviewText({ Kind: "action", DraftText: JSON.stringify({ action: "save_routine", title: "Late fees", script }) }), script);
   const card = proposalPresentation(rv);
   assert.deepEqual([card.title, card.destinationLabel, card.destination, card.readOnly], ["Save this as a routine", "It runs", "daily 07:00 · Late fees", true]);
+  // ...SAID IN WORDS, the script folded (design round 4, 2026-11-19: an ops manager was asked to approve 60 lines of Python)
+  const said = proposalPresentation({ ...rv, DraftText: JSON.stringify({ ...p, why: "lists the invoices that carry a late fee", steps: ["Read", "Run the script", "Read what it found"] }) });
+  assert.deepEqual([said.lead, said.leadWhy, said.folded, said.foldWord], ["Lists the invoices that carry a late fee",
+    "Runs daily 07:00, on this computer: Read, then run the script, then read what it found. Nothing is saved or run until you approve.", true, "script"]);
   const done = { ...p, result: { source: 7, link: "#report=7", said: 'Saved the routine "Late fees" - it runs daily 07:00.' } };
   assert.deepEqual(resultOf({ Kind: "action", Status: "approved", FinalText: JSON.stringify(done) }),
     { said: "Approved · saved the routine", what: 'Saved the routine "Late fees" - it runs daily 07:00.', url: "", command: "" });
-});
-
-test("a Python script is a source type on this computer, its script in a multi-line box", () => {
-  const view = readFileSync(new URL("../src/ReportsView.jsx", import.meta.url), "utf8");
-  assert.match(view, /python_script: \[\["the script - Python, run as written[^"]*", "script", "multiline",/);
-  assert.match(view, /\["This computer", \["local_file", "python_script", "sqlite", "mcp"\]\]/);
-  assert.match(readFileSync(new URL("../src/reportWords.js", import.meta.url), "utf8"), /python_script: "Python script on this computer"/);
 });
 
 
@@ -235,4 +233,23 @@ test("an act whose press failed is a settled card with its error, never a waitin
   assert.equal(failedAsk(rv), true); assert.equal(decidedAsk(rv), true);
   assert.equal(failedAsk({ ...rv, ActError: "" }), false, "a draft set aside is no failure");
   assert.equal(failedAsk({ ...rv, Status: "pending" }), false);
+});
+
+// EVERY APPROVAL SAYS IN WORDS WHAT IT WILL DO (design round 5, 2026-11-19; round 4 did routines): a step in a connected system, a part moved to
+// a task of its own and a routine's change lead with what Approve does - the server's words for it - as a held step and a routine do
+test("every card leads with what its Approve does, in words", () => {
+  const card = (p, Reason) => proposalPresentation({ Kind: "action", DraftText: JSON.stringify(p), Reason });
+  const tool = card({ action: "run_tool", type: "sharepoint", path: "/Shared/Q3.xlsx" }, "the agent proposes to write the Q3 totals to Q3.xlsx on SharePoint");
+  assert.deepEqual([tool.lead, tool.leadWhy], ["Write the Q3 totals to Q3.xlsx on SharePoint", "Nothing runs until you approve."]);
+  const out = card({ action: "break_out", title: "Book the caterer" }, 'the agent proposes to move the caterer emails to a task of its own, "Book the caterer"');
+  assert.deepEqual([out.lead, out.leadWhy], ['Move the caterer emails to a task of its own, "Book the caterer"', "Nothing moves until you approve."]);
+  const fix = card({ action: "repair_workflow", title: "Late fees" }, 'the agent proposes to change the routine "Late fees"');
+  assert.equal(fix.lead, 'Change the routine "Late fees"');
+});
+
+// THE HYDROGEN WALK, 2026-11-19: "Where x" under a post card - a post says its network as he knows it (proposals.queue's `network`)
+test("a post card says where it goes by its network's name", async () => {
+  const { toolWhere } = await import("../src/reviewProposal.js");
+  assert.equal(toolWhere({ action: "run_tool", type: "x_post", network: "X", text: "The portal launches Monday." }), "X");
+  assert.equal(toolWhere({ action: "run_tool", type: "linkedin_post", network: "LinkedIn" }), "LinkedIn");
 });

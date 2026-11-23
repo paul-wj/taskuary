@@ -53,6 +53,28 @@ class OneRoundTripTests(unittest.TestCase):
         self.assertEqual(heard[1][-1], {'role': 'tool', 'tool_call_id': 'c1', 'content': 'PAGE https://portal.example/\n- button "Denials" [ref=e3]'})
         self.assertEqual([e[0] for e in trace], ['tool_call', 'tool_result'])
 
+    def test_his_line_sent_while_it_works_reaches_it_at_its_next_step(self):
+        """Design round 3, 2026-11-18: "sign up yourself" waited 13 minutes behind a long turn. An API card's turn hears what was steered to its
+        conversation (clipool.ear) between its tool calls, as his next message - made only as it goes in - and a line steered as it answers is
+        answered in the same turn; once the turn is over nothing more is taken."""
+        from taskuary import clipool
+        steps = iter([{'tool_calls': [{'id': 'c1', 'function': {'name': 'browser_open', 'arguments': '{"url": "vendor.example"}'}}]},
+                      {'content': 'Opened it.'}, {'content': 'Signing up myself, then.'}])
+        heard, made = [], []
+        class Brain:
+            def chat(self, msgs, tools, max_tokens, **kw):
+                heard.append([dict(m) for m in msgs])
+                if len(heard) == 2: assert clipool.steer('general:5', lambda: made.append(1) or 'THE OWNER SAYS: sign up yourself')
+                return next(steps)
+        def tool(*a):
+            assert clipool.steerable('general:5'); return 'PAGE vendor.example'
+        with mock.patch.object(apiagent, 'run_tool', side_effect=tool):
+            said = apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'list the vendors', 500, ear='general:5')
+        self.assertEqual(said, 'Signing up myself, then.')
+        self.assertEqual(heard[2][-2:], [{'role': 'assistant', 'content': 'Opened it.'}, {'role': 'user', 'content': 'THE OWNER SAYS: sign up yourself'}])
+        self.assertEqual(made, [1])
+        self.assertFalse(clipool.steerable('general:5'), "over: a line is the next turn's")
+
     def test_a_failed_tool_is_told_to_the_model_not_raised(self):
         steps = iter([{'tool_calls': [{'id': 'c1', 'function': {'name': 'browser_click', 'arguments': '{"ref": "@e9"}'}}]},
                       {'content': 'The button was gone.'}])
@@ -62,6 +84,19 @@ class OneRoundTripTests(unittest.TestCase):
         with mock.patch.object(apiagent, 'run_tool', side_effect=ValueError('no element @e9')):
             self.assertEqual(apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'go', 500), 'The button was gone.')
         self.assertIn('no element @e9', heard[1][-1]['content'])
+
+    # ...IN THE WORDS EVERY TASKUARY TOOL'S FAILURE TAKES (agenttools.failed), never "share failed: " before them: the owner's Why line read the
+    # tool's name over what happened ("Why: share failed: there is no report 9"), and the next step stayed the agent's own line (the UI judge)
+    def test_a_failed_tool_is_told_in_the_words_every_tool_failure_takes(self):
+        from taskuary import agenttools
+        steps = iter([{'tool_calls': [{'id': 'c1', 'function': {'name': 'share', 'arguments': '{"report": 9}'}}]}, {'content': 'No such report.'}])
+        refused, seen = agenttools.refusal('there is no report 9', 'give the number search_tasks gives', door='tool'), []
+        class Brain:
+            def chat(self, msgs, tools, max_tokens, **kw): return next(steps)
+        with mock.patch.object(apiagent, 'run_tool', side_effect=ValueError(refused)):
+            apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'go', 500, trace=lambda *e: seen.append(e))
+        got = next(d for k, n, d in seen if k == 'tool_result')
+        self.assertEqual((got['result'], got['is_error']), (refused, True))
 
     def test_it_stops_at_its_step_bound_and_says_where_it_got(self):
         call = {'tool_calls': [{'id': 'c', 'function': {'name': 'browser_look', 'arguments': '{}'}}]}
@@ -90,13 +125,13 @@ class OneRoundTripTests(unittest.TestCase):
         self.assertIsInstance(heard[0][1]['content'], list, 'the picture went with the turn it was sent on - and is not carried')
         self.assertEqual([m['role'] for m in kept], ['user', 'assistant', 'tool', 'assistant', 'user', 'assistant'])
 
-    def test_a_carried_conversation_turned_down_on_the_first_call_is_lost_not_tools_refused(self):
+    def test_a_carried_conversation_turned_down_on_the_first_call_is_lost_and_a_fresh_one_fails_as_it_failed(self):
         kept = [{'role': 'user', 'content': 'the whole task'}, {'role': 'assistant', 'content': 'Done.'}]
         class Brain:
             def chat(self, *a, **kw): raise RuntimeError('gateway error 400 at https://gateway.example: too many tokens')
         with self.assertRaises(apiagent.Lost): apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'and now?', 500, history=kept)
         self.assertEqual(len(kept), 2)
-        with self.assertRaises(apiagent.ToolsRefused): apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'go', 500, history=[])
+        with self.assertRaisesRegex(RuntimeError, 'error 400'): apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'go', 500, history=[])
         stop = __import__('threading').Event(); stop.set()
         with self.assertRaisesRegex(RuntimeError, 'stopped'): apiagent.turn(Brain(), MemoryStore(), 1, 's', 'sys', 'no - the July one', 500, history=kept, cancel=stop)
         self.assertEqual(kept[-1], {'role': 'user', 'content': 'no - the July one'}, 'stopped before an answer, the line was still said')
@@ -225,6 +260,28 @@ class OneRoundTripTests(unittest.TestCase):
             hold.set()
         self.assertLess(time.monotonic() - t0, 5)
         self.assertEqual([m['role'] for m in kept], ['user', 'assistant', 'tool'], 'what it had done is kept, its open call answered')
+
+    def test_every_tool_offered_has_a_schema_gemini_takes(self):
+        """The gateway walk, 2026-11-19: Gemini behind the HIPAA AI gateway turned every tooled call down with a 400 - propose_email's top-level
+        `anyOf` ("parameters schema should be of type OBJECT"), and an `items` object requiring fields it never declared ("required properties
+        are specified but schema properties are empty"). Every schema a turn is offered, its later tools too, is one Gemini takes."""
+        from taskuary import agenttools
+        def post(url, json=None, headers=None, timeout=None):
+            r = mock.Mock(status_code=200); r.json.return_value = agenttools.rpc(json, lambda n, a: '', ()); return r
+        tools = apiagent.tools_for(1, 'g', True, post=post) + list(apiagent.DEFERRED[(1, 'g')].values())
+        def walk(x, name):
+            if isinstance(x, list): return [walk(v, name) for v in x]
+            if not isinstance(x, dict): return
+            bad = {'anyOf', 'oneOf', 'allOf'} & set(x)
+            assert not [k for k in bad if not all(isinstance(b, dict) and 'type' in b for b in x[k])], (name, x)
+            assert set(x.get('required') or ()) <= set(x.get('properties') or {}), (name, x)
+            assert not {'additionalProperties', '$schema', 'default', 'title'} & set(x), (name, x)
+            for k, v in x.items(): [walk(s, name) for s in v.values()] if k == 'properties' else walk(v, name)
+        assert {'propose_email', 'propose', 'sign_form'} <= {t['function']['name'] for t in tools}
+        for t in tools:
+            assert t['function']['parameters']['type'] == 'object'; walk(t['function']['parameters'], t['function']['name'])
+        # ...the server still holds a call to what one card needs: the schema the model reads is not the check
+        with self.assertRaisesRegex(ValueError, 'not given'): agenttools.fit('propose_email', {'subject': 'Q3'})
 
     def test_tools_are_offered_as_the_work_needs_them_and_a_loaded_one_is_added_at_the_end(self):
         """The owner's rule, "model sees all, tools progressive" (2026-11-10: "the ai limits as much as possible to use ai"): every schema rode
@@ -356,8 +413,8 @@ class TheSessionTests(unittest.TestCase):
 
     def _turn(self, brain, installed=True, toolbox=()):
         from taskuary import general, llm as llm_mod
-        s = MemoryStore()
-        tid = s.create_task({'Title': 'Read the denials on the scheduling portal', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        self._s = s = MemoryStore()
+        self._tid = tid = s.create_task({'Title': 'Read the denials on the scheduling portal', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
         session = general.GeneralSession(s, tid)
         session.pick, session.provider, session.model = 'connector:1', 'HIPAA AI', ''
         with mock.patch.object(llm_mod, 'build_llm', return_value=brain), mock.patch.object(bv, 'installed', return_value=installed), \
@@ -475,14 +532,20 @@ class TheSessionTests(unittest.TestCase):
         self.assertIn(selfclose.OWNER_ANSWERED_LINE, said); self.assertTrue(said.startswith(general.UPDATED))
         self.assertNotIn(selfclose.OWNER_ANSWERED_LINE, again, 'said once')
 
-    def test_a_model_that_refuses_tools_is_asked_the_plain_way(self):
-        seen = []
+    def test_a_model_that_refuses_its_tools_fails_the_turn_in_the_providers_words(self):
+        """The gateway walk, 2026-11-19: the gateway turned the tools down (400) and the turn was asked again with none - the agent then told him
+        it had no files, browser or shell, and to install a CLI. The turn fails, and he reads the provider's reason, never a tool-less agent."""
+        from taskuary import conversation
+        inner = json.dumps({'error': {'code': 400, 'message': 'Duplicate function declaration found: show', 'status': 'INVALID_ARGUMENT'}}, indent=2)
+        why = json.dumps({'error': {'message': f'litellm.BadRequestError: Vertex_aiException BadRequestError - {inner}', 'type': 'invalid_request_error'}})
         class Brain:
-            def __call__(self, system, user, **kw): seen.append(system); return 'Here is what I can do without a browser.'
-            def chat(self, *a, **kw): raise RuntimeError('hipaa_ai error 400 at https://gateway.example: tools are not supported')
-        self._turn(Brain())
-        self.assertIn('THIS AI CANNOT DRIVE A BROWSER', seen[0])
-        self.assertNotIn(apiagent.BRIEF, seen[0])
+            def __call__(self, *a, **kw): raise AssertionError('never asked again without its tools')
+            def chat(self, *a, **kw): raise RuntimeError(f'hipaa_ai error 400 at https://gateway.example/v1/chat/completions: {why}')
+        try: s, tid = self._turn(Brain(), toolbox=('search_messages', 'show'))
+        except RuntimeError: s, tid = self._s, self._tid
+        [t] = [x for x in conversation.items(s, tid)['items'] if x['kind'] == 'turn']
+        self.assertIn('refused the request - it said: Duplicate function declaration found: show', t['fail'])
+        self.assertNotIn('litellm', t['fail']); self.assertNotIn('{', t['fail'])
 
     def test_the_clis_toolbox_rides_with_the_browser(self):
         seen = []
@@ -494,20 +557,26 @@ class TheSessionTests(unittest.TestCase):
         self.assertEqual(names.count('show'), 1, "the server's show, never a second")
         self.assertTrue({'search_messages', 'propose_reply', 'browser_open'} <= set(names))
 
-    def test_a_card_with_the_email_tool_hears_the_tool_and_one_that_refuses_tools_the_block(self):
-        # the agent walk, 2026-11-10: one road for an email by what the session has - and a model that would not take tools is asked the
-        # plain way with the plain way's road, where it used to be left with the name of a tool it had just refused
+    def test_a_card_with_tools_is_told_the_owners_systems_and_mailboxes_as_a_cli_is(self):
+        # design round 2, 2026-11-18: one prompt for every road - a CLI with hands is told the owner's connections and the mailboxes it sends
+        # from (docsync.agent_systems); an AI card's agent with the same tools was not, and called around for them
+        from taskuary import docsync
+        SYSTEMS = 'YOUR SYSTEMS - Northwind books (connector_id 4). MAILBOXES you can send FROM: alex@northwind.example (gmail)'
+        seen = []
+        class Brain:
+            def chat(self, msgs, tools, max_tokens, **kw): seen.append(msgs[0]['content']); return {'content': 'ok'}
+        with mock.patch.object(docsync, 'agent_systems', return_value=SYSTEMS):
+            self._turn(Brain(), toolbox=('search_messages', 'run_system'))
+        self.assertIn(SYSTEMS, seen[0])
+
+    def test_a_card_with_the_email_tool_hears_the_tool(self):
+        # the agent walk, 2026-11-10: one road for an email by what the session has
         from taskuary import selfclose
         seen = []
         class Brain:
             def chat(self, msgs, tools, max_tokens, **kw): seen.append(msgs[0]['content']); return {'content': 'ok'}
         self._turn(Brain(), toolbox=('search_messages', 'propose_email', 'show'))
         self.assertIn('propose_reply / propose_email', seen[0]); self.assertNotIn(selfclose.DRAFT_OPEN, seen[0])
-        class Refuses:
-            def __call__(self, system, user, **kw): seen.append(system); return 'Here is what I can do.'
-            def chat(self, *a, **kw): raise RuntimeError('hipaa_ai error 400 at https://gateway.example: tools are not supported')
-        self._turn(Refuses(), toolbox=('search_messages', 'propose_email', 'show'))
-        self.assertIn(selfclose.DRAFT_LINE, seen[1]); self.assertNotIn('propose_email', seen[1])
 
     def test_no_browser_but_a_toolbox_still_loops_and_says_set_the_browser_up(self):
         seen = []
@@ -518,12 +587,176 @@ class TheSessionTests(unittest.TestCase):
         self.assertIn('NO BROWSER FOR AGENTS YET', system)
         self.assertNotIn('browser_open', names)
 
-    def test_a_card_that_takes_no_tools_asks_for_the_next_real_step(self):
+    def test_a_small_text_file_reaches_a_card_whole_and_a_sheet_it_writes_out_is_a_file(self):
+        """The API walk, 2026-11-18: a two-line totals.py on his line reached the card as a path ("I could not open the attached totals.py from
+        here"), and a spreadsheet asked of it was a CSV in its words - "no spreadsheet file anywhere". The file's text rides in the message,
+        and a block it writes out under a file name is saved to the task's files."""
+        from taskuary import config, general, outputs
+        up = config.home() / 'attachments' / 'line' / 'totals.py'; up.parent.mkdir(parents=True, exist_ok=True)
+        up.write_text('def total(xs):' + chr(10) + '    return int(sum(xs))' + chr(10), encoding='utf-8')
+        heard = []
+        def brain(system, user, **kw):
+            heard.append(user)
+            return 'Here are the quotes.' + chr(10) + '```xlsx file=quotes.xlsx' + chr(10) + 'Caterer | Per head' + chr(10) + 'Ray\'s Kitchen | 42' + chr(10) + '```'
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Caterers for the offsite', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        session = general.GeneralSession(s, tid)
+        session.pick, session.provider, session.model = 'connector:1', 'HIPAA AI', ''
+        with mock.patch.object(llm, 'build_llm', return_value=brain), mock.patch.object(bv, 'installed', return_value=False), \
+             mock.patch.object(bv, 'can_set_up', return_value=False):
+            session.send_prompt(general.with_files('why does this round wrong? and price three caterers as a sheet', [str(up)]), echo=False)
+        self.assertIn('    return int(sum(xs))', heard[0])
+        self.assertTrue((outputs.folder(tid) / 'quotes.xlsx').is_file())
+        said = [c['Body'] for c in s.list_comments(tid) if c['ActorType'] == general.ASSISTANT_TYPE][-1]
+        self.assertIn('quotes.xlsx', said); self.assertNotIn('```', said)
+
+    def _down_session(self, s, tid):
+        from taskuary import general
+        session = general.GeneralSession(s, tid); session.pick, session.provider, session.model = 'connector:1', 'HIPAA AI', ''
+        return session
+
+    def _patched(self, brain):
+        from contextlib import ExitStack
+        st = ExitStack()
+        for p in (mock.patch.object(llm, 'build_llm', return_value=brain), mock.patch.object(bv, 'installed', return_value=False),
+                  mock.patch.object(bv, 'can_set_up', return_value=False), mock.patch.object(apiagent, 'taskuary_tools', return_value=[]),
+                  mock.patch('taskuary.blackboard.drain_later')):
+            st.enter_context(p)
+        return st
+
+    def test_while_the_provider_is_down_the_failure_is_one_plain_line_queued_to_try_again(self):
+        """The API walk, 2026-11-18/19: during the provider's outage every line he typed added another "⚠ HIPAA AI: Gemini ... over its quota at
+        the provider (it answered 429) - raise the quota there..." to the chat, and nothing tried again until he typed. One state: one plain line
+        that says when it is tried again, and the turn waits in the start queue. Design round 5, I3: the line was then changed in place
+        ("trying again at 5:11" read "5:24" later) - each try that fails is its own dated line under the one before, and none is rewritten."""
+        from taskuary import conversation, funnel, general
+        class Down:
+            def chat(self, *a, **kw): raise llm.QuotaSpent(llm.QUOTA_LINE.format(name='HIPAA AI', model='Gemini 4'))
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Weekly spend summary', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        with self._patched(Down()):
+            for line in ('set up the Monday summary', 'any luck?', 'Try again.'):
+                try: self._down_session(s, tid).send_prompt(line, echo=False)
+                except Exception: pass
+        failed = [general.failed_line(c['Body'])[1] for c in s.list_comments(tid) if c['ActorType'] == general.ASSISTANT_TYPE and general.failed_line(c['Body'])[1]]
+        self.assertEqual(len(failed), 3, failed)
+        for f in failed: self.assertIn('over its quota', f); self.assertIn('trying again at', f); self.assertNotIn('429', f)
+        items = [x for x in conversation.items(s, tid)['items'] if x['kind'] == 'turn']
+        self.assertEqual([x['fail'] for x in items], failed, 'each try stands as its own failed turn, in the order it failed')
+        q = s.get_dispatch(tid)
+        self.assertEqual((q['Turn'], q['State']), (general.RETRY_TURN, 'retrying'))
+        self.assertEqual(funnel.idle_state(s, tid)['line'], failed[-1])
+
+    def test_the_queued_try_runs_by_itself_and_its_answer_ends_the_outage(self):
+        "Rule 4: a start that cannot happen now is queued and retried - the try is Taskuary's, never a line in his name; answered, nothing is owed."
+        from taskuary import blackboard, general
+        class Down:
+            def chat(self, *a, **kw): raise llm.ProviderDown('hipaa_ai error 503 at https://gateway.example after 3 tries: overloaded')
+        heard = []
+        class Up:
+            def chat(self, msgs, tools, max_tokens, **kw): heard.append(str(msgs[-1]['content'])); return {'content': 'The Monday summary is set up.'}
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Weekly spend summary', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        with self._patched(Down()):
+            try: self._down_session(s, tid).send_prompt('set up the Monday summary', echo=False)
+            except Exception: pass
+        self.assertIn("The AI didn't answer - trying again at", [c['Body'] for c in s.list_comments(tid)][-1])
+        s._exec("UPDATE dispatchq SET NextAt='2000-01-01 00:00:00' WHERE TaskId=?", (tid,))
+        handed = []
+        with mock.patch.object(general, 'retry_turn', side_effect=lambda st, t: handed.append(t)), mock.patch('taskuary.ingest.has_room', return_value=True):
+            blackboard.drain(s)
+        self.assertEqual(handed, [tid])                           # the drain hands the row to the try, and keeps it
+        self.assertTrue(s.get_dispatch(tid))
+        import threading
+        # ...and what the first try made is named to the try (the walk, 2026-11-22: a fresh conversation rebuilt a deck it had already written)
+        from taskuary import outputs
+        outputs.folder(tid).mkdir(parents=True, exist_ok=True); (outputs.folder(tid) / 'monday-summary.md').write_text('# Monday', encoding='utf-8')
+        with self._patched(Up()), mock.patch.object(general, 'start_session', side_effect=lambda *a, **kw: self._down_session(s, tid)):
+            self.assertTrue(general.retry_turn(s, tid))
+            for t in [t for t in threading.enumerate() if t.name == f'retry-{tid}']: t.join(20)
+        self.assertIsNone(s.get_dispatch(tid))
+        bodies = [c['Body'] for c in s.list_comments(tid)]
+        self.assertEqual(bodies[-1], 'The Monday summary is set up.')
+        self.assertEqual(bodies.count('set up the Monday summary'), 1)       # his line once, never again in his name
+        self.assertIn(general.RETRY_ASK, heard[0]); self.assertIn('monday-summary.md', heard[0])
+
+    def test_the_turn_that_answers_after_an_outage_is_clocked_from_its_own_try(self):
+        """The API walk, 2026-11-19: a short ask answered after the outage read "ran 17m 18s" - its clock counted from the first hand-over
+        since the last answer, a try that failed in the outage and filed nothing new (the one failure line stands in place). Each try that
+        failed ends there: the turn that answers counts from its own try."""
+        import time
+        from taskuary import conversation, general
+        class Down:
+            def chat(self, *a, **kw): raise llm.QuotaSpent(llm.QUOTA_LINE.format(name='HIPAA AI', model='Gemini 4'))
+        class Up:
+            def chat(self, *a, **kw): return {'content': 'The posts are drafted.'}
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Launch posts', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        with self._patched(Down()):
+            for line in ('draft the launch posts', 'any luck?'):
+                try: self._down_session(s, tid).send_prompt(line, echo=False)
+                except Exception: pass
+                time.sleep(0.3)
+        last_try = time.time()
+        with self._patched(Up()):
+            self._down_session(s, tid).send_prompt(general.RETRY_ASK, as_owner=False, echo=False)
+        turn = [x for x in conversation.items(s, tid)['items'] if x['kind'] == 'turn'][-1]
+        self.assertEqual(turn['text'], 'The posts are drafted.')
+        self.assertGreaterEqual(turn['started'], last_try - 0.05)
+
+    def test_a_failed_turn_leaves_a_draft_that_is_still_good_live(self):
+        """The API walk, 2026-11-19: Paula's reply was drafted; he asked for a PDF too, the AI failed, and the draft's Send stood greyed for 43
+        minutes while turn after turn failed. A card is set aside as its agent hears the input; a turn the AI never answered read past nothing."""
+        from taskuary import general, proposals
+        class Down:
+            def chat(self, *a, **kw): raise llm.NoAnswer('hipaa_ai: the model ran out of room before answering, even with 8000 tokens (finish_reason length)')
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'October spend summary for Paula', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'The summary is drafted for Paula.')
+        rid = s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Paula - the total is 103,190.', 'Reason': 'reply'})
+        s._exec("UPDATE review SET CreatedAt=datetime(CreatedAt,'-5 minutes') WHERE ReviewId=?", (rid,))
+        s._exec("UPDATE comment SET CreatedAt=datetime(CreatedAt,'-5 minutes') WHERE TaskId=?", (tid,))
+        with self._patched(Down()):
+            try: self._down_session(s, tid).send_prompt('make it a one-page PDF too', echo=False)
+            except Exception: pass
+        self.assertEqual(s.get_review(rid)['Status'], 'pending')
+        self.assertNotIn(rid, proposals.written_past(s, tid))
+        self.assertIn('The AI stopped before it answered - trying again at', [c['Body'] for c in s.list_comments(tid)][-1])
+
+    def test_a_card_that_takes_no_tools_is_offered_only_the_ways_that_are_here(self):
+        """The API walk, 2026-11-18: every answer of a card that takes no tools ended "connect an AI that can use tools ... or switch this task
+        to one?" - with no other AI on the computer, and on asks no browser served. It is told it has words alone, and the AIs really here."""
+        from taskuary import capabilities
         seen = []
-        def brain(system, user, **kw): seen.append(system); return 'I need a browser.\n[[TASKUARY-ASK]] Connect an agent with a browser?'
-        s, tid = self._turn(brain)
-        self.assertIn('THIS AI CANNOT DRIVE A BROWSER', seen[0])
-        self.assertNotIn(apiagent.BRIEF, seen[0])
+        def brain(system, user, **kw): seen.append(system); return 'Here is the plan.'
+        with mock.patch.object(capabilities, 'other_ais', return_value=[]): self._turn(brain)
+        self.assertIn(capabilities.HANDS['none'], seen[0]); self.assertIn('No other AI is connected here', seen[0])
+        self.assertNotIn('switch this task to one?', seen[0]); self.assertNotIn(apiagent.BRIEF, seen[0])
+        with mock.patch.object(capabilities, 'other_ais', return_value=['Claude Code']): self._turn(brain)
+        self.assertIn('Another AI could do this task: Claude Code - he picks it in the Agent menu on this task.', seen[1])
+
+    def test_what_it_states_can_be_checked_so_it_is_told_the_day_the_addresses_and_the_roads_here(self):
+        """The API walk, 2026-11-19: an email said "Thursday, March 12" (a Friday); "I guessed Ray's address" of a man whose invite was on the
+        task; "there is no button or setting you can press" with a CLI's install one page away; "I cannot schedule this" in an app that runs
+        routines. The agent is told the day, the address each person on the task wrote from, and the roads that are here."""
+        from datetime import datetime
+        from taskuary import agents, capabilities, general
+        seen = []
+        def brain(system, user, **kw): seen.append(system); return 'Done.'
+        s = MemoryStore()
+        s.set_setting('owner_email', 'alex@northwind.example', 'owner')
+        tid = s.create_task({'Title': 'Vendor review time', 'Summary': 'go', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        s.add_message({'TaskId': tid, 'Channel': 'email', 'ConversationId': 'c-ray', 'FromName': 'Ray Colton', 'FromEmail': 'ray@northwind.example',
+                       'Subject': 'Vendor review', 'BodyText': 'Invitation: vendor review, Thursday 2-3pm', 'Status': 'routed'})
+        session = general.GeneralSession(s, tid); session.pick, session.provider, session.model = 'connector:1', 'HIPAA AI', ''
+        with mock.patch.object(llm, 'build_llm', return_value=brain), mock.patch.object(bv, 'installed', return_value=False), \
+             mock.patch.object(bv, 'can_set_up', return_value=False), mock.patch.object(capabilities, 'other_ais', return_value=[]), \
+             mock.patch.object(agents, 'cli_ready', return_value=False):
+            session.send_prompt('can we move it to Friday?', echo=False)
+        self.assertIn(f"TODAY: {datetime.now().strftime('%A %d %B %Y')}", seen[0])
+        self.assertIn('Ray Colton <ray@northwind.example>', seen[0])
+        self.assertIn('An AI CLI - a shell, files and a browser on this computer - can be installed from', seen[0])
+        self.assertIn('is a routine Taskuary runs', seen[0])
 
 
 class TheToolboxTests(unittest.TestCase):
@@ -535,7 +768,7 @@ class TheToolboxTests(unittest.TestCase):
             sent.append((url, json, headers))
             return _R({'jsonrpc': '2.0', 'id': 1, 'result': {'tools': [{'name': 'search_messages', 'description': 'Search saved mail.',
                        'inputSchema': {'type': 'object', 'additionalProperties': False, 'properties': {'words': {'type': 'string', 'default': ''}}}}]}})
-        got = apiagent.taskuary_tools(7, 'sid-7', post=post)
+        got = [t for t in apiagent.tools_for(7, 'sid-7', False, post=post) if t['function']['name'] == 'search_messages']      # ...made safe where every tool is
         url, body, h = sent[0]
         self.assertIn('/api/mcp?task=7', url); self.assertEqual(body['method'], 'tools/list')
         from taskuary import guard
@@ -555,7 +788,7 @@ class TheToolboxTests(unittest.TestCase):
 
     def test_a_property_named_like_a_dropped_key_is_kept(self):
         # a gateway's Gemini refused the whole turn: "required fields ['title'] are not defined" once `title` the FIELD was cut (2026-11-09)
-        got = apiagent._clean({'type': 'object', 'title': 'x', 'properties': {'title': {'type': 'string', 'title': 'T'}}, 'required': ['title']})
+        got = apiagent.portable({'type': 'object', 'title': 'x', 'properties': {'title': {'type': 'string', 'title': 'T'}}, 'required': ['title', 'gone']})
         self.assertEqual(got, {'type': 'object', 'properties': {'title': {'type': 'string'}}, 'required': ['title']})
 
     def test_a_refusal_from_the_server_is_the_models_to_read(self):
@@ -635,6 +868,14 @@ class TheHandsTests(unittest.TestCase):
         self.assertIn('Excel workbook', self.run_('file_write', path='hours.xlsx', text='Date | Units | Rate | Amount\n2026-10-01 | 4 | 15.00 | =B2*C2'))
         ws = load_workbook(d / 'hours.xlsx').active
         self.assertEqual([ws['B2'].value, ws['C2'].value, ws['D2'].value], [4, 15.0, '=B2*C2'])
+        NL = chr(10)
+        # ...and each formula carries what it comes to, so a viewer that works nothing out shows the number (the 2026-11-18 walk: a caterers'
+        # sheet's "Est. Total for 40" stood empty for every row)
+        self.run_('file_write', path='caterers.xlsx', text='Caterer | Per head | Total for 40' + NL + 'Clover | 17.50 | =B2*40' + NL + 'Flour | 17.95 | =B3*40' + NL +
+                  'All | | =SUM(C2:C3)' + NL + 'Odd | | =VLOOKUP(A2,A2:C3,2)')
+        shown = load_workbook(d / 'caterers.xlsx', data_only=True).active
+        self.assertEqual([shown['C2'].value, shown['C3'].value, shown['C4'].value, shown['C5'].value], [700, 718, 1418, None])
+        self.assertEqual(load_workbook(d / 'caterers.xlsx').active['C4'].value, '=SUM(C2:C3)')       # the formula stays the formula
         wb = Workbook(); ws = wb.active
         ws.append(['Date', 'Units', 'Rate', 'Amount']); ws.append(['2026-10-01', 4, 15, '=B2*C2']); ws.append([None, None, 'Total', '=SUM(D2:D2)'])
         wb.save(d / 'Invoice template.xlsx')
@@ -645,6 +886,29 @@ class TheHandsTests(unittest.TestCase):
         self.assertEqual([ws['A4'].value, ws['B4'].value, ws['C4'].value, ws['D4'].value], ['2026-10-03', 2, 30, '=B4*C4'])
         self.assertEqual([ws['C5'].value, ws['D5'].value], ['Total', '=SUM(D2:D4)'])
         self.assertIn('Total | =SUM(D2:D4)', self.run_('file_read', path='Invoice INV-2026-10.xlsx'))      # the total it can check, read back
+
+    def test_a_one_page_pdf_with_a_bar_chart_and_a_deck_are_written_by_the_road_the_workbook_takes(self):
+        """The API walk, design round 5 (2026-11-19): asked for a one-page PDF with a bar chart and a five-slide deck, the card's agent made the
+        .xlsx, then said PDF and PowerPoint "require file generation tools ... AI CLI agents" and drew the chart in block characters. file_write
+        makes both from the same text: a heading, points, a table, `chart:` over `label | number` lines, `---` between slides."""
+        from pypdf import PdfReader
+        NL = chr(10)
+        text = NL.join(['# October vendor spend', 'Total $103,190 across 7 vendors.', '- The top five are 93.9%', '', 'chart: Spend by vendor',
+                        'Payworth | 48210', 'Trainly | 21000', '', 'Vendor | Spend', 'Payworth | $48,210', '---', '# Concentration', '- Top five: 93.9%'])
+        d = Path(apiagent.workdir(self.s, self.tid))
+        self.assertIn('a PDF, 1 page', self.run_('file_write', path='October spend.pdf', text=text.replace('---', '')))
+        pages = PdfReader(str(d / 'October spend.pdf')).pages
+        self.assertEqual(len(pages), 1)
+        got = pages[0].extract_text()
+        for w in ('October vendor spend', 'Payworth', '48,210', 'Spend by vendor', '$48,210'): self.assertIn(w, got)
+        self.assertNotIn('chart:', got); self.assertIn(' re f', pages[0].get_contents().get_data().decode('latin-1'), 'the bars are drawn, not typed')
+        self.assertIn('a PowerPoint deck, 2 slides', self.run_('file_write', path='Leadership.pptx', text=text))
+        read = self.run_('file_read', path='Leadership.pptx')
+        for w in ('October vendor spend', 'Concentration', '48,210', 'Top five: 93.9%'): self.assertIn(w, read)
+        try: import pptx
+        except ImportError: pptx = None
+        if pptx: self.assertEqual(len(pptx.Presentation(str(d / 'Leadership.pptx')).slides), 2)
+        with self.assertRaisesRegex(ValueError, 'file_write it whole'): self.run_('file_edit', path='Leadership.pptx', old='Concentration', new='Share')
 
     def test_the_file_tools_are_offered_whole_not_behind_load_tools(self):
         "A model never shown file_write said it had no way to make the file (the same ask, on a card): making one is the hands' first job."
@@ -831,7 +1095,11 @@ class EveryCardTests(unittest.TestCase):
         try:
             with mock.patch.object(s, 'list_connectors', return_value=cards), mock.patch.object(apiagent, 'call_taskuary', return_value='[1] Payworth'):
                 self.assertEqual(apiagent.run_tool(s, 1, 'g', 'web_search', {'query': 'payroll'}), '[1] Payworth')
-            with self.assertRaisesRegex(ValueError, 'no search service is connected'): apiagent.run_tool(s, 1, 'g', 'web_search', {'query': 'payroll'})
+            # ...and with neither, it reads a search engine's results page itself - never a failure handed to the agent (2026-11-20)
+            seen = []
+            with mock.patch.object(apiagent, '_hands', side_effect=lambda *x: seen.append(x[4]['url']) or 'PAGE results - Payworth pricing'):
+                self.assertIn('Payworth', apiagent._search(s, 1, 'g', 'payroll pricing'))
+            self.assertEqual(seen, [apiagent.SEARCH_PAGE + 'payroll%20pricing'])
         finally: apiagent.BRAINS.pop((1, 'g'), None)
 
     def test_the_chatgpt_plan_runs_the_loop_on_its_responses_api(self):
@@ -959,7 +1227,7 @@ class CodingOnACardTests(unittest.TestCase):
     def test_it_is_told_this_is_coding_and_where_it_works_as_its_cli_is(self):
         import tempfile
         self.s.add_comment(self.tid, 'owner', self.g.USER_TYPE, 'fix it')
-        self.assertIn('non-coding work', self.g._prompt(self.s, self.tid)[0])              # ...general work still is
+        self.assertIn(self.g.GENERAL_WHO, self.g._prompt(self.s, self.tid)[0])          # ...general work still is
         self.g.ON_CARD.add(self.tid)
         system, user = self.g._prompt(self.s, self.tid)
         self.assertIn(self.g.CODING_WHO, system)
@@ -1197,3 +1465,16 @@ class NoPageOpenTests(unittest.TestCase):
                 with self.assertRaises(ValueError, msg=tool) as e: apiagent.run_tool(s, tid, 'sid-n', tool, a)
                 self.assertIn('browser_open', str(e.exception)); self.assertIn('nothing was done', str(e.exception))
         ran.assert_not_called(); judged.assert_not_called()
+
+
+def test_a_search_engine_page_read_as_the_fallback_is_its_results_never_its_menu():
+    """A forced fallback, 2026-11-22: half of the results page handed the agent was the engine's sixty regions and time filters, and the cut
+    fell on the results. What is read starts at the first result - its title, its address, its summary."""
+    from taskuary import apiagent
+    menu = '\n\n'.join(['All Regions', 'Argentina', 'Australia', 'US (English)', 'Any Time', 'Past Day', 'Past Year'])
+    page = (f"PAGE https://html.search.example/?q=paper - paper at Search\n{menu}\n\nNorthwind Paper Supply\n\npaper.example/prices\n\n"
+            "Today's office paper prices by the case, delivered next day across the region.\n\nAnother result title\n\nother.example\n\n"
+            "A second summary long enough to be a result's own description line.")
+    out = apiagent._results_only(page)
+    assert out.startswith('PAGE https://html.search.example') and 'Argentina' not in out and 'Past Year' not in out
+    assert out.split('\n')[1] == 'Northwind Paper Supply' and 'paper.example/prices' in out

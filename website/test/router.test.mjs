@@ -2,11 +2,13 @@
 // the address, and only appLinks.js writes it. The browser half - a link over an open page, Back after two opens, the address after
 // Next - is deadend_check.mjs's PLACE, BACK and ADDRESS.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { canvasRequestFromHash, hashFor, placeOf } from "../src/canvasLinks.js";
 import { canGoBack, ownerHref, recordPlace, onPlace } from "../src/appLinks.js";
 import { PLACES } from "../src/words.js";
 
+const src = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 
 test("a link carries its target, so a page already open can open it", () => {
   assert.deepEqual(canvasRequestFromHash("#connector=github").state, { section: null, open: null, connector: "github" });
@@ -27,12 +29,20 @@ test("every place words.json names is a place the canvas opens", () => {
   assert.equal(canvasRequestFromHash(PLACES.ai_apps.href).state.connector, "cli-agents");
 });
 
-test("settings links open their connection target", () => {
-  for (const l of ["ai_apps", "connector:7"]) {
+test("where a setting is saved opens that card - never the Profiles shelf", () => {
+  // every owner_link the server writes (aidefaults.py): a place id, or one connector
+  const links = [...src("../../taskuary/aidefaults.py").matchAll(/owner_link=(?:'([^']*)'|f"connector:)/g)].map((m) => m[1] ?? "connector:7");
+  assert.ok(links.includes("ai_apps") && links.includes("connector:7"), JSON.stringify(links));
+  for (const l of links.filter(Boolean)) {
     const req = canvasRequestFromHash(ownerHref(l));
     assert.equal(req?.area, "connections", `${l} -> ${ownerHref(l)}`);
     assert.ok(req.state.connector, `${l} names no card`);
   }
+  // ...and every place the panel names in its own words: its "still Connections" was onGo("connectors"), a place words.json does not
+  // have, so ownerHref gave "" and the click did nothing (verify, 2026-10-19)
+  const named = [...src("../src/AiDefaults.jsx").matchAll(/onGo\("([^"]*)"\)/g)].map((m) => m[1]);
+  assert.ok(named.length, "the panel names no place of its own any more - this check reads nothing");
+  for (const l of named) assert.ok(canvasRequestFromHash(ownerHref(l)), `AiDefaults' onGo("${l}") -> "${ownerHref(l)}" opens nothing`);
   assert.equal(ownerHref("connector:7"), "#connector=7");
   assert.equal(ownerHref(""), "");
 });
@@ -117,4 +127,3 @@ test("a step of history is heard once, and only Back asks for the address with n
     assert.equal(Object.keys(on).length, 0);
   } finally { delete globalThis.window; }
 });
-

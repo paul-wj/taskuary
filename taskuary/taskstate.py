@@ -61,7 +61,30 @@ def asking(store, task: dict, session=None) -> dict | None:
     tid = task['TaskId']
     if (s := session or workerstate._live(tid)): return browsergate.shown_ask(workerstate.asking_of(store, s))
     rests = general.handles(task) or acpcoding.idled(tid, store)
+    # ...a task he closed asks nothing (walk 5, 2026-11-22: "Answer the agent's question..." stood in the box of a task he had marked done) - his
+    # typing reopens it, as a new line
+    if task.get('Status') in ('done', 'dropped'): return None
     return browsergate.shown_ask({**q, 'resting': True}) if rests and (q := open_question(store, tid)) else None
+
+
+def browser_acts(store, tid: int) -> list:
+    "The held browser/shell acts of task `tid` waiting on his press - only the one the line has at its front (cardqueue; a hard rule)."
+    from . import cardqueue, proposals
+    held = cardqueue.held(store, tid)
+    return [r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' ORDER BY ReviewId", (tid,))
+            if proposals._action(r) in proposals.HELD_ACTS and r['ReviewId'] not in held]
+
+
+def needs_owner(ask: dict | None, acts: list = (), sid: str = '') -> bool:
+    """WHETHER THE OWNER HAS A PART ON THE PAGE - the one answer the task's view draws its browser by (the roads audit, 2026-11-19: the page
+    rebuilt it from the ask's id): a sign-in or a step handed over to him there, or a browser step of this session held for his press."""
+    import json
+    if (ask or {}).get('ask') in ('signin', 'turn'): return True
+    for r in acts or []:
+        try: p = json.loads(r.get('DraftText') or '{}') or {}
+        except (TypeError, ValueError): continue
+        if p.get('action') == 'browser_act' and sid and str(p.get('sid')) == str(sid): return True
+    return False
 
 
 def _chat_resting(store, t: dict) -> str | None:
@@ -70,8 +93,21 @@ def _chat_resting(store, t: dict) -> str | None:
     if not handles(t) or is_dock(t) or t.get('Status') not in ('open', 'in_progress'): return None
     if open_question(store, t['TaskId']): return 'blocked'
     if store.waiting_on_owner(t['TaskId']): return 'approve'          # an email it set up waits for your Send, never "agent done"
-    spoke = store._one('SELECT 1 AS x FROM comment WHERE TaskId=? AND ActorType=? LIMIT 1', (t['TaskId'], ASSISTANT_TYPE))
-    return 'agentdone' if spoke else None
+    return turn_outcome(store, t['TaskId'])
+
+
+def turn_outcome(store, tid: int) -> str | None:
+    """HOW THE LAST TURN ENDED, off the stored turn - one reading for a chat at rest and one whose session is still up: 'agentdone' only for a
+    turn that did the work (the Neon walk, 2026-11-19: a green "agent done" and "Finished at 11:53 PM" over a turn that failed, and over one
+    that refused and left him "Enable local shell access"). A failed turn is 'stopped', its reason on it; one whose own summary left
+    something on him is 'blocked'. None: it never answered."""
+    from .general import ASSISTANT_TYPE, failed_line, turn_summaries
+    last = store._one('SELECT CommentId, Body FROM comment WHERE TaskId=? AND ActorType=? ORDER BY CommentId DESC LIMIT 1', (int(tid), ASSISTANT_TYPE))
+    if not last: return None
+    if failed_line(last['Body'])[1]: return 'stopped'
+    sm = turn_summaries(store, int(tid)).get(last['CommentId']) or {}
+    if not sm.get('nothing_left') and any(str(s).strip() for s in sm.get('on_you') or []): return 'blocked'
+    return 'agentdone'
 
 
 class TaskState:
@@ -200,8 +236,13 @@ class TaskState:
             # sender not trusted yet - after the session had opened; the session stayed, parked, and the task read "agent done" with Mark
             # done lit over a chat that held only the sender's message and the Trust action): the task reads as it does with no session
             if not (parked and never_ran(store, t, session)):
+                # ...AND ONE HE STOPPED IS STOPPED, never "waiting on you" (the walk, 2026-11-22: the chat said "You stopped the agent", the chip
+                # and the rail's hand said it waited on him - nothing did)
+                if parked and not session.get('request') and last_word(store, tid, session.get('sid')) == 'stopped': return 'stopped'
                 # ...and an agent whose turn asked nothing is done for now, never waiting on you (the owner, 2026-11-07) - as it reads once idled out
-                return 'agentdone' if done_for_now(store, t, session) else 'blocked'
+                if not done_for_now(store, t, session): return 'blocked'
+                from .general import handles
+                return (turn_outcome(store, tid) or 'agentdone') if handles(t) else 'agentdone'
         st = t.get('Status')
         if st == 'dropped': return 'dropped'
         # ...and a start in flight for his line is at work from the press, whichever agent comes up (general.OPENING - one mark for every kind): a
@@ -215,9 +256,13 @@ class TaskState:
             if str(t.get('UpdatedBy') or '') in OWNER_ACTORS: return 'closed'        # yours: no need to read its notes
             return 'agentdone' if finish_evidence(store, tid) else 'closed'
         if t.get('RunStatus') == 'running': return 'working'
-        if waits_press(store, t, row=True): return 'approve'
         # A NEW SENDER'S TASK IS HELD, never "waiting to start" (2026-11-17): nothing starts on it until the owner trusts the sender, and the
-        # chip, the list and the Board read the word the phone said alone (lanes.json `held`) - off the tag ingest leaves, which Trust lifts
+        # chip, the list and the Board read the word the phone said alone (lanes.json `held`) - off the tag ingest leaves, which Trust lifts.
+        # ...and before a card on it where a stranger STARTED it: its one move is Trust (the judge's browser round, 2026-11-19) - one who only
+        # joined a known person's task never takes Send off the reply that waits (the ruling, 2026-11-19)
+        if waits_press(store, t, row=True):
+            from . import origin
+            return 'held' if self.held and origin.keeps_him(store, tid) else 'approve'
         if self.held: return 'held'
         # still waiting to start, a failed start included - the row carries the error and the page offers Start now / Cancel (T10)
         if self.queued: return 'queued'
@@ -225,7 +270,7 @@ class TaskState:
         # ...and HOW ITS LAST RUN ENDED, in the run's own word (workerstate.ended) - the reading the rail takes too: a run that failed
         # or was stopped read "on you", and one that finished read "waiting to start", while the worker said what happened (G7)
         end = None if left else self.end
-        if end == 'finished': return 'approve' if store.waiting_on_owner(tid) else 'agentdone'     # a post or an act left for your press
+        if end == 'finished': return 'approve' if store.waiting_on_owner(tid) else (turn_outcome(store, tid) or 'agentdone')     # a post or an act left for your press
         if end: left = 'stopped'
         if not left and str(t.get('Assignee') or '').startswith('agent:') and self.transcript: left = 'stopped'
         if left: return left
@@ -253,8 +298,15 @@ def waits_press(store, t: dict, row: bool = False) -> bool:
     (the owner's live task, 2026-11-13)."""
     from . import proposals
     pending = t.get('ReviewStatus') == 'pending'
-    if pending and not proposals.written_past(store, t['TaskId']): return True
-    return bool(store.waiting_on_owner(t['TaskId'])) if pending or not row else False
+    if pending and t.get('ReviewKind') != 'action' and not proposals.written_past(store, t['TaskId']): return True
+    # ...`row` trusts the list row's own column; a task row that carries none (store.get_task) asks the queue - it said "yours" over a card
+    return bool(store.waiting_on_owner(t['TaskId'])) if pending or not row or 'ReviewStatus' not in t else False
+
+
+def last_word(store, tid: int, sid) -> str | None:
+    "The session's last worker event that is not a note: 'turn_end', 'stopped', 'failed', 'input_needed'..."
+    from . import workerstate as ws
+    return next((e['Kind'] for e in reversed(ws.events(store, tid, sid)) if e['Kind'] not in ws.NOTES), None)
 
 
 def done_for_now(store, t: dict, session: dict) -> bool:
@@ -265,15 +317,18 @@ def done_for_now(store, t: dict, session: dict) -> bool:
     if (session.get('state') or 'parked') != 'parked' or session.get('request') or session.get('held'): return False
     tid = t['TaskId']
     if waits_press(store, t): return False
-    from . import landing, workerstate as ws
+    from . import landing
     from .general import handles
-    last = next((e['Kind'] for e in reversed(ws.events(store, tid, session.get('sid'))) if e['Kind'] not in ws.NOTES), None)
+    last = last_word(store, tid, session.get('sid'))
     # ...a chat agent in its own chat, unless its last turn was STOPPED (the audit, 2026-11-10: Remind me pressed mid-turn lit Mark done over the
     # turn it had just stopped, in the beat before its session rested); one of its kind in a pane (a routine's run) is read by its turns, as a
     # coding agent is
     # ...and never one that has not run a turn at all (never_ran, 2026-11-17: a held task's session, its first turn refused, read "agent done -
     # type to carry on" on the rail over a chat no agent had worked)
-    if handles(t) and (session.get('mode') or 'assistant') == 'assistant': return last not in ('stopped', 'failed') and not never_ran(store, t, session)
+    # ...and never one whose turn left a step on him (turn_outcome 'blocked'): the header read "agent waiting on you" off it while the rail,
+    # reading this, said "Finished; nothing since" (the walk, 2026-11-21) - one answer for both
+    if handles(t) and (session.get('mode') or 'assistant') == 'assistant':
+        return last not in ('stopped', 'failed') and not never_ran(store, t, session) and turn_outcome(store, tid) != 'blocked'
     return last == 'turn_end' and not landing.asked(store, tid)
 
 
@@ -285,6 +340,46 @@ def task_state(store, t: dict = None, session=None, queued=None, tid=None) -> Ta
 def state(store, t: dict, session=None, queued=None) -> str:
     """This task's state key. `session` is its live session row, `queued` its dispatch-queue row."""
     return TaskState(store, t, session, queued).key
+
+
+# THE TASK'S STATUS AND ITS WORDS, SAID ONCE (the roads audit, 2026-11-19 #9): the header's pill, the rail's row, the phone and the bell each
+# put "agent working / waiting on you / done" together from their own facts - the phone said "finished" where the pill said "agent done", and
+# "handed over, not started" where it said "waiting to start". The key is `state`'s; the words are lanes.json's (lanes.word / hint / mark),
+# with the three readings the page laid over them: a chat task's waiting move is its agent's (chat_ready, chat_done - the owner, 2026-11-05
+# and 11-06), a reply owed that nothing has written yet (owed - 2026-10-27), and a start that failed (start_failed - 2026-11-06).
+CHAT_READY, CHAT_DONE = ('blocked', 'approve'), ('agentdone', 'wrapup', 'chat_done')
+def retrying(store, tid) -> bool:
+    """Is a turn Taskuary tries again by itself queued on this task (general.queue_retry)? Then it is the app's move, never his: every surface
+    reads "trying again" - the header did while the rail read "Failed" and "waiting on you" (the walk, 2026-11-22)."""
+    from .general import RETRY_TURN, at_work
+    q = store.get_dispatch(int(tid)) if tid and hasattr(store, 'get_dispatch') else None
+    return bool(q and q.get('Turn') == RETRY_TURN and q.get('State') == 'retrying' and not at_work(int(tid)))
+
+
+def status(store, t: dict, session=None, queued=None, key: str = None) -> dict:
+    """{key, word, hint, mark, spins} for task `t` - what every surface draws as its status. `key`: the state already read for this very
+    reading (state), else it is read here."""
+    from . import lanes
+    from .general import handles, is_dock
+    k = key or state(store, t, session, queued)
+    words = lambda x: {'key': x, 'word': lanes.word(x), 'hint': lanes.hint(x), 'mark': lanes.MARK.get(x, '')}
+    if k == 'queued' and str((queued or {}).get('State') or (queued or {}).get('state') or '') == 'failed': return {**words('start_failed'), 'spins': False}
+    # ...AND A TURN TASKUARY TRIES AGAIN BY ITSELF IS ITS OWN, NEVER HIS (the judge's look, 2026-11-20: "agent waiting on you" over a turn the queue
+    # was about to try again): while the try is queued (general.queue_retry) the task reads trying again
+    if k not in ('working', 'approve') and retrying(store, t['TaskId']): return {**words('retrying'), 'spins': False}
+    w = store.waiting_on_owner(t['TaskId']) if k == 'approve' else None
+    if w and w.get('Kind') in ('draft', 'draft_reply') and not str(w.get('FinalText') or w.get('DraftText') or '').strip(): return {**words('owed'), 'spins': False}
+    # ...and it is the FRONT card that waits (cardqueue): a held step or an act at the front waits on him, never "ready to send" over a reply
+    # held behind it (the judge's look, 2026-11-19)
+    if w and w.get('Kind') == 'action': k = 'blocked'
+    # ...and a draft the card cannot send (its Connect, capabilities.can_send_draft) is no "ready to send": the page's chip reads the same
+    from . import capabilities
+    if w and w.get('Kind') != 'action' and not capabilities.can_send_draft(store, w['ReviewId']): return {**words('unsendable'), 'spins': False}
+    out = {**words(k), 'spins': k == 'working'}
+    if handles(t) and not is_dock(t):
+        if k in CHAT_READY: out = {**out, 'word': lanes.word('chat_ready'), 'hint': lanes.hint('chat_ready')}
+        elif k in CHAT_DONE: out = {**words('chat_done'), 'spins': False}
+    return out
 
 
 def column(key: str) -> str | None:

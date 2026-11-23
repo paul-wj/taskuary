@@ -38,18 +38,6 @@ test("a coding chat names no turns - its own are stamped as they begin - and an 
   assert.deepEqual(after([{ key: "land", at: "2026-11-05 09:01:00" }], { 3: "comment-2" }), ["comment-4"], "a card of no review is placed by its time");
 });
 
-test("the task page hands every waiting ask to its turn, and draws it in its own block only where there are no turns", () => {
-  const page = read("TaskPage.jsx");
-  assert.match(page, /const inTurns = !solo && !\["done", "dropped"\]\.includes\(t\?\.Status\)/);
-  assert.match(page, /\.\.\.\(inTurns \? askCards : \[\]\)\.map\(\(g\) => \(\{ key: g\.key, at: g\.reviews\[0\]\.CreatedAt \|\| "", rid: g\.reviews\[0\]\.ReviewId, waits: true, also: asksBelow, note: g\.held \? "" : askNote\(g\.reviews\[0\]\),/);
-  assert.match(page, /\{!inTurns && askCards\.length > 0 && \(/);
-  // ...and the block is not drawn for them: a chat whose only ask stands in its turn has no "Next steps" over nothing
-  assert.match(page, /const waits = !!\(chatReview \|\| proposals\.length - \(inTurns \? asks\.length : 0\) \|\| \(owesEmails && !inTurns\) \|\| handoff\);/);
-  assert.match(page, /\(waits \|\| \(!inTurns && kept\.length\) \|\| upFailed/);
-  for (const k of ["pressedCards.map((g) => ({ key: g.key, at: g.at, rid: g.reviews[0].ReviewId,", 'at: r.CreatedAt || "", rid: r.ReviewId, node: <SentCard', 'rid: r.ReviewId, letter: true,'])
-    assert.ok(page.includes(k), "a pressed card names its review too");
-});
-
 
 test("what the foot's boxes said over a held act and a playbook is said over its one card", () => {
   const act = (p) => ({ Kind: "action", Status: "pending", DraftText: JSON.stringify(p) });
@@ -58,17 +46,18 @@ test("what the foot's boxes said over a held act and a playbook is said over its
   assert.equal(askNote(act({ action: "close_task", why: "the folder is clear" })), "", "a card that says itself gets no line over it");
 });
 
-// THE LIVE SHAPE (the audit, 2026-11-13, recorded on the walk's Back and on a rail click): the task's cards arrive with the task, its
-// conversation a beat later - and for that beat every letter that went and the draft with its Send stood in one stack at the chat's foot
-test("no card is drawn loose at the chat's foot before the conversation is read, nor under a turn at work", async () => {
-  const { placesLoose } = await import("../src/chatStream.js");
-  assert.equal(placesLoose(null), false, "the list not read yet: nothing can be placed, so nothing is");
-  assert.equal(placesLoose(undefined), false);
-  assert.equal(placesLoose({ items: [], working: true }), false, "a turn at work holds its cards back");
-  assert.equal(placesLoose({ items: [], working: false }), true, "read, at rest: a card the list places nowhere is never lost");
-  const ws = read("GeneralWorkspace.jsx");
-  assert.match(ws, /loose=\{placesLoose\(list\)\}/);
-  assert.match(ws, /const loose = looseOk \? nodes\.filter/);
-  assert.match(ws, /const nextLoose = next && !used\.has\("next"\) && looseOk && /);
-});
 
+// ONE ACTION BOX AT A TIME, A HARD RULE (the owner's live task, 2026-11-19): a held browser step stood at the front reading "1 of 2 · next: the
+// reply to Gail Moreno", and the reply's box was drawn under it - the page's reply block (`next`) and the letters were drawn with no look at
+// the line. What the line holds behind its front stands nowhere; while the front is another card, no door to write a reply stands beside it.
+test("a reply the line holds behind its front draws no box, and no reply door stands beside another card's front", async () => {
+  const { replyDoorOpen } = await import("../src/chatStream.js");
+  const q = { live: [744], held: [745] };
+  assert.equal(replyDoorOpen(q, null), false, "a door to write a reply beside the browser step's front");
+  assert.equal(replyDoorOpen({ live: [745], held: [] }, 745), true); assert.equal(replyDoorOpen({ live: [], held: [] }, null), true);
+  const ws = read("GeneralWorkspace.jsx");
+  // ...a card the line holds has no row in the log (chatlog.advance) and the page places none of its own: nothing to draw
+  assert.doesNotMatch(ws, /looseCards|nextLoose|lettersHere/);
+  assert.match(read("TaskPage.jsx"), /const chatReview = !inTurns \? pendingReview : null;/);
+  assert.match(read("TaskPage.jsx"), /!pendingReview && !inRow && !replyEmpty && replyDoorOpen\(detail\?\.queue, null\) && \(/);
+});

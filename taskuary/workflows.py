@@ -262,10 +262,6 @@ def brain_options(store) -> dict:
     return {**b, 'models': models, 'efforts': efforts_for(b['cli'], cat, b['base'])}
 
 
-_DAYS = {'0': 'Sundays', '1': 'Mondays', '2': 'Tuesdays', '3': 'Wednesdays', '4': 'Thursdays', '5': 'Fridays', '6': 'Saturdays',
-         '7': 'Sundays', '1-5': 'weekdays', '*': 'daily'}
-
-
 # A SCRIPT AN AGENT WROTE ON A JOB, KEPT AS A ROUTINE (the owner, 2026-11-10: "agent should be able to after building one should say
 # should we save this"). The agent proposes it (proposals 'save_routine'); the owner reads the script on the card, and their Approve is
 # the save - the one door by which anything but the editor puts a script on a schedule. The steps are the ones the editor would hold: an
@@ -276,7 +272,19 @@ def script_routine(store, p: dict) -> tuple:
     from . import flow
     from .reports import schedule_error
     title, script = ' '.join(str(p.get('title') or '').split())[:120], str(p.get('script') or '')
-    if not title or not script.strip(): return {}, 'save_routine needs `title` and `script` (the Python source, whole)'
+    based = ' '.join(str(p.get('based_on') or '').split())[:300]
+    # ...A SETUP FOR A GENERAL JOB IS ITS INSTRUCTIONS (the owner, 2026-11-20: a routine for posting, a report on a market): with no script, a
+    # routine an agent works by them, or a report (`kind`) that reads and answers them - built from the best-regarded skill or template found
+    # online for that job and naming it (`based_on`), never from Taskuary's own profiles alone. One card, one save, as the script's
+    if not script.strip() and str(p.get('prompt') or '').strip() and title:
+        kind = 'report' if str(p.get('kind') or '').lower() == 'report' else 'routine'
+        cfg = {'type': 'agent', **({'access': 'write'} if kind == 'routine' else {}), 'title': title, 'prompt': str(p['prompt']).strip(),
+               'goal': ' '.join(str(p.get('why') or '').split())[:300], **({'based_on': based} if based else {}), **{k: p[k] for k in CLOCK if p.get(k)}}
+        if why := schedule_error(cfg): return {}, why
+        if any(x.get('Channel') == 'report' and str(x.get('Address') or '').casefold() == title.casefold() for x in store.list_sources(active_only=False)):
+            return {}, f'a routine or report named {title!r} already exists - give this one its own name, or change that one (change_routine)'
+        return cfg, ''
+    if not title or not script.strip(): return {}, 'save_routine needs `title` and `script` (the Python source, whole) - or `prompt`, its instructions'
     reads, steps = p.get('reads'), []
     if reads:
         if not isinstance(reads, dict) or flow.writes(reads.get('type')):
@@ -297,33 +305,128 @@ def script_routine(store, p: dict) -> tuple:
     return cfg, ''
 
 
+def save(store, fields: dict, actor: str) -> int:
+    """THE ONE SAVE OF A ROUTINE OR REPORT - the editor's (POST /api/sources), an agent's script kept as a routine, a run's change to its
+    own routine and a run's own repair alike: a ConfigPatch laid over what is stored, then its clock, its dashboard and its steps checked
+    whole, and kept. ValueError says why it was not saved."""
+    from . import flow
+    from .reports import schedule_error
+    fields, was = dict(fields), store.get_source(int(fields['SourceId'])) if fields.get('SourceId') else None
+    if (patch := fields.pop('ConfigPatch', None)) is not None:
+        fields['ConfigJson'] = json.dumps({k: v for k, v in {**cfg_of(was or {}), **patch}.items() if v is not None})
+    if fields.get('ConfigJson'):
+        try: cfg = json.loads(fields['ConfigJson']) or {}
+        except ValueError: cfg = {}
+        cfg = cfg if isinstance(cfg, dict) else {}
+        # a clock the scheduler cannot read is refused, never saved as "scheduled" (reports.schedule_error, B3)
+        if why := schedule_error(cfg): raise ValueError(f'Not saved: {why}.')
+        # ...and a dashboard's spec, the same check its composer ran: a component bound to no source never draws (dashboards.validate)
+        if cfg.get('type') == 'dashboard':
+            from . import dashboards
+            ok, why = dashboards.validate(cfg, store)
+            if not ok: raise ValueError(f'Not saved: {why}.')
+            if (named := dashboards.keyed(cfg)) != cfg: fields['ConfigJson'] = json.dumps(named)     # kept under the names it was checked by
+        # ...a workflow's steps are checked before they are kept: a broken list would only fail on its first scheduled run (flow.validate)
+        if cfg.get('flow') is not None:
+            ok, why = flow.validate(store, cfg['flow'])
+            if not ok: raise ValueError(f'The steps cannot be saved yet: {why}.')
+    sid = store.save_source(fields, actor) if set(fields) - {'SourceId'} else fields['SourceId']
+    # A NEW WORKFLOW STARTS ON ITS NEXT SLOT, not on the next tick. A source never run is due at once (reports.is_due) - right
+    # for a report you want to see, wrong for a job that opens tasks and drafts mail: a weekly Monday workflow saved on a
+    # Wednesday ran seconds later, beside the editor's "Saved - runs Mon at 08:00", and again beside its own Save & run now -
+    # two laptop tasks, two approvals (walk 2026-10-21). Run now is the door for running it now.
+    if not was and is_workflow(store.get_source(sid)): store.touch_source(sid)
+    from .docsync import sync_connections
+    sync_connections(store, actor)
+    return sid
+
+
 def save_script_routine(store, p: dict, actor: str) -> dict:
     "The owner's Approve on a save_routine card: the routine, saved as the editor saves one - checked again now, switched on, never run here."
     cfg, why = script_routine(store, p)
     if why: raise RuntimeError(f'{why} - nothing was saved')
-    sid = store.save_source({'Channel': 'report', 'Address': cfg['title'], 'Owner': actor, 'Active': 1, 'ConfigJson': json.dumps(cfg)}, actor)
-    store.audit('source', sid, 'routine_saved', actor, detail={'title': cfg['title'], 'steps': len(cfg['flow']), 'runs': runs_words(cfg)})
-    return {'source': sid, 'link': f'#report={sid}', 'said': f"Saved the routine \"{cfg['title']}\" - it runs {runs_words(cfg)}."}
+    try: sid = save(store, {'Channel': 'report', 'Address': cfg['title'], 'Owner': actor, 'Active': 1, 'ConfigJson': json.dumps(cfg)}, actor)
+    except ValueError as e: raise RuntimeError(f'{e} Nothing was saved.')
+    kind = 'routine' if is_workflow(cfg) else 'report'
+    store.audit('source', sid, 'routine_saved', actor, detail={'title': cfg['title'], 'steps': len(cfg.get('flow') or []), 'runs': runs_words(cfg), 'kind': kind})
+    return {'source': sid, 'link': f'#report={sid}', 'said': f"Saved the {kind} \"{cfg['title']}\" - it runs {runs_words(cfg)}."}
 
 
-def runs_words(cfg: dict) -> str: return when_words(cfg) if any(cfg.get(k) for k in CLOCK) else 'when you run it'
+# A RUN OF A ROUTINE MAY ASK TO CHANGE IT (the design round, 2026-11-18: the agent had no way to change its own routine, so "I can't"):
+# its instructions or its steps, as one card the owner presses - the card a run's own repair is (proposals 'repair_workflow'), saved by the
+# editor's own save (flow.apply -> save). Never from work a stranger started: what their mail said may be what wrote it.
+def change_of(store, tid: int, p: dict) -> tuple:
+    """(the repair_workflow card a change_routine ask is, '') or ({}, why not). `prompt` alone rewrites the routine's one agent step's
+    instructions; `flow` is its steps whole."""
+    from . import flow, origin
+    # ...ANY ROUTINE OF HIS, NAMED (the owner's live task, 2026-11-20: asked to rewrite his routine's instructions, the agent wrote them into a
+    # .txt and handed back "save them from your signed-in app"): `routine` - its number or its title - else the one this task is a run of
+    src = named_setup(store, p.get('routine')) if str(p.get('routine') or '').strip() else source_of(store, store.get_task(int(tid)) or {})
+    if not src: return {}, ('no routine is called that - name it by its title or number as Reports lists it' if p.get('routine') else
+                            'change_routine changes the routine this task is a run of, or the one named in `routine` - this one did not come from a routine (save_routine keeps a new one)')
+    if origin.of_task(store, tid)[0] == 'stranger': return {}, 'a routine is not changed from work a stranger started'
+    cfg = cfg_of(src)
+    if not is_workflow(src): return setup_change(src, cfg, p)             # ...a report or a dashboard: its own fields, the same one card and save
+    was, new = flow.steps_of(cfg), p.get('flow')
+    # ...and its clock and its name, beside or without its steps: one card, one save (save - the editor's own)
+    patch = {k: p[k] for k in (*CLOCK, 'title', 'goal', 'done_when') if p.get(k) not in (None, '')}
+    if patch:
+        from .reports import schedule_error
+        if (why := schedule_error({**{k: None for k in CLOCK}, **patch} if set(patch) & set(CLOCK) else {**cfg, **patch})): return {}, f'that schedule does not hold: {why}'
+    if new is None and str(p.get('prompt') or '').strip():
+        agent = [i for i, x in enumerate(was) if x.get('kind') == 'agent']
+        if len(agent) != 1: return {}, "this routine has no one agent step to give new instructions to - send `flow`, its steps whole"
+        new = [{**x, 'prompt': str(p['prompt']).strip()} if i == agent[0] else x for i, x in enumerate(was)]
+    if new is None and patch: new = was                                     # ...its clock or name alone
+    if not isinstance(new, list) or not new: return {}, "change_routine needs `prompt` (its agent step's new instructions), `flow` (its steps whole), or a schedule (daily_at, cron, every_minutes) or title"
+    ok, why = flow.validate(store, new)
+    if not ok: return {}, f'the changed steps do not hold: {why}'
+    d = flow.diff(was, new)
+    clock = {k: patch.get(k) for k in CLOCK} if set(patch) & set(CLOCK) else {}
+    said = ([f"Runs: {runs_words(cfg)} -> {runs_words({**cfg, **clock})}"] if clock and runs_words({**cfg, **clock}) != runs_words(cfg) else []) +            ([f"Name: {cfg.get('title') or src.get('Address')} -> {patch['title']}"] if patch.get('title') and patch['title'] != cfg.get('title') else []) +            [f"{w}: {cfg.get(k) or '(none)'} -> {patch[k]}" for k, w in (('goal', 'Goal'), ('done_when', 'Done when')) if patch.get(k) and patch[k] != cfg.get(k)]
+    if not d and not said: return {}, 'that is the routine as it already is'
+    return {'action': 'repair_workflow', 'source_id': src['SourceId'], 'title': cfg.get('title') or src.get('Address') or '', 'flow': new,
+            'was': was, 'changes': '\n'.join([*said, *([flow.diff_text(d)] if d else [])]), 'why': ' '.join(str(p.get('why') or '').split())[:300],
+            **({'patch': {**clock, **{k: patch[k] for k in ('title', 'goal', 'done_when') if patch.get(k)}}} if said else {})}, ''
 
 
-def when_words(cfg: dict) -> str:
-    """The clock as the owner says it - "Mondays 08:00" - for the common crons; anything else as reports.schedule_words says it."""
+# A REPORT OR A DASHBOARD IS CHANGED THE SAME WAY (the owner, 2026-11-20): its question, its schedule, its name - one card showing each old ->
+# new, saved on his Approve by the one save its editor uses (save). Its question is `ai_prompt` (`prompt` read as it)
+SETUP_KEYS = {'ai_prompt': 'Question', 'prompt': 'Question', 'title': 'Name', 'query': 'Query'}
+def setup_change(src, cfg: dict, p: dict) -> tuple:
+    from .reports import schedule_error
+    # ...its question where it keeps it: an AI report's own `prompt`, else the AI pass over its data (`ai_prompt`)
+    q = 'prompt' if cfg.get('type') == 'agent' or ('prompt' in cfg and 'ai_prompt' not in cfg) else 'ai_prompt'
+    asked = str(p.get('prompt') or p.get('ai_prompt') or '').strip()
+    want = {**({q: asked} if asked else {}), **{k: p[k] for k in (*CLOCK, 'title', 'query') if str(p.get(k) or '').strip()}}
+    clock = {k: want.get(k) for k in CLOCK} if set(want) & set(CLOCK) else {}
+    if clock and (why := schedule_error(clock)): return {}, f'that schedule does not hold: {why}'
+    patch = {**{k: v for k, v in want.items() if k in SETUP_KEYS and v != cfg.get(k)}, **clock}
+    said = [f"{SETUP_KEYS[k]}: {cfg.get(k) or '(none)'} -> {v}" for k, v in patch.items() if k in SETUP_KEYS]
+    if clock and runs_words({**cfg, **clock}) != runs_words(cfg): said.insert(0, f"Runs: {runs_words(cfg)} -> {runs_words({**cfg, **clock})}")
+    if not said: return {}, 'that is the setup as it already is - give its new question (prompt), schedule (daily_at, cron, every_minutes) or title'
+    kind = 'dashboard' if cfg.get('type') == 'dashboard' else 'report'
+    return {'action': 'change_setup', 'source_id': src['SourceId'], 'kind': kind, 'title': cfg.get('title') or src.get('Address') or '',
+            'patch': patch, 'was': {k: cfg.get(k) for k in patch}, 'changes': '\n'.join(said), 'why': ' '.join(str(p.get('why') or '').split())[:300]}, ''
+
+
+def named_setup(store, name):
+    "The routine, report or dashboard `name` names - its number, else its title (case aside) - or None."
+    n = str(name or '').strip()
+    rows = [s for s in store.list_sources(active_only=False) if is_workflow(s) or cfg_of(s).get('title')]
+    if n.isdigit(): return next((s for s in rows if int(s['SourceId']) == int(n)), None)
+    return next((s for s in rows if str(cfg_of(s).get('title') or s.get('Address') or '').strip().lower() == n.lower()), None)
+
+
+def runs_words(cfg: dict) -> str:
     from .reports import schedule_words
-    if cfg.get('daily_at') and not cfg.get('cron') and not cfg.get('every_minutes'): return f"daily {cfg['daily_at']}"
-    m, h, dom, mon, dow = (str(cfg.get('cron') or '').split() + [''] * 5)[:5]
-    if m.isdigit() and h.isdigit() and mon == '*':
-        at = f'{int(h):02d}:{int(m):02d}'
-        if dom == '*' and dow in _DAYS: return f'{_DAYS[dow]} {at}'
-        if dom.isdigit() and dow == '*': return f'day {dom} of each month, {at}'
-    return schedule_words(cfg)
+    return schedule_words(cfg) if any(cfg.get(k) for k in CLOCK) else 'when you run it'
 
 
 def of_task(store, task) -> dict | None:
     """What the task card says about a workflow run: which workflow, and what started it (TaskPage's header and Came from)."""
     from . import flow
+    from .reports import schedule_words
     if (task or {}).get('Source') != 'workflow': return None
     src, trig = source_of(store, task), trigger_of(task)
     cfg = cfg_of(src) if src else {}
@@ -331,7 +434,7 @@ def of_task(store, task) -> dict | None:
     by_code = flow.is_flow(cfg) and not any(s.get('kind') == 'agent' for s in flow.steps_of(cfg))
     title = cfg.get('title') or (src or {}).get('Address') or str(task.get('Title') or '').rsplit(' - ', 1)[0]
     run = store.report_run_of_task(task['TaskId']) if task.get('TaskId') else None     # its steps, when it ran as steps (flow.execute)
-    return {'source_id': (src or {}).get('SourceId'), 'title': title, 'trigger': trig, 'schedule': when_words(cfg) if src else '',
+    return {'source_id': (src or {}).get('SourceId'), 'title': title, 'trigger': trig, 'schedule': schedule_words(cfg) if src else '',
             'started_by': STARTED_BY.get(trig, ''), 'runs_on': brain(store, cfg, task)['said'] if src and not by_code else '',
             **({'by_code': True} if by_code else {}),
             **({'steps': run['steps'], 'run_id': run['runId'], 'failed': run['failed'], 'summary': run.get('summary') or '',
@@ -399,7 +502,7 @@ def run(store, src, actor: str = 'schedule', trigger: str = 'schedule', context:
 
 
 def _run(store, src, actor, trigger, context, mail) -> dict:
-    from . import ingest, browserview, flow
+    from . import chatlog, ingest, browserview, flow
     from .agents import CODING_KINDS
     defn, steps = definition(store, src), flow.is_flow(cfg_of(src))
     busy = running(store, defn['source_id'])
@@ -440,5 +543,6 @@ def _run(store, src, actor, trigger, context, mail) -> dict:
             else: ingest._auto_general(store, tid, text)
         finally:
             with _LOCK: _STARTING.discard(tid)
+            if steps: chatlog.ran(store, tid)           # ...the run's turn is over once the run lets go of its task
     out = {'task_id': tid, 'ref': task_ref(tid), 'kind': kind, 'title': defn['title'], 'trigger': trigger, 'steps': steps}
     return {**out, 'start': start}

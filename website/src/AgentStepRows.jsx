@@ -41,6 +41,11 @@ const Mark = ({ step }) => { const I = iconOf(step); return I ? <I aria-hidden c
 // ...and one put to the owner that nobody allowed (`refused`: his no, no answer in time) was never run - never its "Deleted …" alone, as done
 const STATUS_WORD = { running: "working", recovered: "retried - worked", held: "waits for your yes", refused: "not run", none: "found none", error: "failed" };
 import { whyFailed } from "./stepWhy.js";
+// ...a command shown as itself (agentSteps `code`) sits in a code span inside its words: "Ran `git log --oneline -10`"
+const Label = ({ step }) => {
+  const t = stepLabel(step), at = step.code ? t.indexOf(step.code) : -1;
+  return at < 0 ? <span>{t}</span> : <span>{t.slice(0, at)}<code className="tq-aui-step-code">{step.code}</code>{t.slice(at + step.code.length)}</span>;
+};
 export const StepRow = ({ step }) => {
   useLocale();
   const summary = step.summary_i18n ? translateDescriptor(step.summary_i18n) : step.summary;
@@ -48,10 +53,12 @@ export const StepRow = ({ step }) => {
   if (step.kind === "note" || step.kind === "error") return <div className={`tq-aui-note tq-aui-note-${step.kind}`}>{summary}</div>;
   // ...and the one at work now says what it is doing, with a quiet spinner where its word was
   // ...one still at work while later ones finished runs alongside them, and says so (agentSteps `alongside`)
-  const head = <><Mark step={step} /><span>{step.status === "running" ? t(stepLabel(step)) : summary}</span>
-    {step.status === "running" ? <>{step.alongside && <em data-tq-step-alongside="">{t("still working in parallel")}</em>}
-      <CircularProgress size={10} thickness={5} className="tq-aui-step-spin" aria-label={t("working")} /></>
-      : step.status !== "done" && <em>{t(STATUS_WORD[step.status] || "failed")}</em>}</>;
+  const head = <><Mark step={step} /><Label step={step} />
+    {!!step.outcome && <span className="tq-aui-step-outcome" data-tq-step-outcome=""> - {step.outcome}</span>}
+    {step.times > 1 && <span className="tq-aui-step-outcome" data-tq-step-times=""> ({step.times} times)</span>}
+    {step.status === "running" ? <>{step.alongside && <em data-tq-step-alongside="">still working in parallel</em>}
+      <CircularProgress size={10} thickness={5} className="tq-aui-step-spin" aria-label="working" /></>
+      : step.status !== "done" && <em>{STATUS_WORD[step.status] || "failed"}</em>}</>;
   const cls = `tq-aui-step tq-aui-step-${step.kind} tq-aui-tool-${step.status === "done" ? "complete" : step.status}`;
   // ...a step that FAILED opens on why, in one plain line, and only then the tool's raw output, folded (the owner, 2026-11-05: "i clicked on it it
   // made no sense" - a stack of tool text with no reason in front of it)
@@ -61,7 +68,7 @@ export const StepRow = ({ step }) => {
     <div className="tq-aui-helper-steps"><AgentSteps data={{ steps: step.kids }} /></div></details>;
   return step.detail
     ? <details className={cls}><summary>{head}</summary>
-      {failed && <div className="tq-aui-step-why" data-tq-step-why="">{whyFailed(step.detail)}{step.status === "recovered" ? " It tried again another way, and that worked." : ""}</div>}
+      {failed && <div className="tq-aui-step-why" data-tq-step-why="">{step.why || whyFailed(step.detail, step.own)}{step.status === "recovered" ? " It tried again another way, and that worked." : ""}</div>}
       {failed ? <details className="tq-aui-step-raw"><summary>Raw output</summary><pre>{step.detail}</pre></details> : <pre>{step.detail}</pre>}</details>
     : <div className={cls}><div className="tq-aui-step-line">{head}</div></div>;
 };

@@ -2,7 +2,7 @@
 // the rail ran localDay over every pile row on every key and poll, seconds on a large home. dates.js keeps them; this holds it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { setLocale } from "../src/i18n.js";
+
 
 const Real = Intl.DateTimeFormat;
 let built = 0;
@@ -53,7 +53,6 @@ const old = (TZ) => {
 };
 const N = +(process.env.DATES_N || 300);   // two years of stamps; the proof run sets 20,000
 test("asUtc, fmtTime12, fmtDateTime and localDay are unchanged in every zone, DST edges and bad stamps included", () => {
-  setLocale("en");
   const ss = ["", null, "garbage", "2026-03-08 02:30:00", "2026-11-01 01:30:00", "2026-10-05 02:15:00", "2026-04-05 02:45:00", "2026-03-29 01:30:00",
     ...Array.from({ length: N }, (_, i) => new Date(Date.UTC(2025, 0, 1) + (i * Math.floor(1051200 / N) + i % 60) * 60000).toISOString().slice(0, 19).replace("T", i % 2 ? " " : "T"))];
   try {
@@ -66,4 +65,3 @@ test("asUtc, fmtTime12, fmtDateTime and localDay are unchanged in every zone, DS
     }
   } finally { setTz(""); }
 });
-

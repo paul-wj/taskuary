@@ -1,40 +1,22 @@
+import { useEffect, useState } from "react";
+import api from "./api";
 import { READ_LABELS } from "./apiReads.js";
 // WHAT A REPORT READS AND WHEN IT RUNS, in words (ReportsView's list and the report on the table, ItemSections) - kept apart so the Assistant's card
 // can say it without loading the whole Reports tab
-// A cron line, said in words when it is one of the shapes people actually write; the raw
-// expression stays for anything cleverer, because a wrong paraphrase is worse than none.
-import { t } from "./i18n.js";
-
-const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-export const cronText = (expr) => {
-  const f = String(expr || "").trim().split(/\s+/);
-  if (f.length !== 5) return t("cron {expr}", { expr });
-  const [mi, h, dom, mon, dow] = f;
-  const hhmm = /^\d+$/.test(mi) && /^\d+$/.test(h) ? `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}` : null;
-  const every = (x, unit) => { const m = /^\*\/(\d+)$/.exec(x); return m ? t(unit === "m" ? "every {count}m" : "every {count}h", { count: m[1] }) : null; };
-  if (h === "*" && dom === "*" && mon === "*" && dow === "*") return every(mi, "m") || (mi === "*" ? t("every minute") : t("cron {expr}", { expr }));
-  if (/^\d+$/.test(mi) && /^\d+(,\d+)+$/.test(h) && dom === "*" && mon === "*" && dow === "*") {
-    const at = [...new Set(h.split(",").map(Number))].sort((a, b) => a - b).map((x) => `${x}:${String(mi).padStart(2, "0")}`);
-    if (at.length > 1) return t(at.length === 2 ? "twice a day: {times} and {last}" : "{count} times a day: {times} and {last}", { count: at.length, times: at.slice(0, -1).join(", "), last: at.at(-1) });
-  }
-  if (mi !== "*" && dom === "*" && mon === "*" && dow === "*") return every(h, "h") ? t("{interval} at :{minute}", { interval: every(h, "h"), minute: String(mi).padStart(2, "0") }) : hhmm ? t("daily {time}", { time: hhmm }) : t("cron {expr}", { expr });
-  if (hhmm && dom === "*" && mon === "*") {
-    if (dow === "1-5") return t("weekdays {time}", { time: hhmm });
-    if (dow === "0,6" || dow === "6,0") return t("weekends {time}", { time: hhmm });
-    const days = dow.split(",").map((d) => DOW[Number(d) % 7]).filter(Boolean);
-    if (days.length && days.length === dow.split(",").length) return t("{days} {time}", { days: days.map((d) => t(d)).join(", "), time: hhmm });
-  }
-  if (hhmm && mon === "*" && dow === "*" && /^\d+$/.test(dom)) return t("the {day}{suffix} of the month {time}", { day: dom, suffix: ["th", "st", "nd", "rd"][(dom % 10 > 3 || [11, 12, 13].includes(dom % 100)) ? 0 : dom % 10], time: hhmm });
-  return t("cron {expr}", { expr });
-};
-
-// "on app startup" is a lie next to once_per_day/once_per_week - it fires on the FIRST launch of the
-// day (or week) and drops the rest. Saying "every" is what made one evening launch look like a restart.
-export const startupText = (c) => c.once_per_day ? t("on app startup (at most once a day)")
-  : c.once_per_week ? t("on app startup (at most once a week)") : t("on app startup");
-export const reportSchedule = (c) => [c.on_startup && startupText(c), c.cron && cronText(c.cron),
-  c.every_minutes && t("every {count} minutes", { count: c.every_minutes }), c.daily_at && t("daily at {time}", { time: c.daily_at })]
-  .filter(Boolean).join(" + ") || t("only when you press Run now");
+// WHEN IT RUNS is the SERVER's to say, once (reports.schedule_words): a saved row carries it as ScheduleWords, and a clock an editor holds
+// unsaved is asked of the same function (/api/schedule-words). The page had three sayings of its own - "daily 08:00" in the list, "every day
+// at 08:00" in the routine's editor, "daily at 08:00" on its task - for one routine.
+export function useScheduleWords(cfg) {
+  const key = JSON.stringify(cfg || {});
+  const [words, setWords] = useState("");
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(() => api.post("/api/schedule-words", { cfg: JSON.parse(key) })
+      .then(({ data }) => { if (live) setWords(data?.words || ""); }).catch(() => {}), 150);
+    return () => { live = false; clearTimeout(t); };
+  }, [key]);
+  return words;
+}
 
 export const TYPE_LABELS = {
   ...READ_LABELS,

@@ -2,15 +2,15 @@
 // "End of day checkup — the last 8 hours of Inbox and Sent email" whichever day it was, so yesterday's read like today's.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { t } from "../src/i18n.js";
+
 import { dayLabel, fmtDate } from "../src/dates.js";
 import { nameAndRest } from "../src/reportRows.js";
 
 const now = new Date("2026-10-22T18:00:00");
 
 test("the day reads Today, Yesterday, then the weekday and date - the chat thread's own day words", () => {
-  assert.equal(dayLabel("2026-10-22 09:15:00", now), t("Today"));
-  assert.equal(dayLabel("2026-10-21 17:00:00", now), t("Yesterday"));
+  assert.equal(dayLabel("2026-10-22 09:15:00", now), "Today");
+  assert.equal(dayLabel("2026-10-21 17:00:00", now), "Yesterday");
   const d = new Date("2026-10-19T17:00:00");
   assert.equal(dayLabel("2026-10-19 17:00:00", now), fmtDate(d, undefined, { weekday: "short", month: "short", day: "numeric" }));
   for (const x of [null, undefined, "", "not a date"]) assert.equal(dayLabel(x, now), "");
@@ -23,4 +23,3 @@ test("the heading splits after the report's name, whatever report it is", () => 
     ["Morning digest", " — yesterday and today so far, distilled"], "no sender match: the name is up to the last dash");
   assert.deepEqual(nameAndRest("Open invoices", ""), ["Open invoices", ""]);
 });
-

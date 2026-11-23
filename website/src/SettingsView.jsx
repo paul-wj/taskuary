@@ -6,6 +6,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { t, setLocale } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { sectionOr } from "./browseSection.js";
 import { refreshCapabilities, useCapabilities } from "./capabilities.js";
 import { nothingMatches } from "./searchHits.js";
 import { matches, placeHits } from "./settingsSearch.js";
@@ -98,6 +99,8 @@ function SignatureSetting({ value, save }) {
   // what the account signs with by itself while nothing is typed here - the one its sent mail plainly ends with (signatures.account)
   const [acct, setAcct] = useState({ accounts: [] });
   useEffect(() => { setText(value); }, [value]);
+  // ...SAVED AS IT IS TYPED, a moment after the last key (the walk, 2026-11-21: it saved only on leaving the box, and a page left from it kept nothing)
+  useEffect(() => { if (text === value) return undefined; const t = setTimeout(() => save(text.trim()), 800); return () => clearTimeout(t); }, [text]);  // eslint-disable-line react-hooks/exhaustive-deps
   // OFFERED ONCE (2026-10-28): with nothing saved, the signature the sent mail ends with is read and put to the owner to confirm -
   // never saved behind their back
   useEffect(() => {
@@ -144,7 +147,7 @@ function SignatureSetting({ value, save }) {
       {(boxes || []).map((b) => <MailboxSignature key={b.address} box={b} save={saveBox} />)}
       <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)", px: 1.5, py: 1, fontSize: 12.5, whiteSpace: "pre-line", color: INK }}>
         {t("Hi Erin,\n\nThanks - that's done.\n\n")}{text.trim() || acct.accounts[0]?.signature
-          || <span style={{ color: DIM }}>{t("(no signature - your sign-off in STYLE.md, else your name)")}</span>}
+          || <span style={{ color: DIM }}>{t("(no signature - the sign-off you taught it, else your name)")}</span>}
       </Box>
       {!text.trim() && !!acct.accounts.length && (
         <Typography data-tq-account-signature="" sx={{ fontSize: 12, color: DIM }}>
@@ -174,6 +177,7 @@ const jsonProblem = (v) => {
 };
 
 import schema from "../../taskuary/settings_schema.json";
+import MorningDigest from "./MorningDigest.jsx";
 // ONE VOCABULARY for the knobs, in taskuary/settings_schema.json - the assistant reads the same file
 // (settings_schema.py, appfacts.py), so a knob is called the same thing on this page and in the chat.
 const KNOB_META = schema.knobs;
@@ -407,7 +411,13 @@ const defaultNote = (s, m) => {
   const d = showValue(s.Default, m);
   if (!d) return "";
   const now = showValue(s.Value, m);
-  return now === d ? t("Default: {default} — unchanged.", { default: d }) : t("Default: {default}. Yours: {current}.", { default: d, current: now });
+  // ...said only where it was changed (the design walk, 2026-11-20: "Default: on - unchanged" under every row said nothing) - by what it
+  // says, not its spacing: a list of folders one a line read "Changed" beside the very default (the screens walk, 2026-11-22)
+  // ...and one nobody ever set stands at its default whatever it is stored as (the screens walk, 2026-11-22: code_folders, stored blank, read
+  // "Changed" under a box showing the default's own folders)
+  if (!s.UpdatedBy && (s.Value === "" || s.Value == null)) return "";
+  const same = (a, b) => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+  return same(now, d) ? "" : t("Changed - the default is {default}.", { default: d });
 };
 
 // ONLY A KNOB THE SCHEMA NAMES IS DRAWN (the 2026-10-19 UI walk): Configuration > Other listed twelve one-shot migration flags
@@ -737,7 +747,8 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
         onBlur={(e) => e.target.value !== s.Value && saveSetting(s.Name, e.target.value, e.target)} />
     );
     if (m.type === "switch" || ["0", "1"].includes(String(s.Value))) return (
-      <Switch checked={s.Value === "1"} title={m.hover ? t(m.hover) : undefined} onChange={() => saveSetting(s.Name, s.Value === "1" ? "0" : "1")} />
+      <Switch checked={s.Value === "1"} title={m.hover ? t(m.hover) : undefined} inputProps={{ "aria-label": t(m.label || s.Name.replaceAll("_", " ")) }}
+        onChange={() => saveSetting(s.Name, s.Value === "1" ? "0" : "1")} />
     );
     // A JSON KNOB IS CHECKED BEFORE IT IS SENT. A stray quote used to save, and the reader ignored the
     // whole value without a word - so every role quietly fell back to the default brain.
@@ -774,6 +785,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // ...and what a section lists UNDER its knobs: the share links still open sit below the switch that allows them
   const after = {
     Sharing: panel("panel:sharedlinks", <SharedLinks />),
+    Assistant: panel("panel:digest", <MorningDigest />),            // ...the digest it opens the main screen with: its time and on/off (2026-11-22)
     Replies: panel("panel:handsig", <HandSignature />),              // the signature forms are signed with sits beside the one under the email
     "Agent permissions": <>{panel("panel:trusted", <TrustedSenders />)}{panel("panel:signins", <SavedSignins />)}{panel("panel:sendfilter", <SendFilter />)}</>,
   };
@@ -885,7 +897,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
               <Typography variant="caption" sx={{ color: FAINT, whiteSpace: "nowrap" }}
                 title={t("When two rules with the same action match, the lower number wins")}>{t("priority {number}", { number: p.SortOrder })}</Typography>
               <Button size="small" onClick={() => setDraft({ ...p, Active: !!p.Active })}>{t("Edit")}</Button>
-              <Switch checked={!!p.Active} onChange={() => togglePolicy(p)} />
+              <Switch checked={!!p.Active} inputProps={{ "aria-label": t("Rule {name} on", { name: p.Name || "" }) }} onChange={() => togglePolicy(p)} />
               <IconButton size="small" title={t("Remove this rule")} aria-label={t("Remove this rule")} onClick={() => deletePolicy(p)}><DeleteOutlineIcon sx={{ fontSize: 16 }} /></IconButton>
             </Box>
           ))}
@@ -1218,7 +1230,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     // log only in Developer mode
     const SHELF = { docs: ["g:documents", "g:how"], profiles: ["g:profiles"] };
     const mine = about ? ["you", "docs", "memory"] : ["config", "profiles", "policies", PHONE_PAGE, ...(devMode ? ["audit"] : []), "updates"];
-    const section = mine.includes(browseState.section) ? browseState.section : null;
+    const asked = mine.includes(browseState.section) ? browseState.section : null, section = sectionOr(asked, mine);
     // ...and SAYS WHY (the product audit, 2026-11-08: #settings=audit with Developer mode off drew the list with no pill and no word)
     const hidden = !about && browseState.section === "audit" && !section ? "The Activity log shows only in Developer mode." : "";
     const page = SHELF[section] ? "docs" : section === "you" ? "about" : section;
@@ -1258,14 +1270,15 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
       : section === "config" ? cfgShown.map((g) => ({ key: g, title: t(g), sub: t("{count} settings", { count: knobsIn(g) }) }))
       : SHELF[section] ? docCards.filter((c) => c.key !== "d:learned")
       : section === "memory" ? [{ key: "memory", node: <MemoryLines /> }]
-      : section ? [{ key: section, title: t(PAGES[page].title), sub: t(PAGES[page].desc) }] : [];
-    const open = gone || !section ? null : browseState.open;
+      : section ? [{ key: section, title: PAGES[page].title, sub: PAGES[page].desc }] : [];
+    // ...a first section that IS its one page (About you's You) opens as that page, as its chip would
+    const open = gone || !section ? null : browseState.open ?? (!asked && onePage(section, SHELF) ? section : null);
     const label = (k) => (k === "you" ? "You" : k === "profiles" ? "Profiles" : k === "memory" ? "Memory" : PAGES[k].title);
     const where = about ? "About you" : "Settings";
     return browse({
-      title: about ? t("About you") : t("Settings"), wide: about && section === "memory", noBack: onePage(section, SHELF),
-      summary: about ? t("how you sound, how you do your job, and what Taskuary has learned · pick a section") : t("how Taskuary works for you · pick a section"),
-      sections: mine.map((k) => ({ key: k, label: t(label(k)) })),
+      title: where, wide: about && section === "memory", onePage: onePage(section, SHELF),
+      summary: about ? "how you sound, how you do your job, and what Taskuary has learned" : "how Taskuary works for you",
+      sections: mine.map((k) => ({ key: k, label: label(k) })),
       section: needle ? "" : section,
       // a section that is one page opens from its chip, with no card to press first (settingsMap.onePage)
       onSection: (key) => { setQ(""); onBrowseState?.({ section: key, open: onePage(key, SHELF) ? key : null }); },
@@ -1292,11 +1305,10 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
           <Box key={catN} sx={{ display: "none" }}><DocsView onCatalog={onCatalog} catalogOnly /></Box></> : null}</>,
       detail: open && section !== "memory" ? <SettingsPages only={{ page, group: section === "config" ? open : null, knob: browseState.knob || "", at: browseState.at }} q="" setQ={() => {}} onNavigate={onNavigate}
         onJump={() => {}} onSections={setCfgSecs} docSel={docSel} setDocSel={setDocSel} onCatalog={onCatalog} /> : null,
-      onBack: () => (onePage(section, SHELF) ? onBrowseState?.({ section: null, open: null }) : onBrowseState?.({ ...browseState, open: null })),
-      openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" ({where} - {section})', { document: docCards.find((c) => c.key === open)?.title || (open === "d:learned" ? "LEARNED.md" : t("Docs")), where: t(where), section: t(section === "docs" ? "Docs" : "Profiles") })
+      openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" (Settings - {section})', { document: docCards.find((c) => c.key === open)?.title || (open === "d:learned" ? "LEARNED.md" : "Docs"), section: t(section === "docs" ? "Docs" : "Profiles") })
         : section === "you" ? t("who you are - your name, your identity on each channel, what the agents are told (About you)")
-        : section === PHONE_PAGE ? t("Phone & chats (Settings) - your Taskuary chat on WhatsApp or Telegram{dev}", { dev: devMode ? ", and the chats bound to coding agents" : "" })
-        : t('the settings group "{group}" (Settings)', { group: t(section === "config" ? open : PAGES[section]?.title) }),
+        : section === PHONE_PAGE ? t("Phone & chats (Settings) - your Taskuary chat on WhatsApp or Telegram{dev}", { dev: devMode ? t(", and the chats bound to coding agents") : "" })
+        : t('the settings group "{group}" (Settings)', { group: section === "config" ? open : PAGES[section]?.title }),
       empty: null,
       note: gone ? t("“{group}” is not a settings group any more - here are the ones there are.", { group: browseState.open }) : "",
     });

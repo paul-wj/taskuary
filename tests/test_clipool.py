@@ -60,8 +60,8 @@ def test_a_process_that_died_between_turns_is_resumed_by_its_id(cli):
 
 def test_a_process_that_dies_mid_turn_is_reopened_once_and_answers(cli):
     a = ask(cli, 'chat:1', 'hello')
-    with pytest.raises(clipool.Ended):
-        ask(cli, 'chat:9', 'die')                                   # a first turn that dies is simply an error
+    with pytest.raises(clipool.PartWay):
+        ask(cli, 'chat:9', 'die')                                   # a first turn that dies is simply an error - said as one that ended part-way
     b = ask(cli, 'chat:1', 'fine', resume=a['sid'])
     assert b['said'] == 'fine'
 
@@ -192,3 +192,47 @@ def test_words_the_cli_queued_as_their_own_turn_are_read_to_the_end(cli):
     t.join(20)
     assert got['said'].split('\n\n')[0] == 'queued' and got['said'].endswith(':and the refunds')
     assert ask(cli, 'chat:1', 'next', resume=got['sid'])['said'] == 'next'
+
+
+def test_a_general_agent_over_acp_hears_his_line_at_its_next_step():
+    """Design round 3, 2026-11-18 (Codex as the general agent): "sign up yourself" sat unheard 13 minutes behind a 15-minute turn - a kept ACP
+    conversation is not a claude process, so nothing could steer it. An ACP agent that steers (`_session/steering`) takes his words into the
+    turn at work; one that does not keeps them for the next turn, and its road says so (takes_words)."""
+    class Client:
+        def __init__(self, steers): self.steers, self.got = steers, []
+        def can_steer(self): return self.steers
+        def steer(self, text): self.got.append(text); return 'injected'
+    class Conv:
+        def __init__(self, steers): self.client, self.lock = Client(steers), threading.Lock()
+        def alive(self): return True
+        def close(self): pass
+    for key, steers in (('general:71', True), ('general:72', False)):
+        conv = Conv(steers); clipool._POOL[key] = conv
+        try:
+            assert not clipool.steerable(key), 'at rest a line is a turn of its own'
+            with conv.lock:
+                assert clipool.steerable(key) is steers and clipool.takes_words(key) is steers
+                assert clipool.steer(key, lambda: 'sign up yourself') is steers
+            assert conv.client.got == (['sign up yourself'] if steers else [])
+        finally: clipool._POOL.pop(key, None)
+
+
+def test_words_the_agent_did_not_take_stay_his_waiting_lines():
+    """The agent audit, 2026-11-22: a line sent in the second the turn ended was taken and heard first, the adapter answered "promptRequired",
+    steer said True anyway - and nothing ever answered it. What did not go in is not taken: False, and the next turn takes it."""
+    class Client:
+        def __init__(self, answer): self.answer = answer
+        def can_steer(self): return True
+        def steer(self, text): return self.answer
+    class Conv:
+        def __init__(self, answer): self.client, self.lock = Client(answer), threading.Lock()
+        def alive(self): return True
+        def close(self): pass
+    for answer, went in (('promptRequired', False), ('injected', True)):
+        took = []
+        def lines(take=True): took.append(take); return 'use the March file'
+        clipool._POOL['general:81'] = conv = Conv(answer)
+        try:
+            with conv.lock: assert clipool.steer('general:81', lines) is went
+            assert took == ([False, True] if went else [False]), 'taken only once it went in'
+        finally: clipool._POOL.pop('general:81', None)

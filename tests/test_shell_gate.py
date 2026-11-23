@@ -142,7 +142,7 @@ class Holding(unittest.TestCase):
         with mock.patch.object(sg.os.path, 'isdir', self.held_dir), run:
             out = verdicts.decide(self.s, rv, 'approve')
         self.assertFalse(out['ok']); self.assertIn('non-fast-forward', out['send_error'])
-        self.assertTrue(out['send_error'].startswith('The held step failed: '), out['send_error'])
+        self.assertTrue(out['send_error'].startswith("Push the agent's commits out of this computer failed: "), out['send_error'])     # what did not happen, in his words
         with mock.patch.object(sg.os.path, 'isdir', return_value=False):
             self.assertRaisesRegex(RuntimeError, 'folder it was held in is gone', sg.perform, self.s, self.tid, json.loads(rv['DraftText']))
 
@@ -167,10 +167,11 @@ class Holding(unittest.TestCase):
         hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': '<task-notification>done</task-notification>'})
         self.assertEqual([r['ReviewId'] for r in self.pending()], [rv['ReviewId']], 'a wake leaves it lit')
         told = []
-        with mock.patch('taskuary.general.tell', lambda st, tid, note, actor='owner': told.append(note) or 'told'):
+        with mock.patch('taskuary.general.to_agent', lambda st, tid, note, actor='owner': told.append(note) or 'told'):
             hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'no, leave the checkout - is it ready to push?'})
         self.assertEqual(self.pending(), []); self.assertTrue(proposals.passed(self.s.get_review(rv['ReviewId'])))
-        self.assertTrue(told and proposals.PASSED_TOLD in told[0] and f"rv{rv['ReviewId']}" in told[0], told)
+        from taskuary import cardqueue
+        self.assertTrue(told and cardqueue.SCREEN_HEAD in told[0] and f"rv{rv['ReviewId']}" in told[0].split('Greyed, will not go')[1], told)
 
     def test_the_agents_own_words_for_the_call_ride_on_the_card(self):
         sg.check(self.s, self.tid, 'run1', 'git push origin fix-export', 'Bash', r'C:\work\ledger', about='  ship the export fix  ')
@@ -430,6 +431,37 @@ class ReadingOutside(unittest.TestCase):
         self.assertEqual(d['hookSpecificOutput']['permissionDecision'], 'deny')
         self.assertEqual(hooks.command_gate(self.s, self.tid, 'run1', 'Get-Content notes.md', 'PowerShell', self.work), {})
 
+    def test_codexs_powershell_call_is_read_run_and_approved_as_the_script_it_is(self):
+        """The HIPAA walk, 2026-11-21: Codex reports each call as its argv joined by POSIX quoting, the script's quoting switching mid-word.
+        Cut at the `;` inside its quotes, `$outDir = "<its outputs folder>"; New-Item $outDir` was held as "a path it builds from a variable"
+        - the task's own folder - and Approve unquoted it by hand: PowerShell's parser failed on it. A PowerShell array of folders read as
+        `", in Desktop`."""
+        from taskuary import acpgate, outputs, readgate as rg
+        out = str(outputs.folder(self.tid))
+        script = f'$outDir = "{out}"; New-Item -ItemType Directory -Force -Path $outDir | Out-Null; py make_deck.py $outDir'
+        ps = r'C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe'
+        head, tail = out.split('\\', 1) if '\\' in out else (out, '')
+        shown = f'"{ps}" -Command \'$outDir = "{head}\'"\\{tail}"\'"; New-Item -ItemType Directory -Force -Path $outDir | Out-Null; py make_deck.py $outDir\''
+        if not tail: shown = f'"{ps}" -Command \'{script}\''
+        tc = {'toolCallId': 'c', 'kind': 'execute', 'title': 'Run command', 'rawInput': {'command': shown, 'cwd': self.work}}
+        t = acpgate.tool_of(tc)
+        self.assertEqual((t['command'], t['shell'], t['argv'][1:]), (script, 'PowerShell', ['-Command', script]))
+        self.assertNotIn(None, rg.command_paths(shown, self.work, rg.env_for(self.s, self.tid, self.work)))
+        self.assertEqual(acpgate.decide(tc, self.ctx)[0], acpgate.ALLOWED, "the task's own outputs folder needs no press")
+        # ...and a script it writes through a here-string is that file's data, never paths read ("$60 / day" was held as one, the fix2 walk)
+        here = f"$outDir = \"{out}\"\n@'\nlimits = ['meals $60 / day', 'hotels $220 / night']\nopen('/etc/x')\n'@ | Set-Content -Path make_deck.py\npy make_deck.py $outDir"
+        self.assertNotIn(None, rg.command_paths(here, self.work, rg.env_for(self.s, self.tid, self.work)))
+        self.assertEqual(sg.acts("@'\ngit push origin main\n'@ | Set-Content x.txt", self.work), [])
+        self.assertTrue(sg.acts("@'\ngit push origin main\n'@ | iex", self.work), 'fed to a shell, it is a command')
+        # ...and a held one is approved as exactly that argv
+        far = f'"{ps}" -Command \'Get-ChildItem -Path @("$env:USERPROFILE\\Desktop", "$env:USERPROFILE\\Documents") -Filter notes.txt\''
+        got = acpgate.decide({**tc, 'rawInput': {'command': far, 'cwd': self.work}}, self.ctx)
+        self.assertEqual(got[0], acpgate.HELD)
+        [rv] = self.pending(); p = json.loads(rv['DraftText'])
+        self.assertEqual(p['argv'][1:], ['-Command', 'Get-ChildItem -Path @("$env:USERPROFILE\\Desktop", "$env:USERPROFILE\\Documents") -Filter notes.txt'])
+        self.assertEqual(sg.replay(p)[1:], p['argv'][1:])
+        self.assertNotIn('"', p['what']); self.assertIn('Desktop', p['what'])
+
     def test_a_program_installed_for_this_user_alone_is_nobodys_files(self):
         """The real-CLI walk, 2026-11-16: an agent looking for its python (`ls .../AppData/Local/Programs/Python`) was held as a card asking the
         owner to let it read "Python". A per-user install (%LOCALAPPDATA%\\Programs) is a program's folder, as Program Files is."""
@@ -454,7 +486,7 @@ class ReadingOutside(unittest.TestCase):
         """The owner, 2026-11-17, on the same task after the fix: the old card still stood, "Read craft-floor.md in reference · Dismissed ·
         nothing was run" - "it told you to get rid of it". A held read the gate would let through now was never his to answer: it is not
         drawn, pending or answered. A read it still holds stays, and so does a card whose command holds something else."""
-        from taskuary import conversation, proposals
+        from taskuary import cardqueue, conversation, proposals, taskstate
         claude = os.path.join(self.docs, 'claude-home'); ref = os.path.join(claude, 'skills', 'impeccable', 'reference'); os.makedirs(ref, exist_ok=True)
         hist = os.path.join(self.docs, 'claude-home-other')
         def held(folder, cmd='', status='rejected'):
@@ -465,9 +497,16 @@ class ReadingOutside(unittest.TestCase):
             return rid
         with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': claude}):
             gone, gone2, kept, both = held(ref), held(ref, status='pending'), held(hist), held(ref, cmd='git push origin main')
+            self.s._exec("UPDATE review SET DecidedBy='owner' WHERE ReviewId=?", (gone,))
+            allowed = held(ref, status='approved')
             cards = [c['review'] for x in conversation.items(self.s, self.tid)['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])]
+            queue = cardqueue.state(self.s, self.tid)
+            self.assertNotIn(gone2, queue['live'] + queue['held'])
+            self.assertNotIn(gone2, [r['ReviewId'] for r in self.s.waiting_reviews()])
+            self.assertIsNone(self.s.waiting_on_owner(self.tid))
+            self.assertFalse(taskstate.waits_press(self.s, {'TaskId': self.tid, 'ReviewStatus': 'pending', 'ReviewKind': 'action'}, row=True))
         self.assertNotIn(gone, cards); self.assertNotIn(gone2, cards)
-        self.assertIn(kept, cards); self.assertIn(both, cards)
+        self.assertIn(kept, cards); self.assertIn(both, cards); self.assertIn(allowed, cards)
 
     def test_what_its_own_cli_downloaded_is_its_work_and_the_rest_of_that_home_still_asks(self):
         """The owner, 2026-11-16: a research turn's read-back of the PDF its own WebFetch had saved was held as a card under its finished
@@ -509,7 +548,8 @@ class ReadingOutside(unittest.TestCase):
         r = self.s.get_review(rv['ReviewId'])
         self.assertTrue(proposals.passed(r), 'nothing presses it')
         self.assertEqual(proposals.passed_why(self.s, r), 'Not needed - the agent finished without it')
-        self.assertEqual(proposals.passed_since(self.s, self.tid, ''), [], 'never told back as a card he moved past')
+        from taskuary import cardqueue
+        self.assertIn('(Not needed - the agent finished without it)', cardqueue.screen(self.s, self.tid), 'told as what it is, never as a card he moved past')
 
     def test_approve_lets_the_task_read_that_folder_from_then_on_and_tells_the_agent(self):
         from taskuary import acpgate
@@ -592,3 +632,81 @@ class TwoGatesAtOnce(unittest.TestCase):
             for t in ts: t.start()
             for t in ts: t.join(10)
         self.assertEqual(len(s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))), 1)
+
+
+# ── AN APPROVE RUNS THE CALL AS THE AGENT'S OWN TOOL WOULD HAVE (the owner's live task, 2026-11-19): Codex reported its push as the shell it
+# started on a line - `"<powershell.exe>" -Command '...'` - and Approve wrapped that line in PowerShell again, which read the quoted program and
+# its -Command as one expression: every press "failed: At line:1 char:66"
+def test_a_held_line_replays_in_the_shell_it_was_written_for():
+    ps = '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'git push origin HEAD:refs/heads/deploy\''
+    a = sg.replay({'command': ps, 'shell': 'PowerShell'})
+    assert sg._name(a[0]) in ('powershell', 'pwsh') and a[1:] == ['-Command', 'git push origin HEAD:refs/heads/deploy']
+    bash = 'cd ../ledger && git push origin "$(git rev-parse --abbrev-ref HEAD)"'
+    with mock.patch.object(sg, 'git_bash', return_value='/usr/bin/bash'):
+        assert sg.replay({'command': bash, 'shell': 'Bash'}) == ['/usr/bin/bash', '-c', bash]
+        assert sg.replay({'command': "bash -lc 'git push origin main'", 'shell': 'PowerShell'}) == ['/usr/bin/bash', '-lc', 'git push origin main']
+    own = 'Get-ChildItem | Remove-Item -Recurse'
+    assert sg.replay({'command': own, 'shell': 'PowerShell'})[-2:] == ['-Command', own]
+    # ...and the argv a brain gave as a list (Codex) is that argv, the program found where it was named
+    with mock.patch.object(sg, '_shell_exe', return_value='C:/pwsh.exe'):
+        assert sg.replay({'command': 'x', 'argv': ['powershell.exe', '-Command', 'git push']}) == ['C:/pwsh.exe', '-Command', 'git push']
+
+
+def test_a_powershell_failure_is_said_by_its_reason_never_its_position():
+    said = ("At line:1 char:66\n+ \"C:\\WINDOWS\\powershell.exe\" -Command 'git push'\n+                ~~~~~~~~\n"
+            "Unexpected token '-Command' in expression or statement.\n    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException\n")
+    assert sg.failed(said, 1, 'push 3 commits to northwind/ledger deploy') == \
+        "Push 3 commits to northwind/ledger deploy failed: Unexpected token '-Command' in expression or statement."
+
+
+# A READ-ONLY LOOK AT TASKUARY'S OWN API IS NO FILE READ (the roads audit, 2026-11-19): `curl "$TASKUARY_URL/api/..."` was held as "a path it
+# builds from a variable" - a card each time the agent looked
+def test_a_curl_of_taskuarys_own_api_reads_no_file():
+    from taskuary import readgate
+    assert readgate.command_paths('curl -s "$TASKUARY_URL/api/tasks/3"', 'C:/work/ledger') == []
+    assert readgate.command_paths('curl -s ${TASKUARY_URL}/api/tasks/3 | python -c "import json,sys"', 'C:/work/ledger') == []
+    assert readgate.command_paths('cat "$SECRETS_DIR/x"', 'C:/work/ledger') == [None]                # a variable it cannot read is still held
+
+
+def test_a_step_piped_into_a_tool_that_exits_zero_is_as_it_ended():
+    # the Claude walk, 2026-11-19: `git push ... | tail -3` exited 0 and the card read "Approved · it ran" over a refused push
+    s = MemoryStore(); tid = Factory(s).task('Ship the export fix')
+    said = "To https://github.com/northwind/ledger.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'https://github.com/northwind/ledger.git'"
+    with mock.patch.object(sg, '_tell'), mock.patch.object(sg.os.path, 'isdir', return_value=True):
+        try: sg.perform(s, tid, {'command': 'git push origin main | tail -3', 'shell': 'Bash', 'cwd': 'C:/work/ledger', 'what': 'push 1 commit to northwind/ledger main'},
+                        run=lambda argv, cwd: (0, said))
+        except RuntimeError as e: assert str(e).startswith('Push 1 commit to northwind/ledger main failed: error: failed to push some refs')
+        else: raise AssertionError('a refused push read as run')
+
+
+def test_a_folder_its_agent_wrote_in_is_its_own_to_read_back():
+    """The goal walk on Claude CLI, 2026-11-22: the agent drew a picture in a scratch folder of its own, and its read of the script it had just
+    written stood as an Approve card. A folder it wrote in is its own work."""
+    import os, tempfile
+    from taskuary import readgate
+    from taskuary.store import MemoryStore
+    s = MemoryStore(); tid = s.create_task({'Title': 'Draw the ledger scene', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    import shutil
+    d = os.path.join(os.getcwd(), 'tqwork-gate-test'); os.makedirs(d, exist_ok=True); f = os.path.join(d, 'gen.py'); open(f, 'w').close()
+    try:
+        readgate.WROTE.pop(tid, None)
+        assert readgate.judge(s, tid, [f])[0], 'a folder it never wrote in is held'     # ...outside temp, which a CLI may always read
+        readgate.wrote(tid, [f])
+        assert readgate.judge(s, tid, [f, os.path.join(d, 's.svg')]) == ([], '')
+    finally: shutil.rmtree(d, ignore_errors=True)
+
+
+def test_an_inline_scripts_lines_and_words_are_its_text_and_a_path_in_it_is_read_where_one_is_there():
+    """The HIPAA walk, 2026-11-22: a PDF a `python -c` script wrote to the task's own outputs was held for the owner as "a path it builds
+    from a variable" - each line of the script was cut as a command of its own, and the copper price in its words, "~\\$5.46", read as a
+    path. A script's lines are its text; a word in it is a path only where one is there, so a real file it opens is still read."""
+    import tempfile
+    from taskuary import readgate
+    out = tempfile.mkdtemp()
+    script = ('python -c "\nimport os\nout_dir = r\'' + out + '\'\npdf = os.path.join(out_dir, \'week.pdf\')\n'
+              'c.drawString(90, 45, \'Copper: ~\\$5.46 - \\$5.61 USD/lb\')\n"')
+    assert readgate.command_paths(script, '') == [out]                     # ...its own folder, and no price
+    key = os.path.join(out, 'id_test')
+    open(key, 'w').close()
+    assert readgate.command_paths('python -c "print(open(r\'' + key + '\').read())"', '') == [key]
+    assert readgate.command_paths('cat $NOT_SET_ANYWHERE_X/a.txt', '') == [None]

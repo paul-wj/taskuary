@@ -14,6 +14,7 @@ import hashlib, json, re, threading, time
 from pathlib import Path
 from loguru import logger
 from .kinds import SHOWN, shown as shown_agent   # who the owner sees at work: Taskuary, never the profile (kinds.json `shown_`)
+from . import say
 
 KINDS = ('working', 'turn_end', 'background', 'input_needed', 'approval_needed', 'stalled', 'answered', 'finished', 'failed', 'disconnected', 'stopped',
          'floor_denied', 'idled')
@@ -73,23 +74,34 @@ def _live(tid: int):
     return next((x for x in list(term.SESSIONS.values()) if getattr(x, 'task_id', None) == tid and getattr(x, 'alive', False)), None)
 
 
+def on_task(tid) -> bool:
+    """IS AN AGENT ON THIS TASK NOW - one answer for the rail's buttons, the phone's card, the Assistant and the task's page: a session open
+    on it (coding terminal or chat), or its start in flight (general.starting). A chat agent that idled out (general.idle_out) is not - its
+    session is gone until the next line brings it back - though its row's lane, its Assignee and its last event still name an agent: the
+    phone read the lane and said "working" over a task whose page read idle."""
+    try: tid = int(tid)
+    except (TypeError, ValueError): return False
+    from . import terminal
+    from .general import starting
+    try: return terminal.for_task(tid, details=False) is not None or starting(tid)
+    except Exception: return False
+
+
 LIVE_SESSION, OTHER_SESSION = 'the agent session on it is still open', 'another agent session on it is still open'
 
 def live_work(store, tid: int, but=None, skip: tuple = ()) -> list:
     """Everything still working or live on this task, each in its words - [] when nothing is. THE ONE CHECK every AUTOMATIC close asks
     (the owner, 2026-11-01: "If anything still working never close the task automatically" - a Send closed a task whose agent sat at
     its prompt waiting on him). An agent waiting on the owner is live: its session is open. `but` is the session asking (an agent's own
-    --done), never counted against itself; `skip` names work the caller IS ('routine', 'quick'). The owner's own closes - Mark done, Send
+    --done), never counted against itself; `skip` names work the caller IS ('routine'). The owner's own closes - Mark done, Send
     and close - never ask this."""
-    from . import quickwork, terminal as term, workflows, writeup
+    from . import terminal as term, workflows, writeup
     tid, out = int(tid), []
     if but is None: live = _live(tid)
     else: live = next((x for x in list(term.SESSIONS.values()) if getattr(x, 'task_id', None) == tid and getattr(x, 'alive', False) and str(x.sid) != str(but)), None)
     if live: out.append(OTHER_SESSION if but is not None else LIVE_SESSION)
     # ...a run row is a session's too: with `but` its own row is the asker's, so only a live pty speaks for another
     elif but is None and any(r.get('TaskId') == tid for r in store.running_runs()): out.append('an agent run on it is still going')
-    with quickwork._RUN_LOCK: quick = tid in quickwork.RUNNING
-    if quick and 'quick' not in skip: out.append('a quick answer is still being worked out on it')
     if writeup.running(tid) and not writeup.in_job(): out.append('its write-up is still being written')
     if workflows.at_work(tid) and 'routine' not in skip: out.append('its routine is still running')
     if store.get_dispatch(tid): out.append('an agent is queued to start on it')
@@ -158,7 +170,7 @@ def events(store, tid: int, sid: str = None) -> list:
 
 # A QUESTION NOBODY ASKED: a model's wording of the prose that ended a turn, which a build before 2026-11-10 recorded as a request and
 # the row then read "Agent asked you: ...". Nothing writes one now (the owner: nothing is asked on the rail); the rows a database
-# still holds are no request and no run (quickwork)
+# still holds are no request and no run
 READ_OFF_PROSE = 'judge'
 def open_requests(evs: list) -> list:
     """The requests still outstanding, oldest first.
@@ -177,10 +189,14 @@ def open_requests(evs: list) -> list:
     # AN ANSWER ANSWERS WHAT WAS ASKED BEFORE IT: a request named by what it asks for (`signin:<site>`) is asked again when the site signs the
     # session out or wants a code - and the first sign-in's answer closed every later one before it was drawn (the recorded walk, 2026-11-11:
     # "I'm still waiting on the sign-in, which you're doing on the browser page", with no page shown and nothing lit)
+    from .failures import cli_quota
     answered = {e['RequestId']: i for i, e in enumerate(evs) if e['Kind'] == 'answered'}
     spoke = max((i for i, e in enumerate(evs) if e['Kind'] == 'working' and e.get('Text') != WAKE), default=-1)
+    failed = next((i for i in range(len(evs) - 1, spoke, -1)
+                   if evs[i]['Kind'] == 'failed' and cli_quota(evs[i].get('Text'))), -1)
     return [e for i, e in enumerate(evs)
-            if i > spoke and e['Kind'] in REQUESTS and answered.get(e['RequestId'], -1) < i and e.get('Source') != READ_OFF_PROSE]
+            if i > max(spoke, failed) and e['Kind'] in REQUESTS and answered.get(e['RequestId'], -1) < i and e.get('Source') != READ_OFF_PROSE
+            and not (e['Kind'] == 'stalled' and e.get('Source') == 'hook' and str(e.get('Text') or '').strip().lower() == 'unknown')]
 
 
 def _public_request(e: dict) -> dict:
@@ -188,8 +204,23 @@ def _public_request(e: dict) -> dict:
     except ValueError: choices = []
     # `source` travels with it because it changes what an ANSWER is: a request read off a chooser is
     # answered by picking, not by typing the option's words back at it (see `answer`)
+    a = ask_of(e['RequestId'])
+    # ...A STEP THE AGENT NAMED IS ASKED BY ITS NAME (the owner's ruling, 2026-11-19: "PermitWatch asks a human check", never "sign in" because
+    # the page also has a password field): a sign-in ask whose words are the agent's step (signin.needs: "Your turn in the browser on ...")
+    # is `named` - the page says those words; the vault's road on that page runs all the same
+    if a.get('ask') == 'signin' and str(e.get('Text') or '').startswith(NAMED_STEP): a = {**a, 'named': True}
     return {'request_id': e['RequestId'], 'kind': e['Kind'], 'text': e['Text'], 'choices': choices,
-            'sid': e['Sid'], 'at': e['CreatedAt'], 'source': e.get('Source') or 'api'}
+            'sid': e['Sid'], 'at': e['CreatedAt'], 'source': e.get('Source') or 'api', **a}
+NAMED_STEP = 'Your turn in the browser'          # the words signin.needs and browserview.your_turn open a step the agent named with
+
+
+# WHICH KIND OF ASK, SAID BY THE SERVER (the roads audit, 2026-11-19): the page read `signin:` and `yourturn:` off the request id in five places,
+# each its own copy of a marker only this app writes. It is read here, once: {'ask': 'signin' | 'turn' | 'question', 'site': the site a sign-in is for}
+def ask_of(rid) -> dict:
+    from .browserview import TURN_PREFIX
+    from .signin import PREFIX
+    r = str(rid or '')
+    return {'ask': 'signin', 'site': r[len(PREFIX):].split('~')[0]} if r.startswith(PREFIX) else {'ask': 'turn' if r.startswith(TURN_PREFIX) else 'question', 'site': ''}
 
 
 def reconcile_screen_request(store, t, asking: bool) -> dict | None:
@@ -482,7 +513,7 @@ def answer_group(store, tid: int, answers: dict, actor: str = 'owner') -> dict:
             return {'delivered': all(answer(store, tid, r['request_id'], answers[r['request_id']], actor).get('delivered') for r in reqs),
                     'state': 'delivered', 'sid': sess.sid}
     except Exception as e:
-        store.add_comment(tid, actor, 'human', f'Answers could not be delivered to the agent: {str(e)[:200]}')
+        store.add_comment(tid, actor, 'human', f'Answers could not be delivered to the agent: {say.said(e)}')
         return {'delivered': False, 'state': 'failed', 'why': str(e)[:200]}
     for r in reqs: record(store, tid, sess.sid, 'answered', request_id=r['request_id'], text=answers[r['request_id']], source=said_by(actor))
     store.add_comment(tid, actor, 'human', 'Answered the agent: ' + '; '.join(f"{r['text'][:80]} - {answers[r['request_id']][:200]}" for r in reqs)
@@ -554,10 +585,6 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
     # whatever "type something" field the list offers last. The owner's words stay the owner's words
     # everywhere they are READ (the comment below, the audit); only the keystroke changes.
     send = text
-    # ...and a press handed over on the page, answered in words: the agent hears that it was not pressed (browsergate.owner_said). A chat
-    # hears it from its own send_prompt, which every owner word to it passes through
-    if str(request_id).startswith(browsergate.PRESS) and not hasattr(sess, 'send_prompt'):
-        if (note := browsergate.owner_said(store, tid, req['sid'], text)): send = f'{text} ({note})'     # one line: a newline typed into a CLI's prompt is its Enter
     # a codex question asked in WORDS is answered through its own queue - a chooser or an approval is still a keystroke
     words = req['kind'] == 'input_needed' and req.get('source') != 'screen' and (not req.get('choices') or _cli(sess) == 'codex')
     # ...and so is a HOOK's chooser once its hold ran out and Claude drew the form (B12, the owner, 2026-10-11): its label
@@ -584,7 +611,7 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
                 sessionrecord.keep_seed(tid, send)          # its `you` step in the record reads as Taskuary's brief (mark_briefs)
         else: term.type_into(sess, send, **_as(actor))
     except Exception as e:
-        store.add_comment(tid, actor, 'human', f'Answer to "{req["text"][:160]}": {text[:500]} - could not be delivered to {who}: {str(e)[:200]}')
+        store.add_comment(tid, actor, 'human', f'Answer to "{req["text"][:160]}": {text[:500]} - could not be delivered to {who}: {say.said(e)}')
         return {'delivered': False, 'state': 'failed', 'why': str(e)[:200]}
     words = ' '.join(str(owner or text).split())          # the record reads what the owner said, not the Assistant's version
     record(store, tid, sess.sid, 'answered', request_id=request_id, text=words, source=said_by(actor))

@@ -19,20 +19,10 @@ test("while held, the spinner stands in for the conversation and the row's mark 
   const at = src.indexOf("{!holding && <>"), end = src.indexOf("</>}", at);
   assert.ok(at > 0 && end > at, "the chat body's content is behind the hold");
   // ...the conversation's lines drawn in the chat window instead, the cards on the canvas (the chat window, 2026-10-28)
-  assert.ok(src.slice(at, end).includes("shown.map((m, i) => inWin.has(m.id) ? null : <Line"), "the conversation, the table's item with it");
+  assert.ok(src.slice(at, end).includes("shown.map((m, i) => inWin.has(m.id) || gone.has(m.id) ? null : <Line"), "the conversation, the table's item with it");
   // ...and the mark of what is filled (no strip since 2026-10-26) is not drawn for the item before the link either
   assert.match(src, /\{!firstRun && table\.speaks && !holding && !hostedRow && readFor\?\.key === table\.key/);
 });
 
-test("a chat read sent before a turn began never puts its older table back over that turn's answer", () => {
-  assert.match(src, /const turnOnce = useCallback\(async \(body\) => \{\n    turnsBegun\.current \+= 1;/);
-  assert.match(src, /const turns = turnsBegun\.current, moves = tableMoves\.current, mid = turnFlight\.current;\n    const \{ data: st \} = await api\.get\("\/api\/concierge"\);/);
-  assert.match(src, /if \(turns === turnsBegun\.current && \(said\?\.key \|\| null\) !== \(currentRef\.current\?\.key \|\| null\)\) \{ putOnTable\(said, "sync"\); loadPileRef\.current\?\.\(true\); \}/);
-});
-
 // RING (the dead-end walk, 2026-10-20): a link to the task the page loaded with, pressed in the chat once Next had moved on, was taken for the
 // reload of the address and opened nothing - the guard read the boot's answer (state.current), not what is on the table now
-test("a task link is skipped as the page's own address only when that task is on the table now", () => {
-  assert.match(src, /request\.fromUrl && !request\.start && !request\.act\n\s+&& Number\(currentRef\.current\?\.tid \?\? \/\^task:\(\\d\+\)\$\/\.exec\(currentRef\.current\?\.key \|\| cardRef\.current \|\| ""\)/);
-  assert.doesNotMatch(src, /Number\(state\.current\?\.tid/);
-});

@@ -35,7 +35,7 @@ class Step:
 STEPS = [
     # ...its first word at 1.75s: the Assistant's payload names every connection card, and some 200 joined it on 2026-11-08 (1.52s on a desk)
     Step('bring up TQ-12', None, 'Here: [TQ-0012](#task=12).', 'link:#task=12', r'TQ-0*12', budget=(1.75, 3.0)),
-    Step("respond to this - say we'll have it Friday", 'msg:17', "I'll draft it.\n" + c('reply', text="We'll have it Friday."), 'draft:reply', r'draft|Draft'),
+    Step("respond to this - say we'll have it Friday", 'msg:17', "I'll draft it.\n" + c('reply', text="We'll have it Friday."), 'open:#task=', r'Opened'),
     # TQ-12's coding agent ran before and its session is saved (world()): Continue reopens it, the notes riding along
     Step('rerun the agent with these notes: use the new template', 'msg:17',
          'Sending it back to work with your notes.\n' + c('agent.continue', ref='TQ-0012', note='use the new template'), 'light:continue',
@@ -111,7 +111,7 @@ def world(real: bool = False):
     for k in ('auto_draft_enabled',): s.set_setting(k, '0', 't')
     args = ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'] + (REAL_ARGS if real else [])
     s.upsert_agent('claude', 'general', 'cli', json.dumps({'cmd': 'claude', 'args': args}))
-    s.set_setting('concierge_ai', 'cli:claude', 't')
+    s.set_setting('concierge_ai', 'cli:claude', 'owner')            # his own pick: the brain resolver honours only that
     saved = s.resumable_session
     s.resumable_session = lambda tid: {'ExtId': 's12', 'Brain': 'claude'} if int(tid) == 12 else saved(tid)
     funnel.invalidate()

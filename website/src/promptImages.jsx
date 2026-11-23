@@ -16,7 +16,6 @@ import { pastedFiles } from "./promptPaste.js";
 export const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
 export const MAX_IMAGES = 8;
 export const IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
-export const isImagePath = (p) => /\.(png|jpe?g|gif|webp)$/i.test(String(p || ""));
 
 // one file to the server: a picture through the image road (its type check), anything else through the file road; { path, name, image }
 // ...IN A MINUTE OR TWO, or it says so (the owner, 2026-11-16: a paste's "Attaching..." never resolved and nothing was attached): an upload
@@ -133,10 +132,12 @@ export function AttachChip({ name, icon = null, thumb = "", warn = "", note = ""
       boxSizing: "border-box", textDecoration: "none", ...(opens ? { cursor: "pointer", "&:hover": { borderColor: "var(--tq-border, #b9c6d1)" } } : {}), ...sx }}>
     {thumb ? <Box component="img" src={thumb} alt="" sx={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
       : icon === false ? null : icon || <AttachFileIcon sx={{ fontSize: 13, color: "var(--tq-link, #55697a)", flexShrink: 0 }} />}
-    <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</Box>
-    {note && <Box component="span" sx={{ color: "var(--tq-link, #7d8a94)", fontSize: 11, whiteSpace: "nowrap", flexShrink: 0 }}>{note}</Box>}
-    {warn && <Box component="span" sx={{ color: "var(--tq-warning, #8a5a1c)", whiteSpace: "nowrap", flexShrink: 0 }}>· {warn.length > 24 ? t("can't go") : warn}</Box>}
-    {onRemove && <IconButton size="small" aria-label={t("Remove {name}", { name })} onClick={(e) => { e.stopPropagation(); onRemove(e); }} sx={{ width: 18, height: 18, p: 0, color: "var(--tq-link, #55697a)", flexShrink: 0 }}>
+    {/* ...THE NAME BEFORE ITS SIZE (the design walk, 2026-11-20: a cramped chip read "Q... 44 KB"): the name keeps a few letters and the size
+        gives way first */}
+    <Box component="span" sx={{ minWidth: "min(7ch, 100%)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</Box>
+    {note && <Box component="span" sx={{ color: "var(--tq-link, #7d8a94)", fontSize: 11, whiteSpace: "nowrap", flexShrink: 1, minWidth: 0, overflow: "hidden" }}>{note}</Box>}
+    {warn && <Box component="span" sx={{ color: "var(--tq-warning, #8a5a1c)", whiteSpace: "nowrap", flexShrink: 0 }}>· {warn.length > 24 ? "can't go" : warn}</Box>}
+    {onRemove && <IconButton size="small" aria-label={`Remove ${name}`} onClick={(e) => { e.stopPropagation(); onRemove(e); }} sx={{ width: 18, height: 18, p: 0, color: "var(--tq-link, #55697a)", flexShrink: 0 }}>
       <CloseIcon sx={{ fontSize: 12 }} /></IconButton>}
   </Box>;
 }
@@ -155,7 +156,7 @@ export function AttachRow({ children, sx, few = ATTACH_FEW, ...rest }) {
   const [at, setAt] = useState(null);
   const all = flat(children), chips = all.filter(isChip), other = all.filter((c) => !isChip(c)), k = attachSplit(chips.length, few), more = chips.slice(k);
   return <Box data-tq-attach-row="" {...rest} sx={{ display: "flex", flexWrap: "nowrap", alignItems: "center", gap: 0.5, minWidth: 0, maxWidth: "100%", overflow: "hidden",
-    pb: 0.25, "& > .tq-attach-chip": { flexShrink: 1, minWidth: 56 }, "& > [data-tq-attach-more]": { flexShrink: 0 }, ...sx }}>
+    pb: 0.25, "& > .tq-attach-chip": { flexShrink: 1, minWidth: 96 }, "& > [data-tq-attach-more]": { flexShrink: 0 }, ...sx }}>
     {chips.slice(0, k)}
     {more.length > 0 && <AttachChip name={`+${more.length} more`} icon={false} component="button" type="button" data-tq-attach-more={more.length}
       aria-haspopup="dialog" aria-expanded={!!at} title={`Show all ${chips.length}`} onClick={(e) => setAt(e.currentTarget)}
@@ -183,7 +184,6 @@ export function ImageTray({ pics, sx, cannot = null }) {
 }
 
 // the words, then the files: how a CLI agent is shown a picture or a file (server.with_images says it the same way)
-// ...and the words alone, from a text withImages wrote (the server's general.split_files): a task's ask quoted on its page, never its paths
-export const wordsOf = (text) => String(text || "").replace(/\n\nATTACHED (?:IMAGES|FILES) \(read these files\)\n[\s\S]+$/, "");
-export const withImages = (text, paths) => (paths?.length
-  ? `${text || ""}\n\n${paths.every(isImagePath) ? "ATTACHED IMAGES" : "ATTACHED FILES"} (read these files)\n${paths.join("\n")}` : text || "");
+// WHAT HE ATTACHED IS A FIELD BESIDE HIS WORDS (the design loop, 2026-11-20): every door sends `files` (the saved uploads, pics.paths) next to
+// the words, and the server keeps them on the line or the task (store.files_json) - never a block written into the words, which ~40 readers
+// parsed back and a door that wrote it slightly differently lost from his bubble. A prompt's block is built on the server, from the field

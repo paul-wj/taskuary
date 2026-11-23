@@ -3,37 +3,32 @@
 // research turn - so what is asserted here is what that backend's real parser hands the canvas.
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import test, { beforeEach } from "node:test";
+import test from "node:test";
 import { describeCall, isWork, stepsOf } from "../src/agentSteps.js";
-import { setLocale } from "../src/i18n.js";
-
-beforeEach(() => setLocale("en"));
 
 test("a heredoc written into a file reads as that file written, never 'Read <<EOF, and N more' (stress test 2026-11-02)", () => {
-  const said = (command) => describeCall("Bash", { command });
-  const svg = said(`cat > /work/outputs/TQ-0001/desk.svg <<'EOF'\n<svg width="10" a='b'></svg>\nEOF`);
-  assert.equal(svg.kind, "edit"); assert.match(svg.summary, /desk\.svg/);
-  const notes = said("mkdir -p out && cat <<EOF > out/notes.md\nhi\nEOF");
-  assert.equal(notes.kind, "edit"); assert.match(notes.summary, /notes\.md/);
-  assert.equal(said("cat notes.md").kind, "read");
-  assert.equal(said("cat notes.md > /dev/null").kind, "read");
+  const said = (command) => describeCall("Bash", { command }).summary;
+  assert.equal(said(`cat > /work/outputs/TQ-0001/desk.svg <<'EOF'\n<svg width="10" a='b'></svg>\nEOF`), "Wrote desk.svg");
+  assert.equal(said("mkdir -p out && cat <<EOF > out/notes.md\nhi\nEOF"), "Wrote notes.md");
+  assert.equal(said("cat notes.md"), "Read notes.md");
+  assert.doesNotMatch(said("cat notes.md > /dev/null"), /^Wrote/);
 });
 
 test("a folder the shell fills in ($d) is never shown as its name: the agent's own words for the step are (stress test 2026-11-03)", () => {
   const command = "$d=Join-Path $env:USERPROFILE 'Downloads'; $d; Get-ChildItem $d -Filter 'notes*' | Select Name; Get-ChildItem . -Recurse -Filter 'notes*'";
   assert.equal(describeCall("PowerShell", { command, description: "Locate the zip in Downloads" }).summary, "Locate the zip in Downloads");
-  assert.ok(describeCall("PowerShell", { command }).summary.includes("'notes*'"), "the pattern it looked for is named, whatever the language");
-  assert.ok(!describeCall("PowerShell", { command: "Get-ChildItem $d | Select Name" }).summary.includes("$d"), "a shell variable names no folder");
-  assert.ok(!describeCall("Bash", { command: 'cat "$f"' }).summary.includes("$f"), "same, in bash");
-  assert.ok(!describeCall("Bash", { command: "type %TEMP%\\notes.txt" }).summary.includes("%TEMP%"), "nor a %var%");
-  assert.ok(describeCall("Bash", { command: "ls ~/Downloads" }).summary.includes("Downloads"), "a plain folder is named");
+  assert.equal(describeCall("PowerShell", { command }).summary, "Looked for files named like 'notes'");
+  assert.equal(describeCall("PowerShell", { command: "Get-ChildItem $d | Select Name" }).summary, "Listed the files");
+  assert.equal(describeCall("Bash", { command: 'cat "$f"' }).summary, "Read a file");
+  assert.equal(describeCall("Bash", { command: "type %TEMP%\\notes.txt" }).summary, "Read a file");
+  assert.equal(describeCall("Bash", { command: "ls ~/Downloads" }).summary, "Listed the files in Downloads");
   // ...and a pattern it looked for is not a folder it listed
   const find = 'Get-ChildItem -Recurse -Filter "notes-missing*" -Path "$env:USERPROFILE\\Downloads" -ErrorAction SilentlyContinue | Select FullName';
   assert.equal(describeCall("PowerShell", { command: find, description: "Search for the named zip elsewhere" }).summary, "Search for the named zip elsewhere");
-  assert.ok(describeCall("PowerShell", { command: find }).summary.includes("'notes-missing*'"), "the pattern is named, not the $env path");
-  assert.ok(describeCall("Bash", { command: "ls ~/Downloads/*.zip" }).summary.includes("*.zip"), "a glob is a pattern, not a folder");
+  assert.equal(describeCall("PowerShell", { command: find }).summary, "Looked for files named like 'notes-missing'");
+  assert.equal(describeCall("Bash", { command: "ls ~/Downloads/*.zip" }).summary, "Looked for .zip files");
   // ...nor a file it looked at a folder it listed
-  assert.ok(describeCall("Bash", { command: "ls -la ~/Downloads/notes.zip 2>&1" }).summary.includes("notes.zip"), "a lone file is the file, not its folder");
+  assert.equal(describeCall("Bash", { command: "ls -la ~/Downloads/notes.zip 2>&1" }).summary, "Looked at notes.zip");
   assert.equal(describeCall("Bash", { command: "ls -la ~/Downloads/notes.zip", description: "Locate the zip in Downloads" }).summary, "Locate the zip in Downloads");
 });
 
@@ -50,23 +45,25 @@ const ANSWER = "The budget review is waiting on Gail Moreno's sign-off: TQ-1142 
 const SAY = "I'll find the budget review thread first, then check the status board code.";
 const CLIS = ["claude", "codex", "opencode", "gemini_acp", "claude_acp", "codex_acp"];
 const APIS = ["openai_responses", "anthropic_api"];
-const WORK_COUNT = 6;
+const WORK = [
+  "Searched your mail for 'budget review' (3 results)",
+  "Opened TQ-1142",
+  "Read StatusBoard.js and BudgetTable.js",
+  "Searched files for 'approvedTotal'",
+  "Searched the web for 'northwind budget review policy'",
+  "Read docs.northwind.example/budget/review",
+];
 const work = (b) => stepsOf(trace(b), { answer: ANSWER, keepStart: false }).filter(isWork);
 // what the canvas shows with every row closed: the summaries, and the agent's own words
 const mainView = (steps) => steps.map((s) => s.summary).join("\n");
 
 test("every CLI's recorded turn renders to the same plain steps", () => {
-  const expected = work(CLIS[0]).map((s) => s.summary);
-  assert.equal(expected.length, WORK_COUNT);
-  for (const [i, value] of ["budget review", "TQ-1142", "Budget/", "approvedTotal", "northwind budget review policy", "docs.northwind.example"].entries())
-    assert.ok(expected[i].includes(value), value);
-  for (const b of CLIS) assert.deepEqual(work(b).map((s) => s.summary), expected, b);
+  for (const b of CLIS) assert.deepEqual(work(b).map((s) => s.summary), WORK, b);
   for (const b of CLIS) assert.ok(work(b).every((s) => s.status === "done"), b);
 });
 
 test("an API connector's own web searches read exactly like a CLI's", () => {
-  const expected = work(CLIS[0]).slice(4).map((s) => s.summary);
-  for (const b of APIS) assert.deepEqual(work(b).map((s) => s.summary), expected, b);
+  for (const b of APIS) assert.deepEqual(work(b).map((s) => s.summary), WORK.slice(4), b);
 });
 
 test("the agent's prose comes through as its own words, once, and the answer is not repeated above itself", () => {
@@ -97,6 +94,8 @@ test("no step is drawn twice: a structured backend's echo lines are not a second
     const steps = stepsOf(trace(b), { answer: ANSWER, keepStart: false });
     const seen = steps.map((s) => s.summary);
     assert.equal(new Set(seen).size, seen.length, `${b}: ${seen.join(" | ")}`);
+    // ...and one line of its own words before the work, on every road: ACP traced none until its chunks were joined (2026-11-06)
+    assert.equal(steps.length, WORK.length + 1, `${b}: ${seen.join(" | ")}`);
   }
   // the echo lines are really there in the claude trace - they used to land in "Agent progress"
   assert.ok(trace("claude").some((e) => e.type === "live" && String(e.detail).startsWith("→ Bash:")));
@@ -108,16 +107,18 @@ test("a CLI that streams only lines is read off its lines, as one block of prose
 });
 
 test("summaries come from the call's own arguments", () => {
-  assert.match(describeCall("Bash", { command: "git status" }).summary, /git status/);
-  assert.equal(describeCall("Bash", { command: "ls -la", description: "List the scratch folder" }).kind, "list");
+  assert.equal(describeCall("Bash", { command: "git status" }).summary, "Ran git status");
+  assert.equal(describeCall("Bash", { command: "ls -la", description: "List the scratch folder" }).summary, "Listed the files here");
   assert.equal(describeCall("Bash", { command: "./build.sh --fast", description: "Build the report" }).summary, "Build the report");
-  assert.match(describeCall("Glob", { pattern: "**/*.js" }).summary, /\*\*\/\*\.js/);
-  assert.match(describeCall("Edit", { file_path: "/srv/northwind/ledger/app.py" }).summary, /app\.py/);
-  assert.match(describeCall("file change", { changes: [{ path: "a.py" }, { path: "b.py" }] }).summary, /2/);
-  assert.match(describeCall("TodoWrite", { todos: [{}, {}, {}] }).summary, /3/);
-  assert.match(describeCall("mcp__github__search_issues", { query: "budget" }).summary, /budget/);
-  assert.match(describeCall("shell", { command: 'curl -s -X POST "$TASKUARY_URL/api/tools/run" -d \'{"type": "mssql"}\'' }).summary, /mssql/);
-  assert.match(describeCall("sync_messages", { new: 2 }).summary, /2/);
+  assert.equal(describeCall("Glob", { pattern: "**/*.js" }).summary, "Looked for .js files");
+  assert.equal(describeCall("Edit", { file_path: "/srv/northwind/ledger/app.py" }).summary, "Edited app.py");
+  assert.equal(describeCall("file change", { changes: [{ path: "a.py" }, { path: "b.py" }] }).summary, "Changed 2 files");
+  assert.equal(describeCall("TodoWrite", { todos: [{}, {}, {}] }).summary, "Updated its plan (3 steps)");
+  assert.equal(describeCall("mcp__github__search_issues", { query: "budget" }).summary, "Used search issues (github) on 'budget'");
+  assert.equal(describeCall("shell", { command: 'curl -s -X POST "$TASKUARY_URL/api/tools/run" -d \'{"type": "mssql"}\'' }).summary,
+    "Looked up data in mssql");
+  assert.equal(describeCall("sync_messages", { new: 2 }).summary, "Found 2 new messages on the thread");
+  assert.doesNotMatch(describeCall("sync_messages", {}).summary, /mail/, "not every task came by mail");
 });
 
 test("a failed or still-running call says so on its row", () => {
@@ -139,9 +140,7 @@ test("a failed step the agent retried with success reads as recovered; one never
     call("c", "Bash", { command: "npm test" }), res("c", false),
     call("d", "Bash", { command: "git push" }), res("d", true),
   ]);
-  assert.deepEqual(steps.map((s) => s.status), ["recovered", "done", "done", "error"]);
-  for (const [i, value] of ["npm test", "notes.md", "npm test", "git push"].entries())
-    assert.ok(steps[i].summary.includes(value));
+  assert.deepEqual(steps.map((s) => [s.summary, s.status]), [["Ran npm test", "recovered"], ["Read notes.md", "done"], ["Ran npm test", "done"], ["Ran git push", "error"]]);
   // ...and back to back, folded into one row: the row is the retry that worked
   const twice = stepsOf([call("a", "Bash", { command: "npm test" }), res("a", true), call("b", "Bash", { command: "npm test" }), res("b", false)]);
   assert.deepEqual(twice.map((s) => s.status), ["recovered"]);
@@ -212,11 +211,24 @@ test("Claude's retries while it cannot reach its servers are one line, the newes
 // its own name.
 test("each ACP tool kind reads as one plain step, the way the same act reads from stream-json", () => {
   const steps = stepsOf(trace("kinds_acp"), { keepStart: false });
-  assert.deepEqual(steps.map(({ kind, status }) => [kind, status]), [
-    ["thought", "done"], ["plan", "done"], ["read", "done"], ["edit", "done"],
-    ["delete", "done"], ["move", "done"], ["search", "done"], ["run", "done"],
-    ["plan", "done"], ["page", "done"], ["web", "done"], ["tool", "done"],
-    ["run", "error"], ["run", "held"], ["said", "done"], ["run", "done"],
+  const said = steps.map((s) => [s.kind, s.summary, s.status]);
+  assert.deepEqual(said, [
+    ["thought", "The ledger keeps the totals in store.py; I should read it before changing the budget.", "done"],
+    ["plan", "Updated its plan (2 steps)", "done"],
+    ["read", "Read store.py", "done"],
+    ["edit", "Edited budget.py", "done"],
+    ["delete", "Deleted notes.txt", "done"],
+    ["move", "Moved README.md to docs/", "done"],
+    ["search", "Searched files for 'approvedTotal'", "done"],
+    ["run", "Ran git status", "done"],
+    ["plan", "Planning the budget summary", "done"],
+    ["page", "Read docs.northwind.example/budget/review", "done"],
+    ["web", "Searched the web for 'northwind budget review policy'", "done"],
+    ["tool", "Look up Payworth invoice", "done"],
+    ["run", "Ran pytest tests/test_budget.py", "error"],
+    ["run", "Ran git push origin main", "held"],
+    ["said", "The total is fixed; the push waits for your Approve.", "done"],
+    ["run", "Ran npm test", "done"],
   ]);
   // the turn is over: nothing spins, and nothing raw - no ids, no JSON, no query string a token rides in
   assert.ok(steps.every((s) => s.status !== "running"));
@@ -226,7 +238,9 @@ test("each ACP tool kind reads as one plain step, the way the same act reads fro
     ["Bash", { command: "rm /home/alex/northwind/ledger/notes.txt" }], ["Bash", { command: "mv README.md docs/README.md" }],
     ["Grep", { pattern: "approvedTotal", path: "src" }], ["Bash", { command: "git status" }],
     ["WebFetch", { url: "https://docs.northwind.example/budget/review?token=abc" }], ["WebSearch", { query: "northwind budget review policy" }]];
-  assert.deepEqual(claude.map(([n, a]) => describeCall(n, a).summary), [2, 3, 4, 5, 6, 7, 9, 10].map((i) => steps[i].summary));
+  const acp = ["Read store.py", "Edited budget.py", "Deleted notes.txt", "Moved README.md to docs/", "Searched files for 'approvedTotal'",
+    "Ran git status", "Read docs.northwind.example/budget/review", "Searched the web for 'northwind budget review policy'"];
+  assert.deepEqual(claude.map(([n, a]) => describeCall(n, a).summary), acp);
 });
 
 test("a file command reads as what it did, in bash or PowerShell, and stays a lesser step beside real work", () => {
@@ -238,7 +252,7 @@ test("a file command reads as what it did, in bash or PowerShell, and stays a le
   assert.equal(said("Copy-Item budget.py budget.bak"), "Copied budget.py to budget.bak");
   assert.equal(said("Add-Content -LiteralPath budget.py -Value '# ok'"), "Edited budget.py");
   assert.equal(said("(Get-ChildItem -Force -File | Measure-Object).Count"), "Listed the files here");
-  assert.equal(said("mkdir -p out && cp a.txt out && python build.py"), "Ran python build.py");
+  assert.equal(said("mkdir -p out && cp a.txt out && python build.py"), "Ran mkdir -p out && cp a.txt out && python build.py");
   assert.equal(said("rm -rf $d"), "Deleted a file");
 });
 
@@ -262,4 +276,276 @@ test("a step says what it did: a seeded file by what is in it, a view by its tit
   assert.equal(said("mcp__taskuary__propose_email", { command: "erin@northwind.example", file_path: "erin@northwind.example" }), "Drafted an email");
   assert.equal(said("taskuary__propose_email", JSON.stringify({ to: "erin@northwind.example", subject: "Run sheet" })), "Drafted an email");
   assert.equal(said("write_file", JSON.stringify({ path: "/work/run-sheet.md", content: "see n @path" })), "Wrote run-sheet.md");
+});
+
+// A TICK IS NEVER NARRATED (the owner, 2026-11-18): the working line read "Ticking a to-do" - the checklist shows it ticked, and its call, by
+// Taskuary's tool or its shell line, is no step of the work (stepkinds.json, which the server's conversation reads too)
+test("ticking a to-do is no step and no working line, by tool or by shell", () => {
+  const steps = stepsOf([
+    { type: "tool_call", name: "mcp__taskuary__tick", detail: { tool_call_id: "a", args: { id: 3 } } },
+    { type: "tool_call", name: "Bash", detail: { tool_call_id: "b", args: { command: "taskuary --tick 4" } } },
+    { type: "tool_call", name: "shell", detail: { tool_call_id: "c", args: { command: "taskuary --untick 4" } } },
+    { type: "tool_call", name: "Read", detail: { tool_call_id: "d", args: { file_path: "/x/notes.md" } } },
+  ]);
+  assert.deepEqual(steps.map((s) => s.id), ["d"]);
+  assert.deepEqual(stepsOf([{ type: "tool_call", name: "Bash", detail: { tool_call_id: "e", args: { command: ["taskuary", "--tick", "2"] } } }]), [], "a command sent as its words too");
+  assert.doesNotMatch(fs.readFileSync(new URL("../src/agentSteps.js", import.meta.url), "utf8"), /a to-do"/);
+});
+
+// "Running taskuary, and 4 more" stood in the steps on the 2026-11-18 walk: the app's own command is said by what it was asked
+test("Taskuary's own command reads as what was asked of it, never its name", async () => {
+  const { describeCall } = await import("../src/agentSteps.js");
+  assert.equal(describeCall("Bash", { command: 'taskuary --search "ledger sync" --since 2026-11-01' }).summary, "Searched your mail for 'ledger sync'");
+  assert.equal(describeCall("Bash", { command: "taskuary --message m1073" }).summary, "Read a message in full");
+  assert.equal(describeCall("Bash", { command: "taskuary --board" }).summary, "Read what earlier agents left on the wall");
+  assert.doesNotMatch(describeCall("Bash", { command: "taskuary --memory" }).summary, /taskuary/i);
+});
+
+// "Searching your mail for '$q', and 1 more" (design round 6, D3): a loop's `taskuary --search "$q"` - the shell fills the value as it runs, so
+// the step has none to say; a price in the words ("$519") is a value all the same
+test("a value the shell fills in as it runs is never shown as the step's words", async () => {
+  const { describeCall } = await import("../src/agentSteps.js");
+  const loop = 'for q in "board" "data asks"; do taskuary --search "$q" | head -20; done';
+  assert.equal(describeCall("Bash", { command: loop }).summary, "Searched your mail");
+  assert.equal(describeCall("Bash", { command: 'taskuary --search "${TERM}"' }).summary, "Searched your mail");
+  assert.equal(describeCall("Bash", { command: 'taskuary --search "%Q%"' }).summary, "Searched your mail");
+  assert.equal(describeCall("Bash", { command: 'taskuary --search "print run $519"' }).summary, "Searched your mail for 'print run $519'");
+});
+
+// THE OWNER'S CODING TURN ON CODEX OVER ACP (2026-11-18: "ran git is not feedback??"): its shell calls carry no words of their own - the step is
+// what the call did, read off its grammar, or the agent's own words where the call carries them (a wall note); never a bare program's name
+test("a wordless shell call says what it did, never a bare program, a number for a file, nor 'Used <its title>'", () => {
+  const said = (command, name = "Bash") => describeCall(name, { command }).summary;
+  // ...the agent's own note on the wall is its words for the whole line
+  assert.equal(said('taskuary --board\ntaskuary --note "Looking into the history of the ledger totals." --kind working\ngit -C ledger status --short'),
+    "Looking into the history of the ledger totals.");
+  assert.equal(said("taskuary --board"), "Read what earlier agents left on the wall");
+  // ...a command with no words of its own is itself, cut at its width
+  assert.equal(said("git -c safe.directory=C:/work/ledger -C ledger fetch --no-tags origin master"), "Ran git -c safe.directory=C:/work/ledger -C ledger fetch --no-tags origin master");
+  assert.equal(said("git -C .wt-ledger -c safe.directory=C:/work/ledger push origin feat:refs/heads/deploy"), "Ran git -C .wt-ledger -c safe.directory=C:/work/ledger push origin feat:refs/heads/…");
+  // ...a line count is no file
+  assert.equal(said("Get-Content ledger/totals.py -TotalCount 290"), "Read totals.py");
+  assert.equal(said("Get-Content ledger/totals.py -TotalCount 290\nGet-Content ledger/sql/notes.sql -TotalCount 60"), "Read totals.py and notes.sql");
+  // ...a shell named by its whole path runs what it was handed
+  assert.equal(said("\"C:\\\\WINDOWS\\\\system32\\\\cmd.exe\" /c 'git -C ledger worktree add -b feat/x ../x origin/master'"), "Ran git -C ledger worktree add -b feat/x ../x origin/master");
+  // ...a script handed to python, by a PowerShell here-string or a heredoc, is a script it ran - its lines are not commands
+  assert.equal(said("@'\nfrom pathlib import Path\nimport json\nprint(1)\n'@ | python -", "PowerShell"), "Ran a Python script (3 lines)");
+  assert.equal(said("python - <<'EOF'\nimport json\nprint(1)\nEOF"), "Ran a Python script (2 lines)");
+  assert.equal(said("..\\venv\\Scripts\\python.exe -u -m scripts.ledger.import_totals 'C:\\work\\totals.xlsx' --apply"), "Ran ..\\venv\\Scripts\\python.exe -u -m scripts.ledger.import_totals 'C:\\work\\totals.x…");
+  assert.equal(said("python -u tools/check_totals.py --all"), "Ran python -u tools/check_totals.py --all");
+  for (const c of ["git -c a=b -C x status", "python -u x.py", "git --no-pager log -5"]) assert.doesNotMatch(said(c), /^Ran (git|python)$/);
+  // ...an ACP call named only by its title is the agent's own words; a helper it started, by its name
+  assert.equal(describeCall("Start subagent history_probe", { agentPath: "/root/history_probe" }).summary, "Handed part of the work to a helper: history probe");
+  assert.equal(describeCall("Checking the build output", {}).summary, "Checking the build output");
+  assert.equal(describeCall("other", { title: "Checking the build output" }).summary, "Checking the build output");
+  assert.equal(describeCall("other", { title: "Start subagent history_probe", agentPath: "/root/history_probe" }).summary, "Handed part of the work to a helper: history probe");
+});
+
+test("each thought is its own row: a message of two reasoning headers never reads as one sentence", () => {
+  const steps = stepsOf([
+    { type: "progress", name: "thinking", detail: "\n\n**Reviewing the vendor mapping snapshots**\n\n**Planning the history roll-up**" },
+    { type: "tool_call", name: "Read", detail: { tool_call_id: "r", args: { file_path: "/x/notes.md" } } },
+    { type: "live", name: "thinking", detail: "**Preparing the schema**\n\n**Writing the plan**" },
+  ]);
+  assert.deepEqual(steps.map((s) => [s.kind, s.summary]), [["thought", "Reviewing the vendor mapping snapshots"], ["thought", "Planning the history roll-up"],
+    ["read", "Read notes.md"], ["thought", "Preparing the schema"], ["thought", "Writing the plan"]]);
+  // ...and the live thought, updated, replaces its own rows, never stacks them
+  const again = stepsOf([{ type: "live", name: "thinking", detail: "**A**" }, { type: "live", name: "thinking", detail: "**A**\n\n**B**" }]);
+  assert.deepEqual(again.map((s) => s.summary), ["A", "B"]);
+});
+
+// WHAT HE SEES (design round 4, 2026-11-19, three walks): a failed command's PATH dump stood as a red note under its step; Taskuary's own tool
+// list read "Used find tools (taskuary) on 'propose_reply'"; a code search read "Searched files for 'import.*spawn|def run\(|...'"
+test("a failed call is its own step, failed, its output folded - never a note with the output whole", () => {
+  const dump = `Exit code 127\nwhich: no python3 in (${"/c/Program Files/Tool/bin:".repeat(20)})`;
+  const steps = stepsOf([{ type: "tool_call", name: "Bash", detail: { tool_call_id: "a", args: { command: "which python3" } } },
+    { type: "tool_result", name: "a", detail: { tool_call_id: "a", result: "" } }, { type: "error", name: "Bash", detail: { result: dump } }]);
+  assert.deepEqual(steps.map((s) => [s.summary, s.status]), [["Ran which python3", "error"]]);
+  assert.match(steps[0].detail, /Program Files/, "the output is behind the row, for debugging");
+  // ...one no call names is still said, as before
+  assert.equal(stepsOf([{ type: "error", detail: { result: "The provider refused." } }])[0].kind, "error");
+});
+
+test("every one of Taskuary's own tools reads as what it did; reading the tool list is no step", async () => {
+  const own = JSON.parse(fs.readFileSync(new URL("../../taskuary/owntools.json", import.meta.url), "utf8")).tools;
+  const kinds = JSON.parse(fs.readFileSync(new URL("../../taskuary/stepkinds.json", import.meta.url), "utf8")).machinery;
+  const key = (n) => n.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const n of own.filter((x) => !kinds.includes(key(x)))) {
+    const s = describeCall(`mcp__taskuary__${n}`, {}).summary;
+    assert.doesNotMatch(s, /^Used |taskuary|_/, `${n} reads ${s}`);
+  }
+  assert.deepEqual(stepsOf([{ type: "tool_call", name: "mcp__taskuary__find_tools", detail: { tool_call_id: "f", args: { query: "propose_reply" } } }]), []);
+});
+
+test("a search by a pattern in its own syntax reads as a search, never the pattern", () => {
+  assert.equal(describeCall("Grep", { pattern: "import.*spawn|def run\(|capture_output" }).summary, "Searched files");
+  assert.equal(describeCall("Grep", { pattern: "rounding" }).summary, "Searched files for 'rounding'");
+  assert.equal(describeCall("Bash", { command: "rg -n 'def run\(' taskuary" }).summary, "Searched files");
+});
+
+test("...and so it stays when the chat hands its result in after it", async () => {
+  const { eventsOf, turnParts } = await import("../src/chatStream.js");
+  const parts = turnParts(eventsOf([{ k: "tool", id: "t1", name: "Bash", args: { command: "which python3" }, status: "completed" },
+    { k: "error", name: "Bash", text: "Exit code 127\nwhich: no python3" }], false), { answer: "x" });
+  assert.deepEqual(parts.flatMap((p) => p.steps || []).map((s) => [s.summary, s.status]), [["Ran which python3", "error"]]);
+});
+
+// WHAT HE SEES (design round 5, 2026-11-19, three walks): after a press "⚠ ``` \`item\` was not given Next: call tick again ... The input schema is:
+// {...} select:mcp__taskuary__tick"; rows "Running function Inspect-VendorForm", "Ran foreach (2 times)", "Using Load skill: dataviz", "Looked for
+// files matching '**/*sync*'"
+test("a tool's refusal reaches the agent only: no note for a call of the turn, a plumbing call's included", () => {
+  const schema = `\`\`\`
+\`item\` was not given
+Next: call tick again with it
+\`\`\`
+The input schema is: {"type":"object"}`;
+  const steps = stepsOf([{ type: "tool_call", name: "mcp__taskuary__tick", detail: { tool_call_id: "t1", args: {} } },
+    { type: "error", name: "mcp__taskuary__tick", detail: { result: schema } },
+    { type: "tool_call", name: "mcp__taskuary__tick", detail: { tool_call_id: "t2", args: { item: "1" } } },
+    { type: "tool_call", name: "Bash", detail: { tool_call_id: "b", args: { command: "git status" } } },
+    { type: "error", name: "Bash", detail: { result: "fatal: not a git repository" } },
+    { type: "error", name: "Bash", detail: { result: "fatal: not a git repository" } }]);
+  assert.deepEqual(steps.map((s) => [s.summary, s.status]), [["Ran git status", "error"]]);
+  // ...a turn's own failure, named by no call, is still said
+  assert.equal(stepsOf([{ type: "error", name: "assistant", detail: { result: "the CLI exited" } }])[0].kind, "error");
+});
+
+test("a shell's own grammar round a command is no step: its blocks, its functions, its assignments", () => {
+  const fn = `function Inspect-VendorForm {
+  $landing = agent-browser snapshot -i -c
+  $landing | Write-Output
+}
+`
+    + `foreach ($t in @('t2','t3')) {
+  agent-browser tab $t
+  if ($LASTEXITCODE -eq 0) { Inspect-VendorForm }
+}`;
+  assert.equal(describeCall("PowerShell", { command: fn }).summary, "Looked at the page");
+  assert.equal(describeCall("PowerShell", { command: '$refs = 3..5; foreach ($r in $refs) { agent-browser click "@e$r" }' }).summary, "Clicked on the page");
+  assert.equal(describeCall("Bash", { command: "for f in *.py; do { python -m pytest $f; } done" }).summary, "Ran for f in *.py; do { python -m pytest $f; } done");
+  assert.equal(describeCall("Bash", { command: 'cat "${d}/notes.md"' }).summary, "Read a file", "a ${var} is no block");
+  assert.equal(describeCall("Glob", { pattern: "**/*sync*" }).summary, "Looked for files named like 'sync'");
+  assert.deepEqual(stepsOf([{ type: "tool_call", name: "Skill", detail: { tool_call_id: "s", args: { skill: "dataviz" } } }]), [], "a skill loaded is the CLI's own reading");
+});
+
+// THE API CARD'S OWN HANDS, IN THE WORDS THE CLI'S TAKE (design round 5, 2026-11-19: the API walk's steps read "Used file write", "Used browser open")
+test("an AI card's file, browser and tool-finder calls read as the CLI road's steps do", () => {
+  const said = (n, a) => describeCall(n, a).summary;
+  assert.equal(said("file_write", { path: "out/caterers.xlsx", text: "a | b" }), "Wrote caterers.xlsx");
+  assert.equal(said("file_edit", { path: "Invoice.docx", old: "x", new: "y" }), "Edited Invoice.docx");
+  assert.equal(said("file_read", { path: "spend.pdf" }), describeCall("Read", { file_path: "spend.pdf" }).summary);
+  assert.equal(said("browser_open", { url: "https://vendors.example/signup" }), "Opened vendors.example in the browser");
+  assert.equal(said("browser_click", { ref: "@e4" }), "Clicked on the page");
+  assert.equal(said("browser_signup", {}), "Sent the sign-up form");
+  assert.equal(said("find_tools", { query: "pdf" }), "Looked for the right tool");
+  for (const n of ["file_write", "file_read", "files_list", "browser_open", "browser_look", "browser_fill", "browser_signup", "find_tools"])
+    assert.doesNotMatch(said(n, {}), /^Used /, n);
+});
+
+// A WORDLESS COMMAND IS SHOWN AS ITSELF (the owner, 2026-11-19, of "Ran a command", "Ran git", "Ran foreach, and 1 more": "If not exact detail show
+// what it's doing? other chats do this description thing much better"): where the agent gave no words of its own - Codex's shell calls above all -
+// the row is the command, first line, short; a script by its language and length, its text behind the fold. Codex-shaped: no description
+test("a command with no words of its own reads as the command itself, a script by its language and length", () => {
+  const ps = (c) => `"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "${c}"`;
+  const step = (command, name = "shell") => describeCall(name, { command });
+  assert.deepEqual([step("git log --oneline -10").summary, step("git log --oneline -10").code], ["Ran git log --oneline -10", "git log --oneline -10"]);
+  assert.equal(step(ps("git log --oneline -10")).code, "git log --oneline -10", "the shell it was handed to is no part of it");
+  assert.equal(step(["bash", "-lc", "pytest tests/test_totals.py -q"]).code, "pytest tests/test_totals.py -q");
+  assert.equal(step("python -u tools/check_totals.py --all").summary, "Ran python -u tools/check_totals.py --all");
+  const block = ["$rows = Import-Csv totals.csv", ...Array.from({ length: 10 }, (_, i) => `$rows[${i}].Total = [decimal]$rows[${i}].Total`), "$rows | Export-Csv out.csv"].join("\n");
+  assert.equal(step(["powershell.exe", "-Command", block]).summary, "Ran a PowerShell script (12 lines)");
+  assert.equal(step(block, "PowerShell").summary, "Ran a PowerShell script (12 lines)");
+  assert.equal(step("python - <<'EOF'\nimport json\nprint(1)\nEOF").summary, "Ran a Python script (2 lines)");
+  assert.equal(step("@'\nfrom pathlib import Path\nimport json\nprint(1)\n'@ | python -", "PowerShell").summary, "Ran a Python script (3 lines)");
+  const each = "foreach ($f in Get-ChildItem *.csv) { $n = (Import-Csv $f).Count; \"$($f.Name) $n\" }";
+  assert.equal(step(ps(each)).code, `${each.slice(0, 79)}…`, "a long line, cut at its width");
+  const snip = `python -c "import json; print(json.load(open('t.json'))['total'])"`;
+  assert.equal(step(snip).code, snip);
+  // ...never a bare program, never "a command"; the agent's own words still lead; Taskuary's own command keeps its done-wording
+  for (const c of ["git log --oneline -10", block, each, snip, "cd ledger", ps(each)]) assert.doesNotMatch(step(c).summary, /^Ran (a command|git|python|foreach)\b(,|$)/);
+  assert.equal(describeCall("Bash", { command: "git log --oneline -10", description: "Show recent commits" }).summary, "Show recent commits");
+  assert.equal(step("taskuary --board").summary, "Read what earlier agents left on the wall");
+  assert.equal(step("Get-Content ledger/totals.py -TotalCount 290").summary, "Read totals.py");
+  // ...the same command twice is one row "(2 times)"; two scripts of one length are two rows
+  const call = (id, command) => ({ type: "tool_call", name: "shell", detail: { tool_call_id: id, args: { command } } });
+  assert.deepEqual(stepsOf([call("a", "git status"), call("b", "git status")]).map((s) => s.summary), ["Ran git status (2 times)"]);
+  assert.equal(stepsOf([call("a", "python - <<'EOF'\nprint(1)\nEOF"), call("b", "python - <<'EOF'\nprint(2)\nEOF")]).length, 2);
+});
+
+// A FAILED STEP SAYS WHY IN HIS WORDS FROM THE SERVER (say.step_why, 2026-11-19) - a merged row of the same call made again keeps it
+test("a merged row of repeated tries keeps the server's why of the newest that failed", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("../src/agentSteps.js", import.meta.url), "utf8");
+  assert.match(src, /run\.some\(\(x\) => x\.why\) \? \{ why: run\.filter\(\(x\) => x\.why\)\.at\(-1\)\.why \}/);
+});
+
+// THE REAL-CLAUDE WALK, 2026-11-19: a Write refused ("File has not been read yet") then made stood twice with its diff, under a raw "⚠" note; and
+// "3 steps - ran 2 commands, used a tool" opened on two rows. A try made good folds into the one that worked; the line counts and names its rows
+test("a refused write the agent then made is one row, and the fold's line counts and names the rows it opens on", async () => {
+  const { eventsOf, turnParts, foldLine } = await import("../src/chatStream.js");
+  const err = "```\n<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>\n```";
+  const steps = [{ k: "tool", id: "a1", name: "Write", args: { file_path: "C:/work/totals.py", content: "x = 1\n" }, status: "failed", output: err },
+    { k: "error", name: "Write", text: err },
+    { k: "tool", id: "a2", name: "Read", args: { file_path: "C:/work/totals.py" }, status: "completed" },
+    { k: "tool", id: "a3", name: "Write", args: { file_path: "C:/work/totals.py", content: "x = 1\n" }, status: "completed" }];
+  const parts = turnParts(eventsOf(steps, false));
+  const notes = parts.flatMap((p) => (p.type === "work" ? p.steps : [])).filter((s) => s.kind === "error" || /tool_use_error/.test(s.summary));
+  assert.deepEqual(notes, [], "the agent's error is no line of his");
+  assert.equal(parts.filter((p) => p.type === "edit").length, 1, "one diff: the write that was made");
+  const failed = parts.flatMap((p) => (p.type === "work" ? p.steps : [])).filter((s) => s.status === "recovered");
+  assert.equal(failed.length, 1, "the refused try is marked made good - the chat folds it (GeneralWorkspace TurnWorkView)");
+  const shown = parts.map((p) => (p.type === "work" ? { ...p, steps: p.steps.filter((s) => s.status !== "recovered") } : p)).filter((p) => p.type !== "work" || p.steps.length);
+  assert.equal(foldLine(shown), "2 steps - read totals.py, wrote totals.py (+1 −0)");
+  const ws = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(ws, /p\.steps\.filter\(\(st\) => !\(chat && st\.status === "recovered"\)\)/, "the chat folds a try made good");
+});
+
+test("the agent's own words for a shell line are its step - never a reading of a script cut short for the chat (walk 8, 2026-11-20)", () => {
+  // ...the chat keeps a command cut at 300 characters (sessionrecord.ARG_N): the edit below, cut, read as 'Read f"Headcount {hc} (…'
+  const command = `W=/work/scratch; sed -i -e 's/rev, cost, hc = 4820000, 3910000, 212/rev, cost, hc = 4820000, 3910000, 214/' \\n -e 's/f"Headcount {hc} (provisional - may be revised)"/f"Headcount {hc}"/' \\n -e 's/Headcount was {hc} (provisional - this figure may be revised)\./Headcount was {hc}./' $W/build.py`.slice(0, 299) + "…";
+  assert.equal(describeCall("Bash", { command, description: "Change headcount to 214 and rebuild all files" }).summary, "Change headcount to 214 and rebuild all files");
+  assert.equal(describeCall("Bash", { command: "taskuary --guide browser 2>&1 | head -80" }).summary, "Read the browser guide");
+  const read = (id, file_path) => ({ type: "tool_call", name: "Read", detail: { tool_call_id: id, args: { file_path } } });
+  const [s] = stepsOf([read("a", "/s/outputs/TQ-0001/chart-2.png"), read("b", "/s/outputs/TQ-0001/Q3-board-report.pdf")], { keepStart: false });
+  assert.equal(s.summary, "Read chart-2.png and Q3-board-report.pdf");
+});
+
+// THE WALK, 2026-11-21 (Claude over ACP): "5 steps - ran 3 commands, showed you 'show', showed you 'mcp__taskuary__show'" - the adapter's title
+// for a call is the tool's own name, and read as the view's title, so a failed bare `show` and the one that worked never folded together;
+// "searched your mail for , searched your documents"; and its working notes between calls stood in the chat as its answer
+test("a step line is plain words: no tool name as a title, no empty query, and words on the way to a call fold into the work", async () => {
+  const { turnParts, foldLine } = await import("../src/chatStream.js");
+  assert.equal(describeCall("mcp__taskuary__show", { title: "mcp__taskuary__show", files: ["C:/out/TQ-0002/forecast.png"] }).summary, "Showed you forecast.png");
+  assert.equal(describeCall("show", { title: "show" }).summary, "Laid it out for you");
+  assert.equal(describeCall("mcp__taskuary__show", { title: "Q4 forecast" }).summary, "Showed you 'Q4 forecast'");
+  const call = (id, name, args) => ({ type: "tool_call", name, detail: { tool_call_id: id, args } });
+  const done = (id, result = "", is_error = false) => ({ type: "tool_result", name: id, detail: { tool_call_id: id, result, is_error } });
+  const said = (t) => ({ type: "progress", name: "text", detail: t });
+  const trace = [call("m1", "mcp__taskuary__search_messages", { words: "" }), done("m1", "[]"),
+    call("m2", "mcp__taskuary__search_messages", { sender: "" }), done("m2", "[]"),
+    said("Python 3.10 exists under the user path; check libraries."),
+    call("b1", "Bash", { command: "py -c \"import openpyxl\"" }), done("b1"),
+    call("s1", "show", { title: "show" }), done("s1", "No such tool available: show", true),
+    call("s2", "mcp__taskuary__show", { title: "mcp__taskuary__show" }), done("s2", "Shown in the owner's chat."),
+    said("Good. Now the reply with both files attached."),
+    call("r1", "mcp__taskuary__propose_reply", { text: "Hi Gail" }), done("r1", "{}"),
+    said("The forecast is ready and the reply to Gail waits for your Send.")];
+  const parts = turnParts(trace, { answer: "The forecast is ready and the reply to Gail waits for your Send." });
+  assert.deepEqual(parts.filter((p) => p.type === "said"), [], "no working note stands as an answer");
+  const steps = parts.flatMap((p) => (p.type === "work" ? p.steps : []));
+  assert.deepEqual(steps.filter((s) => s.kind === "thought").map((s) => s.summary),
+    ["Python 3.10 exists under the user path; check libraries.", "Good. Now the reply with both files attached."]);
+  assert.equal(steps.find((s) => s.tool === "show").status, "recovered", "the failed try is the same step as the one that worked");
+  assert.doesNotMatch(foldLine(parts), /show'|mcp__|for ,|for $/);
+  assert.match(foldLine(parts), /^\d+ steps - searched your mail/);
+  // ...a turn still at work keeps every word where it stands
+  assert.equal(turnParts(trace.slice(0, 7), { live: true }).filter((p) => p.type === "said").length, 1);
+});
+
+test("an answer that names a made file is drawn once, whether its words named the file by path or by name (the HIPAA walk, 2026-11-21)", () => {
+  const path = "C:\\Users\\alex\\AppData\\Local\\Temp\\home\\scratch\\outputs\\TQ-0003\\Wellness_Flyer.pdf";
+  const trace = [{ type: "tool_call", name: "exec", detail: { tool_call_id: "c1", args: { command: "make flyer" } } },
+    { type: "tool_result", name: "c1", detail: { tool_call_id: "c1", result: "ok" } },
+    { type: "progress", name: "text", detail: `Created the one-page flyer at \`${path}\` and showed it in the chat.` }];
+  const steps = stepsOf(trace, { answer: "Created the one-page flyer at `Wellness_Flyer.pdf` and showed it in the chat." });
+  assert.equal(steps.filter((s) => s.kind === "said").length, 0);
 });

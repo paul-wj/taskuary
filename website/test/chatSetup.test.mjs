@@ -2,6 +2,8 @@
 // click, and links to the created resource's own screen afterwards.
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { describe } from "../src/proposalCard.js";
 
 
@@ -12,4 +14,3 @@ test("the card shows the report's facts, not the raw config, and offers a dry ru
   assert.equal(d.preview, true);
   assert.equal(describe({ ...p, kind: "connection.create" }).preview, false);
 });
-

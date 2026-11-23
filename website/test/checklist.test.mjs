@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { checklistMarkdown, parseChecklist, toggleItem, progressLine, settleTick, withTicks } from "../src/checklist.js";
 
 // PW-075/PW-077: one list, GitHub task-list syntax, shared by the task page and the assistant card;
@@ -22,9 +23,8 @@ test("toggling flips one item by id and leaves the rest", () => {
 });
 
 test("the progress line counts boxes and never calls the task done", () => {
-  assert.match(progressLine(ITEMS), /1.*2/);
-  assert.match(progressLine([{ id: "x", text: "t", done: true }]), /1.*1/);
-  assert.notEqual(progressLine([{ id: "x", text: "t", done: true }]), progressLine([{ id: "x", text: "t", done: false }]));
+  assert.equal(progressLine(ITEMS), "1 of 2 done");
+  assert.equal(progressLine([{ id: "x", text: "t", done: true }]), "1 of 1 done — Mark done when it is really finished");
   assert.equal(progressLine([]), "");
 });
 
@@ -38,4 +38,3 @@ test("a press in flight is drawn over the server's list, and settles only when n
   const newer = { b2: false };
   assert.equal(settleTick(newer, "b2", true), newer, "a second press on the box is still in flight: it stays drawn");
 });
-

@@ -4,6 +4,8 @@
 // asks first, when it is done, and when it runs. Every one of those is a field here, the actions sit in one place at the top,
 // and Run now is there for a workflow that is not saved yet (it saves, then runs).
 import React, { useEffect, useMemo, useState } from "react";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { Alert, Box, Button, Chip, CircularProgress, MenuItem, Select, Switch, TextField, Typography } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -16,9 +18,7 @@ import { effortChoices, keepEffort, modelChoices } from "./workflowBrain.js";
 import WorkflowSteps from "./WorkflowSteps.jsx";
 import { REPAIR, REPORT_WORDS, asReport, asSteps, askFor, diffKeys, firstMissing, onlyReads, outputsOf, toSaved } from "./workflowFlow.js";
 import { openAppLink } from "./appLinks.js";
-import { openHelp, useViewExtras } from "./pageView.js";
-import { t } from "./i18n.js";
-import { useLocale } from "./LocaleProvider.jsx";
+import { useScheduleWords } from "./reportWords.js";
 
 const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -52,24 +52,13 @@ export const withSchedule = (c, s) => {
   return out;
 };
 
-export const scheduleWords = (s) => s.mode === "every" ? t("every {minutes} minutes", { minutes: s.minutes })
-  : s.mode === "daily" ? t("every day at {time}", { time: s.at })
-  : s.mode === "weekly" ? t("{days} at {time}", { days: (s.days || []).map((d) => t(DAYS[d])).join(", "), time: s.at })
-  : s.mode === "monthly" ? t("on the {day} of each month at {time}", { day: s.day, time: s.at })
-  : s.mode === "cron" ? t("cron {cron}", { cron: s.cron }) : t("only when you press Run now");
-
-// ...and when a mail starts it too (workflows.from_mail)
-export const runsWords = (s, c) => String(c?.on_mail || "").trim()
-  ? s.mode === "manual" ? t("when a mail like the one described arrives") : t("{schedule}, and when a mail like the one described arrives", { schedule: scheduleWords(s) }) : scheduleWords(s);
-
-const Field = ({ label, hint, children }) => {
-  useLocale();
-  return <Box sx={{ mb: 2 }}>
-    <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13, mb: 0.25 }}>{t(label)}</Typography>
-    {hint && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>{t(hint)}</Typography>}
+const Field = ({ label, hint, children }) => (
+  <Box sx={{ mb: 2 }}>
+    <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13, mb: 0.25 }}>{label}</Typography>
+    {hint && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>{hint}</Typography>}
     {children}
-  </Box>;
-};
+  </Box>
+);
 
 // WHEN IT RUNS: one picker for a workflow and a report alike (the 2026-10-21 UI audit, B3) - the report's free "daily at HH:MM" box
 // saved "7am", which the scheduler cannot read. Every choice here writes a key it can (withSchedule); Custom keeps cron for the rest.
@@ -166,9 +155,6 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
   useEffect(() => { if (fixRun && cur) { fix(fixRun); onFixTaken?.(); } }, [fixRun, cur?.SourceId]);   // eslint-disable-line react-hooks/exhaustive-deps
   const changed = repair ? diffKeys(repair.was, cfg.flow) : null;
   const canFix = !!(cur && steps && lastRunRec?.failed && lastRunRec?.run_id && (lastRunRec.steps || []).some((r) => r.status === "failed"));
-  // FIX WITH AI OPENS THE CHAT (2026-10-30): the repair it ran is the Assistant's to press here, as the owner's own "Repair the failed step"
-  // would be - it lands as the same unsaved change (Keep, then Save stay the owner's)
-  useViewExtras("reports", { buttons: canFix ? [{ id: "repair", label: t("Repair the failed step"), press: () => fix(lastRunRec.run_id) }] : [] });
 
   const body = () => {
     const c = withSchedule({ ...cfg, type: "agent", access: "write" }, sched);
@@ -181,6 +167,8 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
   const missing = !String(cfg.title || "").trim() ? "a name"
     : steps ? (!(cfg.flow || []).length ? "a first step" : "") : !String(cfg.prompt || cfg.skill || "").trim() ? "what it does" : "";
   const stepMissing = steps ? firstMissing(cfg.flow) : "";
+  // ...and WHEN IT RUNS, as it is held now, in the server's one phrase (reports.schedule_words) - what the list and its task say once saved
+  const runs = useScheduleWords(withSchedule({ on_mail: cfg.on_mail }, sched));
   const save = async () => {
     if (missing) { setMsg({ ok: false, key: "Give it {missing} first.", missing }); return null; }
     if (stepMissing) { setMsg({ ok: false, key: "Not yet: {missing}.", flow: cfg.flow }); return null; }
@@ -190,7 +178,7 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
       const { data } = await api.post("/api/sources", { ...(cur ? { SourceId: cur.SourceId } : {}), Channel: "report",
         Address: c.title, ConfigJson: JSON.stringify(c), Active: cur ? !!cur.Active : true });
       await reload();
-      setMsg({ ok: true, key: "Saved — runs {schedule}.", schedule: { sched, cfg } }); setRepair(null);
+      setMsg({ ok: true, text: `Saved — runs ${runs}.` }); setRepair(null);
       if (!cur) onSaved?.(data.sourceId);
       return data.sourceId || cur?.SourceId;
     } catch (e) { setMsg(e?.response?.data?.detail ? { ok: false, text: e.response.data.detail } : { ok: false, key: "It could not be saved." }); return null; }
@@ -220,7 +208,7 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
       {/* the actions, together: what it is doing now, and the three things you can do about it */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 2, mt: -1 }}>
         <Typography variant="body2" sx={{ color: DIM, flex: 1, minWidth: 200 }}>
-          {cur ? t("{state} · runs {schedule}", { state: t(cur.Active ? "On" : "Off"), schedule: runsWords(sched, cfg) }) : t("Not saved yet · will run {schedule}", { schedule: runsWords(sched, cfg) })}
+          {cur ? `${cur.Active ? "On" : "Off"} · runs ${runs}` : `Not saved yet · will run ${runs}`}
         </Typography>
         {cur && <Box sx={{ display: "flex", alignItems: "center" }}>
           {/* named, so the Assistant can find it (the everyday-asks audit, 2026-11-02): a switch with no label never reached its view */}
@@ -234,12 +222,8 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
           {busy === "save" ? t("Saving…") : t("Save")}</Button>
       </Box>
       {msg && <Alert severity={msg.ok ? "success" : "warning"} sx={{ mb: 1.5, fontSize: 12.5 }} onClose={() => setMsg(null)}
-        action={msg.fix ? <Button size="small" component="a" href={msg.fix.href} sx={{ fontSize: 12 }}>{msg.fix.label || btnLabel("fix")}</Button> : null}>
-        {msg.key ? t(msg.key, msg.schedule ? { schedule: runsWords(msg.schedule.sched, msg.schedule.cfg) }
-          : msg.flow ? { missing: firstMissing(msg.flow) } : msg.missing ? { missing: t(msg.missing) }
-          : msg.key === "{explain} Test each step, then Save - nothing is saved yet." ? { explain: msg.params.explain || t("Drafted as steps.") }
-          : msg.key === "{title} is running." ? { title: msg.params.title || t("It") } : msg.params) : msg.text}</Alert>}
-      {lastRun && lastRun({ onFix: canFix ? () => openHelp(`Fix the failed run of ${cfg.title || cur?.Address || "this routine"}`) : null, fixing: busy === "fix",
+        action={msg.fix ? <Button size="small" component="a" href={msg.fix.href} sx={{ fontSize: 12 }}>{msg.fix.label || btnLabel("fix")}</Button> : null}>{msg.text}</Alert>}
+      {lastRun && lastRun({ onFix: canFix ? () => fix(lastRunRec.run_id) : null, fixing: busy === "fix",
         // a repair taken back puts the old steps on the saved workflow: the page shows them too
         onChanged: async () => { await reload(); const { data } = await api.get("/api/sources"); const row = (data.data || []).find((x) => x.SourceId === cur?.SourceId);
           if (row) setCfg((c) => ({ ...c, flow: parse(row.ConfigJson).flow })); } })}

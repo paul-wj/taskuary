@@ -3,7 +3,8 @@
 // from their email and ask them if it's good description"). Name, organisation, title and systems, each filled from the mail where it
 // can (firstrun.suggest_about) and never over what was typed; the title answered, JOB.md is written from the mail with them in hand
 // (firstrun.learn) and the last screen asks whether it is right. No placeholder text: a box is either filled from the mail or empty.
-// The row's Back and Next are this component's while it is on the canvas; the question is the Advisor's line (onLine).
+// The row's Back and Next are this component's while it is on the canvas; what each question asks is page text under its heading,
+// written here (the owner, 2026-11-20: "anything important put on page and should be hard coded. no assistant things any more").
 // EVERY SOURCE BEFORE THE JOB (the owner, 2026-10-20; any source, 2026-10-21): the job is read out of what comes in, so a step lists the
 // sources connected so far - mailboxes, chats, task systems (firstrun.sources) - and adds the rest with the main source step's own
 // cards (FirstRun hands its shelf in as `mailShelf`). It is never skipped - Skip on a question before it lands on it - and
@@ -31,7 +32,7 @@ const LABEL = { name: "Your name", org: "Your organisation", role: "Your job tit
   systems: "Systems you work in", mailboxes: "Connect your sources", job: "About your work", workstreams: "What you work on", style: "How you write", soul: "Who you are" };
 const ASK = {
   name: "What's your name?", org: "What organisation do you work for?",
-  role: "What's your job title? Next, I write your job description from your email.",
+  role: "What's your job title? Next, Taskuary writes your job description from your email.",
   // the block under every email Taskuary writes - read off the sent mail, checked here (the owner, 2026-10-16: "pull the signature
   // from the email and use that in emails ... have a setting so they can check it that it looks good")
   signature: "Is this your email signature? It goes under every email Taskuary writes for you, exactly like this - fix anything that's off.",
@@ -41,30 +42,31 @@ const ASK = {
 };
 // each draft's line, by its state - the job's as it was, the other two in the same words
 const SAYS = {
-  job: { running: "Reading three months of your email to write your job description - about a minute.",
-    failed: (why) => t("I couldn't write it from your email ({why}). Press Write it again, or say it in your own words.", { why }),
+  job: { running: "Taskuary reads the last three months of your email to write your job description - about a minute.",
+    failed: (why) => t("Taskuary couldn't write it from your email ({why}). Press Write it again, or say it in your own words.", { why }),
     ready: "This is your job as your email describes it, and below it what you work on. Is it right? Fix anything that's wrong, then press Next.",
-    none: "Press Write it - I read your email and describe your job.", busy: "Writing your job description from your email…" },
+    none: "Press Write it - Taskuary reads your email and describes your job." },
   // HERE'S WHAT I THINK YOU WORK ON (the owner, 2026-11-01): six months of mail grouped into workstreams - rename one, mark it personal,
   // or leave it out; a personal one is never learned from. Drawn under the job since 2026-11-06, where `busy` is its line in place
-  workstreams: { running: "Reading six months of your mail to see what you work on - about a minute.",
-    failed: (why) => t("I couldn't tell what you work on from your mail ({why}).", { why }),
-    ready: "Here's what I think you work on. Rename any, untick anything that isn't your work, then press Next.",
-    none: "Press Write it - I read six months of your mail and list what you work on.", busy: "Grouping your mail into what you work on…" },
-  style: { running: "Reading your sent mail to describe how you write - about a minute.",
-    failed: (why) => t("I couldn't write it from your sent mail ({why}). Press Write it again, or describe it in your own words.", { why }),
+  workstreams: { running: "Taskuary reads the last six months of your mail to see what you work on - about a minute.",
+    failed: (why) => t("Taskuary couldn't tell what you work on from your mail ({why}).", { why }),
+    ready: "This is what your mail shows you work on. Rename any, untick anything that isn't your work, then press Next.",
+    none: "Press Write it - Taskuary reads six months of your mail and lists what you work on." },
+  style: { running: "Taskuary reads your sent mail to describe how you write - about a minute.",
+    failed: (why) => t("Taskuary couldn't write it from your sent mail ({why}). Press Write it again, or describe it in your own words.", { why }),
     ready: "This is how you write, as your sent mail shows it. Edit anything that's off, then press Next.",
-    none: "Press Write it - I read your sent mail and describe how you write.", busy: "Describing how you write from your sent mail…" },
-  soul: { running: "Reading your mail and your answers to describe how you like to work - about a minute.",
-    failed: (why) => t("I couldn't write it from your mail ({why}). Press Write it again, or say it in your own words.", { why }),
+    none: "Press Write it - Taskuary reads your sent mail and describes how you write." },
+  soul: { running: "Taskuary reads your mail and your answers to describe how you like to work - about a minute.",
+    failed: (why) => t("Taskuary couldn't write it from your mail ({why}). Press Write it again, or say it in your own words.", { why }),
     ready: "This is how you like to work, from your mail and your answers. Edit anything that's off, then press Next.",
-    none: "Press Write it - I describe how you like to work from your mail and your answers.", busy: "Describing how you like to work…" },
+    none: "Press Write it - Taskuary describes how you like to work from your mail and your answers." },
 };
 const NONE = { state: "none", why: "", text: "" };
+// ...A DRAFT STARTS ONCE THE FIRST READ OF THE MAIL IS IN (firstrun._await_first_read): until then it is running, and says only that
 // what the job was written from: the answers and every mailbox it read - one added since is a reason to write it again
 const who = (a, boxes = []) => JSON.stringify([...[a.name, a.org, a.role].map((x) => (x || "").trim()), ...boxes.map((b) => b.address.toLowerCase()).sort()]);
 
-export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again = false, mailboxes = [], mailShelf = null, hidden = false }) {
+export default function FirstRunAbout({ onSaved, onBack, onStep, again = false, mailboxes = [], mailShelf = null, hidden = false }) {
   useLocale();
   const [a, setA] = useState(null), [offered, setOffered] = useState([]), [seen, setSeen] = useState([]), [all, setAll] = useState(false);
   const [at, setAt] = useState(0), [reading, setReading] = useState(false), [note, setNote] = useState("");
@@ -94,7 +96,7 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
       try {
         const { data: s } = await api.post("/api/setup/first-run/about/suggest", {}, { timeout: 180_000 });
         if (!on) return;
-        if (s.error) setNote(s.error);
+        if (s.error) setNote(`Taskuary couldn't fill these in from your email (${s.error}) - type them in.`);
         else {
           // a box the owner answered - now or before - is theirs; only an empty one, or the name guessed from the address, takes the mail's
           setA((x) => ({ ...x, ...Object.fromEntries(["name", "org", "role", "signature"].filter((k) => !touched.current.has(k) && s[k]
@@ -102,7 +104,7 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
             systems: touched.current.has("systems") || x.systems.length ? x.systems : s.systems || [] }));
           setSeen((x) => [...new Set([...x, ...(s.systems || [])])]);
         }
-      } catch (e) { if (on) setNote(errText(e)); }
+      } catch (e) { if (on) setNote(`Taskuary couldn't fill these in from your email (${errText(e)}) - type them in.`); }
       if (on) setReading(false);
     }).catch((e) => on && setErr(errText(e)));
     return () => { on = false; };
@@ -171,6 +173,7 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
   const last = step === "soul";
   // THE ONE LIT MOVE (FirstRun.jsx, the owner 2026-10-19): Write it while there is no draft to look at, else the row's Next - and the
   // line names it by its label
+  const working = draft?.state === "running";
   const writeLit = !!draft && ["none", "failed"].includes(draft.state);
   // ...and it says Next on every step (the owner, 2026-11-03): "Looks right", "That's all my sources" and "Save" named what each press did,
   // and a word that changes per step is one more thing to read before the same press. What it does is said on the line and in its hover
@@ -184,17 +187,14 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
       title: t(last ? "Saved to what Taskuary knows about you - change it any time in Settings" : step === "mailboxes" ? "Every place your work comes in is connected"
         : draft ? "Kept as it is here - change it any time in Settings" : "The next question"), run: next },
   ] : [], !!a && !hidden);
-  // the question is the Advisor's line over the row
+  // the question, under its heading; a draft being written or one that failed says so where the draft will be, once
   const says = draft && SAYS[step];
-  // a mailbox connected but not read yet says so whole (firstrun.FIRST_READ) - not "connect a mailbox" to one who just did
-  const soon = /first read is still running/i.test(draft?.why || "");
-  const line = !a ? "" : draft ? (draft.state === "failed" ? (soon ? (draft.why === "The first read is still running - press Write it again in a minute." ? t("The first read is still running - press Write it again in a minute.") : draft.why) : says.failed(draft.why)) : t(says[draft.state]))
+  const line = !a ? "" : draft ? (["ready", "none"].includes(draft.state) ? t(says[draft.state]) : "")
     : step === "mailboxes" ? (boxes ? t(boxes === 1 ? "One source is connected. {question} Then press {next}." : "{count} sources are connected. {question} Then press {next}.", { count: boxes, question: t(ASK.mailboxes), next: nextLabel })
       : t("Connect your email, chat or task system with its card - your job is read from everything you connect."))
+    // ...and "the ones ticked" only when the mail ticked some: with none it pointed at nothing
     : step === "systems" && !reading && !seen.length ? t("Which systems do you work in? Type each one and press Add a system. Then press {next}.", { next: nextLabel })
-    : t("{question}{reading} Then press {next}.", { question: t(ASK[step]), reading: reading && step !== "systems" ? t(" I'm reading your email to fill this in.") : "", next: nextLabel });
-  useEffect(() => { onLine?.(line); }, [line, onLine]);
-  useEffect(() => () => onLine?.(""), [onLine]);
+    : t("{question} Then press {next}.", { question: t(ASK[step]), next: nextLabel });
   if (!a) return err ? <Typography sx={{ color: "var(--tq-danger, #9b2c2c)", fontSize: 13 }}>{err}</Typography> : <CircularProgress size={16} />;
 
   const set = (k) => (e) => { touched.current.add(k); setA((x) => ({ ...x, [k]: e.target.value })); };
@@ -215,19 +215,22 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
   const quiet = { color: DIM, fontSize: 12.5, minWidth: 0, px: 1 };
   const moves = [
     ...(step === "systems" ? [<Button key="all" size="small" sx={quiet} onClick={() => setAll((v) => !v)}>{t(all ? "Show only mine" : "Show the full list")}</Button>] : []),
-    ...(draft && draft.state !== "running" ? [
+    ...(draft && !working ? [
       ...(text.trim() ? [<Button key="edit" size="small" sx={quiet} onClick={() => setEditing((v) => (v === step ? "" : step))}>
         {t(editing === step ? "Done editing" : "Edit")}</Button>] : []),
       <Button key="write" size="small" sx={quiet} onClick={() => { setEditing(""); learn([step]); }} disabled={!!busy}
         data-tq-setup-lit={writeLit ? "about" : undefined}>{t(draft.state === "none" ? "Write it" : "Write it again")}</Button>] : []),
   ];
-  const skipper = !again && canSkip(step), under = step === "job";          // what you work on, under the job
+  const under = step === "job";          // what you work on, under the job
+  // ...and Skip only while nothing runs on this question: the email being read is not a thing to skip past (the owner, 2026-11-20)
+  const skipper = !again && canSkip(step) && !reading && !working && !(under && drafts.workstreams.state === "running");
   return (
     <Box data-tq-firstrun-about={step} sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 720, width: "100%", mx: "auto" }}>
       <Box sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 2, flexWrap: "wrap" }}>
         <Typography component="h2" sx={{ fontSize: 17, fontWeight: 600, color: INK, m: 0 }}>{t(LABEL[step])}</Typography>
         <Typography sx={{ color: FAINT, fontSize: 12, whiteSpace: "nowrap" }}>{t("About your work · {c}", { c: counter(at) })}</Typography>
       </Box>
+      {line && <Typography role="status" data-tq-setup-line="" sx={{ color: DIM, fontSize: 14, mt: -0.5 }}>{line}</Typography>}
       {["name", "org", "role"].includes(step) && <>
         <TextField key={step} size="small" fullWidth autoFocus value={a[step]} onChange={set(step)} onKeyDown={enter} sx={field}
           inputProps={{ "aria-label": t(LABEL[step]) }} />
@@ -242,7 +245,7 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
         <Typography sx={{ color: DIM, fontSize: 12 }}>{t("How it sits under an email:")}</Typography>
         <Box data-tq-signature-preview="" sx={{ border: "1px solid var(--tq-border, #ddd5c6)", borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)", px: 2, py: 1.25, fontSize: 13.5,
           whiteSpace: "pre-line", color: "var(--tq-text, #2b2b2b)", maxWidth: 520 }}>
-          {"Hi Erin,\n\nThanks - that's done.\n\n"}{(a.signature || "").trim() || <span style={{ color: DIM }}>{t("(no signature - leave it blank and drafts sign the way your writing style does)")}</span>}
+          {t("Hi Erin,\n\nThanks - that's done.\n\n")}{(a.signature || "").trim() || <span style={{ color: DIM }}>{t("(no signature - leave it blank and drafts sign the way your writing style does)")}</span>}
         </Box>
       </>}
       {step === "systems" && <>
@@ -266,12 +269,12 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
         </Box>
         {mailShelf}
       </>}
-      {draft && <Box data-tq-draft={draft.state} sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>{draft.state === "running" ? (
+      {draft && <Box data-tq-draft={draft.state} sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>{working ? (
         <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-          <Typography sx={{ color: DIM, fontSize: 13.5 }}>{t(says.busy)}</Typography></Box>
+          <Typography sx={{ color: DIM, fontSize: 13.5 }}>{t(says.running)}</Typography></Box>
       ) : <>
         {draft.state === "failed" && <Typography data-tq-draft-failed="" sx={{ color: "var(--tq-danger, #9b2c2c)", fontSize: 13.5 }}>
-          {soon ? draft.why : t("I couldn't write it: {why}", { why: draft.why })}</Typography>}
+          {says.failed(draft.why)}</Typography>}
         {/* READ AS A DOCUMENT, not its markdown (the owner, 2026-10-16: the box showed "### What my job is"): Edit opens the text */}
         {editing === step || !text.trim()
           ? <TextField key={step} multiline fullWidth minRows={10} maxRows={22} value={text} sx={{ ...field, "& textarea": { fontSize: 14, lineHeight: 1.5 } }}
@@ -302,14 +305,14 @@ export function WorkstreamsSection({ d, text, onChange, onAgain = null, busy = f
   const quiet = { color: DIM, fontSize: 12.5, minWidth: 0, px: 1, ml: -1 };
   return (
     <Box data-tq-workstreams={d.state} sx={{ display: "flex", flexDirection: "column", gap: 1, mt: heading ? 1 : 0 }}>
-      {heading && <Typography component="h3" sx={{ fontSize: 15, fontWeight: 600, color: INK, m: 0 }}>What you work on</Typography>}
+      {heading && <Typography component="h3" sx={{ fontSize: 15, fontWeight: 600, color: INK, m: 0 }}>{t("What you work on")}</Typography>}
       {d.state === "running" ? <>
         <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-          <Typography sx={{ color: DIM, fontSize: 13.5 }}>{SAYS.workstreams.busy}</Typography></Box>
+          <Typography sx={{ color: DIM, fontSize: 13.5 }}>{t(SAYS.workstreams.running)}</Typography></Box>
         {later && <Typography data-tq-workstreams-later="" sx={{ color: FAINT, fontSize: 12.5 }}>{later}</Typography>}
       </> : d.state === "failed" ? <>
         <Typography data-tq-draft-failed="" sx={{ color: "var(--tq-danger, #9b2c2c)", fontSize: 13.5 }}>{SAYS.workstreams.failed(d.why)}</Typography>
-        {onAgain && <Box><Button size="small" sx={quiet} disabled={busy} onClick={onAgain}>Write it again</Button></Box>}
+        {onAgain && <Box><Button size="small" sx={quiet} disabled={busy} onClick={onAgain}>{t("Write it again")}</Button></Box>}
       </> : <WorkstreamsConfirm text={text} onChange={onChange} />}
     </Box>
   );

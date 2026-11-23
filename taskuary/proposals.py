@@ -17,9 +17,10 @@ Unknown actions, bad shapes and unpermitted actions are REFUSED and recorded - a
 proposal is never a partially-executed one.
 """
 import json, re, time
+from .say import said as _said            # a failure written to the chat is said in his words (say.py)
 from loguru import logger
 from .timewords import plural
-from . import buttons
+from . import buttons, words
 
 MARK = 'TASKUARY-PROPOSE'
 BLOCK = re.compile(MARK + r'\s*(\{.*?\})', re.S)     # only for cutting junk a decode could not read (strip)
@@ -44,7 +45,9 @@ def strip(text: str) -> str:
     for a, b, obj in spans(text):
         if obj is None: continue
         out.append(text[at:a]); at = b
-    return BLOCK.sub('', ''.join(out) + text[at:])
+    # ...and the brackets a marker was written in (round 4, 2026-11-22: "[[TASKUARY-PROPOSE {...}]]" left "[[]]" - an answer that was not empty,
+    # so the line saying the proposal was not put on a card never showed: a dead end)
+    return re.sub(r'\[\[\s*\]\]', '', BLOCK.sub('', ''.join(out) + text[at:]))
 
 
 MAX = 5                      # per transcript: a loop proposing 200 pushes is a bug, not intent
@@ -70,6 +73,7 @@ ACTIONS = {
     'close_item': ('comment on the tracker item this task came from and move it to done', ('tracker', 'item'), None),
     # a workflow step that failed, fixed by the model on the owner's say-so (flow.repair): the new list is saved only past their yes
     'repair_workflow': ("change this workflow's steps to the repaired list", ('source_id', 'flow'), None),
+    'change_setup': ("change a report's or dashboard's setup", ('source_id', 'patch'), None),
     # the on-close "did this session do a kind of job that will recur?" answer (playbooks.draft),
     # and an agent that knows it did: a playbook is filed only past the owner's click
     'write_playbook': ('file a new PLAYBOOK - how this kind of job is done here - for the next agent to follow',
@@ -103,7 +107,7 @@ ACTIONS = {
     # A SCRIPT WRITTEN ON THE JOB, KEPT AS A ROUTINE (the owner, 2026-11-10: "agent should be able to after building one should say should
     # we save this"): the card shows the script whole, and the owner's press is the save (workflows.save_script_routine) - nothing is
     # saved or run before it, and it is the one door by which an agent's script ever reaches a schedule
-    'save_routine': ('save this script as a routine', ('title', 'script'), None),
+    'save_routine': ('save this routine or report', ('title',), None),
 }
 FAILED_NOTE = 'failed'      # a pressed act that failed: settled, its error kept (ActError) - its agent sets up what goes next
 HELD_ACTS = ('browser_act', 'shell_act', 'desktop_act')     # raised by a hook before the act ran - never an agent's marker
@@ -116,24 +120,47 @@ def _gate(a: str):
 # WHAT NO AGENT MAY ASK FOR, AND THE MARKS NONE MAY PUT ON ITS OWN ASK - one list for both doors: the marker (parse) and the tool
 # (agenttools.proposal_of). They were two, and had drifted (the spine audit, 2026-11-09): the tool's did not name the held steps, so an agent
 # could file a "held step" of its own - a command of its choosing, on the card the owner reads as one Taskuary stopped
-NOT_ASKED = ('merge_pr', 'close_item', 'repair_workflow', *HELD_ACTS)
+NOT_ASKED = ('merge_pr', 'close_item', 'repair_workflow', 'change_setup', *HELD_ACTS)
 MARKS = ('closeout', 'flow_run')
 
 # A POST IS DRAWN AS THE POST (the owner, 2026-11-05: "it's not showing the post and the image as a linkedin post and asking me if i want to
 # post it"): a run_tool on one of these is the owner's words on a network, so its card shows them as a post, editable, with the picture
 # where the network takes one - and what the owner left in the box is what goes. MEDIA: the ones that carry a picture from here.
-POSTS = {'linkedin_post': 'LinkedIn', 'bluesky_post': 'Bluesky', 'mastodon_post': 'Mastodon'}
-MEDIA = {'linkedin_post'}
+POSTS = {'linkedin_post': 'LinkedIn', 'bluesky_post': 'Bluesky', 'mastodon_post': 'Mastodon', 'reddit_post': 'Reddit', 'x_post': 'X'}
+MEDIA = {'linkedin_post', 'x_post'}
 
 
 def is_post(p: dict) -> bool: return (p or {}).get('action') == 'run_tool' and (p or {}).get('type') in POSTS
+# A POST ON A NETWORK NOT CONNECTED IS STILL ITS CARD, AND ITS PRESS HANDS IT TO THE AGENT FOR THE SITE (the owner, 2026-11-22: "card first,
+# sign-in at the press"): the agent went to LinkedIn's sign-in before writing a word, then gave the posts back as prose. The card stands with
+# the words and picture; Post via the browser saves them as he left them, once (decide_review takes one press), and hands them to its agent,
+# whose final Post on the site the browser gate holds for his yes
+BROWSER_POST = ('The owner pressed Post via the browser on your {network} post card. Post exactly these words on {network} in your browser'
+                '{pic}: "{words}". If the site wants him signed in, hand him its sign-in; then press its final Post - Taskuary holds that press '
+                'for his yes.')
+def via_browser(store, rid: int, text: str, actor: str = 'owner') -> dict:
+    "Post via the browser: {ok, status, told} - the post saved as he left it and handed to its agent; never twice, never a card that is not a post."
+    rv = store.get_review(int(rid)) or {}
+    try: p = json.loads(rv.get('DraftText') or '{}')
+    except ValueError: p = {}
+    if not is_post(p): return {'ok': False, 'why': 'Only a post goes through the browser.'}
+    words = str(text if str(text or '').strip() else p.get('text') or '').strip()
+    if not words: return {'ok': False, 'why': 'The post has no words to put up.'}
+    p = {**p, 'text': words, 'result': {'browser': True}}
+    if not store.decide_review(int(rid), 'approved', json.dumps(p), actor):
+        return {'ok': True, 'status': (store.get_review(int(rid)) or {}).get('Status'), 'already': True}
+    from . import general, outputs
+    pic = f" with the picture {outputs.folder(int(rv['TaskId'])) / p['image']}" if p.get('image') else ''
+    told = general.to_agent(store, int(rv['TaskId']), BROWSER_POST.format(network=POSTS[p['type']], pic=pic, words=words), actor, start=True)
+    return {'ok': True, 'status': 'approved', 'told': told}
 
 
 def picture_why(tid, p: dict) -> str:
     """'' when a post's `image` is a picture in the task's own folder it can carry; else what is wrong, said to the agent."""
     if not p.get('image'): return ''
     from . import linkedin, outputs
-    if p.get('type') not in MEDIA: return f"{POSTS.get(p.get('type'), p.get('type'))} posts carry no picture from here - post the words alone"
+    # ...EVERY POST CARD CARRIES ITS PICTURE (the owner, 2026-11-20): one Taskuary cannot upload to that network (MEDIA) is shown on the card to
+    # save and add by hand, never refused - the card says so (ActionCard)
     f = outputs.named(int(tid), p['image']) if tid else None
     if not f: return f"{p['image']} is not a file in your task folder - save the picture there first"
     if f.suffix.lower() not in linkedin.IMAGE_TYPES: return f'{f.name} is not a PNG, JPG or GIF picture'
@@ -190,15 +217,27 @@ CONNECTOR_ALLOW = {'github': {'use_as_tracker': 'treat GitHub issues/PRs as the 
 SETTING_VALUES = {'answer_to_agent': ('auto', 'ask', 'off')}   # timeline_fade retired with the Timeline (audit, 2026-11-05)
 
 
+# A REFUSAL NAMES THE SWITCH THAT REFUSED, AND OPENS IT (design round 2, 2026-11-18): "the owner has that switch off" named none, and an agent
+# told the owner to "turn on pull requests under Policies" - a page of mail rules with no such switch. Each switch by its label where the owner
+# sees it, and the link that opens that place; GitHub's are read where its card keeps them (store.github_permissions), never a second copy
+SWITCHES = {'agent_push_enabled': ('Agents may push / deploy', 'the GitHub card', '#connector=github'),
+            'use_as_tracker': ('GitHub is the issue tracker', 'the GitHub card', '#connector=github'),
+            'github_reply': ('Reply to issue/PR authors', 'the GitHub card', '#connector=github'),
+            'playbooks_enabled': ('Use playbooks', words.name('sorting'), words.href('sorting') + '&key=playbooks_enabled')}
 def _switch_ok(store, name) -> bool:
     if not name: return True
-    if name in ('agent_push_enabled',): return store.get_setting(name) == '1'
+    if name == 'agent_push_enabled': return store.github_permissions()[1]
+    if name == 'use_as_tracker': return store.github_permissions()[0]
     if name == 'playbooks_enabled': return store.get_setting(name, '1') == '1'
     import json as _j
     c = store.get_connector_by_type('github') or {}
     try: cfg = _j.loads(c.get('ConfigJson') or '{}')
     except ValueError: cfg = {}
     return bool(cfg.get({'github_reply': 'reply_comments'}.get(name, name)))
+def switch_off(name) -> str:
+    "The switch `name` said as the owner finds it, with its link: what an agent passes on, never a place of its own guessing."
+    label, where, href = SWITCHES[name]
+    return f'"{label}" is off on {where} - [open it]({href}); only the owner turns it on'
 
 
 def parse(text: str) -> list:
@@ -239,10 +278,22 @@ def setting_changes(p: dict) -> tuple:
     return out, '' if out else 'no change was named'
 
 
+def unknown_tool(t) -> str:
+    "Why `t` is no tool a run_tool can run - '' when it is one; the names nearest it said so the agent can propose it again."
+    from .reports import REGISTRY
+    t = str(t or '').strip()
+    if not t or t == 'mcp' or t in REGISTRY: return ''
+    near = sorted(k for k in REGISTRY if k.startswith(t) or t in k)[:6]
+    return f"there is no tool {t!r}" + (f" - did you mean {', '.join(near)}?" if near else '')
+
+
 def validate(store, p: dict) -> tuple:
     """(ok, reason). The whole gate: known action, required fields present, switch on."""
     a = p.get('action')
-    if a not in ACTIONS: return False, f'unknown action {a!r}'
+    # ...AND SAYS WHAT WOULD BE ONE (the owner's rules, part 4: nothing an agent calls answers without what to do next): a Claude agent
+    # proposed its LinkedIn post twice as 'post_linkedin', was told only "unknown action", and handed the post to the owner as prose
+    if a not in ACTIONS: return False, (f"unknown action {a!r} - the actions are {', '.join(ACTIONS)}; a post is run_tool with type "
+                                        f"{' | '.join(POSTS)} and its words in `text` (connector_id where that network is connected)")
     words, need, switch = ACTIONS[a]
     if a == 'settings':
         changes, why = setting_changes(p)
@@ -260,6 +311,9 @@ def validate(store, p: dict) -> tuple:
             return False, 'this Skill draft is no longer waiting for publication'
         if generation.get('draft_digest') != p['digest'] or generation.get('base_digest') != p.get('base_digest'):
             return False, 'the Skill draft changed - review its new revision'
+    # ...A TOOL THAT IS NOT ONE IS REFUSED TO ITS AGENT NOW, NEVER AT HIS PRESS (the Hydrogen walk, 2026-11-19: a card for a tool named
+    # "linkedin" raised, its Approve answered "Failed 'linkedin'" - and nothing before the press said LinkedIn was not connected)
+    if a == 'run_tool' and (bad := unknown_tool(p.get('type'))): return False, bad
     # NOTHING EMPTY IS PUT IN FRONT OF THE OWNER: a playbook that could not be filed, or says nothing of how the job is done, is refused at
     # this one gate - the tool, a marker in the agent's words, the on-close question - and its writer is told what it lacks
     if a == PLAYBOOK:
@@ -272,7 +326,7 @@ def validate(store, p: dict) -> tuple:
     # an AGENT may ask for; the owner pressing Merge or Close issue on their own task needs no agent permission turned on.
     # Only Taskuary raises one (parse strips the mark from anything an agent wrote).
     if not p.get('closeout') and not _switch_ok(store, switch):
-        return False, f'{a} is not permitted - the owner has that switch off'
+        return False, f'{a} is not permitted - {switch_off(switch)}'
     return True, words
 
 
@@ -286,7 +340,7 @@ def collect(store, task_id: int, transcript: str, actor='agent', refused: list |
     def one(p):
         try: return None if landing.from_proposal(store, task_id, p) else queue(store, task_id, p, actor, refused, unheard=True)    # the card is the review
         except ValueError as e:                   # ...said on the task, never dropped silently
-            store.add_comment(task_id, 'taskuary', 'agent', f"The {p.get('action')} proposal was not put on the card: {e}")
+            store.add_comment(task_id, 'taskuary', 'agent', f"The {p.get('action')} proposal was not put on the card: {_said(e)}")
             store.audit('task', task_id, 'proposal_refused', actor, detail={'action': p.get('action'), 'why': str(e), 'unheard': True})
             if refused is not None: refused.append(str(e))
             return None
@@ -357,6 +411,10 @@ def tool_words(store, p: dict) -> str:
     from . import reports, scopes, trackers
     t = str(p.get('type') or '')
     if t in trackers.TYPES: return trackers.words(p)
+    # ...a post its card declares is said by that card's own press ("post to X"): built from the tool's name it read "write x post on X
+    # (Twitter)" on the next card's line (design round 6, D3)
+    from .connectorcatalog import action_for
+    if (act := action_for(t)) and act.get('kind') == 'post' and (press := str(act.get('press') or '')): return press[:1].lower() + press[1:]
     verb = {'read': 'read', 'write': 'write', 'admin': 'run'}.get(scopes.needs(t), 'run')
     if t.endswith('_move'): verb = 'move'
     where = next((str(p[k]) for k in WHERE_KEYS if p.get(k)), '')
@@ -387,7 +445,13 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
         if p.get('type') in REGISTRY and not p.get('connector_id'):
             try: p = {**p, **({'connector_id': c['ConnectorId']} if (c := tool_card(store, p['type'])) else {})}
             except ValueError as e: several = str(e)
-    ok, why = validate(store, p)
+    # ...a run's ask to change its own routine is the card a run's own repair is (workflows.change_of): one card, one save
+    routine = ''
+    if p.get('action') == 'change_routine':
+        from . import workflows
+        p, routine = workflows.change_of(store, task_id, p) if actor != 'workflow' else ({}, 'change_routine is an agent\'s ask')
+        p = p or {'action': 'change_routine'}
+    ok, why = validate(store, p) if not routine else (False, routine)
     if ok and p.get('action') == 'publish_skill':
         from . import skillstate
         generation = skillstate.get(store, 'generation', int(p['generation_id']))
@@ -402,6 +466,7 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     # ...a picture on a post is one in the task's own folder, named - never a path the agent wrote (execute resolves it again)
     if ok and p.get('action') == 'run_tool':
         p = {k: v for k, v in p.items() if k != 'image_path'}
+        if p.get('type') in POSTS: p = {**p, 'network': POSTS[p['type']]}       # ...its card says where in his words ("LinkedIn"), never "linkedin post"
         if why := picture_why(task_id, p): ok = False
         elif p.get('image'):                     # ...kept as its name in the folder: an agent names it by its full path as often as not
             from . import outputs
@@ -436,9 +501,17 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
         cfg, miss = ({}, "a script from a task a stranger started is not offered as a routine") if origin.of_task(store, task_id)[0] == 'stranger' \
             else workflows.script_routine(store, p)
         if miss: ok, why = False, miss
-        else: p = {**p, 'title': cfg['title'], 'runs': workflows.runs_words(cfg), 'steps': [s['label'] for s in cfg['flow']]}
+        else: p = {**p, 'title': cfg['title'], 'runs': workflows.runs_words(cfg), 'steps': [s['label'] for s in cfg.get('flow') or []],
+                   'kind': 'routine' if workflows.is_workflow(cfg) else 'report'}
     if ok and p.get('action') in ('comment_issue', 'close_issue') and not linked(store, task_id):
         ok, why = False, f"{NO_LINK} - a comment or an issue on a repository you name is a run_tool (the guide tool's `propose` topic)"
+    # ...THE ONE RULE (actrule.decide): the same card he dismissed since his last line is his no - refused in his voice, never a second card.
+    # A post, a payment, a PR stays his press however often he approved its like (big); a held act's gate asks it at the hook
+    if ok and actor != 'workflow' and p['action'] not in HELD_ACTS:
+        from . import actrule
+        what = tool_words(store, p) if p['action'] == 'run_tool' else p['action'].replace('_', ' ')
+        how, told = actrule.decide(store, task_id, [{'what': what, 'key': actrule.card_key(p)}], big=True)
+        if how == 'dismissed': ok, why = False, told
     if not ok:
         store.add_comment(task_id, actor, 'agent', f'PROPOSAL REFUSED ({p.get("action")}): {why}')
         store.audit('task', task_id, 'proposal_refused', actor, detail={'action': p.get('action'), 'why': why, **({'unheard': True} if unheard else {})})
@@ -447,7 +520,11 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     # a close-out is not the agent's ask ("proposes to merge the pull request this task opened" was said of a stranger's PR), and
     # neither is a workflow's own repair or write, raised by the run itself (flow.py) with no agent anywhere on the task
     said = (tool_words(store, p) if p['action'] == 'run_tool' else break_out_words(p) if p['action'] == 'break_out'
-            else f"save a script as the routine \"{p['title']}\", to run {p['runs']}" if p['action'] == 'save_routine' else why)
+            else (f"save a script as the routine \"{p['title']}\", to run {p['runs']}" if p.get('script') else
+                  f"create the {p.get('kind') or 'routine'} \"{p['title']}\", to run {p['runs']}" + (f" - built from {p['based_on']}" if p.get('based_on') else ''))
+            if p['action'] == 'save_routine'
+            else f"change the routine \"{p['title']}\"" if p['action'] == 'repair_workflow' and actor != 'workflow'
+            else f"change the {p.get('kind') or 'report'} \"{p['title']}\"" if p['action'] == 'change_setup' else why)
     # ...nor a held browser act: the agent did not propose it, it tried it, and the hook stopped it (browsergate.check)
     # ...a shell step by what it does, never its raw line: the card folds the command under "Show the command"
     reason = (f"held before it ran, {HELD_IN[p['action']]}: {p.get('what') or ('a step' if p['action'] == 'shell_act' else p.get('command'))}"
@@ -517,8 +594,10 @@ def playbook_answered(store, tid: int, actor: str) -> None:
     tags = [x for x in str(t.get('Tags') or '').split(',') if x.strip()]
     if HELD not in tags or playbook_pending(store, tid): return
     from . import workerstate as ws          # ...never back to done under work still live on it (a Continue since, 2026-11-01)
-    shut = not owed(store, tid) and not ws.live_work(store, tid)
-    store.update_task(tid, {'Tags': ','.join(x for x in tags if x != HELD), **({'Status': 'done'} if shut else {})}, actor)
+    store.update_task(tid, {'Tags': ','.join(x for x in tags if x != HELD)}, actor)
+    if not owed(store, tid) and not ws.live_work(store, tid):
+        from . import concierge
+        concierge.close_task(store, tid, actor, save=False)
 
 
 def held_pending(store, tid) -> dict | None:
@@ -548,15 +627,15 @@ def held_pending(store, tid) -> dict | None:
 # Nor the task's own finish (its close-out, its playbook): Taskuary raises those when the work ends, no turn of the agent's does
 SET_ASIDE = 'set aside when you moved on'
 LAND = 'land'                  # move_on's mark for the landing question (landing.pass_over) among the review ids
-LAND_LINE = '- the push/landing question you raised'
 
 
 NOT_NEEDED = 'not needed - the agent finished without it'
+PAGE_LEFT = 'the browser left the page it was held on'      # browsergate.left_page: greyed where it stood, no line of why
 
 
 def passed(rv: dict | None) -> bool:
     "Whether review `rv` is a card the conversation moved past (move_on) - not pressable, and its press route says so (passed_why)."
-    return bool(rv) and rv.get('Status') == 'superseded' and rv.get('DecideNote') in (SET_ASIDE, NOT_NEEDED)
+    return bool(rv) and rv.get('Status') == 'superseded' and rv.get('DecideNote') in (SET_ASIDE, NOT_NEEDED, PAGE_LEFT)
 
 
 def finished_without(store, tid: int) -> list:
@@ -595,7 +674,7 @@ def set_aside_drafts(store, tid: int, before: float, actions: float = 0) -> list
     """A CARD THE CHAT MOVED PAST IS SET ASIDE FOR GOOD AS ITS AGENT HEARS THE INPUT (the owner, 2026-11-16, said ~20 times: "The second a new
     prompt comes in, from manual or email, it should gray out the action card but never move"): every card older than the input at `before`
     (`_older` - one rule, every kind), and the landing question, stays where it stood, greyed, and its agent is told it was set aside because
-    the chat moved on (passed_since / passed_note - never that he declined), to raise it again under the newest line if it is still wanted.
+    the chat moved on (cardqueue.screen - never that he declined), to raise it again under the newest line if it is still wanted.
     From the moment the input came in until then every surface already reads it greyed (written_past). Every road hears an input through
     conversation.hear, which calls this. `actions`: the old split by kind, read as the same input. -> the review ids (and LAND)."""
     from . import landing
@@ -603,6 +682,20 @@ def set_aside_drafts(store, tid: int, before: float, actions: float = 0) -> list
     out = [r for r in _older(store, tid, at) if store.decide_review(r, 'superseded', None, 'taskuary', note=SET_ASIDE)]
     if landing.pass_over(store, int(tid), at): out.append(LAND)
     if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out})
+    return out
+
+
+def restore_set_aside(store, tid: int) -> list:
+    """A TURN THE AI NEVER ANSWERED SETS NOTHING ASIDE (design round 4, H3: a draft he needed stood greyed for 43 minutes while the provider
+    failed turn after turn on the line after it). Set aside as its agent heard the input (set_aside_drafts), a card no answer has come under
+    since stands again, live where it stood: no agent read past it. The input stays heard - the try after the failure answers it. -> ids."""
+    from . import general
+    rows = store.list_comments(int(tid), internal=True)
+    answer = next((c['CreatedAt'] for c in reversed(rows) if c.get('ActorType') == general.ASSISTANT_TYPE and c.get('Actor') == 'assistant'
+                   and not (lambda w, f: f and not w)(*general.failed_line(c.get('Body')))), '')
+    out = [r['ReviewId'] for r in store._rows("SELECT ReviewId FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedBy='taskuary' "
+                                              "AND DecidedAt>=?", (int(tid), SET_ASIDE, str(answer or ''))) if store.restore_review(r['ReviewId'])]
+    if out: store.audit('task', tid, 'cards_restored', 'taskuary', 'system', {'rids': out})
     return out
 
 
@@ -662,23 +755,9 @@ def _written_past(store, tid: int) -> set:
     return set(_older(store, tid, moved_on(store, tid, ep(first['a']))))      # ...an input in a card's own second moves nothing (_older)
 
 
-# what its agent is told of a card it raised that the conversation moved past - ONE sentence for every kind and both agent kinds
+# what an agent is told to do about a step that is no longer on his screen - one sentence, every road
 AGAIN = ('If a step is still needed, raise it again as a new card (a step held for their press: run it again - Taskuary holds it anew); never '
          'say it still waits on them, and never ask them in words to press it.')
-PASSED_TOLD = ('THE OWNER MOVED ON PAST THESE CARDS OF YOURS WITHOUT PRESSING THEM - they are old news and nothing waits on the owner for '
-               f'them now. {AGAIN}')
-# ...a letter with whom it was to and its words (2026-11-17): told "your reply draft, which began: Hi Gail," the agent asked whom it was for
-def _passed_line(store, r: dict) -> str:
-    from .continuity import sent_to
-    to = sent_to(store, r, '')
-    said = ' '.join(str(r.get('DraftText') or '').split())[:600] + (f' (to {to})' if to else '')
-    if r.get('Kind') in ('draft_reply', 'draft'): return f"- rv{r['ReviewId']}: your reply draft, which began: {said}"
-    if r.get('Kind') == 'slot': return f"- rv{r['ReviewId']}: the email you wrote, which began: {said}"
-    try: p = json.loads(r.get('DraftText') or '{}') or {}
-    except (TypeError, ValueError): p = {}
-    return f"- rv{r['ReviewId']}: " + ' '.join(str(p.get('what') or p.get('command') or r.get('Reason') or p.get('action') or 'a card').split())[:200]
-
-
 def passed_why(store, r: dict) -> str:
     """WHY A CARD STANDS GREYED, IN WHAT HAPPENED (the owner's live task, 2026-11-16: "there was no earlier draft. This is broken?" - he typed a
     line while the agent worked, the turn that never read it finished its draft after it, and the draft stood greyed reading "set aside when
@@ -687,6 +766,7 @@ def passed_why(store, r: dict) -> str:
     from . import continuity, general
     from .conversation import _mail, ep
     if r.get('DecideNote') == NOT_NEEDED: return 'Not needed - the agent finished without it'
+    if r.get('DecideNote') == PAGE_LEFT: return ''
     card, end = ep(r.get('DraftAt') or r.get('CreatedAt')), ep(r.get('DecidedAt')) or time.time()
     # ...A REPLY TO FILED MAIL HAS NO TASK (2026-11-18): retired by his answer, its press crashed reading one - its thread is its own message's
     tid = int(r['TaskId']) if r.get('TaskId') else None
@@ -720,21 +800,6 @@ def passed_why(store, r: dict) -> str:
 # presses Enter, his line cut as _cut cuts it (chatStream.withMine), never words of its own that the read then swaps
 WROTE_PAST = 'Not sent - you wrote "{line}" after it'
 def _cut(w: str, n: int = 60) -> str: return (w := ' '.join(str(w or '').split()))[:n] + ('…' if len(w) > n else '')
-
-
-def passed_since(store, tid: int, since: str) -> list:
-    "The cards of task `tid` passed since `since` (its agent's last answer), as lines for its prompt: '- rv<n>: <what>'."
-    from . import landing
-    p = (landing.record(store, int(tid)).get('proposal') or {})
-    # ...from the answer's own second on: a stamp is no finer, and a draft he wrote past in the second of that answer was never told
-    return [_passed_line(store, r) for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedAt>=? "
-                                                 "ORDER BY ReviewId", (int(tid), SET_ASIDE, since or ''))] + ([LAND_LINE] if str(p.get('passed') or '') > (since or '') else [])
-
-
-def passed_note(store, rids: list) -> str:
-    "PASSED_TOLD with the cards `rids` - for a coding agent, whose next prompt is the line that passed them; '' with none."
-    rows = [_passed_line(store, r) for r in (store.get_review(int(x)) for x in rids or [] if x != LAND) if r] + ([LAND_LINE] if LAND in (rids or []) else [])
-    return f"{PASSED_TOLD}\n" + '\n'.join(rows) if rows else ''
 
 
 def owed(store, tid: int) -> bool:
@@ -851,11 +916,13 @@ def settle(store, rv: dict, verb: str, actor='owner') -> None:
         # back on the owner - open, nobody else's turn - for their Mark done. It used to close here.
         if (store.get_task(tid) or {}).get('Status') == 'waiting' and not owed(store, tid) and \
                 store._one("SELECT 1 x FROM audit WHERE EntityType='task' AND EntityId=? AND Action='awaits_proposals' LIMIT 1", (tid,)):
-            store.update_task(tid, {'Status': 'open'}, actor)
+            from . import general
+            general.reopen(store, tid, actor, also=('waiting',))
             closed_out(store, tid, actor, 'Every proposal is answered.')
         return
     if verb not in ('approve', 'edit'):
-        store.update_task(tid, {'Status': 'open'}, actor)
+        from . import general
+        general.reopen(store, tid, actor, 'reopen', {'why': 'its close-out was turned down'}, also=('waiting', 'in_progress'))
         return
     if owed(store, tid): return
     closed_out(store, tid, actor, 'Closed out.')
@@ -1006,8 +1073,20 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
         # the fix was written against the steps as they stood then: a change made since would be thrown away by approving it
         now = flow.steps_of(workflows.cfg_of(store.get_source(int(p['source_id'])) or {}))
         if p.get('was') != now: raise RuntimeError('the steps have changed since this fix was written - run the workflow again, or Fix with AI on it')
-        d = flow.apply(store, p['source_id'], p['flow'], actor, p.get('why') or '')       # re-validated there, and audited
-        out = {'workflow': int(p['source_id']), 'changed': flow.diff_text(d)[:1200]}
+        d = flow.apply(store, p['source_id'], p['flow'], actor, p.get('why') or '') if p['flow'] != now else []      # re-validated there, and audited
+        # ...its clock and its name through the same one save the editor uses (workflows.save): one card, one press
+        if p.get('patch'): workflows.save(store, {'SourceId': int(p['source_id']), 'ConfigPatch': p['patch']}, actor)
+        out = {'workflow': int(p['source_id']), 'changed': (str(p.get('changes') or '') or flow.diff_text(d))[:1200]}
+    elif a == 'change_setup':
+        from . import workflows
+        src = store.get_source(int(p['source_id']))
+        if not src: raise RuntimeError(f"that {p.get('kind') or 'report'} is gone - nothing was changed")
+        now = workflows.cfg_of(src)
+        # ...written against the setup as it stood then: a change made since is never thrown away by approving this one
+        if any(now.get(k) != v for k, v in (p.get('was') or {}).items()):
+            raise RuntimeError(f"the {p.get('kind') or 'report'} has changed since this was written - nothing was changed; ask the agent again")
+        workflows.save(store, {'SourceId': int(p['source_id']), 'ConfigPatch': p['patch']}, actor)      # ...its editor's own save
+        out = {'source': int(p['source_id']), 'changed': str(p.get('changes') or '')[:1200]}
     elif a in HELD_ACTS: out = _gate(a).perform(store, tid, p)
     elif a == 'close_item':
         from . import trackers
@@ -1018,6 +1097,14 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
         from .store import task_ref
         p, miss = break_out(store, tid, p)
         if miss: raise RuntimeError(f'{miss} - nothing was moved')
+        # ...ONE JOB IS ONE TASK (the owner's live app 2026-11-18): a part broken out that an open task already IS goes there - triage reads it
+        # (ingest.same_work), as it reads every message and every start - its messages and to-dos moved to it, then its agent told in Taskuary's
+        # words by the one road into it (general.to_agent; started where none ever worked it): the owner pressed the card, he never typed this
+        from . import general, ingest
+        if (same := ingest.same_work(store, f"{p['title']}. {p.get('summary') or ''}", 'Taskuary, breaking a part out of another task', skip={int(tid)})):
+            reshape.move_part(store, tid, same, p['messages'], p['items'], actor)
+            general.to_agent(store, same, f"Moved here from {task_ref(tid)}: {p['title']}" + (f" - {p['summary']}" if p.get('summary') else ''), actor, start=True)
+            return {'task': same, 'ref': task_ref(same), 'joined': True, 'said': f"{task_ref(same)} is already that work - moved there, its agent told: {p['title'][:120]}"}
         new = reshape.split_task(store, tid, {'title': p['title'], 'summary': str(p.get('summary') or ''), 'items': p['items']}, None, p['messages'], actor)
         out = {'task': new, 'ref': task_ref(new), 'said': f"{task_ref(new)} is the new task: {p['title'][:120]}"}
     elif a == 'save_routine':
@@ -1026,10 +1113,12 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
     else:                                   # run_tool
         from .reports import REGISTRY, resolve_cfg
         # the owner approved THIS query, so it may commit - the one road to a write on a read-level SQL card
-        cfg = {k: v for k, v in p.items() if k not in ('action', 'flow_run', 'image_path', 'result')}
+        cfg = {k: v for k, v in p.items() if k not in ('action', 'flow_run', 'image_path', 'result', 'network')}
         if p.get('image'):
             from . import outputs
             if why := picture_why(tid, p): raise RuntimeError(f'{why} - nothing was posted')
-            cfg['image_path'] = str(outputs.named(int(tid), p['image']))
+            if p.get('type') in MEDIA: cfg['image_path'] = str(outputs.named(int(tid), p['image']))
+            else: cfg.pop('image', None)          # ...a network Taskuary uploads no picture to posts the words; the card said so
+        if (bad := unknown_tool(p.get('type'))): raise RuntimeError(f'{bad} - nothing was run')       # ...a card from before the gate refused it
         out = _ran(REGISTRY[p['type']](resolve_cfg(store, {**cfg, '_write': True})))
     return out

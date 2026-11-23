@@ -59,8 +59,8 @@ test("no line is still an answer: every silence lights Next - never nothing", ()
   // ...and the dead-end walk holds the page to all of it (STILL, STRIP, LIT)
   const walk = fs.readFileSync(path.join(process.cwd(), "deadend_check.mjs"), "utf8");
   for (const rule of ["STILL", "STRIP", "LIT"]) assert.ok(walk.includes(`note("${rule}"`), rule);
-  // ...and setup's own line, the one .tq-next the dock still draws, is one line tall (30px since the owner's 2026-10-26 laptop)
-  assert.match(read("assistantView.css"), /\.tq-dock \.tq-next \{ margin: 0; min-height: 30px;/);
+  // ...and setup's line left the dock too: it is page text now (the owner, 2026-11-20)
+  assert.doesNotMatch(read("assistantView.css"), /\.tq-dock[ >]+\.tq-next/);
 });
 
 // THE ADVISOR MATRIX (2026-10-19): every moment the Advisor speaks must match the screen. Two it caught: the draft's text cleared, Send
@@ -76,7 +76,7 @@ test("an advised move the row has greyed says why it is off, and a move lit on t
   assert.match(src, /title=\{\(v\.disabled && v\.why\) \|\| v\.title \|\| undefined\}/);
   // ...and held clear of what stands over it (inView.js), marked so the conversation's pin keeps it clear too (the phone pass, 2026-10-20)
   const rd = read("ReviewDecision.jsx");
-  assert.match(rd, /if \(!lit\.startsWith\(`\$\{r\.ReviewId\}:`\)\) return undefined;\s*const el = movesRef\.current\?\.querySelector\("\.MuiButton-contained"\);/);
+  assert.match(rd, /if \(past \|\| !lit\.startsWith\(`\$\{r\.ReviewId\}:`\)\) return undefined;\s*const el = movesRef\.current\?\.querySelector\("\.MuiButton-contained"\);/);
   assert.match(rd, /el\?\.setAttribute\("data-tq-lit", ""\);\s*const stop = holdInView\(el\);/);
   assert.match(read("AssistantView.jsx"), /el\.querySelector\("\[data-tq-lit\]"\)[\s\S]{0,200}floorOf\(body, el\)/);
 });
@@ -100,17 +100,4 @@ test("a move greyed only by the owner's own press in flight is not said to be of
   assert.ok(!pressInFlight([v("12:redraft", "decide", { label: "Redraft", disabled: true, why: "the reply was sent" })]));
   // ...and since 2026-10-26 nothing says "is off" over the row at all (the strip is gone)
   assert.doesNotMatch(read("ActionRow.jsx"), /is off - /);
-});
-
-// NO ADVISOR'S LINE ON A TASK (the owner, 2026-11-09: "assistant/advisor should only be on rail"; 2026-11-15: no Advisor fills a button at
-// all): the task page reads none, and beside a waiting draft's Send stands what leaves with it, a fact of the draft served as its move's why
-test("the task page reads no Advisor's line, and a draft's Send says what leaves with it", () => {
-  const page = read("TaskPage.jsx");
-  assert.doesNotMatch(page, /taskNote|taskAdvice|const warn = /, "the task page reads no Advisor's line");
-  assert.doesNotMatch(page, /<AdvisorNote |advisorNote|adviceIn/, "no Advisor block on the task page");
-  assert.match(page, /why=\{rec\?\.state === "draft_ready" \? rec\.why \|\| "" : ""\}/, "what leaves, said on the draft whose Send is filled");
-  assert.doesNotMatch(page, /1 note/, "nothing hides behind a tab, so the tab says nothing of it");
-  assert.ok(!fs.existsSync(new URL("../src/AdvisorNote.jsx", import.meta.url)), "the section it drew is gone with its last user");
-  assert.doesNotMatch(page, /data-tq-task-advice/);
-  assert.match(read("CanvasItem.jsx"), /onLeave=\{onLeave\} onStay=\{onStay\} litMove=\{phone \? pick\?\.verb \|\| pick\?\.id \|\| "" : ""\} \/>/);
 });

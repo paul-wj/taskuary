@@ -2,6 +2,7 @@
 // define this well"): the page, the server and the Assistant read one file - its stages, their parts and the rules' order
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { RULES, SECTION_KEYS, STAGE, drawerLit, mainView, sectionOf, stageFrom, stageOf } from "../src/stages.js";
 import { VERBS } from "../src/buttons.js";
 
@@ -67,4 +68,3 @@ test("a task its agent closed opens on the Agent section", () => {
   assert.equal(stageOf({ focus: "reply", closed: true }), "done", "closed by the owner: the chat, how it closed");
   assert.equal(stageOf({ focus: "reply", agentClosed: true }), "to_reply", "an open task is never closed by its agent");
 });
-

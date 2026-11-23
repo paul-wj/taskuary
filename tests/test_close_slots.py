@@ -16,7 +16,9 @@ FOUR = [{'to': 'paula@northwind.example', 'about': 'where tab 1 stands'}, {'to':
 
 @pytest.fixture
 def s():
-    v = MemoryStore(); yield v; v.close()
+    # ...an AI to start on: the one start (concierge.handoff_task) refuses before it makes anything without one
+    with mock.patch('taskuary.capabilities.has_ai', return_value=True):
+        v = MemoryStore(); yield v; v.close()
 
 
 def typed(s, outputs=FOUR):
@@ -181,10 +183,17 @@ def test_the_agent_fills_a_slot_by_id(s):
     assert json.loads(rv['Deliver'])['to'] == ['ray@northwind.example'] and slots.all_(s, tid)[1]['rid'] == rv['ReviewId']
 
 
-def test_by_recipient_and_again_rewrites_the_same_draft(s):
+def test_by_recipient_and_again_rewrites_the_same_draft_and_says_so_and_new_is_a_second_letter(s):
+    """Saved to one person twice in its turn, a letter is rewritten in place (no duplicate copy - the owner) - and, the card audit 2026-11-22,
+    the agent is told it rewrote it: told nothing, it said two emails were ready. A second, different letter to them (legit, the owner
+    2026-11-13) is asked for with slot "new"."""
     tid = typed(s, FOUR[:1])
     a = slots.draft(s, tid, 'first', to='PAULA@northwind.example'); b = slots.draft(s, tid, 'second', to='paula@northwind.example')
     assert a['review_id'] == b['review_id'] and s.get_review(a['review_id'])['DraftText'] == 'second'
+    assert 'rewrote' not in a and b['rewrote'] == a['review_id'] and 'slot="new"' in b['says']
+    c = slots.draft(s, tid, 'And the venue for Friday.', to='paula@northwind.example', slot='new')
+    assert c['ok'] and c['review_id'] != a['review_id'] and 'rewrote' not in c
+    assert s.get_review(a['review_id'])['Status'] == s.get_review(c['review_id'])['Status'] == 'pending'
 
 
 def test_a_chat_id_is_no_mailbox(s):
@@ -309,22 +318,18 @@ def handoff(s, brain):
     return made, session
 
 
-def test_a_chat_handoff_reads_its_slots_before_the_agents_first_turn(s):
-    llm = lambda sys, user, **k: json.dumps({'summary': 's', 'checklist': [], 'outputs': FOUR})
-    made, session = handoff(s, {'return_value': llm})
-    assert len(slots.open_(s, made['taskId'])) == 4 and session.send_prompt.called
-
-
-def test_the_slots_are_there_when_the_agent_is_prompted(s):
-    llm = lambda sys, user, **k: json.dumps({'summary': 's', 'checklist': [], 'outputs': FOUR[:1]})
-    session, seen = mock.Mock(), []
-    session.send_prompt.side_effect = lambda text, **k: seen.append(len(slots.open_(s, made_box[0])))
+def test_a_new_ask_takes_the_one_reading_triage_made_and_its_agent_is_prompted_at_once(s):
+    """Walk 2, 2026-11-21: a second model reading of New's words held its agent 46 s of a 61 s answer. Triage's reading - the one that asked
+    whether the work was open already - is the task's; no model is asked again, and no email is listed for the agent before it writes one
+    (an email nobody wrote is no debt)."""
+    from taskuary import ingest
+    seen, asked = [], []
+    judge = lambda store, msg, llm, *a, **k: ({'intent': 'task', 'same_as': None, 'summary': 'Check the four tabs', 'checklist': ['Tab 1', 'Tab 2']}, {})
+    session = mock.Mock(); session.send_prompt.side_effect = lambda *a, **k: seen.append(len(s.task_checklist(made_box[0])))
     made_box = []
-    real_start = lambda st, tid, **k: made_box.append(tid) or session
-    with mock.patch('taskuary.concierge.brain', return_value=llm), mock.patch('taskuary.general.start_session', side_effect=real_start), \
-         mock.patch('taskuary.concierge.threading.Thread', Inline):
-        concierge.handoff_task(s, 'Email Paula where tab 1 stands', kind='general')
-    assert seen == [1]
+    with mock.patch('taskuary.llm.build_llm', return_value=lambda *a, **k: ''), mock.patch.object(ingest, 'judge', judge),          mock.patch('taskuary.concierge.brain', return_value=lambda *a, **k: asked.append(a) or '{}'),          mock.patch('taskuary.general.start_session', side_effect=lambda st, tid, **k: made_box.append(tid) or session),          mock.patch('taskuary.concierge.threading.Thread', Inline):
+        made = concierge.handoff_task(s, 'Check the four tabs and draft an email to each owner', kind='general')
+    assert seen == [1] and asked == [] and slots.open_(s, made['taskId']) == []      # ...his words, the one box New gives it (setup_task)
 
 
 def test_a_handoff_reads_at_work_from_the_moment_it_is_made_until_its_first_turn_ends(s):
@@ -334,12 +339,13 @@ def test_a_handoff_reads_at_work_from_the_moment_it_is_made_until_its_first_turn
     from taskuary import general
     seen = []
     def llm(sys, user, **k): seen.append(('reading', general.working(s, made_box[0]))); return json.dumps({'summary': 's', 'checklist': [], 'outputs': []})
+    # ...and no second reading stands before it (walk 2, 2026-11-21): the turn is the first thing, at work
     session, made_box = mock.Mock(busy=False), []
     session.send_prompt.side_effect = lambda text, **k: seen.append(('turn', general.working(s, made_box[0])))
     with mock.patch('taskuary.concierge.brain', return_value=llm), mock.patch('taskuary.general.start_session', side_effect=lambda st, tid, **k: made_box.append(tid) or session), \
          mock.patch('taskuary.general._live_of', return_value=None), mock.patch('taskuary.concierge.threading.Thread', Inline):
         concierge.handoff_task(s, 'Find three cafes near the office that cater lunch for 12', kind='general')
-        assert seen == [('reading', True), ('turn', True)] and not general.working(s, made_box[0])
+        assert seen == [('turn', True)] and not general.working(s, made_box[0])
 
 
 def test_an_agent_the_assistant_starts_carries_his_words_alone_as_his_and_the_talk_before_them_as_taskuarys_brief(s):
@@ -393,7 +399,8 @@ def test_a_task_the_assistant_starts_is_his_sentence_as_typed_and_its_polished_a
 def test_a_coding_hand_off_and_a_walk_through_keep_his_words_as_his_and_file_the_rewording_as_taskuarys(s):
     from taskuary import brief, general
     his, polished = 'fix the export thing erin hit', 'Fix the CSV export crash Erin Blake reported. Add a test that reproduces it.'
-    with mock.patch('taskuary.ingest._spawn'), mock.patch('taskuary.concierge._handoff_title', return_value='Export crash'):
+    s.set_setting('developer_mode', '1', 'test')              # ...a coding hand-off is a coding agent's only in Developer mode
+    with mock.patch('taskuary.ingest._spawn'), mock.patch('taskuary.concierge._handoff_title', return_value='Export crash'),          mock.patch('taskuary.capabilities.can_code', return_value=True):
         coding = concierge.handoff_task(s, polished, kind='coding', said=his)['taskId']
     walk = concierge.setup_task(s, polished, said=his)['taskId']
     for tid in (coding, walk):
@@ -402,6 +409,18 @@ def test_a_coding_hand_off_and_a_walk_through_keep_his_words_as_his_and_file_the
     assert 'Add a test' in brief.handoff(s, coding)                 # the coding agent reads it as Taskuary's (terminal seed)
     briefs = [c for c in s.list_comments(walk, internal=True) if general.is_brief(c)]
     assert [c['Body'] for c in briefs] == [polished]                # the walk hears it as Taskuary's turn
+
+
+def test_a_start_the_model_reads_as_open_work_goes_to_that_tasks_agent_never_a_second_task(s):
+    """One job is one task at every door (the owner's live app, 2026-11-18): the open tasks go to the model before a task is made, and the
+    same work hears his line on its own task. Triage is what reads it (ingest.same_work), as it reads every message."""
+    from taskuary import general
+    there = s.create_task({'Title': 'Find two venues for the offsite', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    told, had = [], len(s.list_tasks(None))
+    with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.llm.build_llm', return_value=lambda *a, **k: ''),          mock.patch('taskuary.ingest.judge', return_value=({'intent': 'task', 'same_as': there}, {})),          mock.patch.object(general, 'take_line', lambda st, tid, text, files=None, actor='owner', **k: told.append((tid, text))),          mock.patch('taskuary.general.start_session') as began:
+        made = concierge.handoff_task(s, 'Find venues for the 40-person offsite too', kind='general')
+    assert (made['taskId'], made.get('joined')) == (there, True) and len(s.list_tasks(None)) == had and not began.called
+    assert told == [(there, 'Find venues for the 40-person offsite too')]
 
 
 def test_a_handoff_whose_brain_fails_is_made_anyway(s):
@@ -738,22 +757,46 @@ def test_without_a_written_email_the_reply_is_still_drafted(s):
     raised.assert_called_once()
 
 
+def routine_run(s, job='Total the newest vendor spend export and email the summary to ray@northwind.example every Monday.'):
+    "A run task of a routine the owner saved with `job` as its agent's instructions."
+    sid = s.save_source({'Channel': 'report', 'Address': 'Weekly vendor follow-up', 'Owner': 'o', 'Active': 1,
+                         'ConfigJson': json.dumps({'type': 'agent', 'title': 'Weekly vendor follow-up', 'prompt': job})}, 'o')
+    return s.create_task({'Title': 'Weekly vendor follow-up - Mon', 'Kind': 'general', 'Status': 'open', 'Source': 'workflow',
+                          'SourceRef': f'workflow:{sid}'}, 'routine')
+
+
 def test_a_routines_own_email_goes_at_once_and_his_own_task_waits_for_his_send(s):
     """The owner, 2026-11-17: "routines should send on their own too" - approval is only for what answers input from outside. A routine run's
-    agent email is sent by the very press his Send makes, at once; the same email on a task of his own still waits on his Send."""
-    run = s.create_task({'Title': 'Weekly vendor follow-up - Mon', 'Kind': 'general', 'Status': 'open', 'Source': 'workflow',
-                         'SourceRef': 'workflow:7'}, 'routine')
+    agent email to an address he saved into the routine is sent by the very press his Send makes, at once; the same email on a task of his
+    own still waits on his Send."""
+    run = routine_run(s)
     own = s.create_task({'Title': 'Follow up with Ray', 'Kind': 'general', 'Status': 'open', 'Source': 'assistant'}, 'owner')
-    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''), \
-            mock.patch('taskuary.learn.learn_from'):
+    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''),             mock.patch('taskuary.learn.learn_from'):
         went = slots.draft(s, run, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote')
         held = slots.draft(s, own, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote')
     assert went['sent'] is True and send.call_count == 1, went
     assert s.get_review(went['review_id'])['Status'] == 'approved'
     assert 'sent' not in held and s.get_review(held['review_id'])['Status'] == 'pending', held
     with mock.patch('taskuary.outbound.send_out', side_effect=RuntimeError('SMTP 535')), mock.patch.object(outbound, 'send_block', return_value=''):
-        failed = slots.draft(s, run, 'Hi Erin, the schedule is attached. Alex', 'erin@northwind.example', 'Schedule')
+        failed = slots.draft(s, routine_run(s, 'Send erin@northwind.example the schedule.'), 'Hi Erin, the schedule is attached. Alex',
+                             'erin@northwind.example', 'Schedule')
     assert failed.get('send_error') and 'sent' not in failed, failed
+
+
+# ONE HOLD, WHOEVER CALLS (design round 2, 2026-11-18): a routine run's agent used the draft tool, "and this run sent it before you could
+# approve it". What a routine sends without a press is what the owner saved into it - an address in its own words, or himself; an address the
+# run's agent chose is its card, held at the one door every send goes through (verdicts.decide), nothing sent
+def test_a_routine_runs_email_to_an_address_its_agent_chose_is_a_card_and_nothing_goes(s):
+    s.set_setting('owner_email', 'alex@northwind.example', 'owner')
+    run = routine_run(s, 'Total the newest vendor spend export and email me the top five.')
+    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''),             mock.patch('taskuary.learn.learn_from'):
+        chose = slots.draft(s, run, 'Hi Gail, the October spend is attached. Alex', 'gail@northwind.example', 'October spend')
+        assert send.call_count == 0 and 'sent' not in chose and s.get_review(chose['review_id'])['Status'] == 'pending', chose
+        # ...and no other caller gets past it by pressing in the routine's name
+        out = verdicts.decide(s, s.get_review(chose['review_id']), 'approve', actor=slots.ROUTINE)
+        assert not out['ok'] and out.get('held') and send.call_count == 0, out
+        mine = slots.draft(s, run, 'October spend: 103,190 in all. Alex', 'alex@northwind.example', 'October spend')
+    assert mine['sent'] is True and send.call_count == 1, mine
 
 
 # THE AGENT HEARS WHICH EMAIL WENT (the stress round, 2026-11-18): with two emails out, a Send told it "the message was sent" - no card, no
@@ -770,8 +813,7 @@ def test_the_agent_on_a_routine_run_is_told_its_email_went_not_that_it_waits(s):
     # so the agent told the owner a sent email was waiting for his Send
     from taskuary import agenttools
     from taskuary.selfclose import CARD_SAID
-    run = s.create_task({'Title': 'Weekly vendor follow-up - Mon', 'Kind': 'general', 'Status': 'open', 'Source': 'workflow',
-                         'SourceRef': 'workflow:7'}, 'routine')
+    run = routine_run(s, 'Ask ray@northwind.example and erin@northwind.example where the quote and the schedule stand.')
     with mock.patch('taskuary.outbound.send_out', return_value=SENT), mock.patch.object(outbound, 'send_block', return_value=''), \
             mock.patch('taskuary.learn.learn_from'):
         went = agenttools.said_once(slots.draft(s, run, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote'))
@@ -793,3 +835,29 @@ def test_a_sent_email_is_named_by_whom_it_went_to_not_by_its_cards_reason(s):
         assert verdicts.decide(s, s.get_review(rid), 'approve', actor='owner')['ok']
     said = s.list_comments(tid)[-1]['Body']
     assert said.startswith('Sent: the email to ray@northwind.example. ') and 'Not sent' not in said and 'approve to send' not in said, said
+
+
+# HIS OWN ASK OWES HIM NO EMAIL (a walk, 2026-11-18): "set it up for my press" was read as an email owed to the owner, its agent drafted
+# "please approve the note" to him, and he had to drop it. He is the sender of his own ask: his press on the card is the approval
+
+
+def test_an_address_he_gave_in_his_memory_is_no_guess(s):
+    """Round 3, 2026-11-22: Paula's address stood in his memory under "Your people", and the agent was told it had guessed it and asked him for
+    it. An address in his own words is known: found by her name, and never refused as a guess."""
+    from taskuary import people
+    s.save_doc('learned', '## Your people\n- Paula Vance (paula.vance@northwind.example) handles payroll\n', 'owner')
+    assert people.resolve(s, 'Paula Vance') == {'address': 'paula.vance@northwind.example'}
+    tid = typed(s, FOUR[:1])
+    out = slots.draft(s, tid, 'Hi Paula - the payroll file is attached.', to='paula.vance@northwind.example', guessed=['paula.vance@northwind.example'])
+    assert out['ok'], out
+
+
+def test_an_address_made_from_a_name_whose_person_writes_from_another_is_refused_with_theirs(s):
+    """Walk 5, 2026-11-22: the agent put gail.moreno@ on a Send card 20 seconds after Gail wrote from gail@ - it called it a guess in its answer
+    and passed none as guessed. Her own address is the one to use; someone new at the company is still drafted to."""
+    tid = typed(s, FOUR[:1])
+    s.add_message({'TaskId': tid, 'ExternalId': 'g-w5', 'Channel': 'email', 'Subject': 'Budget', 'FromName': 'Gail Moreno',
+                   'FromEmail': 'gail@northwind.example', 'SentAt': '2026-11-22 08:00:00', 'BodyText': 'Can you send the total?', 'Status': 'routed'})
+    out = slots.draft(s, tid, 'Hi Gail - 34.75 hours.', to='gail.moreno@northwind.example')
+    assert out['ok'] is False and 'gail@northwind.example' in out['why']
+    assert slots.draft(s, tid, 'Hi Omar - welcome aboard.', to='omar.keller@northwind.example')['ok'] is True

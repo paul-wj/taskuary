@@ -59,14 +59,15 @@ class TheRosterTests(unittest.TestCase):
     def test_researcher_and_analyst_are_split_on_whose_information_it_is(self):
         """The first pair of purpose lines both read as "find out something", so "look into last
         month's spend" could land on either (the owner, 2026-09-10: "sharpen analyst vs
-        researcher"). The line is OUTSIDE vs OUR OWN, and each document says it too, so a session
+        researcher"). The line is from outside vs our own (said in sentence case since the design walk,
+        2026-11-20), and each document says it too, so a session
         that starts on the wrong side of it hands the job back instead of guessing."""
         from pathlib import Path
         import taskuary
         res, ana = hub_agents.DEFAULT_PROFILES['researcher']['purpose'], hub_agents.DEFAULT_PROFILES['analyst']['purpose']
-        self.assertIn('OUTSIDE', res)
-        self.assertIn('OUR OWN', ana)
-        self.assertNotIn('OUTSIDE', ana)
+        self.assertIn('from outside', res.lower())
+        self.assertIn('our own', ana.lower())
+        self.assertNotIn('outside', ana.lower())
         tpl = Path(taskuary.__file__).parent / 'templates'
         self.assertIn('analyst', tpl.joinpath('researcher.md').read_text(encoding='utf-8'))
         self.assertIn('researcher', tpl.joinpath('analyst.md').read_text(encoding='utf-8'))
@@ -79,6 +80,15 @@ class TheRosterTests(unittest.TestCase):
         self.assertEqual(hub_agents.seed_profiles(cfg), [])          # nothing left to add
         self.assertEqual(cfg['agents']['researcher']['rules_doc'], 'mine')
         self.assertEqual(cfg['agents']['researcher']['purpose'], 'mine')
+
+    def test_a_shipped_purpose_seeded_in_its_old_capitals_is_reworded_once_and_the_owners_own_stays(self):
+        """The walk, 2026-11-21: an install seeded before the design walk kept "OUTSIDE information" and "OUR OWN figures" on its Agents page."""
+        cfg = {'agents': {'researcher': {'kind': 'research', 'purpose': hub_agents.SHIPPED_BEFORE['researcher'][0]},
+                          'analyst': {'kind': 'analysis', 'purpose': 'mine'}}}
+        self.assertIn('researcher', hub_agents.seed_profiles(cfg))
+        self.assertEqual(cfg['agents']['researcher']['purpose'], hub_agents.DEFAULT_PROFILES['researcher']['purpose'])
+        self.assertEqual(cfg['agents']['analyst']['purpose'], 'mine')
+        self.assertEqual(hub_agents.seed_profiles(cfg), [], 'once')
 
     def test_a_shipped_profile_carries_instructions_and_no_cli(self):
         """A profile is instructions layered on whichever brain runs its work (the owner, 2026-10-15): it

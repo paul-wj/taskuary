@@ -26,8 +26,8 @@ EV = '_evidence'         # a fact's own ids (usual.py), carried beside the line'
 
 
 def _dt(s):
-    try: return datetime.fromisoformat(str(s or '').replace('T', ' ')[:19])
-    except ValueError: return None
+    from .timewords import stamp
+    return stamp(s)
 
 
 def working_days(since, now: datetime = None) -> int:
@@ -51,7 +51,8 @@ def when(at, now: datetime = None) -> str:
     """'at 10:02' today, else ago() - "your reply went at 10:02; nothing since" (the owner, 2026-10-28). '' for a time nothing can read."""
     t, now = _dt(at), now or datetime.now()
     if not t: return ''
-    return f'at {t:%H:%M}' if t.date() == now.date() and t <= now else ago(t, now)
+    from .timewords import clock
+    return f'at {clock(t)}' if t.date() == now.date() and t <= now else ago(t, now)
 
 
 def finished_quiet(store, tid, at) -> str:
@@ -92,7 +93,10 @@ def same_thread(store, item) -> int | None:
     """Another open task on this item's own conversation - the one duplicate a FACT shows. The same sender alone no longer counts
     (the design, 2026-10-23): one person asks for many things, and "TQ-0006 may already cover it" stood over unrelated asks."""
     ms = _inbound(store, item)
-    cids = {m['ConversationId'] for m in ms if m.get('ConversationId')}
+    # ...A CHAT'S ID NAMES ITS ROOM, NOT A TOPIC (routing.CHAT_CHANNELS; design round 4, H4: a colleague's sign-up list read "Same ask as TQ-0003 -
+    # fold it into that one" of a code fix, because her earlier line in the same chat had joined it) - everything said there shares one id
+    from .routing import CHAT_CHANNELS
+    cids = {m['ConversationId'] for m in ms if m.get('ConversationId') and str(m.get('Channel') or '').lower() not in CHAT_CHANNELS}
     if not cids: return None
     own = item.get('tid')
     r = store._one(f"SELECT m.TaskId FROM message m JOIN task t ON t.TaskId=m.TaskId WHERE t.Status NOT IN ('done','dropped') AND m.ConversationId IN "
@@ -321,15 +325,9 @@ def state(store, item: dict, verbs: list) -> tuple:
 # new dialog): before Send, an address the thread never had and the files the draft carries are said in one line beside the lit Send.
 # Addresses and files are facts the draft's envelope keeps - read the way the send will read them (verdicts._deliver_review) - never words.
 def recipients(store, rv: dict) -> list:
-    """The addresses a draft will go to, lowercased: its own envelope's To and Cc when it is new mail or a reply with its people set, else
-    whom a reply to its message goes to (outbound.reply_envelope)."""
+    "The addresses a draft will go to, lowercased: its To and Cc as the send reads them (outbound.review_envelope)."
     from . import outbound
-    try: env = json.loads(rv.get('Deliver') or '{}') or {}
-    except (TypeError, ValueError): env = {}
-    env = env if isinstance(env, dict) else {}
-    if not env.get('to') and (env.get('kind') == 'reply' or not env.get('channel')):
-        m = store.get_message(int(rv['MessageId'])) if rv.get('MessageId') else None
-        env = {**(outbound.reply_envelope(store, m) or {}), **({'cc': env['cc']} if env.get('cc') is not None else {})}
+    env = outbound.review_envelope(store, rv)
     return [str(a).strip().lower() for a in [*(env.get('to') or []), *(env.get('cc') or [])] if '@' in str(a or '')]
 
 
@@ -675,7 +673,7 @@ def _msgs(store, item, target_kind, target_id) -> list:
 def _draft(store, item, target_kind, target_id):
     """The draft waiting for the owner's yes on this item, or None."""
     r = store.get_review(int(item['rid'])) if item.get('rid') else None
-    if not r and target_kind == 'task': r = store.pending_review(int(target_id))
+    if not r and target_kind == 'task': r = store.waiting_on_owner(int(target_id))
     if not r and target_kind == 'message': r = store._one("SELECT * FROM review WHERE MessageId=? AND Status='pending' ORDER BY ReviewId DESC LIMIT 1", (int(target_id),))
     return r if r and r.get('Status') in ('pending', 'held') and (r.get('FinalText') or r.get('DraftText')) else None
 
@@ -890,15 +888,11 @@ AGENT_CHECK = True       # the suite turns this off (tests/conftest.py): a bare 
 
 
 def _agent_ready(store, item: dict) -> str:
-    """'' when an agent can start on the item from here, else why not - the page's own check (capabilities.cannotStart: an AI, and a brain a
-    general hand-off can choose), so no button is filled that the page greys."""
+    """'' when an agent can start on the item from here, else why not - the page's own check (capabilities.cannotStart: an AI for general
+    work, capabilities.has_ai), so no button is filled that the page greys."""
     if not AGENT_CHECK: return ''
-    from . import capabilities, general, agents as ha
-    try:
-        if not capabilities.has_ai(store): return 'no AI is connected'
-        brains = dict(ha.connection_brains(store))
-        ok = any(o.get('type') != 'cli' or ha.runs_here(brains.get(o['pick'][4:])) for o in general.provider_options(store))
-        return '' if ok else 'no brain an agent can run on'
+    from . import capabilities
+    try: return '' if capabilities.has_ai(store, 'general') else 'no AI is connected'
     except Exception as e: logger.debug(f'rulebook: no agent check for {item.get("key")} - {e}'); return ''
 
 

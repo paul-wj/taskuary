@@ -5,8 +5,11 @@
 // four appearing.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { coveredByReload, heldSince } from "../src/funnelPile.js";
 
+const view = readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
+const between = (from, to) => view.slice(view.indexOf(from), view.indexOf(to));
 
 test("a held rail dates from when the server began reading it, never later than now", () => {
   const now = 1_000_000;
@@ -22,3 +25,8 @@ test("a held rail dates from when the server began reading it, never later than 
 });
 
 
+test("a typed next keeps the capture: the table did not change, so the token still names the pick", () => {
+  const next = between('if (verb === "next") {', 'if (verb === "reply" && mid)');
+  assert.doesNotMatch(next, /selectionRef\.current = null/);
+  assert.match(next, /deferInChat\(\(\) => surfaceRef\.current\?\.\(\), 300\)/);
+});

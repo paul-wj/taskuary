@@ -127,7 +127,7 @@ def _tasks(store, q: str, words, status: str = '', today: bool = False) -> tuple
     ts.sort(key=lambda t: str(t.get('UpdatedAt') or t.get('CreatedAt') or ''), reverse=True)
     ts.sort(key=lambda t: (t['TaskId'] not in ids, t.get('Status') in CLOSED, not all(w in (t.get('Title') or '').lower() for w in lw)))
     top, mail = ts[:N_DONE if today else N_TASKS], {}
-    for r in store._rows(f"SELECT TaskId, Channel, SourceName, Subject, FromName, FromEmail, ExternalId, SourceLink FROM message WHERE TaskId IN "
+    for r in store._rows(f"SELECT TaskId, Channel, SourceName, Subject, FromName, FromEmail, ExternalId, SourceLink, Direction FROM message WHERE TaskId IN "
                          f"({','.join('?' * len(top))})", [t['TaskId'] for t in top]) if top else []:
         mail.setdefault(r['TaskId'], []).append(r)
     # THE RAIL'S OWN ROW RIDES ON A TASK STILL ON IT (the audit, 2026-11-15: a hit read "reply · email · 1m ago" beside a rail row that said
@@ -138,10 +138,18 @@ def _tasks(store, q: str, words, status: str = '', today: bool = False) -> tuple
     for i in (funnel.cached_pile(store) or {}).get('items') or ():
         if i.get('tid'): rail.setdefault(i['tid'], i)
     return [{'type': 'task', 'id': f"task:{t['TaskId']}", 'tid': t['TaskId'], 'ref': task_ref(t['TaskId']), 'title': t.get('Title') or '',
-             'sub': ' · '.join(x for x in (t.get('Kind'), t.get('Source')) if x), 'when': t.get('ClosedAt') or t.get('UpdatedAt') or t.get('CreatedAt'),
+             'sub': came(store, t['TaskId'], mail.get(t['TaskId'], [])), 'when': t.get('ClosedAt') or t.get('UpdatedAt') or t.get('CreatedAt'),
              'status': t.get('Status'), 'snippet': snippet(t.get('Summary'), words, 120),
              'why': _task_why(t, words, mail.get(t['TaskId'], [])),
              **({'row': rail[t['TaskId']]} if t['TaskId'] in rail and t.get('Status') not in CLOSED else {})} for t in top], len(ts)
+
+
+# WHERE A TASK CAME FROM, IN HIS WORDS (walk 8, 2026-11-20: a closed task's hit read "general · assistant · closed" - its kind and source,
+# Taskuary's own codes): whom its mail is from, else his own ask
+def came(store, tid: int, mail=None) -> str:
+    if mail is None: mail = store._rows("SELECT FromName, FromEmail, Direction FROM message WHERE TaskId=?", (int(tid),))
+    who = list(dict.fromkeys(m.get('FromName') or m.get('FromEmail') for m in mail if m.get('Direction') != 'out' and (m.get('FromName') or m.get('FromEmail'))))
+    return 'your ask' if not who else f"from {', '.join(who[:2])}" + (f' and {len(who) - 2} more' if len(who) > 2 else '')
 
 
 def _who(store, m: dict) -> str:
@@ -169,13 +177,20 @@ def _wa_ids(store, q: str) -> list:
                                                 'ORDER BY SentAt DESC LIMIT ?', (*p, N_MSGS * 6))]
 
 
+TITLE, HEAD = "IFNULL(TriageTitle,'')", "IFNULL(Subject,'') || ' ' || IFNULL(FromName,'') || ' ' || IFNULL(FromEmail,'')"
 def _message_ids(store, words) -> list:
-    ids = store.message_search(words, limit=N_MSGS * 6, prefix=True)
-    if ids is not None: return ids
-    # no full-text index on this SQLite: the subject and the sender, scanned - slower, never nothing
     pat = [f'%{w.lower()}%' for w in words]
-    cond = ' AND '.join("lower(IFNULL(Subject,'') || ' ' || IFNULL(FromName,'') || ' ' || IFNULL(FromEmail,'')) LIKE ?" for _ in pat)
-    return [r['MessageId'] for r in store._rows(f'SELECT MessageId FROM message WHERE {cond} ORDER BY SentAt DESC LIMIT ?', (*pat, N_MSGS * 6))]
+    like = lambda cols: ' AND '.join(f"lower({cols}) LIKE ?" for _ in pat)
+    # ...BY THE TITLE ITS ROW WEARS FIRST (the walk, 2026-11-18: "Nothing matches" for an FYI row's own words, with the row behind the dialog):
+    # the rail names a message by triage's title (funnel.says), which the full-text index never held
+    titled = [r['MessageId'] for r in store._rows(f"SELECT MessageId FROM message WHERE TriageTitle IS NOT NULL AND {like(TITLE)} "
+                                                  'ORDER BY SentAt DESC LIMIT ?', (*pat, N_MSGS * 6))]
+    ids = store.message_search(words, limit=N_MSGS * 6, prefix=True)
+    # no full-text index on this SQLite: the subject and the sender, scanned - slower, never nothing
+    if ids is None:
+        ids = [r['MessageId'] for r in store._rows(f"SELECT MessageId FROM message WHERE {like(HEAD)} "
+                                                   'ORDER BY SentAt DESC LIMIT ?', (*pat, N_MSGS * 6))]
+    return list(dict.fromkeys([*titled, *ids]))
 
 
 def _messages(store, words, first=()) -> tuple:
@@ -226,7 +241,7 @@ def _sources(store, words, q: str = '') -> list:
                 out.append({'type': 'source', 'id': f"src:{ch}:{name}", 'title': title, 'sub': name, 'channel': ch, 'pick': f'src:{ch}:{name}'})
             continue
         if all(w in f'{name} {ch}'.lower() for w in lw):
-            out.append({'type': 'source', 'id': f"src:{ch}:{name}", 'title': name, 'channel': ch, 'pick': f'src:{ch}:{name}'})
+            out.append({'type': 'source', 'id': f"src:{ch}:{name}", 'title': name, 'channel': ch, 'pick': f'src:{ch}:{name}', 'source': s['SourceId']})
     return out
 
 
@@ -262,7 +277,7 @@ def _settings(words) -> list:
         if k in _UNSHOWN or not _words_in(f"{m['label']} {m['group']} {m.get('desc') or ''} {m.get('help') or ''}", words): continue
         out.append({'type': 'setting', 'id': f'set:{k}', 'title': m['label'], 'where': f"Settings · {m['group']}",
                     'snippet': snippet(m.get('desc') or m.get('help'), words, 120), 'rank': not _words_in(m['label'], words),
-                    'href': f"#settings=config&group={quote(m['group'], safe='')}&key={quote(k, safe='')}"})
+                    'href': settings_schema.href(k)})
     # ...and what a section draws as a PANEL, by the words the schema keeps for it: "password" found no saved sign-ins (2026-11-10)
     found = {h['id'] for h in out}
     knobs = [(m['label'], f"{m['label']} {m['group']} {m.get('desc') or ''} {m.get('help') or ''}")
@@ -270,12 +285,12 @@ def _settings(words) -> list:
     for k, p, behind in _panels_beyond(knobs, words, _words_in):
         if not _words_in(_panel_text(p), words): continue
         out.append({'type': 'setting', 'id': f'set:{k}', 'title': p['title'], 'where': f"Settings · {p['group']}", 'snippet': '',
-                    'rank': 2 if behind else not _words_in(p['title'], words), 'href': f"#settings=config&group={quote(p['group'], safe='')}&key={quote(k, safe='')}"})
+                    'rank': 2 if behind else not _words_in(p['title'], words), 'href': settings_schema.href(k, p['group'])})
     return sorted(out, key=lambda h: h.pop('rank'))
 
 
 def _connectors(store, words) -> list:
-    on = {str(c.get('Type') or '') for c in store.list_connectors() if c.get('Active')}
+    on = {str(c.get('Type') or '') for c in connectorcatalog.connected(store)}     # "connected" as the card says it (connectorcatalog.state)
     out = []
     for c in connectorcatalog.cards():
         title = c.get('title') or c['type']
@@ -306,25 +321,26 @@ def _app_rows(store) -> list:
     from . import words as places
     # ...a page by what it holds too (words.json `does`): "install the new version" named no page, and Updates was found only by "update"
     # ...and a place that IS a settings panel (Saved sign-ins) is that panel's one row, below - found by the words the schema keeps for it
-    panel = lambda k, p: f"#settings=config&group={quote(p['group'], safe='')}&key={quote(k, safe='')}"
+    panel = lambda k, p: settings_schema.href(k, p['group'])
     own = {panel(k, p) for k, p in settings_schema.panels().items()}
     rows = [{'type': 'place', 'title': p['name'], 'rest': f"{k} {p.get('does') or ''}", 'href': p['href'], 'key': k}
             for k, p in places.PLACES.items() if p.get('href') and p['href'] not in own]
     rows += [{'type': 'place', 'title': t, 'rest': w, 'href': h, 'key': w.split()[0]} for t, h, w in PAGES]
     rows += [{'type': 'setting', 'title': m['label'], 'where': f"{places.name('settings')} → {m['group']}", 'rest': f"{m['group']} {m.get('desc') or ''} {m.get('help') or ''} {k}",
-              'href': f"#settings=config&group={quote(m['group'], safe='')}&key={quote(k, safe='')}"}
+              'href': settings_schema.href(k)}
              for k, m in settings_schema.knobs().items() if k not in _UNSHOWN]
     rows += [{'type': 'setting', 'panel': k, 'title': p['title'], 'where': f"{places.name('settings')} → {p['group']}", 'rest': f"{p['group']} {p['words']}",
               'href': panel(k, p)} for k, p in settings_schema.panels().items()]
-    mine =[c for c in store.list_connectors()]
-    on = {str(c.get('Type') or '') for c in mine if c.get('Active')}
+    mine, srcs = store.list_connectors(), store.list_sources() if hasattr(store, 'list_sources') else ()
+    st = {c.get('ConnectorId'): connectorcatalog.state(c, srcs) for c in mine}     # "connected" as the card says it
+    on = {str(c.get('Type') or '') for c in mine if st[c.get('ConnectorId')]['state'] == 'connected'}
     rows += [{'type': 'connector', 'title': c.get('title') or c['type'], 'where': 'Connections', 'boost': c['type'] in on, 'key': c['type'],
               'sub': 'connected' if c['type'] in on else 'planned' if c.get('planned') else 'not connected',
               'rest': ' '.join([c['type'], c.get('group') or '', c.get('desc') or '', *(c.get('match') or [])]),
               'href': f"#connector={quote(c['type'], safe='')}"} for c in connectorcatalog.cards()]
     # ...and the owner's own cards, by the name and account they were given ("my work Outlook"): the card of that type opens
     rows += [{'type': 'connector', 'title': str(c.get('Name') or c.get('Type')), 'where': f"Connections · your {c.get('Type')} card", 'boost': True,
-              'sub': 'connected' if c.get('Active') else 'off', 'rest': f"{c.get('Type')} {c.get('Account') or ''} {c.get('Scope') or ''}",
+              'sub': st[c.get('ConnectorId')]['line'].lower(), 'rest': f"{c.get('Type')} {c.get('Account') or ''} {c.get('Scope') or ''}",
               'href': f"#connector={quote(str(c.get('Type') or ''), safe='')}"} for c in mine if c.get('Name')]
     # A REPORT OPENS AS SEARCH OPENS IT (the owner, 2026-11-03: "open the report should open the report like search"): its newest run, the
     # report itself (#msg=, the card a Search pick puts on the table - read or not, on the rail or off it), its page only when it never ran.
@@ -392,13 +408,15 @@ CHAT_TAG, DRAFTS = 'in agent chat', ('draft_reply', 'draft', 'clarification', 's
 
 def _chat(store, words, skip) -> tuple:
     from .general import ASSISTANT_TYPE, DOCK_TAG, USER_TYPE, line_words
-    from .quickwork import report_of
+    from .selfclose import report_of
     from .store import is_internal
-    TEXT = "COALESCE(rv.FinalText, rv.DraftText, '')"
+    TEXT, SAID = "COALESCE(rv.FinalText, rv.DraftText, '')", "Body || ' ' || COALESCE(Files, '')"
     lk = lambda col: ' AND '.join(f"tq_fold({col}) LIKE ? ESCAPE '\\'" for _ in words)
     pat = [store._like_pat(w) for w in words]
     said = [{**c, 'line': f"comment-{c['CommentId']}", 'Body': report_of(c['Body']) if c['ActorType'] == ASSISTANT_TYPE else line_words(c)}
-            for c in store._rows(f"SELECT CommentId, TaskId, Actor, ActorType, Body, CreatedAt FROM comment WHERE ActorType IN (?,?) AND {lk('Body')} "
+            # ...his files by their names too (comment.Files, read back by line_words) - a word of the folder they sit in finds nothing (_in below)
+            for c in store._rows(f"SELECT CommentId, TaskId, Actor, ActorType, Body, CreatedAt, Files FROM comment WHERE ActorType IN (?,?) "
+                                 f"AND {lk(SAID)} "
                                  "ORDER BY CommentId DESC LIMIT 200", (USER_TYPE, ASSISTANT_TYPE, *pat)) if not is_internal(c)]
     drafts = store._rows(f"SELECT rv.TaskId, {TEXT} Body, rv.CreatedAt, (SELECT 'comment-' || s.CommentId FROM draft_snapshot s "
                          f"WHERE s.ReviewId=rv.ReviewId ORDER BY s.Id DESC LIMIT 1) line FROM review rv WHERE rv.Kind IN ({','.join('?' * len(DRAFTS))}) "
@@ -414,7 +432,7 @@ def _chat(store, words, skip) -> tuple:
         if not t or t.get('SourceRef') == DOCK_TAG: continue
         who = 'you' if c['ActorType'] == USER_TYPE else 'a draft' if c['ActorType'] == 'draft' else 'the agent'
         out.append({'type': 'task', 'id': f"chat:{tid}", 'tid': tid, 'ref': task_ref(tid), 'title': t.get('Title') or '', 'status': t.get('Status'),
-                    'sub': t.get('Kind') or '', 'tag': CHAT_TAG, 'who': who, 'line': c.get('line'), 'when': c.get('CreatedAt'),
+                    'sub': came(store, tid), 'tag': CHAT_TAG, 'who': who, 'line': c.get('line'), 'when': c.get('CreatedAt'),
                     'snippet': snippet(c['Body'], words, 120), 'why': ''})
     return out, len(best)
 

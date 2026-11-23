@@ -1,7 +1,7 @@
 """EVERY CLI RUN OF THE GENERAL AGENT OVER ACP, argv as the fallback (the owner, 2026-11-06): claude and codex through their adapters,
 Taskuary's own rules answering each permission, the run's model and effort as session options, a kept conversation holding its
 connection between turns, and a switch to turn it off. The agent here is tests/fake_acp_server.py; no vendor CLI is installed."""
-import json, sys, threading
+import json, os, sys, threading
 from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
@@ -49,6 +49,19 @@ def test_a_push_is_held_for_the_owner_and_the_step_reads_held_not_failed():
     assert res['is_error'] and res['result'].startswith(shellgate.HELD)          # agentSteps reads this as "held"
     assert any(json.loads(r.get('DraftText') or '{}').get('command') == 'git push origin main'
                for r in s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,)))     # the owner's Approve card
+
+
+def test_a_no_that_ends_the_agents_turn_is_heard_in_the_same_conversation_and_the_work_goes_on():
+    """The HIPAA walk, 2026-11-21: codex-acp's only reject is Codex's "cancel", so every hold aborted Codex's turn - "Cancelled" and Try
+    again over the live Approve card, the agent never told it was held. The same conversation goes on, told what the step's answer says."""
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Fix the budget total', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    with mock.patch.object(shellgate, 'trusted', return_value=''):
+        out, ev = run(profile(), env={'FAKE_ACP_ASK': 'git push origin main', 'FAKE_ACP_ABORT': '1'}, store=s, task_id=tid)
+    said, sid = out[0], out[1]
+    assert sid == 'sess_fake_1' and 'turn=2' in said and 'git push origin main' in said      # the same conversation went on, told of the step
+    assert any(json.loads(r.get('DraftText') or '{}').get('command') == 'git push origin main'
+               for r in s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,)))     # ...and its Approve card stands
 
 
 def _answering(option):
@@ -167,16 +180,14 @@ def test_an_http_client_that_writes_off_this_machine_is_held_as_a_card_never_ref
     assert json.loads(rv['DraftText'])['action'] == 'shell_act' and 'send data to' in json.loads(rv['DraftText'])['what']
 
 
-def test_a_press_in_the_browser_is_judged_on_the_acp_road_as_on_the_hook():
-    """Over ACP Taskuary's answer is the only gate a Codex session has, and it read only the shell's and the read gate's steps: an
-    `agent-browser click` on a "Pay now" a mail talked the agent into was allowed as a plain shell line. It is judged by the hook's own road
-    (hooks.command_gate) - with no AI connected to judge, a press waits; a look runs."""
+def test_a_press_in_the_browser_is_left_to_the_hold_where_it_runs():
+    """Over ACP a Codex session asks only for what its sandbox blocks, so a press judged here was judged on one road and not the next: the
+    hold is at the command itself (gatecmd), on every road. ACP's answer lets the line through, and the session's `agent-browser` holds it."""
     s = MemoryStore(); tid = s.create_task({'Title': 'Pay the vendor', 'Kind': 'coding', 'Status': 'open'}, 'owner')
     ctx = {'store': s, 'task_id': tid, 'cwd': HERE, 'sid': 'run1', 'cli': 'codex'}
     call = lambda c: acpgate.decide({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': c}}, ctx)
-    for cmd in ('agent-browser click @e3', 'timeout 30 agent-browser click @e3', 'agent-desktop click @s1:e2'):
-        assert call(cmd)[0] == acpgate.HELD, cmd
-    assert call('agent-browser snapshot -i') == (acpgate.ALLOWED, '')
+    for cmd in ('agent-browser click @e3', 'agent-desktop click @s1:e2', 'agent-browser snapshot -i'):
+        assert call(cmd) == (acpgate.ALLOWED, ''), cmd
 
 
 @pytest.mark.parametrize('cmd', ['curl -s https://docs.northwind.example/budget', 'curl -f -s https://docs.northwind.example/a.pdf -o a.pdf',
@@ -324,11 +335,11 @@ def test_a_stop_ends_its_own_turn_and_never_the_one_that_begins_after_it(monkeyp
         a = threading.Thread(target=turn, args=(1, s1)); a.start()
         assert heard.wait(60), 'the first turn began'
         s1.set(); a.join(60)                                                   # his stop: the turn honours it and ends
-        assert isinstance(said[1], tuple), said                                # ...as an answer, its conversation kept
+        assert isinstance(said[1], clipool.Cancelled) and said[1].session_id, said     # ...as every road says a stop, its conversation named
         for t in backstops(): t.join(10)
         assert not backstops(), 'the stopped turn is over: its backstop let go at once'
-        b = threading.Thread(target=turn, args=(2, s2, said[1][1]), daemon=True); b.start(); b.join(60)
-        c = threading.Thread(target=turn, args=(3, s2, said[1][1]), daemon=True); c.start(); c.join(60)
+        b = threading.Thread(target=turn, args=(2, s2, said[1].session_id), daemon=True); b.start(); b.join(60)
+        c = threading.Thread(target=turn, args=(3, s2, said[1].session_id), daemon=True); c.start(); c.join(60)
         assert 'turn=2' in str(said[2]) and 'turn=3' in str(said[3]), (said.get(2), said.get(3))    # ...both on that one conversation
         assert clipool.is_live(key)
     finally: s1.set(); s2.set(); clipool.close(key)
@@ -363,7 +374,10 @@ def test_claude_s_argv_reaches_the_adapter_as_sdk_options(tmp_path):
     # dropped - its session ran with no hook of Taskuary's (a held step reached the model only as "User refused permission") and read the
     # owner's own CLAUDE.md, which that file excludes
     o = agents.claude_acp_options(['-p', '--setting-sources', 'project,local', '--strict-mcp-config', '--settings', '/h/general-7.json', '--add-dir', '/h/out'])
-    assert o == {'settingSources': ['project', 'local'], 'extraArgs': {'strict-mcp-config': None}, 'settings': '/h/general-7.json', 'additionalDirectories': ['/h/out']}
+    assert o == {'settingSources': ['project', 'local'], 'extraArgs': {'strict-mcp-config': None}, 'settings': '/h/general-7.json', 'additionalDirectories': ['/h/out'],
+                 'promptSuggestions': False}
+    # ...and NO PREDICTED NEXT PROMPT: the adapter's default is one more model call after every turn, for gray text nothing here draws
+    assert agents.claude_acp_options([])['promptSuggestions'] is False
 
 
 def test_codex_s_config_flags_become_its_session_config():
@@ -413,7 +427,7 @@ def test_a_held_only_run_that_cannot_start_over_acp_runs_nothing_and_says_so():
         with pytest.raises(RuntimeError, match='nothing ran'): run(profile(args=['-p'], held_only=True), env={'FAKE_ACP_FAIL': 'init'}, store=s)
     s.set_setting(agents.ACP_SETTING, '0', 'owner')                              # ...nor with the owner's ACP switch off
     with mock.patch.object(agents, 'run_acp', side_effect=AssertionError('off')), mock.patch.object(agents.spawn, 'popen', side_effect=popen):
-        with pytest.raises(RuntimeError, match="Run CLI agents over ACP"): run(profile(args=['-p'], held_only=True), store=s)
+        with pytest.raises(RuntimeError, match="Taskuary approves each step of an agent"): run(profile(args=['-p'], held_only=True), store=s)
 
 
 # ── a conversation the CLI no longer has (agents.Gone): the turn is said again to a fresh one, never the CLI's error ─────────────────────────
@@ -455,3 +469,145 @@ def test_the_command_line_says_gone_for_claude_s_own_no_conversation_found(monke
             agents.run_cli({'cmd': 'claude', 'args': args, 'cwd': HERE, **({'keep_alive': keep} if keep else {})}, 'carry on', lambda *a: None,
                            resume='3f1c2b9a-0000-4000-8000-00000000000a')
     finally: clipool.close(keep) if keep else None
+
+
+def test_a_stop_pressed_before_the_turn_took_its_conversation_still_stops_it(monkeypatch):
+    """The stop's backstop looked for the turn's lock, and a stop that landed before the turn took it found none and let go: the turn was
+    prompted anyway and ran on, unstopped, until its time ran out. And a stop already pressed when the turn takes its conversation never sends
+    the prompt at all: sent, then cancelled, a quick agent did the work he had stopped."""
+    stop, got, asked, real = threading.Event(), {}, [], acp.ACPClient.prompt
+    monkeypatch.setattr(acp.ACPClient, 'prompt', lambda self, text, sent=None: (asked.append(text), real(self, text, sent=sent))[1])
+    stop.set()                                                                   # pressed while the turn was still being started
+    def turn():
+        try: got['out'] = agents.run_cli(profile(), 'go', lambda *a: None, extra_env={'FAKE_ACP_HANG': '1'}, cancel=stop)
+        except Exception as e: got['out'] = e
+    with mock.patch.object(agents, '_resolve_cmd', return_value=[FAKE[0]]):
+        t = threading.Thread(target=turn, daemon=True); t.start(); t.join(30)
+    assert isinstance(got.get('out'), clipool.Cancelled) and got['out'].session_id, got or 'the turn ran on, unstopped'
+    assert asked == [], 'the stopped turn was never sent to the agent'
+
+
+# ── ONE CONTRACT ACROSS ROADS: a stopped turn, an early end, a death (the parity matrix, workstream 6) ─────────────────────────────
+@pytest.mark.parametrize('stop', ['refusal', 'max_tokens', 'max_turn_requests', 'other'])
+def test_a_turn_that_ends_early_with_nothing_said_fails_as_the_kept_road_reads_its_error_result(stop, tmp_path):
+    """An adapter that stopped for a refusal or a limit before saying a word came back as a finished turn with an empty reply. The kept claude
+    road raises its CLI's error result; ACP goes the same way (agents.raise_failure)."""
+    rules = tmp_path / 'r.json'; rules.write_text(json.dumps([{'when': '.', 'silent': True}]))
+    with pytest.raises(clipool.PartWay) as e:
+        run(profile(), 'go', env={'FAKE_ACP_SCRIPT': str(rules), 'FAKE_ACP_STOP': stop})
+    # ...said once, plainly, with the way on: no agent's name, no stop code (those are the log's) - and an unknown reason claims no limit
+    kind = {'refusal': 'refusal', 'max_tokens': 'limit', 'max_turn_requests': 'limit'}.get(stop, 'other')
+    assert str(e.value) == clipool.ENDED_EARLY[kind] and stop not in str(e.value) and 'claude' not in str(e.value).lower()
+    assert e.value.session_id, 'its conversation goes with it'
+
+
+@pytest.mark.parametrize('stop', ['max_tokens', 'refusal'])
+def test_a_turn_that_says_words_then_hits_a_limit_or_a_refusal_ended_part_way_its_words_kept(stop, tmp_path):
+    """An adapter that said half an answer and then stopped at max_tokens came back as the turn's answer, filed done ("agent done"), where the
+    kept claude road files the same shape - words, then its error_max_turns - as a turn that ended part-way, its words kept. One way on both."""
+    rules = tmp_path / 'r.json'; rules.write_text(json.dumps([{'when': '.', 'first': 'Half of it.'}]))
+    ev = []
+    with pytest.raises(clipool.PartWay) as e, mock.patch.object(agents, '_resolve_cmd', return_value=[FAKE[0]]):
+        agents.run_cli(profile(), 'go', lambda k, n, d=None: ev.append((k, n, d)), extra_env={'FAKE_ACP_SCRIPT': str(rules), 'FAKE_ACP_STOP': stop})
+    assert str(e.value) == clipool.ended_early(stop) and e.value.session_id
+    assert any(k == 'progress' and 'Half of it.' in str(d) for k, n, d in ev), 'its words stay in its steps'
+
+    # ...and a turn that ended for any other reason after words is still its answer
+    out, ev = run(profile(), 'go', env={'FAKE_ACP_SCRIPT': str(rules), 'FAKE_ACP_STOP': 'budget_gone'})
+    assert out[0] == 'Half of it.'
+
+
+# ── ONE FAILURE ROAD: a usage limit reads the same whatever the AI and the road (the design round, 2026-11-18) ──────────────────────
+def test_a_usage_limit_over_acp_is_the_limit_every_road_raises():
+    """Over ACP the adapter says its limit in words, and the chat's road raised them raw - never RateLimited, so the router went on handing
+    the spent AI the next call. Read by agents.failure_of, as the one-shot and kept roads read theirs."""
+    with pytest.raises(agents.RateLimited) as e:
+        run(profile(), 'go', env={'FAKE_ACP_FAIL': 'quota'})
+    assert str(e.value) == "You've hit your 5-hour limit · resets 12:10pm (America/New_York)"
+    # ...and it keeps the conversation it was on (the HIPAA walk, 2026-11-21): a 429's try again opened a fresh Codex thread and did the work twice
+    from taskuary import general
+    assert general._unfinished(e.value).session_id == 'sess_fake_1'
+
+
+@pytest.mark.parametrize('said', ["You've hit your usage limit. Upgrade to Pro or try again at 3:05 PM.", 'Not logged in · Please run /login'])
+def test_every_road_reads_a_failure_by_one_function(said):
+    "A limit and a sign-out, said in words by any CLI, are the same exception on the one-shot road, the kept road and ACP."
+    f = agents.failure_of('codex', said, 'codex')
+    assert isinstance(f, agents.RateLimited) if 'limit' in said else 'sign' in str(f).lower() or 'log' in str(f).lower()
+    with pytest.raises(type(f)): agents.raise_failure('codex', said, 'codex')
+
+
+# ── A CONNECTOR STARTED AHEAD (the speed round, 2026-11-20: every new task's agent waited ~1 s for claude's adapter to start) ──────────────
+def test_claude_s_adapter_runs_on_no_task_s_environment_and_the_next_task_opens_on_one_started_ahead(tmp_path, monkeypatch):
+    import time
+    log = tmp_path / 'acp.jsonl'
+    monkeypatch.setenv('FAKE_ACP_LOG', str(log))
+    launch = {'cmd': FAKE, 'env': {}, 'mode': '', 'meta': {'claudeCode': {'options': {'promptSuggestions': False}}}, 'adapter': 'claude-agent-acp@0'}
+    base = {**os.environ}
+    open_for = lambda tid: agents._acp_open('claude', launch, str(tmp_path), {**base, 'TQ_TASK': str(tid)}, None, 60, lambda *a: None, base=base)
+    try:
+        t = time.time(); a = open_for(1)
+        for _ in range(100):                                                   # ...the next one starting behind it
+            if agents._ACP_SPARE: break
+            time.sleep(0.05)
+        ahead = next(iter(agents._ACP_SPARE.values())).p.pid
+        b = open_for(2)
+        rows = [json.loads(l) for l in log.read_text().splitlines()]
+        assert [r['env'] for r in rows] == [{'TQ_TASK': '1'}, {'TQ_TASK': '2'}]      # ...each task's own part rides with its session
+        assert all(r['proc'] == {} for r in rows)                                       # ...never in the adapter's own process
+        assert b.p.pid == ahead != a.p.pid and rows[1]['pid'] == ahead                   # ...task 2 on the one started ahead
+        for _ in range(100):
+            if agents._ACP_SPARE: break
+            time.sleep(0.05)
+        assert agents._ACP_SPARE                                                         # ...and a third already up for the next
+    finally:
+        for c in (locals().get('a'), locals().get('b')):
+            if c: c.close()
+        agents._close_spares()
+
+
+def test_the_owner_s_own_codex_starts_with_openai_s_apps_and_plugins_off_as_an_ai_card_s_does():
+    """The owner, 2026-11-22: a Codex CLI agent, run on his own ~/.codex, called ChatGPT's Wallet app - "yes turn off". One table closes them
+    for every Codex Taskuary starts; his own -c keys still ride after it."""
+    import json
+    from taskuary import harness
+    with mock.patch.object(agents, '_resolve_cmd', side_effect=lambda c: ['npx'] if c == 'npx' else [f'/opt/bin/{c}']), \
+         mock.patch.object(agents.pathcache, 'which', return_value=None):
+        l = agents.acp_launch({'cmd': 'codex', 'args': ['exec', '-c', 'model_reasoning_effort="high"']})
+    cfg = json.loads(l['env']['CODEX_CONFIG'])
+    assert cfg['features.apps'] is False and cfg['features.plugins'] is False and cfg['model_reasoning_effort'] == 'high'
+    # ...only those: his plan's picture tool and fast tier stay his (the owner, 2026-11-22 - an AI card's harness closes them, his CLI does not)
+    assert {k.split('.', 1)[1] for k in cfg if k.startswith('features.')} == set(harness.OWNER_CLI_OFF)
+    assert 'features.image_generation' not in cfg and 'features.fast_mode' not in cfg
+
+
+def test_a_start_that_fails_once_is_tried_again_before_he_hears_of_it():
+    """The owner's live app, 2026-11-22: "Codex did not start ... (session/new: Internal error)" after 40 s, at a busy minute; both his cards
+    started in 0.9 s a moment later. Nothing ran on a failed start, so it is tried once more; only a second failure is his to see."""
+    from taskuary import acp as acp_mod
+    calls = []
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1: raise acp_mod.ACPStartError('session/new: Internal error')
+        return ('done', 'sid1', '')
+    prof = {'cmd': 'codex', 'held_only': True}
+    with mock.patch.object(agents, '_acp_road', return_value=True), mock.patch.object(agents, 'run_acp', side_effect=flaky):
+        assert agents.run_cli(prof, 'draw it', lambda *a, **k: None) == ('done', 'sid1', '') and len(calls) == 2
+    with mock.patch.object(agents, '_acp_road', return_value=True), \
+         mock.patch.object(agents, 'run_acp', side_effect=acp_mod.ACPStartError('session/new: Internal error')):
+        with pytest.raises(RuntimeError, match="couldn't start just now"): agents.run_cli(prof, 'draw it', lambda *a, **k: None)
+
+
+def test_each_installed_adapter_is_primed_once_and_let_go():
+    """The owner, 2026-11-22: "still takes 40 seconds" - the first start after launch spent 9.4 s loading the adapter cold; later ones under 4 s.
+    Each adapter this computer has is started once in the background and closed; none it lacks."""
+    from taskuary import acp as acp_mod
+    made = []
+    class Fake:
+        def __init__(self, *a, **k): made.append(a[0]); self.closed = False
+        def connect(self): return {}
+        def close(self): self.closed = True
+    have = lambda c: [f'/opt/bin/{c}'] if c == 'codex' else []
+    with mock.patch.object(agents, '_resolve_cmd', side_effect=have), mock.patch.object(acp_mod, 'ACPClient', Fake), \
+         mock.patch.object(agents.pathcache, 'which', return_value=None), mock.patch.object(agents.acpadapter, 'kept', return_value='/opt/kept/codex-acp'):
+        assert agents._prime_adapters(0) == ['codex'] and len(made) == 1

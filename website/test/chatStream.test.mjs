@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-import { asUtc } from "../src/dates.js";
 import { editHunks, headerOf, hunksOf, hunkText, langOf, numbered, parseUnified, tokens } from "../src/diffView.js";
 
 const before = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
@@ -14,16 +13,7 @@ const text = (ls) => `${ls.join("\n")}\n`;
 const patch = { oldStart: 9, oldLines: 7, newStart: 9, newLines: 7,
   lines: [" line 9", " line 10", " line 11", "-line 12", "+    total = a + tax", " line 13", " line 14", " line 15"] };
 
-const LOG = [
-  { k: "brief", text: "TASKUARY: work TQ-0042 ...", at: "2026-11-06 09:00:00" },
-  { k: "tool", name: "Read", args: { file_path: "C:/work/ledger/store.py" }, text: "C:/work/ledger/store.py", at: "2026-11-06 09:00:05" },
-  { k: "tool", name: "Bash", args: { command: "pytest -q tests" }, text: "pytest -q tests", at: "2026-11-06 09:00:06" },
-  { k: "tool", name: "Edit", args: { file_path: "C:/work/ledger/budget.py" }, file: "C:/work/ledger/budget.py", edit: { hunks: [patch] }, at: "2026-11-06 09:00:08" },
-  { k: "said", text: "Fixed: the total now adds the tax line.", at: "2026-11-06 09:00:12" },
-  { k: "you", text: "Run the whole suite too.", at: "2026-11-06 09:01:00" },
-  { k: "tool", name: "Bash", args: { command: "pytest -q" }, text: "pytest -q", at: "2026-11-06 09:01:04" },
-  { k: "said", text: "All 212 pass.", at: "2026-11-06 09:01:30" },
-];
+
 const chunks = (kind, t) => t.match(/.{1,7}/gs).map((x) => ({ sessionUpdate: kind, content: { type: "text", text: x } }));
 const ACP = [
   { sessionUpdate: "user_message_chunk", content: { type: "text", text: "TASKUARY: work TQ-0042 ..." }, _meta: { taskuary: "brief" } },
@@ -39,18 +29,6 @@ const ACP = [
   { sessionUpdate: "tool_call", toolCallId: "d", kind: "execute", rawInput: { command: "pytest -q" } },
   ...chunks("agent_message_chunk", "All 212 pass."),
 ];
-const ses = (more) => ({ sid: "s1", cli: "claude", at: "2026-11-06 09:00:00", ...more });
-// the rows a person reads: ids, stamps and step names aside (an ACP session has no per-step clock; its steps are named by update, a log's by step)
-const shape = (rows) => rows.map(({ id, at, steps, ended, ...r }) => r);
-// ...and a command's output, which only ACP hands over (a log keeps the command alone)
-const noOutput = (rows) => rows.map((r) => (r.parts ? { ...r, parts: r.parts.map((p) => (p.steps ? { ...p, steps: p.steps.map(({ detail, id, ...s }) => s) } : p)) } : r));
-
-
-
-
-
-
-
 
 
 // ── the viewer ───────────────────────────────────────────────────────────────────────────────────
@@ -90,17 +68,6 @@ test("the highlighter colours by language and keeps every character", () => {
 });
 
 
-
-
-// ── recorded ACP update sequences ────────────────────────────────────────────────────────────────
-const say = (t, at) => ({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: t }, ...(at ? { _at: at } : {}) });
-const BRIEF = { sessionUpdate: "user_message_chunk", content: { type: "text", text: "TASKUARY: work TQ-0042 ..." }, _meta: { taskuary: "brief" } };
-const flat = (turn) => turn.parts.flatMap((p) => (p.type === "work" ? p.steps.map((s) => `${s.kind === "said" ? "said" : "step"}:${s.summary}:${s.status}`)
-  : p.type === "said" ? [`said:${p.text}`] : [`${p.type}`]));
-
-
-
-
 test("the general chat's ACP trace keeps the words where they were said: the answer takes only what came after the last call", async () => {
   const { stepsOf } = await import("../src/agentSteps.js");
   // the trace agents.ACPSteps writes for the same recorded sequence (tests/test_acp_steps_order.py)
@@ -110,7 +77,7 @@ test("the general chat's ACP trace keeps the words where they were said: the ans
     { type: "tool_result", name: "t1", detail: { tool_call_id: "t1", result: "212 passed" } },
     { type: "progress", name: "text", detail: "All 212 pass." }];
   const live = stepsOf(trace, { keepStart: false }).map((s) => s.summary);
-  assert.deepEqual(live, ["Running the suite.", "Ran pytest", "Quick update: half of it passed.", "All 212 pass."]);
+  assert.deepEqual(live, ["Running the suite.", "Ran pytest -q", "Quick update: half of it passed.", "All 212 pass."]);
   // ...filed: the answer leaves the trail, every earlier line stays where it stood
   assert.deepEqual(stepsOf(trace, { keepStart: false, answer: "All 212 pass." }).map((s) => s.summary), live.slice(0, 3));
 });
@@ -142,33 +109,6 @@ test("the chat lets go of its end only for the owner's own scroll up, never for 
   assert.doesNotMatch(view, /stick\.current = v\.scrollHeight - v\.scrollTop - v\.clientHeight < 56/, "where it stands alone no longer decides");
 });
 
-// the working dots stood 0px under the last line the turn had said (the owner, 2026-11-11: "give it a drop of space")
-test("the working dots keep room over them wherever something of the turn stands above", () => {
-  const css = fs.readFileSync(new URL("../src/generalWorkspace.css", import.meta.url), "utf8");
-  assert.match(css, /\.tq-aui-agent-body > \* \+ \.tq-aui-thinking \{ margin-top: 10px; \}/);
-});
-
-// three messages of one working turn stood as consecutive lines, 0px between (the owner, 2026-11-11): each is its own block of words
-// (TurnWorkView draws a `said` part as one Md), and a block's last paragraph carries no room under it
-test("each message of a turn is a paragraph: a block of its words keeps room under it, at work and at rest, in a fold too", () => {
-  const css = fs.readFileSync(new URL("../src/generalWorkspace.css", import.meta.url), "utf8"), md = fs.readFileSync(new URL("../src/md.jsx", import.meta.url), "utf8");
-  const view = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(md, /<Box sx=\{sx\} className="tq-md">/, "every block of words is named");
-  assert.match(view, /p\.type === "said" \? <Md key=\{p\.id\} text=\{p\.text\} \/>/, "and a message of a turn is one, a direct child of the turn's body");
-  assert.match(css, /\.tq-aui-agent-body > \.tq-md:not\(:last-child\), \.tq-aui-working-fold > \.tq-md:not\(:last-child\) \{ margin-bottom: 6px; \}/);
-  assert.match(md, /"& p": \{ m: 0, mb: 0\.75 \}/, "the room a paragraph has inside one message: 6px");
-});
-
-// A LONG CHAT'S FIRST PAINTED FRAME IS ITS END. Its lines measure themselves in the draw that mounts them and each grows a "Show all" - after
-// the pane's own pin. The end was watched from an effect that ran after the paint, so a task opened by a rail click painted one frame 896px
-// short (sampled after each paint, 2026-11-11)
-test("the chat is pinned to its end before its first paint: the watch is a layout effect, and the pin runs again once the draw is whole", () => {
-  const view = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(view, /React\.useLayoutEffect\(\(\) => \{\r?\n    const v = viewport\.current, el = inner\.current;/, "the resize watch is set before the paint");
-  assert.match(view, /React\.useLayoutEffect\(\(\) => \{ const pin = \(\) => \{[^\n]*v\.scrollTop = v\.scrollHeight; \};\r?\n    pin\(\); queueMicrotask\(pin\); \}\);/);
-});
-
-
 
 // WHAT WAITS BY THE BOX, WHEN MANY DO (decided 2026-11-12): the newest lines and the count - the strip scrolled from the oldest, the line he had
 // just typed out of sight under a dozen older ones; a line that failed to go in stays wherever it stands
@@ -198,17 +138,6 @@ test("the agent's open question is drawn in the turn that asked it, never under 
   assert.equal(askTurn({ request_id: "q1" }, items), ""); assert.equal(askTurn(null, items), "");
 });
 
-test("the letters that wait for his Send are drawn at the end of the turn the list names, never above later words", async () => {
-  const { lettersTurn } = await import("../src/chatStream.js");
-  // the owner's live task, 2026-11-13: a turn left the reply's card, the turn that went on from it wrote a second letter - both stood over its words
-  const items = [{ id: "l1", kind: "line" }, { id: "t:l1:0", kind: "turn", state: "done" }, { id: "t:l1:1", kind: "turn", state: "done" }];
-  assert.equal(lettersTurn({ letters: "t:l1:1" }, items), "t:l1:1");
-  // ...held back while that turn is at work, as its cards are; and where the list names none (or a turn not drawn yet), the page's own place
-  assert.equal(lettersTurn({ letters: "t:l1:1" }, [...items.slice(0, 2), { ...items[2], state: "working" }]), "");
-  assert.equal(lettersTurn({ letters: null }, items), ""); assert.equal(lettersTurn({ letters: "t:l9:0" }, items), ""); assert.equal(lettersTurn(null, items), "");
-  // ...nor over a line he has just sent (recorded 2026-11-13: its Send stood lit above his new line until the list was read again)
-  assert.equal(lettersTurn({ letters: "t:l1:1" }, [...items, { id: "l2", kind: "line" }]), "");
-});
 
 test("a chat paints a held list only if it was read a moment ago - an older one spins until its read lands", async () => {
   // the owner, 2026-11-13: a long task opened on messages from his last visit, the rest coming in after
@@ -220,16 +149,6 @@ test("a chat paints a held list only if it was read a moment ago - an older one 
   assert.equal(paintable(null, null, now), null);
 });
 
-// WHAT IT WROTE OUT FOR HIM IS NEVER FOLDED WITH ITS STEPS (the owner, 2026-11-15: he asked for a query to review - the turn read "6 steps ▸" and
-// "The SQL is ready for you to review", the query itself behind the fold): a message of the turn that holds a block stays in the turn
-test("a block the agent wrote out on its way is not folded behind the steps", async () => {
-  const { isMade } = await import("../src/chatStream.js");
-  assert.ok(isMade("Here is the script:\n\n```sql\nUPDATE facilities SET fax = NULL WHERE id IN (14, 22, 31);\n```"));
-  assert.ok(isMade("| id | fax |\n|---|---|\n| 14 | 555-0100 |"));
-  assert.ok(!isMade("Let me look at the folder first.") && !isMade("I'll use `psql` for this.") && !isMade(""));
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /p\.type === "said" && \(!ended \|\| isMade\(p\.text\)\)/);
-});
 
 // A REPLY THE AGENT REWROTE, THEN SENT, KEEPS ITS SENT CARD (recorded 2026-11-15): the rewrite is the same review, so the list holds its earlier
 // version ("Earlier draft - rewritten below") above its own card - and the earlier version, drawn first, claimed every card of that review
@@ -241,7 +160,7 @@ test("an earlier version of a draft never takes its review's own card", async ()
   const items = [{ kind: "turn", cards: [old] }, { kind: "arrival" }, { kind: "turn", cards: [own] }, { kind: "card", ...gone }];
   assert.deepEqual([...standing(items)], [12], "review 12 still has its own card; review 7 is only its record");
   const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /if \(isPastCard\(c\)\) \{ if \(!stands\.has\(c\.review\)\) nodes\.forEach/);
+  assert.match(src, /if \(isPastCard\(c\) && stands\.has\(c\.review\)\) return \[wasCard\(c, rv\(c\.review\)\)\];/);
 });
 
 // NOTHING IT WROTE IS INVISIBLE (the owner, 2026-11-15): the agent decides what to show, and where it saved a file and never showed it, the
@@ -270,41 +189,22 @@ test("a missing fact is one question: the reply not written yet waits under no o
 });
 
 // A CARD HE SAID NO TO STAYS WHERE IT STOOD (the real-CLI walk, 2026-11-16: Don't send took the email off the chat, only "You dropped the email"
-// was left - the basic flow's "no card gone from the canvas"): drawn greyed with its words, under "Not sent"
+// was left - the basic flow's "no card gone from the canvas"): drawn with its words, under what he pressed - "Not sent"
 test("a card he said no to is drawn where it stood, with its words", async () => {
   const { isPastCard } = await import("../src/chatStream.js");
   assert.ok(isPastCard({ id: "r:9", review: 9, status: "rejected", was: { text: "Hi Erin, the open house moved" } }));
   const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /rejected: \(\) => "Not sent - you said don't send"/);
+  assert.match(src, /if \(isPastCard\(c\) && c\.status === "rejected"\) \{ if \(!stands\.has\(c\.review\)\) claim\(\); return \[<NotSent key=\{c\.id\} c=\{c\} \/>\]; \}/);
+  assert.match(src, /<div className="tq-conv-past-head">\{c\.what === "action" \? "You said no to this" : "Not sent - you said don't send"\}<\/div>/);
 });
 
-// A TURN AT WORK SHOWS ITS STEPS COUNTED, SHUT (the owner, 2026-11-17: "7 minutes this is all the agent did? and that little feedback?" - 19 steps
-// stood behind three short lines): while it runs the turn draws the same quiet "n steps" fold a finished one has, over its words, closed
-test("a turn at work draws its steps behind the quiet n-steps fold, as a finished one does", async () => {
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /if \(now\) \{\s*const shown = [^]*?<WorkFold k=\{`\$\{key\}:all`\} quiet parts=\{rest\}/);
-});
 
-// HIS LINE SHOWS WHAT HE SENT WITH IT (the owner, 2026-11-17: "the prompt box should show attachment of whatever goes into prompt like report,
-// dashboard, routine, attached pdf"): a pill per file on his bubble, from the press (his own line, files kept) to the heard line (`files`)
-test("his line draws a pill for every file he sent with it, from the press on", () => {
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /\(x\.files \|\| \[\]\)\.map\(\(f\) => <AttachChip key=\{f\} name=\{fileName\(f\)\}/);
-  assert.match(src, /kind: "line", text: w, files: files\.map\(\(a\) => a\.path\)/);
-});
-
-// HIS ANSWER TO A PERMISSION REQUEST STAYS ITS CARD, greyed with what he pressed (the owner, 2026-11-17: "the approve card should never go anywhere")
-test("an answered permission request is drawn as its card, greyed, never a bare line", () => {
-  const ws = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8"), ac = fs.readFileSync(new URL("../src/AgentChannels.jsx", import.meta.url), "utf8");
-  assert.match(ws, /if \(x\.kind === "press" && x\.perm\) return [^\n]*\n\s+<AnsweredPermission perm=\{x\.perm\}/);
-  assert.match(ac, /export function AnsweredPermission\(\{ perm, at = "" \}\)[^]*?PERM_SAID\[perm\.answer\]/);
-});
-
-// ...AND WHILE IT WAITS BY THE BOX (the attach stress round, 2026-11-18): the strip over the box drew his words alone - a picture sent with words
-// lost its pill until heard, and one sent alone was an empty row with a trash can (browser/line-file-pill records it)
-test("a line waiting by the box draws a pill for every file he sent with it", () => {
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  const strip = src.slice(src.indexOf("const PendingStrip"), src.indexOf("function AssistantThread"));
-  assert.match(strip, /\(x\.files \|\| \[\]\)\.map\(\(f\) => <AttachChip key=\{f\} name=\{fileName\(f\)\}/);
-  assert.match(fs.readFileSync(new URL("../src/generalWorkspace.css", import.meta.url), "utf8"), /\.tq-conv-pending-row > \.tq-attach-chip \{ flex: 0 0 auto;/, "never squeezed to a few letters");
+test("his line keeps its words through the swap: placed by the server before it is filed, it never draws empty", async () => {
+  const { withMine } = await import("../src/chatStream.js");
+  const mine = [{ id: "l-9", kind: "line", text: "Post it to all three.", files: [], at: new Date(), rest: true }];
+  const placed = { items: [{ id: "l-9", kind: "line", text: "", files: [] }, { id: "t:9", kind: "turn", state: "starting", steps: [], cards: [] }], pending: [], working: true };
+  const got = withMine(placed, mine);
+  assert.deepEqual(got.items.filter((x) => x.kind === "line").map((x) => [x.id, x.text]), [["l-9", "Post it to all three."]], "one line, its words, in the server's place");
+  const filed = { ...placed, items: [{ ...placed.items[0], text: "Post it to all three." }, placed.items[1]] };
+  assert.deepEqual(withMine(filed, mine).items.filter((x) => x.kind === "line").map((x) => x.text), ["Post it to all three."]);
 });

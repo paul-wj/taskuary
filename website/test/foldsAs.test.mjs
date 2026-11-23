@@ -9,4 +9,3 @@ test("nothing folded folds nothing, a keyless card included", () => {
   assert.equal(foldsAs("msg:3", "msg:3"), true);
   assert.equal(foldsAs("msg:3", "agent:7"), false);
 });
-

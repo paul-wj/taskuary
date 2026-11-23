@@ -96,19 +96,7 @@ def split_task(store, tid: int, second: dict, first: dict = None, move_message_i
                              'Kind': t.get('Kind') or 'general', 'Priority': t.get('Priority') or 'normal',
                              'Source': t.get('Source') or 'manual',
                              'Tags': t.get('Tags'), **({'Assignee': own} if own else {})}, actor)
-    mine = {m['MessageId'] for m in store.list_messages(tid)}
-    moved = [int(m) for m in (move_message_ids or []) if int(m) in mine]
-    for mid in moved:
-        store.attach_message(mid, new)
-        store.add_route(mid, new, 'split', None, f'{task_ref(tid)} was two jobs - this one is {task_ref(new)}', [], actor)
-    # THE TO-DOS GO WITH THEIR JOB (B13, the email walk 2026-10-29): a split left every box on the first task - the second job's
-    # own to-do stayed under the first and the new task had none. The boxes keep their ids, ticks and notes
-    want = {str(x) for x in ((second or {}).get('items') or [])}
-    todo = store.task_checklist(tid)
-    going = [i for i in todo if i.get('id') in want]
-    if going:
-        store._write_checklist(tid, [i for i in todo if i.get('id') not in want], actor)
-        store._write_checklist(new, going, actor)
+    moved, going = move_part(store, tid, new, move_message_ids, (second or {}).get('items'), actor)
     said = [plural(len(moved), 'message')] * bool(moved) + [plural(len(going), 'to-do')] * bool(going)
     store.add_comment(tid, actor, 'human',
                       f'Broke this in two: "{title[:120]}" is now {task_ref(new)}'
@@ -117,6 +105,25 @@ def split_task(store, tid: int, second: dict, first: dict = None, move_message_i
     store.audit('task', new, 'split_from_task', actor, detail={'from_task': tid, 'messages': moved, 'items': [i['id'] for i in going]})
     store.audit('task', tid, 'split_into_task', actor, detail={'new_task': new, 'title': title[:120]})
     return new
+
+
+def move_part(store, tid: int, dst: int, message_ids, items, actor: str = 'owner') -> tuple:
+    """(the messages moved, the to-dos moved) from `tid` to `dst`: only the messages named, and the to-dos by id - a break-out's part, to a
+    new task (split_task) or to the open task that is already that work (proposals break_out, ingest.same_work)."""
+    mine = {m['MessageId'] for m in store.list_messages(tid)}
+    moved = [int(m) for m in (message_ids or []) if int(m) in mine]
+    for mid in moved:
+        store.arrive(mid, dst, 'routed', decided=True)
+        store.add_route(mid, dst, 'split', None, f'{task_ref(tid)} was two jobs - this one is {task_ref(dst)}', [], actor)
+    # THE TO-DOS GO WITH THEIR JOB (B13, the email walk 2026-10-29): a split left every box on the first task - the second job's
+    # own to-do stayed under the first and the new task had none. The boxes keep their ids, ticks and notes
+    want = {str(x) for x in (items or [])}
+    todo = store.task_checklist(tid)
+    going = [i for i in todo if i.get('id') in want]
+    if going:
+        store._write_checklist(tid, [i for i in todo if i.get('id') not in want], actor)
+        store._write_checklist(dst, [*store.task_checklist(dst), *going], actor)
+    return moved, going
 
 
 def _why(sig: dict) -> str:
@@ -199,7 +206,7 @@ def merge_tasks(store, src: int, dst: int, actor: str = 'owner') -> dict:
         store.audit('task', dst, 'reopen', actor, detail={'why': f'{task_ref(src)} folded in'})
     msgs = store.list_messages(src)
     for m in msgs:
-        store.attach_message(m['MessageId'], dst)
+        store.arrive(m['MessageId'], dst, 'routed', decided=True)
         store.add_route(m['MessageId'], dst, 'merge', None, f'folded {task_ref(src)} into {task_ref(dst)} - one job, two tasks', [], actor)
     ask = str(a.get('Summary') or '').strip()
     if ask and ask not in str(b.get('Summary') or ''):
@@ -216,7 +223,11 @@ def merge_tasks(store, src: int, dst: int, actor: str = 'owner') -> dict:
     from . import ingest, verdicts
     result, drafts = agent_result(store, src)
     for rid in [r['rid'] for r in verdicts.unsent(store, src)]: store.decide_review(rid, 'superseded', None, actor, note=f'folded into {task_ref(dst)}')
-    store.update_task(src, {'Status': 'dropped'}, actor)
+    # ...and every other one still open on it (an empty draft, a card) is superseded by the fold too, never 'no reply' by the close below
+    for r in store._rows("SELECT ReviewId FROM review WHERE TaskId=? AND Status IN ('pending','held')", (src,)):
+        store.decide_review(r['ReviewId'], 'superseded', None, actor, note=f'folded into {task_ref(dst)}')
+    from . import concierge
+    concierge.close_task(store, src, actor, save=False, status='dropped', press=False)       # the one close: an agent still on it stops with it
     store.audit('task', src, 'merged_into_task', actor, detail={'into': dst, 'messages': [m['MessageId'] for m in msgs]})
     store.audit('task', dst, 'merged_from_task', actor, detail={'from_task': src, 'messages': len(msgs)})
     told = ingest.folded_in(store, dst, src, str(a.get('Title') or ''), msgs, result, drafts, actor)

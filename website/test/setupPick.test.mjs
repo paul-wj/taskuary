@@ -4,8 +4,11 @@
 // AI". The move is the card itself, or the open card's own button, or the row's Next - never a button of the Advisor's own.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { buttonOf, cardOf } from "../src/setupSteps.js";
 
+const read = (f) => fs.readFileSync(path.join(process.cwd(), "src", f), "utf8");
 const st = (aiDone, mailDone = false) => ({ rail: [{ key: "ai", done: aiDone, open: true }, { key: "mail", done: mailDone, open: aiDone }] });
 const go = () => {};
 const shelf = [{ key: "c1", title: "ChatGPT", state: "off", go }, { key: "c2", title: "Anthropic API", state: "off", go },
@@ -40,6 +43,7 @@ test("the open setup's button to light is its filled one, else its outlined one 
   assert.equal(buttonOf([b("Cancel"), b("Open the sign-in page", false, true)]).label, "Open the sign-in page");
   assert.equal(buttonOf([b("Check now"), b("Show details")]), null);
 });
+
 
 test("the dock fills the setup verb it is told and nothing else", async () => {
   const { rowOf } = await import("../src/actionRow.js");

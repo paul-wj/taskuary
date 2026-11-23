@@ -57,7 +57,7 @@ class HeldStepsOneCard(unittest.TestCase):
         # told they still waited, worked the failure while his next press ran the same step into it again
         ids, out, ran, told, _ = self.run_all([0, 1, 0])
         self.assertEqual([self.s.get_review(i)['Status'] for i in ids], ['approved', 'superseded', 'superseded'])
-        self.assertIn('The held step failed', self.s.get_review(ids[1])['ActError'])
+        self.assertIn('failed: rejected', self.s.get_review(ids[1])['ActError'])
         self.assertIsNone(proposals.held_pending(self.s, self.tid), 'nothing on the card waits on him')
         [t] = told; self.assertIn('Nothing on that card waits on the owner now', t); self.assertIn('held as a new card', t)
         again = sg.approve_steps(self.s, ids[1:], verdicts.decide)                      # a second press on the old card runs nothing
@@ -84,7 +84,7 @@ class HeldStepsOneCard(unittest.TestCase):
         rv, told = self.hold('git push origin deploy'), []
         busy = SimpleNamespace(sid='run1', alive=True, task_id=self.tid, busy=True)
         with mock.patch.dict('taskuary.terminal.SESSIONS', {'run1': busy}, clear=True), \
-             mock.patch.object(general, 'tell', lambda st, t, said, *a, **k: told.append(said) or 'told'):
+             mock.patch.object(general, 'to_agent', lambda st, t, said, *a, **k: told.append(said) or 'told'):
             out = verdicts.decide(self.s, rv, 'approve')
         self.assertFalse(out['ok']); self.assertEqual(out['busy'], sg.BUSY); self.assertFalse(out.get('act_failed'))
         r = self.s.get_review(rv['ReviewId']); self.assertEqual(r['Status'], 'pending', 'still lit for the press it asks for'); self.assertFalse(r.get('ActError'))
@@ -149,3 +149,18 @@ class HeldStepsOneCard(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+def test_a_held_steps_card_is_pressed_through_the_one_decide_door():
+    """ONE PRESS ROAD (walk 8, 2026-11-20): the held steps' card had a road of its own (/api/reviews/steps). It is the decide door with the
+    card's other steps (`steps`): the step pressed first, the rest in order - and the old road is gone."""
+    from fastapi.testclient import TestClient
+    from taskuary import server
+    c = TestClient(server.app)
+    tid = Factory(server.store).task('Ship the portal fix')
+    ids = [server.store.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps({'action': 'shell_act', 'command': f'git push {n}'})})
+           for n in ('deploy', 'master')]
+    with mock.patch.object(sg, 'approve_steps', return_value={'ok': True, 'done': [], 'failed': None, 'left': []}) as run:
+        r = c.post(f'/api/reviews/{ids[0]}/decide', json={'verb': 'approve', 'steps': ids})
+    assert r.status_code == 200 and run.call_args[0][1] == ids and run.call_args[0][2] is verdicts.decide, r.text
+    assert c.post('/api/reviews/steps', json={'ids': ids, 'verb': 'approve'}).status_code in (404, 405, 422)

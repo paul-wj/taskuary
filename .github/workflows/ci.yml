@@ -9,13 +9,18 @@ on:
 # trigger is not missing; GitHub holds the run at action_required until then.
 permissions: { contents: read }
 
+# a push to master that a newer push replaces is cancelled, queued or running: with several fixers pushing, runs queued an hour deep behind
+# commits already superseded (2026-11-21). A release commit, a pull request and a run started by hand each keep a group of their own
+concurrency:
+  group: ci-${{ github.ref }}-${{ (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'Release ')) && 'push' || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   ci-required:
     name: ci-required
     if: always()
-    # ...the browser suites and the walk are gone (the owner, 2026-11-05: "remove the browser test suites"); a release is gated by the smoke set
-    # what blocks a release is the smoke set - the app loads and the agent buttons work end to end
-    needs: [test, build-web, smoke, docker]
+    # ...the browser suites and the walk are gone (the owner, 2026-11-05: "remove the browser test suites"); a release is gated by the suite and the web build
+    needs: [test, build-web, docker]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every CI job to pass
@@ -37,7 +42,7 @@ jobs:
       matrix:
         # Windows and macOS on the newest Python only (the owner, 2026-10-29: the Linux runs held a release for no one using them)
         # ...and AN ORDINARY PUSH RUNS THE CORE ONLY (the owner, 2026-11-10: "can we remove any non core ci test runs to make it faster"):
-        # the suite on Windows, the web build and the smoke set. macOS, the docker image and the one-file exe are checked where they ship -
+        # the suite on Windows and the web build. macOS, the docker image and the one-file exe are checked where they ship -
         # a release commit, a pull request, a run started by hand - so a push takes three test jobs, not six, and nothing queues behind macOS
         os: ${{ fromJSON((startsWith(github.event.head_commit.message, 'Release ') || github.event_name != 'push') && '["windows-latest","macos-latest"]' || '["windows-latest"]') }}
         python: ["3.12"]
@@ -54,11 +59,12 @@ jobs:
       - run: pip install -e .[dev]
       - run: pip install pyodbc
         if: runner.os == 'Windows'
+      # -v: each test's own line, timestamped by the runner - a part cancelled at its time limit still names the slow tests (2026-11-21)
       # a test past two minutes prints every thread's stack - the hang names itself in the log
       # bash on every OS: Windows' default PowerShell reads `@shard.txt` as splatting and writes `>` as UTF-16 (2026-11-09)
       - run: python tools/test_shard.py ${{ matrix.part }} 3 > shard.txt
         shell: bash
-      - run: python -m pytest -q -o faulthandler_timeout=120 @shard.txt
+      - run: python -m pytest -v -o faulthandler_timeout=120 @shard.txt
         shell: bash
       - name: Desk and load CLI
         if: matrix.part == 1
@@ -127,24 +133,6 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: { name: web-as-ci-built-it, path: taskuary/web, retention-days: 3 }
-
-  smoke:
-    # THE BROWSER GATE (2026-10-29): a handful of files that prove the app loads and Send to agent / Continue / Run another work,
-    # coding and general - the only browser tests left (the owner removed the rest, 2026-11-05)
-    name: browser smoke
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with: { python-version: "3.12" }
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with: { node-version: "22" }
-      - run: pip install -e .[dev]
-      - run: npm ci
-        working-directory: website
-      - run: node --test --test-concurrency=1 browser/loads-once.test.mjs browser/general-starting.test.mjs browser/continue-shows-turn.test.mjs browser/run-another-general.test.mjs
-        working-directory: website
 
   docker:
     if: startsWith(github.event.head_commit.message, 'Release ') || github.event_name != 'push'

@@ -35,3 +35,29 @@ def test_the_writing_line_never_shows_the_summary_cut_from_its_tag():
     s(say(prose + '\n[[TASKUARY-SUMMARY]]{"did": "checked it", "on_you": ["press Send on the reply to Erin Blake"], "nothing_left": false, "answ'))
     live = [d for k, n, d in out if k == 'live' and n == 'writing']
     assert live and live[-1].endswith('totals agree.') and '[[' not in live[-1] and 'nothing_left' not in live[-1]
+
+
+def test_a_message_cut_by_a_line_he_typed_mid_turn_is_its_own_step():
+    # design round 6, D2 (the Claude CLI walk, 2026-11-19): his line came in while the agent wrote, the adapter cut its message at "The Q" and
+    # began another - one step held both, run together ("The QPaula's address is..."), while the answer (acp.prompt) kept them two paragraphs
+    m = lambda mid, t: {**say(t), 'messageId': mid}
+    got = traced([m('a', 'The drafts need the same correction. '), m('a', 'The Q'), m('b', "Paula's address is paula@northwind.example."),
+                  m('c', 'Is it 212 or 214?')])
+    assert got == [('progress', 'The drafts need the same correction. The Q'), ('progress', "Paula's address is paula@northwind.example."),
+                   ('progress', 'Is it 212 or 214?')]
+
+
+def test_a_taskuary_tools_answer_on_codex_is_its_steps_result():
+    # the HIPAA walk, 2026-11-21: codex-acp sends an MCP call's answer as rawOutput {result: CallToolResult, error} - only a string was read, so
+    # every Taskuary tool's answer reached the page empty and a show drew no chart
+    out, view = [], "Shown in the owner's chat. TASKUARY-VIEW {\"root\": \"c\"}"
+    s = agents.ACPSteps(lambda kind, name, detail=None: out.append((kind, name, detail)), 'codex')
+    s({'sessionUpdate': 'tool_call', 'toolCallId': 'm1', 'kind': 'execute', 'title': 'mcp.taskuary.show', 'status': 'in_progress',
+       'rawInput': {'server': 'taskuary', 'tool': 'show', 'arguments': {'root': 'c'}}})
+    s({'sessionUpdate': 'tool_call_update', 'toolCallId': 'm1', 'status': 'completed',
+       'rawOutput': {'result': {'content': [{'type': 'text', 'text': view}], 'structuredContent': None}, 'error': None}})
+    s({'sessionUpdate': 'tool_call', 'toolCallId': 'm2', 'kind': 'execute', 'title': 'mcp.taskuary.tick', 'status': 'in_progress', 'rawInput': {}})
+    s({'sessionUpdate': 'tool_call_update', 'toolCallId': 'm2', 'status': 'failed', 'rawOutput': {'result': None, 'error': {'message': 'no such to-do'}}})
+    s.flush('end_turn')
+    res = {n: d for k, n, d in out if k == 'tool_result'}
+    assert res['m1']['result'] == view and res['m2'] == {'result': 'no such to-do', 'is_error': True}

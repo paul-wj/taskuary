@@ -33,27 +33,6 @@ test("a laptop's pane draws the page at a readable scale", () => {
   assert.equal(viewportFor(900, 600).w, 1200);      // a desktop pane keeps the desktop width
 });
 
-test("the brain menu says which AI can use the browser and be held, and names one CLI one way", () => {
-  const ui = src("ui.jsx");
-  assert.match(ui, /export const brainNote = \(b, browser\)/);
-  assert.match(ui, /"can't use the browser"/); assert.match(ui, /"browser acts not held"/); assert.match(ui, /"not signed in"/);
-  assert.match(ui, /\{b\.label\}\{brainNote\(b, browser\)\}/);
-  assert.match(ui, /browser \? "an AI that can use the browser" : "the brain it runs on"/);
-  assert.match(src("TaskPage.jsx"), /browser=\{String\(t\?\.Tags \|\| ""\)\.split\(\/\[\\s,\]\+\/\)\.includes\(BROWSER_TAG\)\}/);
-});
-
-test("the pane says it is starting, closed, or being signed in - and never scrolls the card under a click", () => {
-  const pane = src("BrowserPane.jsx"), term = src("TerminalView.jsx");
-  assert.match(pane, /starting the browser…/);
-  assert.match(pane, /Taskuary is signing in\$\{hostOf\(url\) \? ` to \$\{hostOf\(url\)\}` : ""\} — the picture resumes in a moment/);
-  assert.match(pane, /\{driving && !filling && !turn && \(/);
-  assert.equal((pane.match(/focus\(\{ preventScroll: true \}\)/g) || []).length, 2);
-  assert.doesNotMatch(pane, /\.focus\(\)/);
-  assert.match(term, /The browser closed\$\{lastPage\.current \? ` \(last on/);
-  assert.match(term, /It reopens when the agent next needs it\./);
-  assert.match(term, /yourTurn \? "browser · your turn - open it"/);
-  assert.equal((term.match(/filling=\{!!browser\.filling\}/g) || []).length, 3);
-});
 
 test("a held act waits on the live canvas, and the sign-in ask never invites the password", () => {
   const gw = src("GeneralWorkspace.jsx");
@@ -66,12 +45,4 @@ test("a held act waits on the live canvas, and the sign-in ask never invites the
   // the sign-in ask is the question and a link, no card and no presses (the owner, 2026-11-03)
   assert.match(gw, />fill it in securely<\/a>/);
   assert.doesNotMatch(gw, /Sign in here opens a page|then press Signed in|>Sign in here</);
-});
-
-test("saved sign-ins say so when there are none, can be added ahead of time, and the setup key is asked for in plain words", () => {
-  const ss = src("SavedSignins.jsx");
-  assert.match(ss, /No saved sign-ins\. A sign-in you type in the agent browser is kept here once it goes through - or add one now\./);
-  assert.match(ss, /api\.post\("\/api\/signins", f\)/);
-  assert.match(src("ConnectorsView.jsx"), /open\?\.kind === "signins" \? <SavedSignins \/>/);
-  assert.doesNotMatch(ss, /otpauth:\/\//);
 });

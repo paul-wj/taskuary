@@ -11,8 +11,9 @@ Not `routing.py`: that name, and the `route` table, already mean mail-to-task ma
 AUTO is what an install runs unless its owner chose Fixed (the owner, 2026-11-06: "it should be on auto routing by default using
 triage designation"): triage's quick/standard/hard judgement picks the brain's light, card or strong model, and a brain with only
 one model thinks less or harder instead where its CLI takes an effort flag (`lift`). FIXED is the cards, exactly as before the
-router - in it `choose` asks the resolvers that already exist (llm.effective_pick, general.default_pick/_selected,
-agents.resolve_brain, concierge.pick), so a fixed install behaves as it always did (tests/test_brainroute.py's golden matrix).
+router - in it `choose` asks the one pick resolver, agents.resolve_brain (which llm.effective_pick, general._selected/opening and
+concierge.pick read their card through), so a fixed install behaves as it always did (tests/test_brainroute.py's golden matrix).
+`choose` is THE answer to "which AI runs this job" - pick, model, gear and why; capabilities.has_ai asks it whether one is there.
 
 All router state lives in the store - settings and the `brainroute` log - never in module globals: the
 poller and the server are separate processes (dirty triggers are cross-process).
@@ -22,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 from loguru import logger
 from .kinds import ASSISTANT
+from .timewords import clock
 
 # What a call is FOR. Closed: a new call site picks one of these, and an AST test fails a build_llm without it.
 JOBS = ('triage', 'draft', 'summary', 'advisor', 'memory', 'rank', 'assistant', 'general', 'coding', 'judge', 'report', 'quick_work')
@@ -176,8 +178,21 @@ def _own(store, pick: str, field: str, cfg=None) -> str:
 
 def strong_of(store, pick: str, cfg=None) -> str:
     """This brain's STRONG gear - the owner's strong_model on its CLI connection or its AI card - or '' when it has none.
-    Blank is no strong tier, and nothing is inferred from a model's name (setup never assumes an AI)."""
-    return _own(store, pick, 'strong_model', cfg)
+    Blank is no strong tier, and nothing is inferred from a model's name (setup never assumes an AI) - but a CLI with gears of its own
+    (climodels.gears: claude's opus, codex's largest) has that one where the owner named none."""
+    return _own(store, pick, 'strong_model', cfg) or gear_of(store, pick, 'strong', cfg)
+
+
+def gear_of(store, pick: str, tier: str, cfg=None) -> str:
+    """THREE GEARS BY TRIAGE'S CLASS (the owner, 2026-11-20: quick = Haiku low, normal = Sonnet medium, hard = Opus high on Claude Code; the
+    same shape on Codex): the 'model@effort' a CLI runs `tier` on where the owner left that box on its card blank - '' where he filled
+    it (his stands, read where it always was) or where the CLI has no such defaults. A blank box is never his choice, so an install that
+    never set one moves to these with nothing to migrate."""
+    p = str(pick or '')
+    if not p.startswith('cli:') or tier not in ('light', 'standard', 'strong'): return ''
+    if _own(store, p, {'light': 'light_model', 'standard': 'model', 'strong': 'strong_model'}[tier], cfg): return ''
+    from . import climodels
+    return climodels.gears(_cli(store, p, cfg)).get(tier, '')
 
 
 # ONE MODEL, STILL THREE STEPS (the owner, 2026-11-06: "if it's api or something that only has one model use effort instead if they
@@ -195,25 +210,30 @@ def _cli(store, pick: str, cfg=None) -> str:
     return _cli_of(cfg, agents.brain_key(store, pick, cfg))
 
 
-def lift(store, pick: str, tier: str, model: str = '', cfg=None) -> str:
+def lift(store, pick: str, tier: str, model: str = '', cfg=None, agent: bool = False) -> str:
     """'<model>@<effort>' - `model` (else the brain's own) at the effort `tier` runs at - for a brain with no model of its own for that
-    tier that takes an effort: a CLI with an effort flag, or an AI card whose provider takes one (an AI card has no quick model box, so
-    its quick work is always its one model, thinking less). '' otherwise. A quick gear a CLI already ships (llm.LIGHT_DEFAULT: claude's
-    haiku, codex's low effort) is its own answer, and an effort already at or past the step is no step."""
+    tier that takes an effort: a CLI with an effort flag, or an AI card whose provider takes one. '' otherwise. A quick gear a CLI already
+    ships (llm.LIGHT_DEFAULT: claude's haiku, codex's low effort) is its own answer, and an effort already at or past the step is no step.
+    `agent`: the tier is an AGENT's (LEVEL_JOBS) - on an AI card its quick work is its own model thinking less, never the card's light model,
+    which serves the one-shot jobs alone (the owner, 2026-11-20: a gateway's Flash took every quick agent task, and did it badly)."""
     p = str(pick or '')
-    if tier not in LIFT or not p.startswith(('cli:', 'connector:')) or _own(store, p, f'{tier}_model', cfg): return ''
+    card_agent = agent and tier == 'light' and p.startswith('connector:') and bool(_own(store, p, 'model', cfg))
+    if tier not in LIFT or not p.startswith(('cli:', 'connector:')) or gear_of(store, p, tier, cfg): return ''
+    if _own(store, p, f'{tier}_model', cfg) and not card_agent: return ''
     from . import climodels, llm
     if p.startswith('cli:'):
         cli = _cli(store, p, cfg)
         if not climodels.effort_args(cli, 'x') or (tier == 'light' and llm.LIGHT_DEFAULT.get(cli)): return ''
     else:
         c = store.get_connector(int(p[10:])) if p[10:].isdigit() else None
-        if (c or {}).get('Type') not in llm.EFFORT_TAKERS: return ''
+        # ...a provider that takes no effort runs an agent's quick work on the card's own model all the same
+        if (c or {}).get('Type') not in llm.EFFORT_TAKERS: return _own(store, p, 'model', cfg) if card_agent else ''
         # ...a card whose model box is blank has its provider's light model for quick work (llm.light_of), not its default thinking less
-        if tier == 'light' and not model and (lt := llm.light_of(c['Type'], {'model': _own(store, p, 'model', cfg)})): return lt
+        if tier == 'light' and not model and not card_agent and (lt := llm.light_of(c['Type'], {'model': _own(store, p, 'model', cfg)})): return lt
     m, e = climodels.split_pick(model or _own(store, p, 'model', cfg))
     want = LIFT[tier]
-    if e in EFFORTS and (EFFORTS.index(e) <= EFFORTS.index(want) if tier == 'light' else EFFORTS.index(e) >= EFFORTS.index(want)): return ''
+    if e in EFFORTS and (EFFORTS.index(e) <= EFFORTS.index(want) if tier == 'light' else EFFORTS.index(e) >= EFFORTS.index(want)):
+        return (model or _own(store, p, 'model', cfg)) if card_agent else ''
     return f'{m}@{want}'
 
 
@@ -249,7 +269,7 @@ def _fixed(store, job: str, task=None, want_pick=None, want_model=None, gear=Non
     # reply; the one-shot 'draft' left - a reply or message the owner presses for - is a one-message job like the rest of these
     if job in ONE_SHOT:
         # the same reading llm._build_llm makes: the named pick, else the triage brain, else what blank means
-        pick = llm.effective_pick(store, want_pick if want_pick is not None else store.get_setting('triage_ai') or '')
+        pick = llm.effective_pick(store, want_pick)      # None: the triage card, read by the one resolver (agents.resolve_brain)
         return pick, want_model or '', gear or 'light', _backups(store)
     if job == 'coding':
         pick = want_pick if want_pick is not None else agents.resolve_brain(store, 'coding', cli_only=True)  # a terminal or nothing
@@ -262,7 +282,7 @@ def _fixed(store, job: str, task=None, want_pick=None, want_model=None, gear=Non
         from . import concierge
         return concierge.pick(store), want_model or concierge.model_of(store), gear or 'light', _backups(store)
     from . import general
-    base, pick = general._selected(store), general.default_pick(store, task)
+    base, pick = general._selected(store), general.default_pick(store, task, level=False)      # the level's AI is this router's own step, below
     model = want_model or (base[2] if pick == base[0] else general._selected(store, pick=pick)[2] if pick else '')
     return pick, model or '', gear or 'main', _backups(store)
 
@@ -407,7 +427,7 @@ def _level(store, job: str, tier: str, want_pick, want_model, hands, only) -> tu
         if job != 'general' or want_model != general._selected(store, pick=to)[2]: return None, ''
     cold = cooldowns(store)
     no = (_not_ready(store, to) or ('has no shell, and this work needs a CLI' if not hands(to) else '')
-          or (f"is limited until {cold[to].strftime('%H:%M')}" if to in cold else '') or ('has spent its budget' if spent(store, to) else '')
+          or (f"is limited until {clock(cold[to])}" if to in cold else '') or ('has spent its budget' if spent(store, to) else '')
           or ('is not marked to read sensitive data' if only and not may_read_sensitive(store, to) else ''))
     if no: return None, f"; {LEVEL_OF[tier]} work is set to {_said(store, to)} in AI routing, but it {no}, so its card"
     return (to, m), ''
@@ -458,7 +478,7 @@ def choose(store, job: str, task=None, want_pick=None, want_model=None, gear=Non
             lvl = LEVEL_OF[tier]
             if tier == 'strong' and not cap_left(store): tier, said = 'standard', f"; today's {cap(store)} strong calls are spent, so standard"
             elif tier == 'strong' and not m and not strong_of(store, pick) and not lift(store, pick, 'strong'): tier, said = 'standard', '; it has no strong model, so standard'
-            g, model = GEAR_OF[tier], m or (lift(store, pick, tier) if tier in LIFT else '')
+            g, model = GEAR_OF[tier], m or (lift(store, pick, tier, agent=job in LEVEL_JOBS) if tier in LIFT else '')
             why = f"{JOB_WORDS[job]}{hard}: {lvl} work -> {_said(store, pick)}{f', {spell(model)}' if model else ''} as set in AI routing (rule {rule}){said}{held}"
         elif r and not want_model:
             tier, rule, said = r['use']['tier'], r['id'], ''
@@ -475,16 +495,19 @@ def choose(store, job: str, task=None, want_pick=None, want_model=None, gear=Non
             if tier == 'strong' and not cap_left(store): tier, said = 'standard', f"; today's {cap(store)} strong calls are spent, so standard"
             # the card's model IS the standard tier; strong runs the brain's strong gear and light its quick one - or, on a brain with
             # one model, that model at high or low effort
-            g, model = GEAR_OF[tier], (model if tier == 'standard' else lift(store, pick, tier, model))
+            g, model = GEAR_OF[tier], (model if tier == 'standard' else lift(store, pick, tier, model, agent=job in LEVEL_JOBS))
+            # ...the CLI's own gear for the tier, model and effort, where he named none - but TRIAGE KEEPS ITS QUICK MODEL'S OWN EFFORT (the
+            # owner, 2026-11-20: "I don't care about triage speed" - accuracy over speed): it reads on the light gear's model, thinking as it will
+            if not model: model = gear_of(store, pick, tier) if job != 'triage' else gear_of(store, pick, tier).split('@')[0]
             why = f"{JOB_WORDS[job]}{hard} -> {tier} on {_said(store, pick)}{f', {spell(model)}' if model else ''} (rule {rule}){said}{held}"
         why += miss
     # a brain resting on its usage limit hands the call to the first backup that is not (Auto mode; the cards stand in Fixed)
     if pick and mode(store) == 'auto' and pick in (cold := cooldowns(store)):
         to = next((c for c in chain if c and c not in cold and hands(c)), '')
         if to:
-            why += f"; {_said(store, pick)} is limited until {cold[pick].strftime('%H:%M')}, so {_said(store, to)}"
+            why += f"; {_said(store, pick)} is limited until {clock(cold[pick])}, so {_said(store, to)}"
             # ...on its own model, as a failover always is: the resting brain's model id means nothing to another provider
-            chain, pick, model = [pick, *chain], to, (lift(store, to, tier) if tier in LIFT else '')
+            chain, pick, model = [pick, *chain], to, (lift(store, to, tier, agent=job in LEVEL_JOBS) if tier in LIFT else '')
             if tier == 'strong' and not strong_of(store, pick) and not model: tier, g = 'standard', GEAR_OF['standard']
     up = ''
     if pick and mode(store) == 'auto' and tier != 'strong' and job in ESCALATES and _first(store, f, 'escalate'): up = 'strong'
@@ -733,7 +756,7 @@ def _base(store, p: str, cfg) -> str:
     config (climodels), else the provider's default - 'its default model' only when nothing here names one."""
     if not p.startswith('cli:'): return _card_model(store, p)
     from . import climodels
-    return (spell(_own(store, p, 'model', cfg)) or str((climodels.catalog(_cli(store, p, cfg)).get('current') or {}).get('model') or '')
+    return (spell(_own(store, p, 'model', cfg) or gear_of(store, p, 'standard', cfg)) or str((climodels.catalog(_cli(store, p, cfg)).get('current') or {}).get('model') or '')
             or 'its default model')
 
 
@@ -742,9 +765,12 @@ def _words(store, p: str, cfg) -> dict:
     from .llm import LIGHT_DEFAULT
     base = _base(store, p, cfg)
     name = base.split(', ')[0]
-    at = lambda tier: f'{name}, {LIFT[tier]} effort' if lift(store, p, tier, cfg=cfg) else base
+    at = lambda tier: f'{name}, {LIFT[tier]} effort' if lift(store, p, tier, cfg=cfg, agent=True) else base
     dflt = LIGHT_DEFAULT.get(_cli(store, p, cfg), '') if p.startswith('cli:') else _card_light(store, p)
-    quick = spell(_own(store, p, 'light_model', cfg)) or (f'{name}, {dflt[7:]} effort' if dflt.startswith('effort:') else dflt) or at('light')
+    # ...an AI card's quick AGENT work is its own model thinking less (lift's `agent`): its light box is the one-shot jobs'
+    own = _own(store, p, 'light_model', cfg) if p.startswith('cli:') or not _own(store, p, 'model', cfg) else ''
+    quick = (spell(own or gear_of(store, p, 'light', cfg)) or (f'{name}, {dflt[7:]} effort' if dflt.startswith('effort:') else dflt)
+             or at('light'))
     return {'quick': quick, 'normal': base, 'hard': spell(strong_of(store, p, cfg)) or at('strong')}
 
 
@@ -829,7 +855,7 @@ def resting(store, pick: str) -> str:
     work is still on though it rests - nothing else was there to take it - so "right now it runs on X" is never said of a resting X
     without its time."""
     t = cooldowns(store).get(pick) if pick else None
-    return f"{_said(store, pick)} is limited until {t.strftime('%H:%M')}" if t else ''
+    return f"{_said(store, pick)} is limited until {clock(t)}" if t else ''
 
 
 def default_level(store, cfg=None) -> dict:
@@ -892,7 +918,7 @@ def session_allowed(store, task, chain: list) -> tuple:
     f = facts(store, 'coding', task)
     if not _first(store, f, 'only'): return chain, ''
     from . import agents
-    ok = [c for c in chain if may_read_sensitive(store, f"cli:{c or agents.default_brain(store) or ''}")]
+    ok = [c for c in chain if may_read_sensitive(store, f"cli:{c or agents.resolve_brain(store, 'coding', cli_only=True)[4:]}")]
     return (ok, '') if ok else ([], f'{NO_SENSITIVE}, so the coding agent does not start')
 
 

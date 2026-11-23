@@ -14,11 +14,17 @@
 .tq-published-picture img { max-width: 100%; max-height: min(70vh, 640px); height: auto; }
 .tq-published-table { border-top: 1px solid var(--tq-border, #e3ddd2); max-height: min(70vh, 640px); overflow: auto; font-size: 12.5px; }
 .tq-published-table table { border-collapse: collapse; min-width: 100%; }
-.tq-published-table th, .tq-published-table td { border-bottom: 1px solid var(--tq-border, #eee9df); padding: 4px 10px; text-align: left; white-space: nowrap;
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+/* ...A SHEET FITS ITS CARD WHERE IT CAN (walk 2, 2026-11-21: one long note in column A - "Inputs (yellow cells can be changed)" - stretched the
+   column, and the last one stood cut at the card's edge, "Closing balanc"): words wrap within a column, a number stays on its line; a sheet
+   wider than that still scrolls sideways */
+.tq-published-table th, .tq-published-table td { border-bottom: 1px solid var(--tq-border, #eee9df); padding: 4px 10px; text-align: left; white-space: normal;
+  overflow-wrap: break-word; min-width: 3.5em; max-width: 220px; vertical-align: top; font-variant-numeric: tabular-nums; }
 /* ...its own layout, never the chat's fixed one (.tq-aui-agent-body table): fixed columns at 100% with unwrapped cells drew each long value
    over the next column (the owner, 2026-11-05: "this csv preview is corrupted"). As wide as its columns, the box scrolls sideways */
 .tq-aui-agent-body .tq-published-table table, .tq-published-table table { width: auto; min-width: 100%; table-layout: auto; }
+/* ...and its cells wrap at words inside the chat too (round 3, 2026-11-22: the chat's own `overflow-wrap: anywhere` for its tables reached the
+   preview, every cell shrank to one letter a line and the last columns stood cut off) */
+.tq-aui-agent-body .tq-published-table th, .tq-aui-agent-body .tq-published-table td { overflow-wrap: break-word; word-break: normal; }
 .tq-published-table th { position: sticky; top: 0; background: var(--tq-panel, #faf8f4); color: var(--tq-secondary, #4d514b); font-weight: 600; }
 .tq-aui-agent-body .tq-published { margin: 8px 0 2px; }
 /* a file the agent made for the task (taskOutputs.js): a workbook's sheets as tabs over the table, plain text as itself */
@@ -29,10 +35,12 @@
 .tq-published-tabs + .tq-published-table { border-top: 0; }
 /* A FILE DRAWN IN A TURN HOLDS ITS ROOM FROM ITS FIRST FRAME (decided 2026-11-12, recorded on the sweep's task 30: a picture landed 1.9 s after the
    chat and its card grew 93 -> 397 px, everything above it moving up): its body - loading, a picture, a table, a page - is one fixed height,
-   and what is taller scrolls inside it. A sound is its player's own fixed row; a video holds a 16:9 frame (PublishedPages MediaPlayer) */
-.tq-published[data-tq-turn-files] .tq-published-page > :not(.tq-published-row):not(.tq-published-media) { box-sizing: border-box; height: min(60vh, 360px); max-height: none; overflow: auto; }
-.tq-published[data-tq-turn-files] .tq-published-picture { display: flex; align-items: center; justify-content: center; }
-.tq-published[data-tq-turn-files] .tq-published-picture img { max-height: 100% !important; max-width: 100%; object-fit: contain; }
+   and what is taller scrolls inside it. A sound is its player's own fixed row; a video holds a 16:9 frame (PublishedPages MediaPlayer).
+   A PICTURE WHOSE PIXELS ARE KNOWN DRAWS AT ITS OWN SHAPE (the owner, 2026-11-18): its room is its real size, reserved before it loads (taskOutputs.pictureFit) */
+.tq-published[data-tq-turn-files] .tq-published-page > :not(.tq-published-row):not(.tq-published-media):not([data-tq-natural]) { box-sizing: border-box; height: min(60vh, 360px); max-height: none; overflow: auto; }
+.tq-published[data-tq-turn-files] .tq-published-picture:not([data-tq-natural]) { display: flex; align-items: center; justify-content: center; }
+.tq-published[data-tq-turn-files] .tq-published-picture:not([data-tq-natural]) img { max-height: 100% !important; max-width: 100%; object-fit: contain; }
+.tq-published[data-tq-turn-files] .tq-published-picture[data-tq-natural] img { display: inline-block; vertical-align: top; max-width: 100%; }
 .tq-published-text { margin: 0; border-top: 1px solid var(--tq-border, #e3ddd2); padding: 10px 14px; max-height: min(70vh, 640px); overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* an agent's files, each thing once (PublishedPages deliver): its earlier versions and the rest of a long list fold */
 .tq-published .tq-published { margin: 0; }

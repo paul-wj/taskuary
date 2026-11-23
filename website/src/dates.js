@@ -36,9 +36,11 @@ const tzOffsetMin = (d) => {
   const m = part.replace("GMT", "").match(/([+-]?)(\d+)(?::(\d+))?/) || [0, "+", "0"];
   return (m[1] === "-" ? -1 : 1) * (parseInt(m[2] || 0) * 60 + parseInt(m[3] || 0));
 };
+// ...and a stamp that names its own zone ("...Z", "+02:00") is read as written: "Z" glued on after it read nothing (Invalid Date)
+const ZONED = /(?:Z|[+-]\d\d:?\d\d)$/i;
 export const asUtc = (s) => {
-  const iso = String(s || "").replace(" ", "T");
-  if (!TZ) return new Date(iso);                       // blank = this browser IS the server's zone
+  const iso = String(s || "").trim().replace(" ", "T");
+  if (!TZ || ZONED.test(iso)) return new Date(iso);    // blank = this browser IS the server's zone
   try { return new Date(Date.parse(iso + "Z") - tzOffsetMin(new Date(iso + "Z")) * 60000); }
   catch { return new Date(iso); }
 };
@@ -50,10 +52,9 @@ export const tzLabel = () => {
   } catch { return ""; }
 };
 const tzOpt = () => (TZ ? { timeZone: TZ } : {});   // format in the configured zone, so digits match the label
-export const fmtTime12 = (s) => {
-  const d = s ? asUtc(s) : null;
-  return d && Number.isFinite(d.getTime()) ? fmtTime(d, getLocale() === "zh-CN" ? "zh-CN" : "en-US", { hour: "numeric", minute: "2-digit", ...tzOpt() }) : "";
-};
+// ONE CLOCK, "4:15 PM" (the real-Claude walk, 2026-11-19: "04:15 PM", "16:26" and "4:14 PM" in one chat) - the server's is timewords.clock
+export const clock = (d) => (d && Number.isFinite(+d) ? fmtTime(d, "en-US", { hour: "numeric", minute: "2-digit", ...tzOpt() }) : "");
+export const fmtTime12 = (s) => clock(s ? asUtc(s) : null);
 export const tsMs = (s) => {
   const n = s ? asUtc(s).getTime() : 0;
   return Number.isFinite(n) ? n : 0;

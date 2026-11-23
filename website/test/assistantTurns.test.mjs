@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { actReceipt, mergeDurableTurns } from "../src/assistantTurns.js";
 
 test("durable chat turns reconcile with their optimistic bubbles instead of drawing twice", () => {
@@ -71,19 +73,6 @@ test("the receipt drawn at the click and the server's recorded line are one turn
   assert.equal(mergeDurableTurns([{ id: "r2", role: "receipt", text: "Done." }], [{ id: 53, role: "assistant", text: "Done.", card: { kind: "proposal" } }]).messages.length, 2);
 });
 
-test("reconciling a receipt preserves its presentation source and inserted values", () => {
-  const uiSource = "Failed: {why}", uiValues = { why: "Settings" };
-  const text_i18n = { source: uiSource, values: uiValues };
-  const { messages } = mergeDurableTurns(
-    [{ id: "r1", role: "receipt", text: "Failed: Settings", uiSource, uiValues, text_i18n }],
-    [{ id: 52, role: "assistant", text: "Failed: Settings", card: null }],
-  );
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].uiSource, uiSource);
-  assert.deepEqual(messages[0].uiValues, uiValues);
-  assert.deepEqual(messages[0].text_i18n, text_i18n);
-});
-
 test("a card put down on the page stays down when the server's copy of its turn arrives", () => {
   // the owner, 2026-10-02: "if you click all read next on fyi mail too quickly it reopens the same 4 again before
   // disappearing" - the freshness read swapped the folded bubble for the durable turn and dropped its `done` mark
@@ -126,6 +115,8 @@ test("a rail pick of the same item twice leaves one pick line, and keeps everyth
   for (const [i, k] of [["1", "msg:1"], ["2", "msg:2"], ["3", "msg:1"], ["4", "msg:2"]]) m = pickLine(m, { id: `u${i}`, role: "user", text: `Show me ${k}`, pick: k });
   assert.deepEqual(m.map((x) => x.id), ["u0", "u3", "u4"]);
   assert.deepEqual(pickLine(m, { id: "u5", role: "user", text: "and this?" }).map((x) => x.id), ["u0", "u3", "u4", "u5"], "a typed line is never dropped");
+  const view = readFileSync(fileURLToPath(new URL("../src/AssistantView.jsx", import.meta.url)), "utf8");
+  assert.match(view, /setMsgs\(\(m\) => pickLine\(m, \{ id: optimisticId, role: "user", text: asUser, pick: key \|\| undefined \}\)\)/);
 });
 
 // SWAP, NEVER CLEAR (G8, 2026-10-20): an item shown before was opened again - placeLine moved its line to the end and kept the old
@@ -208,15 +199,15 @@ test("two lines with the same words but different items are two turns", () => {
 // one sentence for every act, the server's own line when it gave one
 test("an act-only turn gets one receipt read off the act", () => {
   const light = { verb: "defer", label: "Remind me", key: "msg:4", tid: 4, ref: "TQ-0004", line: "" };
-  assert.equal(actReceipt({ say: "", light }, "msg:4").status, "warn");
-  assert.ok(actReceipt({ say: "", light }, "msg:9").text.includes("TQ-0004"));
-  const day = actReceipt({ light: { ...light, day: { until: "2026-11-02 09:00", day: "Mon 2 Nov" } } }, "msg:4");
-  assert.ok(day.text.includes("Mon 2 Nov"));
-  const pressed = actReceipt({ pressed: { label: "Mark done", key: "msg:4", ref: "TQ-0004", note: "paid Friday" } }, "msg:9");
-  assert.equal(pressed.status, "done");
-  assert.ok(pressed.text.includes("TQ-0004") && pressed.text.includes("paid Friday"));
+  assert.deepEqual(actReceipt({ say: "", light }, "msg:4"), { text: "Remind me is ready on the row for this task - yours to press.", status: "warn" });
+  assert.match(actReceipt({ say: "", light }, "msg:9").text, /for TQ-0004/);
+  // ...and a said day is in the words (F4)
+  assert.equal(actReceipt({ light: { ...light, day: { until: "2026-11-02 09:00", day: "Mon 2 Nov" } } }, "msg:4").text,
+    "Remind me (Mon 2 Nov) is ready on the row for this task - yours to press.");
+  assert.deepEqual(actReceipt({ pressed: { label: "Mark done", key: "msg:4", ref: "TQ-0004", note: "paid Friday" } }, "msg:9"),
+    { text: "Mark done - TQ-0004: paid Friday.", status: "done" });
   assert.equal(actReceipt({ light: { ...light, line: "Remind me is lit for Monday." } }).text, "Remind me is lit for Monday.");
-  assert.ok(actReceipt({ light: { ...light, label: "" } }, "msg:4").text);
+  assert.match(actReceipt({ light: { ...light, label: "" } }, "msg:4").text, /^Opened this task/);
   assert.equal(actReceipt({}).status, "warn");
   assert.ok(actReceipt({}).text, "even nothing back is said");
 });
@@ -283,4 +274,16 @@ test("the pill's number counts answers to the owner's own questions, never what 
   assert.equal(unseenAnswers([...q, { id: "a10", role: "assistant", text: "Clear." }, ...task], "u9"), 1, "task lines after the answer add nothing");
   // ...nothing seen yet: a reload's history is not news
   assert.equal(unseenAnswers([...asked, ...task]), 0);
+});
+
+test("a task's line keeps its key when its row comes back under another name: New's task view is built once", async () => {
+  const { lineKeys } = await import("../src/assistantTurns.js");
+  // New draws `task:N` at the press; the walk's answer names the same task by its rail key (goal walk, 2026-11-22: built twice in a second)
+  const drawn = [{ id: "a1", role: "assistant", card: { key: "task:21", kind: "task", tid: 21 } }];
+  const answered = [{ id: "a1", role: "assistant", card: { key: "processing:pi_1", kind: "wrapup", tid: 21 } }];
+  assert.equal(lineKeys(drawn).get("a1"), lineKeys(answered).get("a1"));
+  // ...and two lines of one task still take one key between them, the newest keeping it
+  const two = [{ id: "a1", role: "assistant", card: { key: "reply:5", kind: "reply", tid: 9 } }, { id: "a2", role: "assistant", card: { key: "task:9", kind: "task", tid: 9 } }];
+  const k = lineKeys(two);
+  assert.equal(k.get("a2"), "item:task:9"); assert.equal(k.get("a1"), "a1");
 });

@@ -5,10 +5,12 @@
 //   as sessionrecord reads it, an ACP session's updates as conversation.acp_steps does), read into trace events (eventsOf).
 // Trace events are the one currency: turnParts reads them into a turn's parts - its words, its work (agentSteps.stepsOf, one line a step),
 // each edit its own row with its diff ("Edited budget.py (+12 −3)"), its plan a checklist. Whatever drew them, a turn is those parts.
-import { baseName, describeCall, isWork, stepsOf } from "./agentSteps.js";
+import { baseName, describeCall, isWork, present, stepsOf } from "./agentSteps.js";
 import { editHunks, stat } from "./diffView.js";
+import { isSignin } from "./browserSplit.js";
 import { liveTerminal } from "./taskLayout.js";
 import { filesOf, viewOf } from "./viewSpec.js";
+import { plural } from "./timeWords.js";
 
 // ── a coding session's steps -> trace events, the one currency ───────────────────────────────────
 // a step the record kept without its arguments (saved before they were) is read off its one line of text
@@ -27,13 +29,14 @@ const ended = (s, output) => (ASKED[s.status] ? { result: ASKED[s.status], is_er
 export const eventsOf = (steps, running, tail = true) => steps.flatMap((s, i) => {
   const id = s.id || `t${i}`, output = String(s.output || "").trim();
   if (s.k === "tool") return [{ type: "tool_call", name: s.name, detail: { tool_call_id: id, args: argsOf(s), output,
-      ...(s.parent ? { parent: s.parent } : {}), ...(s.edit ? { edit: s.edit } : {}), ...(s.file ? { file: s.file } : {}) } },
+      ...(s.parent ? { parent: s.parent } : {}), ...(s.edit ? { edit: s.edit } : {}), ...(s.file ? { file: s.file } : {}),
+      ...(s.outcome ? { outcome: s.outcome } : {}), ...(s.why ? { why: s.why } : {}), ...(s.times > 1 ? { times: s.times } : {}) } },
     ...(runs(s, running, tail && i === steps.length - 1) ? [] : [{ type: "tool_result", name: id, detail: { tool_call_id: id, ...ended(s, output) } }])];
   if (s.k === "plan") return [{ type: "tool_call", name: "TodoWrite", detail: { tool_call_id: id, args: { todos: s.items || [] } } },
     { type: "tool_result", name: id, detail: { tool_call_id: id, result: "" } }];
   if (s.k === "said") return [{ type: "progress", name: "text", detail: s.text }];
   if (s.k === "thought") return [{ type: "progress", name: "thinking", detail: s.text }];
-  if (s.k === "error") return [{ type: "error", detail: { result: s.text } }];
+  if (s.k === "error") return [{ type: "error", ...(s.name ? { name: s.name } : {}), detail: { result: s.text } }];      // ...by the call it came from
   return s.text ? [{ type: "progress", name: "note", detail: s.text }] : [];
 });
 
@@ -56,18 +59,21 @@ const argEdit = (name, a) => {
 };
 // ...but an edit that FAILED or never ran is no edit made: drawn "Edited totals.py (+1 −1)" from the diff it asked to make, it read as done -
 // it is its step, drawn failed (the stress round, 2026-11-10)
-export function editOf(e, res) {
+export function editOf(e, res, running = false) {
   if (e?.type !== "tool_call" || res?.detail?.is_error) return null;
   const d = e.detail || {}, a = d.args || {};
   if (!d.edit && describeCall(e.name, a).kind !== "edit") return null;
   const edit = d.edit || argEdit(e.name, a), file = fileOfCall(e);
   // ...a log's own edit row stands even with no diff kept; a trace's call is a row of its own only when it carries one
-  return edit || d.file ? editRow({ name: e.name, edit, file }) : null;
+  return edit || d.file ? editRow({ name: e.name, edit, file, running: running && !res }) : null;
 }
 export const editRow = (s) => {
   const hunks = editHunks(s.edit), { plus, minus } = stat(hunks), file = s.file || "";
   const wrote = /^(write|writefile|createfile)$/i.test(String(s.name || "").replace(/[^a-z]/gi, "")) || (hunks.length && hunks.every((h) => h.lines.every((l) => l[0] === "+")));
-  return { type: "edit", file, wrote: !!wrote, summary: `${wrote ? "Wrote" : "Edited"} ${baseName(file) || "a file"}${hunks.length ? ` (+${plus} −${minus})` : ""}`, plus, minus, hunks };
+  // ...an edit still being made is "Editing x", never "Edited x (+1 −1)" over a call that has not returned (and the working line says it, workingLine)
+  // - its verb in the present by the one table every running step is worded by (agentSteps.present), never a pair of its own
+  const did = wrote ? "Wrote" : "Edited", verb = s.running ? present(did) : did;
+  return { type: "edit", file, wrote: !!wrote, running: !!s.running, summary: `${verb} ${baseName(file) || "a file"}${hunks.length && !s.running ? ` (+${plus} −${minus})` : ""}`, plus, minus, hunks };
 };
 // THE PLAN IS A CHECKLIST, the newest one of the turn where it was last updated - never "Updated its plan (3 steps)" six times over
 const PLAN_MARK = { completed: "done", done: "done", in_progress: "now", now: "now" };
@@ -84,15 +90,9 @@ export function planOf(e) {
 // in order: its words, a fold of the work it did, each edit with its diff, each view it showed, its plan. `answer`: the words the turn
 // filed as its answer, which its trail does not say twice (agentSteps.stepsOf). A call's result is its own wherever it came - a run of steps cut by an edit keeps the results
 // that arrived after the edit, so nothing it started is left spinning
-export function turnParts(events, { answer = "", keepStart = false } = {}) {
-  const evs = (events || []).filter(Boolean), results = new Map(), files = new Map(), parts = [], special = new Set();
-  for (const e of evs) {
-    if (e.type === "tool_result") results.set(e.detail?.tool_call_id || e.name, e);
-    else if (e.type === "tool_call" && e.detail?.tool_call_id) {
-      const file = fileOfCall(e);
-      if (file) files.set(e.detail.tool_call_id, file);
-    }
-  }
+export function turnParts(events, { answer = "", keepStart = false, live = false } = {}) {
+  const evs = (events || []).filter(Boolean), results = new Map(), parts = [], special = new Set();
+  for (const e of evs) if (e.type === "tool_result") results.set(e.detail?.tool_call_id || e.name, e);
   let run = [], first = true;
   const flush = () => {
     if (!run.length) return;
@@ -108,24 +108,58 @@ export function turnParts(events, { answer = "", keepStart = false } = {}) {
     if (e.type === "tool_result") continue;
     // ...and a VIEW the agent showed (agenttools `show`) is its own part, drawn as the UI it describes (ViewSpec.jsx)
     // ...and the FILES it showed with it (viewSpec.filesOf): the pictures themselves, over any view the same call drew
-    const res = results.get(e.detail?.tool_call_id), ps = [filesOf(e, res), editOf(e, res) || planOf(e) || viewOf(e, res)].filter(Boolean);
+    const res = results.get(e.detail?.tool_call_id), ps = [filesOf(e, res), editOf(e, res, live) || planOf(e) || viewOf(e, res)].filter(Boolean);
     if (ps.length) { flush(); special.add(e.detail?.tool_call_id); parts.push(...ps); } else run.push(e);
   }
   flush();
   // ...an edit that failed and was then made is no failure (agentSteps' `recovered`): Claude's first try at a string not found, its second made.
   // Match structured paths: translated summaries and shared basenames cannot identify the edited file.
-  const madeIt = (s, q) => q.type === "edit" && !!files.get(s.id) && q.file === files.get(s.id);
-  parts.forEach((p, i) => p.type === "work" && p.steps.forEach((s) => { if (s.status === "error" && s.kind === "edit"
-    && parts.slice(i + 1).some(madeIt.bind(null, s))) s.status = "recovered"; }));
+  const files = new Map(evs.filter((e) => e.type === "tool_call" && e.detail?.tool_call_id)
+    .map((e) => [e.detail.tool_call_id, fileOfCall(e)]));
+  parts.forEach((p, i) => p.type === "work" && p.steps.forEach((s) => {
+    const file = s.status === "error" && s.kind === "edit" && files.get(s.id);
+    if (file && parts.slice(i + 1).some((q) => q.type === "edit" && q.file === file)) s.status = "recovered";
+  }));
+  // ...AND WHAT IT SAID ON ITS WAY TO ITS NEXT CALLS IS ITS WORKING, ONCE THE TURN IS FILED (the walk, 2026-11-21: "Python 3.10 exists under the
+  // user path; check libraries." and "Good. Now the reply with both files attached." stood in the chat as its answer): words whose next part
+  // is a fold of calls go into that fold, a row of its working, in the order said - as acp.prompt files only what it said after its last
+  // call as the answer. Words before a view, a file or an edit introduce it and stand; a turn still at work keeps every word where it stands
+  if (answer && !live) for (let i = parts.length - 2; i >= 0; i -= 1) {
+    if (parts[i].type !== "said" || parts[i + 1].type !== "work") continue;
+    const t = String(parts[i].text || ""), note = { id: `note-${i}`, kind: "thought", summary: t.length > 140 ? `${t.slice(0, 139)}…` : t, detail: t.length > 140 ? t : "", status: "done" };
+    parts.splice(i, 2, { ...parts[i + 1], steps: [note, ...parts[i + 1].steps] });
+    if (parts[i - 1]?.type === "work") parts.splice(i - 1, 2, { ...parts[i - 1], steps: [...parts[i - 1].steps, ...parts[i].steps] });
+  }
   const lastPlan = parts.map((p) => p.type).lastIndexOf("plan");
   return parts.filter((p, i) => p.type !== "plan" || i === lastPlan).map((p, i) => ({ ...p, id: `p${i}` }));
 }
 // what a turn did, counted for its fold's line: "6 steps" - its edits each one
-export const workCount = (parts) => (parts || []).reduce((n, p) => n + (p.type === "edit" ? 1 : p.type === "work" ? p.steps.filter(isWork).length : 0), 0);
-// WHAT IT WROTE OUT FOR HIM IS NEVER FOLDED WITH ITS STEPS (the owner, 2026-11-15: "if it returns something you need to see it"): a message of the
-// turn that holds a block - a query, a script, a table - is a thing it made, not a note on its way; said before its last step, it stays in the turn
-export const isMade = (text) => /^[ \t]*(?:\x60{3}|~~~)/m.test(String(text || "")) || /^[ \t]*\|.+\|[ \t]*\n[ \t]*\|[ :|-]+\|[ \t]*$/m.test(String(text || ""));
-// A DRAFT WHERE IT STOOD, no longer the one to press (GeneralWorkspace PastCard): the list's card in one of these states, carrying what it said
+export const workCount = (parts) => workRows(parts).length;
+// ...a helper's own steps among them (walk 5: "4 steps" stood five minutes while the helper under one of them did all the work)
+const withKids = (ss) => ss.filter(isWork).flatMap((s) => [s, ...withKids(s.kids || [])]);
+const workRows = (parts) => (parts || []).flatMap((p) => (p.type === "edit" ? [p] : p.type === "work" ? withKids(p.steps) : []));
+// ...AND ITS ONE LINE SAYS THE ROWS IT OPENS ON (the real-Claude walk, 2026-11-19: "3 steps - ran 2 commands, used a tool" opened on two rows,
+// and "1 step - used a tool" named nothing): counted from those rows, in their own words - the first few, then how many more
+const FEW = 3;
+const lower = (t) => String(t || "").replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase());
+// ...and rows of one kind say it once, counted (walk 5: "read 3 web pages, read 4 web pages" - two runs of reads cut by a sentence)
+const KIND_SAID = { read: (k) => `read ${plural(k, "file")}`, page: (k) => `read ${plural(k, "web page")}`, run: (k) => `ran ${plural(k, "command")}`,
+  edit: (k) => `changed ${plural(k, "file")}`, search: (k) => `searched files ${k} times`, web: (k) => `searched the web ${k} times`, mail: () => "searched your mail" };
+const calls = (r) => String(r.id || "").split("+").length;
+// ...ONE COUNTING UNIT (the judge's walk, 2026-11-19: "1 step - ..., and 2 more" - the head counted rows, the tail counted calls): every
+// number is of calls - a row folding three calls is three steps - and "and N more" is the steps the named words did not cover
+const callsOf = (r) => (r.type === "edit" ? 1 : calls(r));
+export const foldLine = (parts) => {
+  const rows = workRows(parts), n = rows.reduce((t, r) => t + callsOf(r), 0);
+  if (!n) return "";
+  const kinds = [], by = new Map();
+  for (const r of rows) { const k = r.type === "edit" ? "edit" : r.kind; if (!by.has(k)) { by.set(k, []); kinds.push(k); } by.get(k).push(r); }
+  const words = kinds.flatMap((k) => { const rs = by.get(k), c = rs.reduce((t, r) => t + callsOf(r), 0);
+    return rs.length > 1 && KIND_SAID[k] ? [[KIND_SAID[k](c), c]] : rs.map((r) => [lower(r.summary), callsOf(r)]); }).filter(([w]) => w);
+  const said = words.slice(0, words.length > FEW ? FEW - 1 : FEW), more = n - said.reduce((t, [, c]) => t + c, 0);
+  return `${plural(n, "step")}${said.length ? ` - ${said.map(([w]) => w).join(", ")}${more > 0 && words.length > said.length ? `, and ${more} more` : ""}` : ""}`;
+};
+// A DRAFT WHERE IT STOOD, no longer the one to press (GeneralWorkspace wasCard, NotSent): the list's card in one of these states, carrying what it said
 export const isPastCard = (c) => ["superseded", "passed", "withdrawn", "rejected"].includes(c?.status) && !!c.was;
 // ...AND AN EARLIER VERSION NEVER TAKES ITS REVIEW'S OWN CARD (recorded 2026-11-15: a reply the agent rewrote and he then sent - the rewrite
 // is the same review - left no "Sent" card at all: the earlier draft's record, drawn first, had claimed every card of that review): the
@@ -196,10 +230,18 @@ export const withMine = (list, mine) => {
   // ...AND A REPLY DRAFT ABOVE IT GREYS IN ITS PLACE FROM THE SAME FRAME (the owner, 2026-11-12: "grey out buttons right away"): what the
   // server does as it hears the line (proposals.set_aside_drafts), drawn before its read comes back - its buttons stood lit ~300 ms
   // ...a line sent while a turn works too (the owner, 2026-11-16: "The second a new prompt comes in ... it should gray out the action card but never move")
-  // ...in the server's own sentence (`aside`, proposals.WROTE_PAST) with his newest line cut as proposals._cut cuts it: its read never swaps the words
-  const by = own.findLast((l) => !l.err), cut = (w) => ((w = String(w || "").trim().split(/\s+/).join(" ")).length > 60 ? `${w.slice(0, 60)}…` : w);
-  const aside = (c) => (by && c.status === "pending" && c.was ? { ...c, status: "passed", ...(c.aside ? { why: c.aside.replace("{line}", cut(by.text)) } : {}) } : c);
-  const greyed = items.map((x) => (x.kind === "card" ? aside(x) : x.kind === "turn" && (x.cards || []).length ? { ...x, cards: x.cards.map(aside) } : x));
+  // ...the same card, its buttons greyed, no line saying why (the owner, 2026-11-18): the server marks each card his line would grey (`aside`)
+  const by = own.findLast((l) => !l.err);
+  // ...ONLY A CARD THAT STOOD BEFORE HIS LINE (a walk, 2026-11-18): a Post card raised twelve seconds after his line was drawn greyed "you wrote
+  // ... after it" - he never saw it lit. A card from his line's own second on is the answer to it (the server's rule: proposals._older)
+  const before = (c) => !c.at || +new Date(String(c.at).replace(" ", "T")) + 1000 <= +new Date(by.at);
+  const aside = (c) => (by && c.status === "pending" && (c.was || c.aside) && before(c) ? { ...c, status: "passed" } : c);
+  // ...AND HIS LINE KEEPS ITS WORDS THROUGH THE SWAP (the owner, live 2026-11-20: his line showed, vanished, came back): the server places his
+  // line the moment it is heard and fills its words a beat later, when its row is filed - in that beat its item had no words and drew nothing.
+  // One identity from the send: the server's item takes the place, the words he sent stay in it until the server's own arrive
+  const sent = new Map(mine.map((l) => [l.id, l]));
+  const said = (x) => (x.kind === "line" && !String(x.text || "").trim() && sent.has(x.id) ? { ...x, text: sent.get(x.id).text, files: x.files?.length ? x.files : sent.get(x.id).files || [] } : x);
+  const greyed = items.map((x) => (x.kind === "card" ? aside(x) : x.kind === "turn" && (x.cards || []).length ? { ...x, cards: x.cards.map(aside) } : said(x)));
   return { items: [...greyed.slice(0, at), ...rest, ...greyed.slice(at), ...tail], pending: [...pending, ...wait] };
 };
 // THE BASIC FLOW OF WHAT THE PAGE DRAWS (conversation.flow_breaks, the page's half): his newest line has no turn at work above it, and
@@ -239,19 +281,31 @@ export const waitingChips = (pending, came = "") => {
 // agent to start" is the app's mechanics) - a `later` turn starting is the work going on, and reads as the turn it becomes: bare dots stood
 // over it, then words (the walks, 2026-11-17). One whose CLI is opening is not `later` (ConvTurn), so a later line never steps back
 // `doing`: the answer it is writing, while that is the newest thing it did (conversation `doing`)
-export const workingLine = (parts, label, { starting = false, later = false, ask = "", doing = "" } = {}) => {
+// ...AND NEVER THE WORDS OF A ROW IN SIGHT (the status walk, 2026-11-18: a short thought's row and the line under it read "The budget note comes
+// first, then the archive" at one beat; with the fold opened, "Reading budget.md" stood as a row and again on the line under it at every tool
+// beat). One structural test, for a thought and a step alike: is the row that holds those words drawn open right now - a turn's rows stand open
+// while it has no work to fold (TurnWorkView), and inside a fold he opened or the dock's trail (`open`); shut in the fold, the line names it
+export const workingLine = (parts, label, { starting = false, later = false, ask = "", doing = "", open = false } = {}) => {
   if (ask) return ask;
-  const steps = (parts || []).filter((p) => p.type === "work").flatMap((p) => p.steps || []), last = steps.at(-1);
-  if (last?.status === "running") return String(label(last) || "").split(/\r?\n/)[0].trim() || "Working…";
+  // the newest thing the turn did: its last step, or an edit made after it (an edit is a part of its own, editRow)
+  const newest = (parts || []).flatMap((p) => (p.type === "work" ? (p.steps || []).map((st) => ({ st, row: String(label(st) || "") }))
+    : p.type === "edit" ? [{ edit: p, row: p.summary }] : [])).at(-1);
+  const inSight = open || workCount(parts) === 0;
+  const say = (line, held) => (line && !(inSight && flat(newest.row).includes(flat(line))) ? line : held);
+  // ...an edit being made, or a step at work, is the newest thing at work, in its own words (editRow `running`, stepLabel)
+  if (newest?.edit?.running) return say(newest.edit.summary, "Working…");
+  if (newest?.st?.status === "running") return say(newest.row.split(/\r?\n/)[0].trim(), "Working…");
   if (doing && thinkingLine(doing)) return `Writing: ${thinkingLine(doing)}`;
-  if (!last) return starting && !later ? "Waiting for the agent to start" : "Thinking…";
+  if (!newest) return starting && !later ? "Waiting for the agent to start" : "Thinking…";
   // ...and WHAT IT IS THINKING, where its newest step is a thought (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else):
-  // that thought's latest words, as it writes them (agents.ACPSteps._thinking) - never a bare word for minutes
-  return last.kind === "thought" ? thinkingLine(last.detail || last.summary) || "Thinking…" : "Thinking…";
+  // that thought's latest words, as it writes them (agents.ACPSteps._thinking) - never a bare word for minutes. An edit made after it is newer
+  return newest.st?.kind === "thought" ? say(thinkingLine(newest.st.detail || newest.st.summary), "Thinking…") : "Thinking…";
 };
+const flat = (t) => String(t || "").replace(/\s+/g, " ").replace(/[.…]+$/, "").trim();
 // a thought as one short line: its last sentence, cut at a word
 export const thinkingLine = (text) => {
-  const t = String(text || "").replace(/\s+/g, " ").trim().replace(/[.…]+$/, "");
+  // ...never Taskuary's own marker as it streams in (the goal walk on Codex, 2026-11-22: "Writing: [["): words stop where one opens, even half-written
+  const t = String(text || "").replace(/\[\[[\s\S]*$|\[$/, "").replace(/\s+/g, " ").trim().replace(/[.…]+$/, "");
   const s = t.split(/(?<=[.!?])\s+/).filter(Boolean).at(-1) || "";
   return s.length > 110 ? `…${s.slice(-108).replace(/^\S*\s/, "")}` : s;
 };
@@ -259,29 +313,19 @@ export const thinkingLine = (text) => {
 // which the list names (conversation.items `asking.turn`) - "" only while that turn is not in what is drawn (a read behind, a chat with no
 // turn yet), when it stands under everything as it did
 export const askTurn = (asking, items) => (asking?.turn && (items || []).some((x) => x.kind === "turn" && x.id === asking.turn) ? asking.turn : "");
-// WHERE THE LETTERS THAT WAIT FOR HIS SEND ARE DRAWN (the reply's card and the task's emails, one block of the page): at the end of the turn
-// the list names (conversation.items `letters` - the last turn that left a letter still waiting), under that turn's words. "" while the
-// list names none or holds no such turn yet, or while that turn is at work - it holds the block back, as it does its cards - and the page
-// then hangs the block on the reply's own card, as it did. The owner's live task, 2026-11-13: an email a later turn wrote stood up at the
-// reply's card, that turn's words under both
-// ...nor above a line of his: what stood over the line he just sent is set aside as it is heard (proposals.set_aside_drafts), and the page
-// draws that from the same frame (withMine) - the block's Send stood lit over his new line until the list was read again
-// A CARD THE LIST PLACES NOWHERE STANDS UNDER EVERYTHING - ONCE THERE IS A LIST (the audit, 2026-11-13, recorded on Back and on a rail click): a
-// task's cards arrive with the task, its conversation a beat later, and for that beat (1.5 s on the recording) every card of the task -
-// each letter that went, newest first, and the draft with its Send - stood in one stack at the chat's foot, then jumped up into the turns
-// that wrote them. Until the list is read nothing can be placed, so nothing is; nor under a turn at work, which holds its own cards back.
-export const placesLoose = (list) => !!list && !list.working;
+// ONE ACTION BOX AT A TIME, A HARD RULE (cardqueue.py; the owner's live task, 2026-11-19: a held browser step read "1 of 2 · next: the reply
+// to Gail" and the reply's box stood under it): a card the line holds behind its front is drawn nowhere - the reply's block included, by its
+// review (`rid`) - and while the front is another card, no door to write a reply stands beside it either (`replyDoorOpen`)
+export const replyDoorOpen = (queue, rid) => !(queue?.live || []).length || (queue.live || []).includes(rid);
 // ...and A MISSING FACT IS ONE QUESTION (the owner's rule; recorded on the real CLI, 2026-11-15): while the agent waits on his answer, the reply
 // it could not write yet - no words, no email beside it - is not drawn under the question as an empty box over a greyed Send; his answer's
 // turn writes it (the server's list leaves it out of the turn the same way, conversation.items)
 const words = (r) => String(r?.FinalText || r?.DraftText || "").trim();
 export const askedFirst = (asking, reviews = []) => !!asking && !(reviews || []).some((r) => r.Kind === "slot" && r.Status === "pending")
   && !(reviews || []).some((r) => ["draft_reply", "draft"].includes(r.Kind) && r.Status === "pending" && words(r));
-export const lettersTurn = (list, items) => { const xs = items || [], i = list?.letters ? xs.findIndex((x) => x.kind === "turn" && x.id === list.letters) : -1;
-  return i >= 0 && !["starting", "working"].includes(xs[i].state) && !xs.slice(i + 1).some((x) => x.kind === "line") ? xs[i].id : ""; };
-// THE ONE TURN THAT SAYS WHAT IS LEFT TO HIM ("For you to do", the summary's `on_you`; the walk, 2026-11-17): it is the state of what is left,
-// not a record of each turn - an old turn whose ask was withdrawn grew "Give the three agenda topics" above his own answer. The newest turn, at
-// rest, with nothing of his under it (nothing new is drawn above his line), and never one whose own ask, card or letters wait: those ARE the step
+// THE ONE TURN THAT OFFERS ITS TRY AGAIN (its summary's `retry`): the newest turn, at rest, with nothing of his under it (nothing new is drawn
+// above his line), and never one whose own ask, card or letters wait: those ARE the step. What a turn left on him ("For you to do") is not this
+// one's: each turn says its own, settled once by the list (conversation.left_on_him)
 export const onYouTurn = (items, { askAt = "", lettersAt = "", landAt = "" } = {}) => {
   const xs = items || [], i = xs.map((x) => x.kind === "turn").lastIndexOf(true), t = xs[i];
   if (!t || ["starting", "working"].includes(t.state) || xs.slice(i + 1).some((x) => x.kind !== "arrival")) return "";
@@ -291,4 +335,4 @@ export const onYouTurn = (items, { askAt = "", lettersAt = "", landAt = "" } = {
 // ...(a question the agent asked before is no wait while it works: the recorded walk, 2026-11-12, read "Waiting for your answer" over a turn
 // already at work on his answer - only a step it is stopped at, or a sign-in on the page, holds a turn at work)
 export const waitingOn = (list) => (list?.permissions?.length ? "Waiting for your Allow once"
-  : String(list?.asking?.request_id || "").startsWith("signin:") ? "Waiting for you to sign in" : "");
+  : isSignin(list?.asking) ? (list.asking.named ? list.asking.text : "Waiting for you to sign in") : "");      // ...a step the agent named, by its name

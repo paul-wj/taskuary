@@ -5,11 +5,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import api from "./api.js";
-import { failLine, landed, press as pressReview } from "./press.js";
-import { label } from "./buttons.js";
 import { useAgents } from "./ui.jsx";
-import { ACCENT, BORDER, CATPPUCCIN, DIM, FAINT, INK, PANEL, PANEL2, mono } from "./theme.jsx";
-import { activeTab, tabList, FIRST_WAIT, fitFrame, holdFirst, isPaste, isPress, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor,
+import { ACCENT, BORDER, CATPPUCCIN, DIM, FAINT, INK, PANEL, PANEL2, mono, sans } from "./theme.jsx";
+import { activeTab, tabList, FIRST_WAIT, fitFrame, holdFirst, isPaste, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor,
   viewportMoved, wheelMessage } from "./browserSplit.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
@@ -290,11 +288,14 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         )}
         {note && <Typography title={note.local ? t(note.text, note.values) : note.text} sx={{ ...mono, fontSize: 10, flexShrink: 1, minWidth: 0, maxWidth: "45%",
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          color: note.bad ? CATPPUCCIN.red : CATPPUCCIN.green }}>{note.local ? t(note.text, note.values) : note.text}</Typography>}
+          color: note.bad ? CATPPUCCIN.red : CATPPUCCIN.green }}>{note.t}</Typography>}
+        {/* ...but not while the agent has handed him the page: its bar's "I'm done" is that step's one press, and this stood beside it as a
+            second, greyed one (the overnight walk, 2026-11-11). THIS BUTTON ONLY EVER MEANS TAKE OVER (the Claude walk, 2026-11-19: its "I'm
+            done" let go of the page and told nobody, beside the turn's real one) - driving, it gives the page back, in those words */}
         {!turn && <Box component="button" onClick={() => (driving ? setDriving(false) : takeOver())}
-          title={driving ? t("give the page back to the agent") : t("drive the page yourself - for a password or a code the agent must not type")}
-          sx={{ ...btn, ...(driving ? { color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow } : {}) }}>
-          {driving ? t("I'm done") : t("Take over")}
+          title={driving ? "stop driving - the page is the agent's again" : "drive the page yourself - for a password or a code the agent must not type"}
+          sx={{ ...btn, ...sans, ...(driving ? { color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow } : {}) }}>
+          {driving ? "Give it back" : "Take over"}
         </Box>}
         {/* ...Snapshot only in Developer mode (audit, 2026-11-05): a frame filed as an attachment is a developer's record */}
         {devMode && <Box component="button" onClick={snapshot} title={t("keep this frame on the task as an attachment")} sx={btn}>{t("Snapshot")}</Box>}
@@ -310,7 +311,8 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
 ${t.url}
 
 ${t.active ? "the tab the agent is working on - shown now" : driving ? "show this tab - the agent works on the tab shown" : "Take over to switch to this tab"}`}
-              sx={{ ...mono, fontSize: 10.5, lineHeight: 1.2, display: "flex", alignItems: "center", gap: 0.6, flex: "0 1 auto", minWidth: 0, maxWidth: 180,
+              // ...each tab keeps a name's room and the strip scrolls (design round 4, 2026-11-19: at ~756px thirteen tabs read one letter each)
+              sx={{ fontSize: 11.5, lineHeight: 1.2, display: "flex", alignItems: "center", gap: 0.6, flex: "0 0 auto", minWidth: 64, maxWidth: 180,
                 px: 0.9, py: 0.4, borderRadius: 1, cursor: t.active ? "default" : "pointer", whiteSpace: "nowrap",
                 border: `1px solid ${t.active ? ACCENT : BORDER}`, bgcolor: t.active ? PANEL2 : "transparent",
                 color: t.active ? INK : FAINT, fontWeight: t.active ? 600 : 400,
@@ -379,7 +381,7 @@ ${t.active ? "the tab the agent is working on - shown now" : driving ? "show thi
           </Typography>
         )}
         {driving && !filling && !turn && (
-          <Typography sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: CATPPUCCIN.yellow,
+          <Typography sx={{ ...sans, position: "absolute", left: 8, bottom: 6, fontSize: 11, color: CATPPUCCIN.yellow,
             bgcolor: "#000000aa", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
             {/* ...only over a page that has drawn: "click the page and type" stood over a pane with no frame in it (2026-11-04) */}
             {!live ? t("Loading the page…") : handed.current ? t("your turn — click the page and type; scroll it for a button below the edge") : t("you are driving — the agent's next command still runs; press I'm done when finished")}
@@ -388,8 +390,8 @@ ${t.active ? "the tab the agent is working on - shown now" : driving ? "show thi
         {asked && !driving && (
           <Box sx={{ position: "absolute", left: 8, right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 1,
             bgcolor: "#000000cc", border: `1px solid ${CATPPUCCIN.yellow}66`, px: 1, py: 0.5, borderRadius: 1 }}>
-            <Typography sx={{ ...mono, fontSize: 10, color: "var(--tq-muted, #e1dcd5)", flex: 1 }}>
-              {t(tabs.length > 1 ? "You are watching the agent's page — Take over to type on it or switch tabs." : "You are watching the agent's page — Take over to type on it.")}
+            <Typography sx={{ ...sans, fontSize: 11, color: "var(--tq-muted, #e1dcd5)", flex: 1 }}>
+              {`You are watching the agent's page — Take over to type on it${tabs.length > 1 ? " or switch tabs" : ""}.`}
             </Typography>
             <Box component="button" onClick={takeOver}
               sx={{ ...btn, color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow }}>{t("Take over")}</Box>
@@ -398,7 +400,11 @@ ${t.active ? "the tab the agent is working on - shown now" : driving ? "show thi
       </Box>
       {/* WHAT WAITS ON THE OWNER, ON THE PAGE IT WAITS ON - below the page, never over it: a CAPTCHA box under a bar is not one they
           can tick. A held act's Approve / Dismiss, and the owner's turn with its hand-back; both flow back into the agent's chat. */}
-      {waiting.map((h) => <HeldBar key={h.id} held={h} onDecided={onDecided} />)}
+      {/* ...A HELD STEP IS ONE CARD, IN ONE PLACE (the Codex walk, 2026-11-19: the same Approve stood in the chat and again here): its card is
+          the chat's - the page says only that it waits there */}
+      {!!waiting.length && <Box data-tq-browser-waits="" sx={bar}>
+        <Typography sx={barText}><Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>Waits for your Approve in the chat: </Box>
+          {waiting.map((h) => h.what).join("; ")}</Typography></Box>}
       {turn && <TurnBar turn={turn} url={url} onHandBack={onHandBack} short={short} />}
     </Box>
   );
@@ -408,40 +414,10 @@ ${t.active ? "the tab the agent is working on - shown now" : driving ? "show thi
 const bar = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1, px: 1.25, py: 0.75, flexShrink: 0, bgcolor: "#1c1b19",
   borderTop: `1px solid ${CATPPUCCIN.yellow}88` };
 const barText = { fontSize: 12.5, color: "var(--tq-muted, #e1dcd5)", flex: "1 1 220px", minWidth: 0, lineHeight: 1.4 };
-const press = { ...btn, fontSize: 11.5, px: 1.25, py: 0.6 };
-const primary = { ...press, color: "var(--tq-text, #101010)", bgcolor: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow,
-  "&:hover": { bgcolor: "var(--tq-tint-brass, #f3d98f)", borderColor: "var(--tq-edge-brass, #f3d98f)", color: "var(--tq-text, #101010)" } };
-const failed = (e, data) => {
-  const detail = data?.send_error || e?.response?.data?.detail;
-  return detail ? { text: detail, local: false } : e ? { text: "That did not go through - nothing was done. Try again.", local: true } : null;
-};
+// ...the hand-over's words and presses in the app's own face: they are his to read, not the page's address bar (design round 5)
+const press = { ...btn, ...sans, fontSize: 12, px: 1.25, py: 0.6 };
+const failed = (e, data) => data?.send_error || e?.response?.data?.detail || (e ? "That did not go through - nothing was done. Try again." : "");
 
-// A HELD ACT (browsergate.check): Approve runs that exact command in this browser and the agent is told what happened - it goes on
-// in the same conversation by itself; Dismiss tells it the step was not done. The existing decide road, the same as the card's.
-function HeldBar({ held: h, onDecided }) {
-  useLocale();
-  const [busy, setBusy] = useState(""), [err, setErr] = useState("");
-  const decide = async (verb) => {
-    if (busy) return;
-    setBusy(verb); setErr("");
-    const o = await pressReview(api, h.id, { verb, cc: null, anyway: false }, 2);       // the one press (press.js)
-    if (!landed(o) && o.kind !== "already") { setErr(failLine(o)); setBusy(""); }
-    if (o.kind !== "error") onDecided?.();
-  };
-  return (
-    <Box data-tq-browser-held={h.id} sx={bar}>
-      <Typography sx={barText} title={[h.url, h.why].filter(Boolean).join("\n")}>
-        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{t("Approve: ")}</Box>{h.whatIsFallback ? t("the step the agent held") : h.what}
-        {h.why && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}>{t(" — held because {reason}", { reason: h.why })}</Box>}
-      </Typography>
-      <Box component="button" onClick={() => decide("approve")} disabled={!!busy} sx={primary}
-        title={t("Taskuary runs exactly this in the agent's browser, and the agent carries on from there")}>{busy === "approve" ? t("running…") : label("approve", "action")}</Box>
-      <Box component="button" onClick={() => decide("reject")} disabled={!!busy} sx={press}
-        title={t("Not done - the agent is told, and carries on without it or asks you")}>{busy === "reject" ? "…" : t("Dismiss")}</Box>
-      {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err.local ? t(err.text) : err.text}</Typography>}
-    </Box>
-  );
-}
 
 // THE OWNER'S TURN (browserview.your_turn): the page is theirs to click and type on (yourTurn hands it over), and Done hands it back -
 // their press, never words in their name: Taskuary tells the agent, which looks at the page and goes on (browsergate.done).
@@ -455,16 +431,15 @@ function TurnBar({ turn, url = "", onHandBack, short = false }) {
     try { await onHandBack?.(); } catch (e) { setErr(failed(e)); setBusy(false); }
   };
   useEffect(() => { setBusy(false); setErr(""); }, [turn?.request_id]);
-  // a press handed over is said by its own line, and the press that matters is the page's; every hand-over is watched and goes on by itself
-  // when the page moves on (the owner, 2026-11-05) - Done stays, quiet, for a page Taskuary cannot read
-  const pressing = isPress(turn);
+  // every hand-over is watched and goes on by itself when the page moves on (the owner, 2026-11-05) - Done stays, quiet, for a page Taskuary
+  // cannot read. A press is never handed over here: it is a card in the chat (browsergate, 2026-11-18)
   return (
-    <Box data-tq-browser-turn={turn.request_id} data-tq-browser-press={pressing ? "" : undefined} data-tq-browser-turn-short={short ? "" : undefined}
+    <Box data-tq-browser-turn={turn.request_id} data-tq-browser-turn-short={short ? "" : undefined}
       sx={short ? { ...bar, flexWrap: "nowrap", py: 0.4 } : bar}>
       <Typography sx={short ? { ...barText, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } : barText}
-        title={short ? `${turn.text || t("Your turn in the browser")}${pressing ? "" : " - do it on the page, and the agent goes on when it moves on"}` : undefined}>
-        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || t("Your turn in the browser")}</Box>
-        {!pressing && !short && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}>{t(" · do it on the page, and the agent goes on when it moves on")}</Box>}
+        title={short ? `${turn.text || "Your turn in the browser"} - do it on the page, and the agent goes on when it moves on` : undefined}>
+        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || "Your turn in the browser"}</Box>
+        {!short && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}> · do it on the page, and the agent goes on when it moves on</Box>}
       </Typography>
       {/* ...AND IN HIS OWN BROWSER WHERE THIS ONE IS REFUSED (the owner, 2026-11-13: a registrar's "Verifying you are human" spun forever in the
           agent's browser - a check that turns away an automated browser even with a person at it, and Approve could not get past it): the

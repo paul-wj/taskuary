@@ -199,22 +199,29 @@ def _off(store, e) -> bool:
 # ── 1. signed out of Microsoft ───────────────────────────────────────────────────────────────────
 
 def signed_out(c: dict) -> bool:
-    """An Outlook card whose sign-in Microsoft has let lapse: the token is still stored, so "signed in"
-    alone said yes while no mail had been read for hours."""
-    if (c or {}).get('Type') != 'outlook' or not c.get('Active'): return False
-    from .msauth import lapsed
-    return lapsed(c.get('LastError'))
+    """A card whose sign-in its system has let lapse: the token is still stored, so "signed in" alone said yes while no mail had
+    been read for hours. Decided once, with the card's whole state (connectorcatalog.state) - Outlook's was the only one asked here."""
+    from .connectorcatalog import signed_out as out
+    return out(c)
 
 
 def away_since(store, cid):
     return _load(store.get_setting(f'{AWAY}{cid}')).get('at') or ''
 
 
+def signed_out_by(c) -> str:
+    "Who let the sign-in lapse, as the owner knows them: the company that signs them in, else the system itself."
+    from .connectorcatalog import by_type
+    t = c.get('Type')
+    return 'Microsoft' if t in ('outlook', 'teams') else 'Google' if t == 'gmail' else (by_type(t) or {}).get('title') or c.get('Name') or t
+
+
 def signed_out_line(store, c) -> tuple:
     """(title, detail) - the one thing to say about it, on the bell and on the rail alike."""
     at = clock(away_since(store, c['ConnectorId']) or c.get('LastErrorAt'))
-    return (f"Microsoft signed you out{f' at {at}' if at else ''}",
-            "I can't see your mail, so I can't watch for answers. Sign in here and I'll catch up.")
+    what = ("I can't see your mail, so I can't watch for answers" if c.get('Type') in ('outlook', 'gmail', 'imap')
+            else f"I can't reach {c.get('Name') or signed_out_by(c)}")
+    return f"{signed_out_by(c)} signed you out{f' at {at}' if at else ''}", f"{what}. Sign in here and I'll catch up."
 
 
 def watch_mail(store, c: dict, err=None):
@@ -337,6 +344,20 @@ def collect(store, all_of_them: bool = False) -> list:
         out.append({'key': f'fell_back:{pick}', 'title': f'{name}: {fell_line(store, pick)}', 'detail': 'Every call still gets an answer - '
                     'from the model the gateway fell back to.', 'back': f"{name}: {words(e.get('asked'))} answers again", 'since': e.get('from') or '',
                     'now': True, 'where': 'Connections', 'connector': pick[10:] if c else None, 'fix': 'Open the card'})
+    # ...AND THE AI FAILING ON HIS TASKS (the Hydrogen walk, 2026-11-19: "Nothing is failing" over three turns that failed): every open task whose
+    # newest turn failed, read off the chat's own record of it - one line, its newest failure in his words, gone once a turn answers
+    try:
+        failed = store._rows("SELECT c.TaskId, c.Body, c.At FROM chatlog c JOIN task t ON t.TaskId=c.TaskId WHERE c.Kind='turn' AND c.Parent IS NULL "
+                             "AND c.State='failed' AND t.Status NOT IN ('done','dropped') AND c.Id=(SELECT MAX(x.Id) FROM chatlog x WHERE x.TaskId=c.TaskId "
+                             "AND x.Kind='turn' AND x.Parent IS NULL) ORDER BY c.Id DESC")
+    except Exception: failed = []
+    if failed:
+        from .timewords import plural
+        newest = json.loads(failed[0].get('Body') or '{}').get('fail') or ''
+        out.append({'key': 'ai_turns', 'title': f"The AI failed on {plural(len(failed), 'task')}", 'detail': str(newest)[:400],
+                    'since': datetime.fromtimestamp(float(failed[0].get('At') or 0)).strftime('%Y-%m-%d %H:%M:%S') if failed[0].get('At') else '',
+                    'back': 'The AI is answering on your tasks again', 'now': True, 'where': 'Connections', 'fix': 'Open the task',
+                    'task': failed[0]['TaskId']})
     # ...and the day's ceiling for AI work nobody asked for, while it holds: one line, gone tomorrow or when the limit is raised
     from .brainroute import auto_held
     if held := auto_held(store):
@@ -383,4 +404,6 @@ def collect(store, all_of_them: bool = False) -> list:
     uniq = ring
     # ...minus the ones the owner has read, and only while they are the SAME failure
     put_down = _dismissed(store)
-    return [p for p in uniq if put_down.get(p['key']) != signature(p)]
+    # ...and the bell he reads says each in his words (say.plain) - the troubleshooter and the facts above keep the raw text
+    from .say import plain
+    return [{**p, **{k: plain(p[k], 'service') for k in ('title', 'detail') if p.get(k)}} for p in uniq if put_down.get(p['key']) != signature(p)]

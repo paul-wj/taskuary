@@ -2,6 +2,8 @@
 // agent - its own session is the way in (Continue / the session's card). The server's dispatch door refuses it too.
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { agentRuns } from "../src/taskFilter.js";
 
 
@@ -13,4 +15,3 @@ test("an item an agent is working - or a live session holds - reads as running; 
   assert.equal(agentRuns({ kind: "message", tid: 4 }), false);
   assert.equal(agentRuns(null), false);
 });
-

@@ -3,10 +3,19 @@
 // spend the card's key - one name for each of them in every place that lists them.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CATALOGUE } from "../src/connectorCatalog.js";
+import { readFileSync } from "node:fs";
+import { oneOf } from "../src/connectorCatalog.js";
 
-test("Stripe is available as a connector", () => {
-  const stripe = CATALOGUE.find((card) => card.type === "stripe");
-  assert.ok(stripe);
-  assert.equal(stripe.planned, false);
+const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
+const TYPES = ["stripe_balance", "stripe_balance_transactions", "stripe_charges", "stripe_payments", "stripe_payouts", "stripe_refunds",
+  "stripe_disputes", "stripe_customers", "stripe_subscriptions", "stripe_invoices"];
+
+test("the card is a Corporate system with a write-only key and no other field", () => {
+  const cv = read("ConnectorsView.jsx");
+  assert.match(cv, /dataCards\(\["intacct", "quickbooks", "zoho_invoice", "amazon_sp", "stripe"\]\)/);
+  const card = cv.slice(cv.indexOf("  stripe: { title: \"Stripe\","), cv.indexOf("SETUP DONE", cv.indexOf("  stripe: { title")));
+  assert.match(card, /fields: \[\], secretLabel: "restricted API key \(write-only\)/);
+  for (const t of TYPES) assert.ok(card.includes(`"${t}"`), t);
+  assert.match(read("logos.jsx"), /stripe: \(p\) => <T p=\{p\} bg="#635BFF"/);
+  assert.equal(oneOf("stripe"), "Stripe account");
 });

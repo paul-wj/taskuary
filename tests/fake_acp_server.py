@@ -13,6 +13,9 @@ Set in its environment, for the tests that need more:
   FAKE_ACP_RESUME=1      it offers session/resume (no replay) beside session/load
   FAKE_ACP_GONE=1        it no longer has the session it is asked to reopen, as the CLI after its own cleanup says
   FAKE_ACP_ASK=<command> the permission it asks for is to run that shell command (kind execute)
+  FAKE_ACP_AFTER=<secs>  the turn works on that long after his answer to its permission
+  FAKE_ACP_ABORT=1       a no ends its turn (stopReason cancelled, nothing said), as codex-acp's only reject - Codex's "cancel" - does; the
+                         turns after it ask nothing and say what they heard
   FAKE_ACP_CODE=<file>   a coding turn: a plan, an edit of that file asked for (kind edit, its location) and, once allowed, made -
                          a comment line on top, sent back as a diff - then `git status` run, its output streamed as terminal deltas
   FAKE_ACP_HANG=1        a turn that only ends when it is cancelled (session/cancel) - or steered
@@ -21,13 +24,16 @@ Set in its environment, for the tests that need more:
   FAKE_ACP_STEER_ECHO=1  ...and echoes the steered words back as a user_message_chunk before it answers the steer
   FAKE_ACP_STEER_HOLD=1  ...and the turn goes on after a steer, as a real one at a tool does: only session/cancel ends it; `said`: it
                          says a word after taking the steer in, then goes on
+  FAKE_ACP_STOP=<reason> every turn ends with that stopReason (refusal, max_tokens, max_turn_requests), as an adapter's PromptResponse says it
   FAKE_ACP_USAGE=1       each turn's answer carries its usage and _meta.quota, as both adapters' PromptResponses do
   FAKE_ACP_MODELS=<a,b>  the model values it offers (default opus,sonnet)
+  FAKE_ACP_LOG=<file>    each session/new, as a line: the env its _meta handed it, and its own process's TQ_ variables
   FAKE_DIRECTOR=<folder> each turn's words come from a scenario (fake_director.py), no permission asked; a session/cancel ends it meanwhile
   FAKE_ACP_SCRIPT=<file>  fake_claude's script: the first rule whose `when` the owner's words match answers `first`, after its `post`s ran
                          as the agent's own `taskuary --reply` would (fake_director.post) - a coding agent filing a reply, no permission asked;
                          `wait` seconds before it answers, `exit` a code it dies with mid-turn (after its `updates`),
-                         `updates` raw session updates said first
+                         `updates` raw session updates said first, `silent` it says no words at all and ends the turn, `stop` the stopReason its turn ends with,
+                         `ask` a shell command it then asks permission to run (FAKE_ACP_ASK's card), the turn ending at his answer
 It offers config options (mode, model, effort) the way claude-agent-acp and codex-acp do, and says what they were set to.
 """
 import json, os, re, sys
@@ -37,6 +43,7 @@ SID = 'sess_fake_1'
 PERM_ID = 9001
 _prompt_id = None                 # the turn waiting on the permission answer
 _heard = ''                       # what it was asked, said back once the turn ends
+_then = ''                        # a script rule's own words after his answer to its `ask`
 SET = {'mode': 'auto', 'model': 'opus', 'effort': 'high'}
 STARTS = 0                        # how many turns this one process has served: a kept connection serves more than one
 RESUMED = ''                      # the session it was resumed into, said back in its answer
@@ -67,8 +74,9 @@ def code_done(granted):
     update('agent_message_chunk', content={'type': 'text', 'text': ('Added the comment.' if granted else 'denied') + f' - {_heard}'})
 
 
-def ended(stop='end_turn'):
+def ended(stop=None):
     "A turn's answer - with what it used, the shape claude-agent-acp and codex-acp give, when FAKE_ACP_USAGE asks."
+    stop = stop or os.environ.get('FAKE_ACP_STOP') or 'end_turn'
     if os.environ.get('FAKE_ACP_USAGE') != '1': return {'stopReason': stop}
     n = {'inputTokens': 12 * STARTS, 'cachedReadTokens': 3000, 'cachedWriteTokens': 400, 'outputTokens': 250}
     return {'stopReason': stop, 'usage': {**n, 'totalTokens': sum(n.values())},
@@ -94,10 +102,16 @@ for line in sys.stdin:
             granted = ((msg.get('result') or {}).get('outcome') or {}).get('outcome') == 'selected' and \
                 'reject' not in str(((msg.get('result') or {}).get('outcome') or {}).get('optionId'))
             if os.environ.get('FAKE_ACP_CODE'): code_done(granted)
-            else:
-                update('tool_call_update', toolCallId=f'call_{STARTS}', status='completed' if granted else 'failed')
-                update('agent_message_chunk', content={'type': 'text', 'text': ('granted' if granted else 'denied') + f' - {_heard}'})
-            reply(_prompt_id, ended())
+            else: update('tool_call_update', toolCallId=f'call_{STARTS}', status='completed' if granted else 'failed')
+            if not granted and os.environ.get('FAKE_ACP_ABORT') == '1':
+                reply(_prompt_id, {'stopReason': 'cancelled'}); _prompt_id = None; continue
+            def done_(pid=_prompt_id, granted=granted):
+                # ...FAKE_ACP_AFTER=<secs>: the turn works on that long after his answer, as a real agent goes on from an allowed step
+                __import__('time').sleep(float(os.environ.get('FAKE_ACP_AFTER') or 0))
+                if not os.environ.get('FAKE_ACP_CODE'): update('agent_message_chunk', content={'type': 'text', 'text': _then or (('granted' if granted else 'denied') + f' - {_heard}')})
+                reply(pid, ended())
+            if os.environ.get('FAKE_ACP_AFTER'): __import__('threading').Thread(target=done_, daemon=True).start()
+            else: done_()
             _prompt_id = None
         continue
 
@@ -111,6 +125,11 @@ for line in sys.stdin:
     elif method == 'session/new':
         # the cwd we were given is echoed back so a test can prove the run was placed correctly
         os.environ['FAKE_ACP_CWD'] = str(msg['params'].get('cwd') or '')
+        # ...FAKE_ACP_LOG=<file>: each session's opening, with the environment it was handed and the one its process runs on
+        if os.environ.get('FAKE_ACP_LOG'):
+            with open(os.environ['FAKE_ACP_LOG'], 'a', encoding='utf-8') as f:
+                f.write(json.dumps({'pid': os.getpid(), 'env': ((((msg['params'].get('_meta') or {}).get('claudeCode') or {}).get('options') or {}).get('env')),
+                                    'proc': {k: v for k, v in os.environ.items() if k.startswith('TQ_')}}) + chr(10))
         reply(mid, {'sessionId': SID, 'configOptions': options()})
     elif method in ('session/load', 'session/resume') and os.environ.get('FAKE_ACP_GONE') == '1':
         send({'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32603, 'message': f"No conversation found with session ID: {msg['params'].get('sessionId')}"}})
@@ -138,11 +157,26 @@ for line in sys.stdin:
             for u in rule.get('updates') or []:
                 u = dict(u); __import__('time').sleep(float(u.pop('_sleep', 0) or 0)); update(u.pop('sessionUpdate'), **u)
             if rule.get('exit') is not None: sys.exit(rule['exit'])   # an agent that dies mid-turn, as fake_claude's `exit` - after what it said
+            # ...`ask`: then it asks to run that shell command, as FAKE_ACP_ASK does - the turn ends at his answer (browser/step-words)
+            if (ask := rule.get('ask')):
+                tc = {'toolCallId': f'call_{STARTS}', 'title': ask, 'kind': 'execute', 'rawInput': {'command': ask}}
+                update('tool_call', **tc, status='pending'); _prompt_id = mid; _then = rule.get('first') or ''
+                send({'jsonrpc': '2.0', 'id': PERM_ID, 'method': 'session/request_permission', 'params': {'sessionId': SID, 'toolCall': tc,
+                      'options': [{'optionId': 'reject-once', 'name': 'Reject', 'kind': 'reject_once'}, {'optionId': 'allow-always', 'name': 'Always', 'kind': 'allow_always'},
+                                  {'optionId': 'allow-once', 'name': 'Allow once', 'kind': 'allow_once'}]}})
+                continue
             # ...each post the shell call a real agent makes for it, reported running before it files and done after - never a card ahead of its turn
             # ...each its own call id, as a real adapter's: one reused across turns drew a later turn's call into the first one's step
             for i, p in enumerate(rule.get('post') or []):
                 update('tool_call', toolCallId=f'post_{STARTS}_{i}', title='taskuary', kind='execute', status='in_progress', rawInput={'command': f"taskuary {p['path'].rsplit('/', 1)[-1]}"})
                 post(p); update('tool_call_update', toolCallId=f'post_{STARTS}_{i}', status='completed')
+            # ...its `steps` (fake_claude's): a call and its answer - failed where `error` - or a thought, streamed as the adapter streams them
+            for i, st in enumerate(rule.get('steps') or []):
+                if 'thought' in st: update('agent_thought_chunk', content={'type': 'text', 'text': st['thought']}); continue
+                update('tool_call', toolCallId=f'step_{STARTS}_{i}', title=st['tool'], kind='execute', status='in_progress', rawInput=st.get('input') or {})
+                __import__('time').sleep(float(st.get('wait') or 0.2))
+                update('tool_call_update', toolCallId=f'step_{STARTS}_{i}', status='failed' if st.get('error') else 'completed',
+                       content=[{'type': 'content', 'content': {'type': 'text', 'text': st.get('error') or st.get('output') or 'ok'}}])
             if rule.get('wait'):                       # a long turn: a session/cancel meanwhile ends it, as a real adapter's does
                 _prompt_id = mid
                 def finish(mid=mid, text=rule.get('first') or 'Ok.', wait=float(rule['wait'])):
@@ -150,7 +184,8 @@ for line in sys.stdin:
                     __import__('time').sleep(wait)
                     if _prompt_id == mid: update('agent_message_chunk', content={'type': 'text', 'text': text}); reply(mid, ended()); _prompt_id = None
                 __import__('threading').Thread(target=finish, daemon=True).start(); continue
-            update('agent_message_chunk', content={'type': 'text', 'text': rule.get('first') or 'Ok.'}); reply(mid, ended()); continue
+            if not rule.get('silent') and rule.get('first') != '': update('agent_message_chunk', content={'type': 'text', 'text': rule.get('first') or 'Ok.'})
+            reply(mid, ended(rule.get('stop'))); continue           # ...`stop`: this rule's turn ends with that stopReason
         if folder_of():                                # a scenario's own turn (fake_director.py): its words, no permission asked
             _prompt_id = mid                           # ...on a thread, so a session/cancel meanwhile ends the turn as a real adapter's does
             def answer_later(mid=mid, said=said):
@@ -158,6 +193,11 @@ for line in sys.stdin:
                 text = directed(said)
                 if _prompt_id == mid: update('agent_message_chunk', content={'type': 'text', 'text': text}); reply(mid, ended()); _prompt_id = None
             __import__('threading').Thread(target=answer_later, daemon=True).start(); continue
+        if os.environ.get('FAKE_ACP_FAIL') == 'quota' and STARTS == 1:
+            notice = "You've hit your 5-hour limit · resets 12:10pm (America/New_York)"
+            update('agent_message_chunk', content={'type': 'text', 'text': notice})
+            send({'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32603, 'message': f'Internal error: {notice}'}})
+            continue
         update('agent_message_chunk', content={'type': 'text', 'text': 'Looking. '})
         if os.environ.get('FAKE_ACP_FAIL') == 'turn' and STARTS == 1:
             send({'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32603, 'message': 'Internal error: API Error: 529 Overloaded'}}); continue
@@ -173,6 +213,8 @@ for line in sys.stdin:
             send({'jsonrpc': '2.0', 'id': PERM_ID, 'method': 'session/request_permission', 'params': {'sessionId': SID, 'toolCall': tc,
                   'options': [{'optionId': 'reject-once', 'name': 'Reject', 'kind': 'reject_once'}, {'optionId': 'allow-once', 'name': 'Allow once', 'kind': 'allow_once'}]}})
             continue
+        if os.environ.get('FAKE_ACP_ABORT') == '1' and STARTS > 1:
+            update('agent_message_chunk', content={'type': 'text', 'text': _heard}); reply(mid, ended()); continue
         ask = os.environ.get('FAKE_ACP_ASK')
         tc = {'toolCallId': f'call_{STARTS}', 'title': ask, 'kind': 'execute', 'rawInput': {'command': ask}} if ask else \
              {'toolCallId': f'call_{STARTS}', 'title': 'read the ledger'}

@@ -139,7 +139,8 @@ def test_an_agents_draft_is_filed_with_the_block_once_not_under_its_own_sign_off
 
 
 MD = 'Hi Erin,\n\n## Flights\n\n- **Tue 9:05** out, `NW 12`\n- see [the fares](https://fares.example/x)\n\n| Day | Fare |\n|---|---|\n| Tue | 210 |'
-PLAIN = 'Hi Erin,\n\nFlights\n\n- Tue 9:05 out, NW 12\n- see the fares\n\nDay · Fare\nTue · 210'
+# ...a link keeps its address in the plain text (a walk, 2026-11-18: a reply's links went out as bare labels)
+PLAIN = 'Hi Erin,\n\nFlights\n\n- Tue 9:05 out, NW 12\n- see the fares (https://fares.example/x)\n\nDay · Fare\nTue · 210'
 
 
 def test_a_drafted_email_is_plain_text_not_markdown(s):
@@ -167,6 +168,18 @@ def test_an_agents_chat_reply_loses_its_name_and_gets_no_block(s):
     tid, mid, _ = thread(s, channel='teams', box='Erin Blake', draft='')
     out = wrapup.agent_reply(s, tid, 'on it - done by noon\nAlex', 'coding')
     assert s.get_review(out['review_id'])['DraftText'] == 'on it - done by noon'
+
+
+def test_an_agents_chat_reply_is_filed_in_the_words_it_goes_as_links_written_out(s):
+    """Design round 6, D4: an agent's reply to a colleague's chat ask stood in his box as "3-5 business days. [Calculator](https://...)" four
+    times - the box he edits and sends. It is filed as the plain words a chat send leaves as, each link's address written out."""
+    from taskuary import wrapup
+    tid, mid, _ = thread(s, channel='teams', box='Paula Vance', draft='')
+    md = ('Four printers:\n\n- **Northwind Print**: $128.25, 3-5 business days. [Calculator](https://print.example/calc)\n'
+          '- Vendor Two: $140, 5 days. [Calculator](https://two.example/calc)')
+    box = s.get_review(wrapup.agent_reply(s, tid, md, 'coding')['review_id'])['DraftText']
+    assert box == ('Four printers:\n\n- Northwind Print: $128.25, 3-5 business days. Calculator (https://print.example/calc)\n'
+                   '- Vendor Two: $140, 5 days. Calculator (https://two.example/calc)')
 
 
 def test_what_goes_is_exactly_the_box_his_own_sign_off_kept(s):

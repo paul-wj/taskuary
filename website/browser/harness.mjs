@@ -149,7 +149,7 @@ async function warmVite(ui, timeout = 240000) {
 // `fresh`: a first start on a machine with nothing set up instead of the demo world - its PATH holds only the system's own
 // folders and `bin` (a folder of fake CLIs, or none), so no AI tool of the machine running the test can be seen
 // `tour`: the canvas opens on the demo's tour, as a visitor's first view does (demo.opens) - off for the rest, written against the greeting
-export async function startHarness({ fresh = false, bin = "", tour = false } = {}) {
+export async function startHarness({ fresh = false, bin = "", tour = false, claudeConfigDir = "" } = {}) {
   const backendPort = await freePort();
   const frontendPort = await freePort(new Set([backendPort]));
   if (backendPort === frontendPort || forbiddenPorts.has(backendPort) || forbiddenPorts.has(frontendPort)) {
@@ -161,7 +161,7 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
   const appData = path.join(home, "appdata");
   const localAppData = path.join(home, "localappdata");
   const codexHome = path.join(home, "codex");
-  const claudeHome = path.join(home, "claude");
+  const claudeHome = claudeConfigDir || path.join(home, "claude");
   const userHome = path.join(home, "user");
   // ...under the scratch profile, by the name the driver itself gives it: a program run with that profile keeps its state where Taskuary reads it
   const agentBrowserHome = path.join(userHome, ".agent-browser");
@@ -231,6 +231,7 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
       if (process.env.REAL_BROWSER === "own") backendEnv.AGENT_BROWSER_HOME = path.join(os.homedir(), ".agent-browser");
       // ...and Taskuary reads that browser's own ports on this computer (fixture_server.py LOOPBACK): blocked, no sign-in was ever raised
       if (process.env.REAL_BROWSER) backendEnv.TASKUARY_FIXTURE_LOOPBACK = "1";
+      if (process.env.TASKUARY_FIXTURE_ALLOW) backendEnv.TASKUARY_FIXTURE_ALLOW = process.env.TASKUARY_FIXTURE_ALLOW;      // ...a gateway walk's one AI (real-run.mjs)
       // ...and the Chrome it runs, where the scratch home has none of its own (AGENT_BROWSER_EXECUTABLE_PATH, as the owner may set it)
       if (process.env.REAL_BROWSER && process.env.AGENT_BROWSER_EXECUTABLE_PATH) backendEnv.AGENT_BROWSER_EXECUTABLE_PATH = process.env.AGENT_BROWSER_EXECUTABLE_PATH;
     }
@@ -407,7 +408,7 @@ export async function clickRail(page, label) {
   if (!(await page.$("#tqSettingsRail"))) {
     // a rail GROUP heading is the list's grouping in the canvas: "clicking" it is being on the list
     if (["Operator documents", "Profiles", "Playbooks"].includes(label)) {
-      await page.evaluate(() => document.querySelector("[data-tq-browse-back]")?.click());
+      await page.evaluate(() => document.querySelector("[data-tq-browse-chip][aria-pressed=true]")?.click());
       await page.waitForSelector("[data-tq-browse-card]");
       return;
     }
@@ -415,7 +416,7 @@ export async function clickRail(page, label) {
       (c.querySelector("p")?.textContent || "").trim() === wanted && c.getBoundingClientRect().width > 0);
     await page.waitForFunction((src, wanted) => {
       if (new Function("return " + src)()(wanted)) return true;
-      document.querySelector("[data-tq-browse-back]")?.click();
+      document.querySelector("[data-tq-browse-chip][aria-pressed=true]")?.click();
       return false;
     }, { polling: 300, timeout: 20000 }, card.toString(), label);
     await page.evaluate((src, wanted) => new Function("return " + src)()(wanted).click(), card.toString(), label);

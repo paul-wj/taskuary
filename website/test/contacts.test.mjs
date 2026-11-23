@@ -2,6 +2,7 @@
 // Next that drew a draft asked for the whole list twice. readContacts is the real function; the pickers' wiring is read from the source.
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { CONTACTS_MS, forgetContacts, readContacts } from "../src/contacts.js";
 
 
@@ -16,4 +17,3 @@ test("pickers drawn together share one read; a minute later, or after a failure,
   await assert.rejects(readContacts(get, 5000)); fail = false;
   assert.equal((await readContacts(get, 5001)).length, 1); assert.equal(n, 4);
 });
-

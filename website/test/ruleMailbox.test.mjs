@@ -1,6 +1,8 @@
 // Settings → Rules: "Applies to" - All mailboxes or one connected sending mailbox, offered only when there is a choice to make.
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { ALL_MAILBOXES, mailboxChoices, mailboxValue } from "../src/ruleMailbox.js";
 
 const NW = { address: "alex@northwind.example" }, CT = { address: "alex@contoso.example" };
@@ -20,8 +22,6 @@ test("two mailboxes: All mailboxes first (blank, today's behaviour), then each",
 
 test("a rule scoped to a mailbox no longer connected keeps it, said so", () => {
   const c = mailboxChoices([NW, CT], "ops@contoso.example");
-  assert.equal(c.at(-1).value, "ops@contoso.example");
-  assert.ok(c.at(-1).label.includes("ops@contoso.example"));
+  assert.deepEqual(c.at(-1), { value: "ops@contoso.example", label: "ops@contoso.example (not connected)" });
   assert.equal(mailboxValue(c, "ops@contoso.example"), "ops@contoso.example");
 });
-

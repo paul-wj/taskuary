@@ -37,16 +37,16 @@ class TheGeneralAgentsBrowserIsHeld(unittest.TestCase):
         self.s = MemoryStore(); self.tid = browser_task(self.s)
         self.sess = general.GeneralSession(self.s, self.tid)
         terminal.SESSIONS[self.sess.sid] = self.sess; self.addCleanup(terminal.SESSIONS.pop, self.sess.sid, None)
-        self.pay = {'tool_name': 'Bash', 'tool_input': {'command': "agent-browser click '@e2'"}, 'session_id': 'claude-conv-1', 'cwd': ''}
+        self.pay = {'tool_name': 'Bash', 'tool_input': {'command': 'git push origin main'}, 'session_id': 'claude-conv-1', 'cwd': ''}
 
     def test_its_own_hook_names_it_by_session(self):
-        with mock.patch.object(bg, 'check', return_value={'held': 1}) as check:
+        with mock.patch('taskuary.shellgate.check', return_value={'held': 1}) as check:
             self.assertEqual(hooks.browser(self.pay, sid=self.sess.sid), {'held': 1})
-        self.assertEqual(check.call_args.args[1:4], (self.tid, self.sess.sid, "agent-browser click '@e2'"))
+        self.assertEqual(check.call_args.args[1:4], (self.tid, self.sess.sid, 'git push origin main'))
 
     def test_the_user_wide_hook_finds_it_by_its_cli_conversation(self):
         self.sess.cli_sid = 'claude-conv-1'
-        with mock.patch.object(bg, 'check', return_value={'held': 1}) as check:
+        with mock.patch('taskuary.shellgate.check', return_value={'held': 1}) as check:
             self.assertEqual(hooks.browser(self.pay), {'held': 1})
         self.assertEqual(check.call_args.args[1], self.tid)
 
@@ -57,13 +57,13 @@ class TheGeneralAgentsBrowserIsHeld(unittest.TestCase):
         f = Path(hooks.general_settings(self.tid))
         cmd = next(h['hooks'][0]['command'] for h in json.loads(f.read_text(encoding='utf-8'))['hooks']['PreToolUse'] if h['matcher'] == hooks.BROWSER_MATCH)
         self.assertIn(f'{hooks.BROWSER_MARK}?task={self.tid}', cmd)
-        with mock.patch.object(bg, 'check', return_value={'held': 1}) as check:
+        with mock.patch('taskuary.shellgate.check', return_value={'held': 1}) as check:
             self.assertEqual(hooks.browser(self.pay, task=str(self.tid)), {'held': 1})
             self.assertEqual(hooks.browser(self.pay, task=str(self.tid + 1)), {})                   # another task's: not this chat
         self.assertEqual(check.call_args.args[1], self.tid)
 
     def test_a_session_that_is_not_ours_is_left_alone(self):
-        with mock.patch.object(bg, 'check') as check:
+        with mock.patch('taskuary.shellgate.check') as check:
             self.assertEqual(hooks.browser(self.pay, sid='nobody'), {})
             self.sess.alive = False
             self.assertEqual(hooks.browser(self.pay, sid=self.sess.sid), {})
@@ -84,12 +84,12 @@ class TheGeneralAgentsBrowserIsHeld(unittest.TestCase):
         self.assertIn('HELD for the owner', seen['system'])
         self.assertNotIn('CANNOT HOLD', seen['system'])
 
-    def test_a_codex_chat_is_told_to_ask_first_never_that_it_is_held(self):
+    def test_a_codex_chat_is_told_its_presses_are_held_as_claudes_are(self):
+        """Its presses are held where they run (gatecmd), not by a hook it does not have - so it is told the same road as Claude."""
         connect_cli(self, codex={'cmd': 'codex', 'args': ['exec']})
         seen = self._turn('cli:codex')
         self.assertIsNone(seen['kw'].get('hold_sid'))
-        self.assertIn('TASKUARY CANNOT HOLD YOUR BROWSER COMMANDS', seen['system'])
-        self.assertNotIn('HELD for the owner', seen['system'])
+        self.assertIn('held for the owner', seen['system'])
 
     def test_claudes_argv_carries_the_hook_and_codexs_does_not(self):
         connect_cli(self, claude={'cmd': 'claude', 'args': ['-p']}, codex={'cmd': 'codex', 'args': ['exec']})
@@ -171,17 +171,17 @@ class TheHeldActInWords(unittest.TestCase):
 
     def test_the_card_names_the_control_from_the_snapshot(self):
         pg = {'url': 'https://billing.vendor.example/inv/1001', 'elements': self.SNAP}
-        self.assertEqual(bg.target(bg.acts("agent-browser click '@e12'")[0], pg), 'click the "Pay $412.50" button on billing.vendor.example')
-        self.assertEqual(bg.target(bg.acts('agent-browser click @e99')[0], pg), 'click an element the page no longer shows on billing.vendor.example')
+        self.assertEqual(bg.target(bg.acts("agent-browser click '@e12'")[0], pg), 'click the "Pay $412.50" button on vendor.example')     # the one name of a site (signin.site_name)
+        self.assertEqual(bg.target(bg.acts('agent-browser click @e99')[0], pg), 'click an element the page no longer shows on vendor.example')
         with mock.patch('taskuary.llm.build_llm', return_value=None):
             self.assertEqual(bg.judge(MemoryStore(), bg.acts('agent-browser click @e12'), pg)[0]['what'],
-                             'click the "Pay $412.50" button on billing.vendor.example')
+                             'click the "Pay $412.50" button on vendor.example')     # the one name of a site (signin.site_name)
 
     def test_a_slow_verdict_holds_inside_the_hooks_limit(self):
         slow = lambda *a, **k: time.sleep(2) or {'hold': False, 'what': 'x', 'why': ''}
         with mock.patch.object(bg, '_judge', slow):
             t0 = time.time(); [v] = bg.judge(MemoryStore(), bg.acts('agent-browser click @e12'), {'url': 'https://x.example/'}, wait=.2)
-        self.assertTrue(v['hold']); self.assertIn('did not answer in time', v['why']); self.assertLess(time.time() - t0, 1.5)
+        self.assertTrue(v['hold']); self.assertIn('in time', v['why']); self.assertLess(time.time() - t0, 1.5)
         self.assertLess(bg.JUDGE_WAIT + 20, hooks.BROWSER_WAIT)       # verdict + snapshot always land before curl gives up
 
     def test_approve_returns_before_the_agents_turn_and_a_failed_tell_is_on_the_task(self):
@@ -277,7 +277,8 @@ class TheSignInPage(unittest.TestCase):
         def refused(*a, **k): raise signin.NotAccepted('northwind.example did not accept that password')
         signin._auto(self.s, self.tid, 'sess1', 'northwind.example', 'signin:northwind.example', refused)
         said = ' '.join(c.get('Body') or '' for c in self.s.list_comments(self.tid))
-        self.assertIn('The saved password for northwind.example did not work', said); self.assertNotIn('Signed in', said)
+        # ...said as what happened, and gone back to the agent to get past (design round 4): never "sign in on the page" to him
+        self.assertIn('The saved sign-in for northwind.example did not go in', said); self.assertNotIn('Signed in', said)
 
     def test_the_page_names_its_task_and_says_what_happens_next(self):
         line = signin.for_line(self.s, self.tid)
@@ -338,8 +339,9 @@ class SignedInIsAPressOnEveryAgent(unittest.TestCase):
             out = ws.answer(s, tid, 'signin:toll.example', 'Signed in', 'owner')
             self.assertEqual(ws.status(s, tid)['requests'], [])
         self.assertTrue(out['delivered'], out)
-        self.assertEqual(typed, [('run1', 'Signed in to toll.example - continue. The owner signed in on the page themselves.')])
-        self.assertTrue(any('Signed in to toll.example - the agent goes on.' in (c.get('Body') or '') for c in s.list_comments(tid)))
+        # ...told as the press it is (round 3, 2026-11-22: a press with nothing typed was told "the owner signed in on the page themselves")
+        self.assertEqual(len(typed), 1); self.assertTrue(typed[0][1].startswith('The owner pressed Signed in on the toll.example page'), typed)
+        self.assertTrue(any('You pressed Signed in on toll.example' in (c.get('Body') or '') for c in s.list_comments(tid)))
 
     def test_other_words_to_a_sign_in_ask_stay_the_owners(self):
         self.assertTrue(signin.said_done('signin:toll.example', ' signed in. '))

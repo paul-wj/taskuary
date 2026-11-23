@@ -68,6 +68,38 @@ class ATurnTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_his_files_ride_as_content_blocks_the_agent_can_take_never_only_a_path(self):
+        """The walk, 2026-11-21: Codex answered "I can't read the whiteboard photo - please attach it" with the photo's path in its prompt
+        and no call made - session/prompt was one text block. A picture rides as an image where the agent takes images, a PDF or sheet as
+        its text (an embedded resource), and anything else - or an agent that says it takes neither - as a resource_link; the words keep
+        the path the agent acts on."""
+        import base64, tempfile
+        from taskuary.general import with_files
+        d = Path(tempfile.mkdtemp())
+        pic, notes = d / 'whiteboard.png', d / 'lease-notes.txt'
+        pic.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\0' * 32); notes.write_text('Either party may break the lease after 12 months.', encoding='utf-8')
+        text = with_files('what does the whiteboard say, and the notes?', [str(pic), str(notes)])
+        full = acp.blocks(text, {'promptCapabilities': {'image': True, 'embeddedContext': True}})
+        self.assertEqual([b['type'] for b in full], ['text', 'image', 'resource'])
+        self.assertEqual(base64.b64decode(full[1]['data']), pic.read_bytes()); self.assertEqual(full[1]['mimeType'], 'image/png')
+        self.assertIn('Either party may break the lease', full[2]['resource']['text'])
+        self.assertIn(str(pic), full[0]['text'])                                    # ...and the path stays in the words
+        bare = acp.blocks(text, {'promptCapabilities': {}})
+        self.assertEqual([(b['type'], b.get('name')) for b in bare], [('text', None), ('resource_link', 'whiteboard.png'), ('resource_link', 'lease-notes.txt')])
+        self.assertEqual(acp.blocks('no files here', {}), [{'type': 'text', 'text': 'no files here'}])
+        # ...and a seed whose next lines run on under the block (the Codex walk: "STATUS: in_progress" went as a link to a file) names only files
+        ran_on = acp.blocks(text + '\nSTATUS: in_progress\n- [ ] Who can break this lease? [e17]', {'promptCapabilities': {}})
+        self.assertEqual([b.get('name') for b in ran_on[1:]], ['whiteboard.png', 'lease-notes.txt'])
+        # ...and a real turn sends them: the fake takes no images, so the picture goes as a link
+        sent, c = [], client()
+        try:
+            with mock.patch.object(c, '_send', side_effect=lambda m: sent.append(m) or acp.ACPClient._send(c, m)):
+                c.connect(); c.new_session(HERE); c.prompt(text)
+        finally:
+            c.close()
+        got = next(m for m in sent if m.get('method') == 'session/prompt')['params']['prompt']
+        self.assertEqual([b['type'] for b in got], ['text', 'resource_link', 'resource_link'])
+
     def test_progress_arrives_as_it_happens_not_at_the_end(self):
         seen = []
         c = client(on_update=lambda u: seen.append(u.get('sessionUpdate')))
@@ -186,3 +218,62 @@ class NothingElseChangesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _stub_turn(updates, unnamed_own=True, stop='end_turn'):
+    "A client whose session/prompt streams `updates` and ends - no process: what acp.prompt makes of them is the thing tested."
+    c = object.__new__(acp.ACPClient)
+    c.session_id, c.on_update, c.unnamed_own, c.last_turn = 's1', None, unnamed_own, {}
+    def request(method, params, sent=None, **kw):
+        for u in updates: c.on_update(u)
+        return {'stopReason': stop}
+    c.request = request
+    return c
+
+
+def _chunk(text, mid=None): return {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': text}, **({'messageId': mid} if mid else {})}
+
+
+RAW_400 = ("stream disconnected before completion: litellm.BadRequestError: Vertex_ai_betaException BadRequestError - b'{\n \"error\": "
+           "{\n \"code\": 400,\n \"message\": \"functionDeclaration parameters schema should be of type OBJECT.\",\n \"status\": \"INVALID_ARGUMENT\"\n }\n}\n'")
+
+
+class TheAdaptersOwnLinesTests(unittest.TestCase):
+    """codex-acp sends Codex's own lines - a warning, a turn's terminal error - as a chunk with no message id; the model's words always carry
+    one. "Warning: Model metadata ... not found" stood above every answer, and a provider's 400 stood as the answer, raw JSON and all."""
+    def test_a_warning_is_never_the_answer(self):
+        c = _stub_turn([_chunk('Warning: Model metadata for `m` not found.\n\n'), _chunk('The answer is 7.', 'item_1')])
+        self.assertEqual(c.prompt('q'), ('end_turn', 'The answer is 7.'))
+
+    def test_a_tool_update_mid_message_never_cuts_the_answer(self):
+        """Walk 2, 2026-11-21 (Codex): a shell call left running posted an update while the last message streamed; the answer was cut there,
+        and only '_left": false}' was filed - the question and the summary lost, the turn read "agent done"."""
+        upd = {'sessionUpdate': 'tool_call_update', 'toolCallId': 'c1', 'status': 'in_progress'}
+        c = _stub_turn([_chunk('Looking.', 'item_1'), {'sessionUpdate': 'tool_call', 'toolCallId': 'c1'}, _chunk('Not found. Is it ', 'item_2'), upd,
+                        _chunk('on another drive?', 'item_2')])
+        self.assertEqual(c.prompt('q'), ('end_turn', 'Not found. Is it on another drive?'))
+
+    def test_a_question_asked_before_one_more_tool_call_is_part_of_the_answer(self):
+        """The agent audit, 2026-11-22: the agent asked, ticked a to-do, and ended - the answer was its last message alone, the question never
+        recorded, and the turn read "agent done" over it. What it wrote for the app before its last call goes with the answer."""
+        from taskuary import selfclose
+        c = _stub_turn([_chunk('Which account should it bill - Payworth or Spendly?\n[[TASKUARY-ASK]]', 'item_1'),
+                        {'sessionUpdate': 'tool_call', 'toolCallId': 'c1'}, _chunk('Ticked the first to-do.', 'item_2')])
+        stop, said = c.prompt('q')
+        self.assertTrue(said.startswith('Ticked the first to-do.'))
+        self.assertEqual(selfclose.asked_inline(said)[1], [('Which account should it bill - Payworth or Spendly?', [])])
+
+    def test_a_turn_that_only_failed_raises_and_reads_as_one_plain_line(self):
+        from taskuary import say
+        c = _stub_turn([_chunk(RAW_400)])
+        with self.assertRaises(acp.ACPAgentError) as e: c.prompt('q')
+        line = say.owner({'kind': 'turn_failed', 'raw': str(e.exception)})
+        self.assertTrue(line.startswith('The AI provider refused the request'), line)
+        self.assertNotIn('{', line); self.assertNotIn('litellm', line)
+
+    def test_another_adapter_keeps_its_unnamed_words(self):
+        self.assertEqual(_stub_turn([_chunk('Hello.')], unnamed_own=False).prompt('q'), ('end_turn', 'Hello.'))
+
+    @__import__('pytest').mark.acp               # ...the real adapter rows, which every other test runs without (conftest)
+    def test_the_codex_adapter_is_marked(self):
+        self.assertTrue(clis.ADAPTERS['codex']['unnamed_own']); self.assertFalse(clis.ADAPTERS['claude'].get('unnamed_own'))

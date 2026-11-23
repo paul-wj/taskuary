@@ -71,6 +71,43 @@ class AgentSendsWaitForThePress(unittest.TestCase):
         self.assertNotIn('flow_run', p); self.assertNotIn('closeout', p)
 
 
+class ARedditPostFromItsInboxCard(unittest.TestCase):
+    """The Reddit card reads an inbox and now posts: as it is seeded (no role set by hand) an agent's post waits for the press, the press
+    posts on the card's own sign-in, and Reddit's link is what the card keeps. Reddit's HTTP is stubbed."""
+    def setUp(self):
+        from taskuary import net
+        net._TOKENS.clear()
+        s = server.store
+        self.tid = s.create_task({'Title': 'Share the payroll write-up', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        self.card = s.get_connector_by_type('reddit')
+        s.save_connector({'ConnectorId': self.card['ConnectorId'], 'Active': 1, 'Secret': 'pw',
+                          'ConfigJson': json.dumps({'client_id': 'cid', 'client_secret': 'cs', 'username': 'alexdoyle'})}, 'test')
+
+    def tearDown(self): server.store.save_connector({'ConnectorId': self.card['ConnectorId'], 'Active': 0}, 'test')
+
+    def test_proposed_then_posted_on_the_press_with_its_link(self):
+        from tests.test_social import RedditNet
+        from taskuary import inboxes
+        r = c.post('/api/tools/run', headers=agent(self.tid), json={'type': 'reddit_post', 'task_id': self.tid, 'subreddit': 'smallbusiness',
+                   'title': 'How we moved payroll', 'text': 'Three things we learned.', 'why': 'Alex asked to share it'})
+        self.assertEqual(r.status_code, 202, r.text)
+        rv = server.store.get_review(r.json()['review'])
+        rd = RedditNet()
+        with mock.patch.object(inboxes.requests, 'request', rd.request): out = proposals.execute(server.store, rv, 'owner')
+        self.assertEqual(rd.submitted()[0]['data']['sr'], 'smallbusiness')
+        self.assertEqual(out['url'], RedditNet.OK['json']['data']['url'])
+
+    def test_a_refused_press_raises_and_posts_nothing(self):
+        from tests.test_social import RedditNet
+        from taskuary import inboxes
+        r = c.post('/api/tools/run', headers=agent(self.tid), json={'type': 'reddit_post', 'task_id': self.tid, 'subreddit': 'smallbusiness',
+                   'title': 'T', 'text': 'x', 'why': 'w'})
+        rd = RedditNet({'json': {'errors': [['SUBMIT_VALIDATION_FLAIR_REQUIRED', 'Your post must contain post flair.', 'flair']]}}, [{'id': 'f1', 'text': 'Question'}])
+        with mock.patch.object(inboxes.requests, 'request', rd.request), self.assertRaises(RuntimeError) as e:
+            proposals.execute(server.store, server.store.get_review(r.json()['review']), 'owner')
+        self.assertIn('flair - one of: Question', str(e.exception))
+
+
 class WhatReaches(unittest.TestCase):
     def test_every_executor_is_a_decision(self):
         "A new executor is either a read, a write that reaches nobody, or a send - never inherited."
@@ -240,3 +277,43 @@ class AProposalSaysWhatNeverWhere(unittest.TestCase):
         miss = []
         self.assertIsNone(proposals.queue(s, tid, {'action': 'run_tool', 'type': 'mcp', 'tool_args': {}}, 'agent', refused=miss))
         self.assertIn('tool', miss[0])
+
+
+def test_a_session_with_tools_is_never_told_the_marker_road_and_a_bracketed_marker_strips_clean():
+    """Round 4, 2026-11-22: told both roads, Codex (with Taskuary's tools) wrote "[[TASKUARY-PROPOSE {propose_email ...}]]" - an email the
+    marker road does not take - and the turn read "agent done" over "[[]]", the line that it was not put on a card hidden."""
+    from taskuary import general, proposals
+    from taskuary.store import MemoryStore
+    s = MemoryStore()
+    assert 'TASKUARY-PROPOSE' not in general.action_line(s, tools=True)
+    assert 'TASKUARY-PROPOSE' in general.action_line(s, tools=False)
+    assert proposals.strip('[[TASKUARY-PROPOSE {"action": "propose_email", "to": "gail@northwind.example"}]]') == ''
+
+
+def test_post_via_the_browser_hands_the_post_as_he_left_it_to_its_agent_once():
+    """The owner, 2026-11-22 ("card first, sign-in at the press"): a post on a network not connected is its card; Post via the browser saves it
+    as he left it and hands it to its agent once, however often it is pressed - and the card reads handed over, never Posted."""
+    import json
+    from unittest import mock
+    from taskuary import general, proposals
+    from taskuary.store import MemoryStore
+    s = MemoryStore(); tid = s.create_task({'Title': 'Post the week', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    rid = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'post it',
+                        'DraftText': json.dumps({'action': 'run_tool', 'type': 'linkedin_post', 'text': 'A good week at Northwind.'})})
+    with mock.patch.object(general, 'to_agent', return_value='woke') as to:
+        outs = [proposals.via_browser(s, rid, 'A great week at Northwind.') for _ in range(3)]
+    assert to.call_count == 1 and 'A great week at Northwind.' in to.call_args.args[2] and 'LinkedIn' in to.call_args.args[2]
+    assert outs[0] == {'ok': True, 'status': 'approved', 'told': 'woke'} and all(o.get('already') for o in outs[1:])
+    assert json.loads(s.get_review(rid)['FinalText'])['result'] == {'browser': True}
+    mail = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps({'action': 'run_tool', 'type': 'github_issue'})})
+    assert proposals.via_browser(s, mail, 'x')['ok'] is False
+
+
+def test_an_action_that_is_none_is_refused_with_the_ones_that_are():
+    """A Claude agent proposed its LinkedIn post as 'post_linkedin' twice, was told only "unknown action", and handed the post to the owner
+    as prose (goal walk, 2026-11-22). The refusal names the actions and how a post is written - which then goes, with no connection."""
+    from taskuary import proposals
+    from taskuary.store import MemoryStore
+    ok, why = proposals.validate(MemoryStore(), {'action': 'post_linkedin', 'why': 'a post'})
+    assert not ok and 'run_tool' in why and 'linkedin_post' in why
+    assert proposals.validate(MemoryStore(), {'action': 'run_tool', 'type': 'linkedin_post', 'text': 'Three lines.', 'why': 'a post'})[0]

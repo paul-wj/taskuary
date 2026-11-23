@@ -28,6 +28,8 @@ test("the requested Grok API connector is BUILT, not merely planned", () => {
   // it was a roadmap entry; it speaks the OpenAI surface, so it became a real card. A type that
   // is live must not also sit on the roadmap, or Connections draws it twice.
   assert.equal(plannedFor("AI — agents & models").find((c) => c.type === "xai"), undefined);
+  const view = read("ConnectorsView.jsx");
+  assert.match(view, /^ {2}xai: \{ group: "AI — agents & models"/m);
   assert.ok(AI_SHELF.includes("xai"));
 });
 
@@ -92,6 +94,6 @@ test("a mailbox preset makes an IMAP card with its servers, and is offered until
 });
 
 test("the Connections line counts the catalogue, not only the cards still planned", () => {
-  assert.equal(browseSummary(4, [{ planned: true }, {}, {}]), "4 connected · 3 in the catalogue · pick a section");
+  assert.equal(browseSummary(4, [{ planned: true }, {}, {}]), "4 connected · 3 in the catalogue");
   assert.match(read("ConnectorsView.jsx"), /summary: browseSummary\(connected, all\)/);
 });

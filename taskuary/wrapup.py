@@ -104,11 +104,13 @@ def resolution_text(rep: dict) -> str:
 
 
 def from_owner(store, m: dict, own: set = None) -> bool:
-    """Did the owner write this row - mail from one of their own addresses (ingest.own_addresses), or his ask from the New box (outbox.is_ask,
-    2026-11-17)? Nobody else is behind it."""
+    """Did the owner write this row - mail from one of their own addresses (ingest.own_addresses), his ask from the New box (outbox.is_ask,
+    2026-11-17), or the task's own row New files for his words (ownwork.is_own - the walk, 2026-11-22: missing here, "remember this" asked in
+    New was refused as "the owner has said nothing in this chat")? Nobody else is behind it. THE ONE ANSWER to "are these his own words"."""
     from .ingest import own_addresses
     from .outbox import is_ask
-    return is_ask(m) or str((m or {}).get('FromEmail') or '').strip().lower() in (own if own is not None else own_addresses(store)) - {''}
+    from .ownwork import is_own
+    return is_ask(m) or is_own(m) or str((m or {}).get('FromEmail') or '').strip().lower() in (own if own is not None else own_addresses(store)) - {''}
 
 
 def reply_target(store, task_id: int):
@@ -340,6 +342,17 @@ def refused_line(store, task_id: int) -> str:
     rv = store.pending_review(task_id, 'draft_reply', live_only=False) or {}
     got = refused_files(store, rv.get('ReviewId'))
     return f'{REFUSED_HEAD}\n' + '\n'.join(f'- {w}' for w in got) + f'\n{REFUSED_TELL}' if got else ''
+# ...AND WHAT THE CARD CARRIES IS TOLD BACK EVERY TIME, FROM THE CARD (the Hydrogen walk, 2026-11-19: "I've attached the working spreadsheet"
+# in letters that went with no file): the agent reads the files its card really has, and with none, that it must not say one is attached
+NO_FILES = ("This card carries no file - its words must not say anything is attached. Pass `attach` (a file in your folder) with it to put "
+            "one on the card.")
+def carries(store, rid) -> dict:
+    try: env = json.loads((store.get_review(int(rid)) or {}).get('Deliver') or '{}') or {} if rid else {}
+    except (TypeError, ValueError): env = {}
+    names = [f.get('name') for f in (env.get('attachments') or [] if isinstance(env, dict) else []) if isinstance(f, dict) and f.get('name')]
+    return {'card_attachments': names, **({} if names else {'attachments_note': NO_FILES})}
+
+
 def _told(store, rid, out: dict) -> dict:
     no = list(out.get('not_attached') or [])
     no += [w for w in refused_files(store, rid) if not any(x.split(':')[0] == w.split(':')[0] for x in no)]
@@ -442,22 +455,26 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         store.add_comment(task_id, agent, 'agent', f'{agent} saved a reply that already went out{_at(sent)} - nothing new was put on the table.')
         return {'ok': False, 'already_sent': True, 'review_id': sent['ReviewId'],
                 'why': f'that reply already went out{_at(sent)} - nothing new was saved. Write a new one only if there is something new to say.'}
+    # ...and `answers` names the mail that holds the ask when the owner means one triage did not pick: it must be somebody's mail on this task
+    if answers:
+        a = store.get_message(answers) or {}
+        if a.get('TaskId') != task_id or a.get('Status') in ('context', 'skipped') or str(a.get('Direction') or 'in') == 'out' or from_owner(store, a):
+            return {'ok': False, 'why': f'#{answers} is not a mail on this task - use a number from THE MAIL ON THIS TASK in your brief, or leave --answers out'}
     held = store.held_review(task_id) or {}
-    if str(to or '').strip():
-        hit, why = addressee(store, task_id, to)
-        if not hit: return {'ok': False, 'why': why}
-        mid = hit['MessageId']
+    # THE MESSAGE A REPLY ANSWERS IS ONE FACT (the HIPAA walk, 2026-11-21): `answers` was checked and then set aside - the newest message, a
+    # second person's chat, became the card's channel while the first person's address stayed on it: "To Gail" on Paula's chat, its files
+    # "can't be sent on chat", Gail's email card greyed. Its channel, its person and its thread all come from the one it answers
+    if str(to or '').strip() or answers:
+        if str(to or '').strip():
+            hit, why = addressee(store, task_id, to)
+            if not hit: return {'ok': False, 'why': why}
+        mid = answers if answers and not str(to or '').strip() else hit['MessageId']
         if held and _person(store, held.get('MessageId')) != _person(store, mid): held = {}
     else: mid = reply_target(store, task_id) or held.get('MessageId')
     # ...and a machine reads no reply (NOTICE): refused at the door, saying what to do instead - nothing is kept as a result, the write-up is
     # the agent's own last words to the owner
     if mid and nobody_waiting(store, mid):
         return {'ok': False, 'no_reply': True, 'why': f'{NOTICE} Nothing was saved.'}
-    # ...and `answers` names the mail that holds the ask when the owner means one triage did not pick: it must be somebody's mail on this task
-    if answers:
-        a = store.get_message(answers) or {}
-        if a.get('TaskId') != task_id or a.get('Status') in ('context', 'skipped') or str(a.get('Direction') or 'in') == 'out' or from_owner(store, a):
-            return {'ok': False, 'why': f'#{answers} is not a mail on this task - use a number from THE MAIL ON THIS TASK in your brief, or leave --answers out'}
     # ...and who else hears it: `only` is the sender alone, so it copies nobody; an address the thread never had is said on the card
     ccs = _addrs(cc)
     if only and ccs: return {'ok': False, 'why': '--only sends it to that one person - leave --cc out, or drop --only to copy others'}
@@ -564,7 +581,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     from .general import own_replies, USER_TYPE
     turn = (store._one('SELECT MAX(CreatedAt) AS at FROM comment WHERE TaskId=? AND ActorType=?', (task_id, USER_TYPE)) or {}).get('at')
     meanwhile = [' '.join(str(x.get('OwnText') or x.get('BodyText') or '').split())[:300] for x in own_replies(store, task_id, turn)] if turn else []
-    return {'ok': True, 'review_id': rid, 'message_id': mid, 'answers': ans or mid, 'to': m.get('FromName') or m.get('FromEmail') or '', **ends,
+    return {'ok': True, 'review_id': rid, 'message_id': mid, 'answers': ans or mid, 'to': m.get('FromName') or m.get('FromEmail') or '', **ends, **carries(store, rid),
             **({'owner_wrote_on_the_thread_while_you_worked': meanwhile} if meanwhile else {}),
             **({'replaced_the_owners_version': str(mine.get('DraftText') or '')} if mine else {}),
             **({'recipients': {'to': env.get('to') or [], 'cc': env.get('cc') or []}} if env else {}),
@@ -1238,7 +1255,7 @@ def raise_reply(store, task_id: int, mid: int, run_id: int, fresh: dict = None, 
 
 
 # ...AND THE AGENT IS ASKED FOR IT, ONCE. An agent that ended its run itself (`taskuary --done`) without the reply it owes is told so, by the
-# road every Taskuary word to an agent takes (general.tell) - write it, or say none is needed. Once per reply owed, kept on the review's own
+# road every Taskuary word to an agent takes (general.to_agent) - write it, or say none is needed. Once per reply owed, kept on the review's own
 # audit: an agent that ends again without writing it is not told twice (no loop), and the reply waits as owed, its agent's start lit
 # (rulebook.reply_unwritten). A run the owner ended - Stop and save, Done - is not reopened for it: the same reply owed waits for their start.
 OWED = ('TASKUARY: your run ended and {who} is owed a reply that nobody has written. Write only that reply now (propose_reply, or '
@@ -1253,14 +1270,14 @@ def owed_to(store, mid, rv: dict = None) -> str:
     m = store.get_message(mid) or {}
     return m.get('FromName') or m.get('FromEmail') or 'the person who asked'
 def ask_for_reply(store, task_id: int, rid: int) -> str:
-    """Tell task `task_id`'s agent the reply on review `rid` is owed: 'told' / 'woke' as general.tell answers, '' where it was asked before,
+    """Tell task `task_id`'s agent the reply on review `rid` is owed: 'told' / 'woke' as general.to_agent answers, '' where it was asked before,
     is written or gone, or no agent can be asked - then the task says so in one line."""
     rv = store.get_review(rid) or {}
     if rv.get('Status') not in ('pending', 'held') or str(rv.get('DraftText') or '').strip(): return ''
     if any(r.get('Action') == ASKED for r in store.list_audit('review', rid, 50) or []): return ''
     from . import general
     who = owed_to(store, rv.get('MessageId'), rv)
-    got = general.tell(store, task_id, OWED.format(who=who), 'router')
+    got = general.to_agent(store, task_id, OWED.format(who=who), 'router')
     store.audit('review', rid, ASKED, 'router', detail={'how': got or 'nobody'})
     if got: store.update_review_reason(rid, f'reply owed to {who} - its agent was asked to write it', rv.get('RunId'))
     else: store.add_comment(task_id, 'router', 'agent', f'A reply to {who} is owed and no agent could be asked to write it.')

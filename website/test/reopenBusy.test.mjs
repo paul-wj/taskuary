@@ -2,8 +2,10 @@
 // seconds"): the page redrew only when the follow-up read of the task came back, with nothing on the button meanwhile.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { pageState, reopenedDetail } from "../src/taskLifecycle.js";
 
+const page = fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
 
 
 test("the reopened detail is open, its reminder cleared, an owner's close read as on you", () => {

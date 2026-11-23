@@ -121,18 +121,23 @@ class OnePress(unittest.TestCase):
         self.assertNotIn('Error', said); self.assertNotIn('Traceback', said)
         def need(name, a): return a['item']
         said = agenttools.rpc({'id': 1, 'method': 'tools/call', 'params': {'name': 'tick', 'arguments': {}}}, need)['result']['content'][0]['text']
-        self.assertEqual(said, 'tick needs `item` - call it again with it')
+        self.assertEqual(said, agenttools.refusal('`item` was not given', 'call tick again with it'))
 
     def test_a_picture_outside_the_task_folder_is_refused(self):
         r = self.propose(text='Hi', image='../../secret.png')
         self.assertEqual(r.status_code, 422, r.text)
 
-    def test_a_network_that_takes_no_picture_from_here_says_so(self):
-        self.assertIn('no picture', proposals.picture_why(self.tid, {'type': 'bluesky_post', 'image': 'gas-prices.png'}))
+    def test_a_network_that_takes_no_picture_from_here_carries_it_on_its_card_all_the_same(self):
+        # the owner, 2026-11-20: every post card carries its picture - one Taskuary uploads none to is shown to save and add by hand
+        self.assertEqual(proposals.picture_why(self.tid, {'type': 'bluesky_post', 'image': 'gas-prices.png'}), '')
+        self.assertIn('not a file', proposals.picture_why(self.tid, {'type': 'bluesky_post', 'image': 'nowhere.png'}))
 
     def test_the_prompt_names_the_connected_road(self):
         system, _ = general._prompt(server.store, self.tid)
         self.assertIn('NEXT STEPS - DO WHAT YOU CAN DO', system)
+        # the live app, 2026-11-19: a turn ended "For you to do: check the error folder on the server" and did it when asked - what it
+        # might reach itself is never his part
+        self.assertIn('never handed to him to look at', system)
         self.assertIn(f"(connector_id {self.card['ConnectorId']}): linkedin_post", system)
         server.store.save_connector({'ConnectorId': self.card['ConnectorId'], 'Active': 0}, 'test')
         self.assertNotIn('linkedin_post -', general.roads(server.store))     # off is not a road
@@ -150,3 +155,27 @@ def test_the_agent_keeps_going_when_a_way_fails_and_hands_the_page_over():
     said = general.action_line(MemoryStore())
     assert 'KEEP GOING WHEN A WAY FAILS' in said and 'same failing call unchanged more than twice' in said and 'one line per way you tried' in said
     assert 'hands the real page to the owner' in said and "owner's Approve" not in said
+
+
+# ONE POST CARD PER NETWORK, EACH WITH ITS PICTURE, CONNECTED OR NOT (the owner's live routine, 2026-11-20: drafts for X, Reddit and LinkedIn went
+# into one text file and only the connected one got a card - the agent was told of connected roads only)
+def test_every_network_is_a_post_card_with_its_picture_one_at_a_time_connected_or_not():
+    from taskuary import cardqueue, outbound
+    from taskuary.store import MemoryStore
+    from taskuary.testing import Factory
+    s = MemoryStore(); tid = Factory(s).task('Post the IPO drafts')
+    f = outputs.folder(tid); f.mkdir(parents=True, exist_ok=True); (f / 'ipo.png').write_bytes(PNG)
+    try:
+        line = general.action_line(s)
+        # ...a card first, connected or not; the browser only at his press (the owner, 2026-11-22: "card first, sign-in at the press")
+        assert 'one per network' in line and 'its post card first, connected or not' in line and 'never open a browser for a post before he presses' in line
+        assert 'Not connected - its post card offers Post via the browser: ' in line and 'X' in line.split('its post card offers Post via the browser: ')[1]
+        assert 'only what needs his press waits in the row' in line
+        rids = [proposals.queue(s, tid, {'action': 'run_tool', 'type': t, 'text': 'Anthropic IPO, in one picture.', 'image': 'ipo.png',
+                                         **({'subreddit': 'SideProject', 'title': 'The IPO in one picture'} if t == 'reddit_post' else {})}, 'agent')['reviewId']
+                for t in ('x_post', 'reddit_post', 'linkedin_post')]
+        assert all(json.loads(s.get_review(r)['DraftText'])['image'] == 'ipo.png' for r in rids), 'a picture on every card, Reddit too'
+        q = cardqueue.state(s, tid)
+        assert q['live'] == [rids[0]] and q['of'] == 3 and set(q['held']) == set(rids[1:])            # 1 of 3, the others in their turn
+        assert all(outbound.review_connect(s, s.get_review(r))['label'].startswith('Connect ') for r in rids)   # not connected: Connect + copy
+    finally: shutil.rmtree(f, ignore_errors=True)

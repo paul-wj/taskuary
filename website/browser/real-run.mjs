@@ -1,8 +1,9 @@
 // A scratch instance on the person's real CLI, kept up for a walk driven from other scripts (real-lib.mjs). Not a test: nothing here runs in CI.
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
-import { existsSync, rmSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
+import http from "node:http";
 import path from "node:path";
 import { startHarness } from "./harness.mjs";
 
@@ -13,15 +14,22 @@ import { startHarness } from "./harness.mjs";
 for (const k of Object.keys(process.env)) if (/^npm_/i.test(k)) delete process.env[k];
 const out = process.env.REAL_OUT || path.join(os.tmpdir(), "claude", "real");
 await mkdir(out, { recursive: true });
-const where = (n) => execFileSync("where", [n], { encoding: "utf8" }).trim().split(/\r?\n/).map((s) => s.trim());
-const claude = where("claude").find((p) => /\.cmd$/i.test(p)), exe = path.join(path.dirname(claude), "node_modules", "@anthropic-ai", "claude-code", "bin");
+// ...on any machine: `where` on Windows, `which -a` elsewhere (a cloud walk runs on Linux)
+const WIN = process.platform === "win32", BRAIN = process.env.EVAL_BRAIN || "cli";
+const where = (n) => execFileSync(WIN ? "where" : "which", WIN ? [n] : ["-a", n], { encoding: "utf8" }).trim().split(/\r?\n/).map((s) => s.trim());
 const git = where("git")[0];
-const real = [exe, path.dirname(where("npx")[0])          /* the folder npx is in: an ACP adapter is launched through it */, path.dirname(git)];
+const real = [path.dirname(where("npx")[0])          /* the folder npx is in: an ACP adapter is launched through it */, path.dirname(git)];
+// ...the person's Claude CLI's own folder only when the walk runs on it
+if (BRAIN === "cli") { const claude = where("claude").find((p) => !WIN || /\.cmd$/i.test(p));
+  real.unshift(WIN ? path.join(path.dirname(claude), "node_modules", "@anthropic-ai", "claude-code", "bin") : path.dirname(claude)); }
 // THE AGENTS' BROWSER, KEPT IN THE SCRATCH HOME (REAL_BROWSER=1; a walk of the browser): the CLI signs in from the person's own profile, and the
 // browser driver keeps its sessions under whatever profile it is run with - so it is run through a stand-in of its name that hands it the
 // scratch profile (the folder above AGENT_BROWSER_HOME, harness.mjs). Nothing of a walk is written to the person's own driver folder.
 // ...REAL_EXTRA_PATH: more folders of programs - an ACP adapter installed in a scratch folder (npm i --prefix), found on PATH as the owner's own
 if (process.env.REAL_EXTRA_PATH) real.unshift(...process.env.REAL_EXTRA_PATH.split(path.delimiter));
+// ...and the machine's python, as a real one has it on its PATH (the walk, 2026-11-22: only `py` was found, so every made-file ask began with
+// one failed `python` call - a walk artefact, not the app's)
+try { const py = where("python").find((p) => !/WindowsApps/i.test(p)); if (py) real.push(path.dirname(py)); } catch { /* no python here: nothing to add */ }
 if (process.env.REAL_BROWSER === "own") real.push(path.dirname(where("agent-browser")[0]));
 else if (process.env.REAL_BROWSER) {
   const exe = path.join(path.dirname(where("agent-browser")[0]), "node_modules", "agent-browser", "bin", "agent-browser-win32-x64.exe"), shim = path.join(out, "shim");
@@ -45,13 +53,38 @@ exec "$(cygpath -u '${exe}')" "$@"
   await writeFile(path.join(bin, "taskuary.cmd"), `@echo off\r\nset "PYTHONPATH=${repo}"\r\n"${py}" -m taskuary.cli %*\r\n`);
   await writeFile(path.join(bin, "taskuary"), `#!/bin/sh\nPYTHONPATH='${repo.replace(/\\/g, "/")}' exec "$(cygpath -u '${py}')" -m taskuary.cli "$@"\n`);
   real.unshift(bin); }
-process.env.TASKUARY_BROWSER_REAL_CLI = real.join(path.delimiter);
-const h = await startHarness({ fresh: true });
+// WHICH AGENT THE WALK RUNS ON (EVAL_BRAIN, tools/eval): `cli` the person's real CLI (the default), `stand-in` the test CLIs (tests/fake_claude.py,
+// fake_acp_server.py - free, every mechanic and no judgement), `gateway` the test CLIs with an organisation AI card picked as every job's brain
+// (its address, key and model from EVAL_AI_URL/EVAL_AI_KEY/EVAL_AI_MODEL or ~/.taskuary-eval.json - never from the repo)
+// ...`codex`: the person's real Codex CLI picked as the agents' brain (its own budget, not Claude's)
+if (BRAIN === "codex") real.unshift(path.dirname(where("codex")[0]));
+// ...and THE AGENTS' BROWSER ON EVERY BRAIN'S ROAD (design round 5, 2026-11-19): on the gateway walk only the CLIs' PATH carried it, so the
+// server found no browser, and the card's agent was told it had none - its browser_signup never reached it, 0 of 13 sign-ups
+if (BRAIN === "cli" || BRAIN === "codex" || process.env.REAL_BROWSER) process.env.TASKUARY_BROWSER_REAL_CLI = real.join(path.delimiter);
+// ...the gateway's address and key, read before the server starts: its host is the one outside address the test server may reach
+const GW = BRAIN !== "gateway" ? {} : (() => { const f = path.join(os.homedir(), ".taskuary-eval.json"), c = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : {};
+  return { url: process.env.EVAL_AI_URL || c.url, key: process.env.EVAL_AI_KEY || c.key, model: process.env.EVAL_AI_MODEL || c.model }; })();
+// ...and a walk is the owner's day: its agents reach the web as they would for him (the test server's guard is for the suites, not a walk)
+process.env.TASKUARY_FIXTURE_ALLOW = "*";
+// ...REAL_BIN: a folder of stand-in CLIs on the server's own PATH (EVAL_BRAIN=stand-in) - a CLI dropped in it mid-walk is found then, so a
+// walk starts with no AI and connects one, as a new owner does
+const h = await startHarness({ fresh: true, bin: process.env.REAL_BIN || "" });
 // ...AND npx RUNS IN IT (the coding walk, 2026-11-12): APPDATA is the scratch home's, with no npm folder, so `npx -y <the ACP adapter>` failed
 // and every coding session fell back to its terminal - a road the owner's own machine does not take
 await mkdir(path.join(h.home, "appdata", "npm"), { recursive: true });
-const api = (p, body) => fetch(`${h.fixtureApi}${p}`, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", "X-Taskuary-Token": h.token }, body: body && JSON.stringify(body) }).then((r) => r.json());
-console.log("ai", JSON.stringify(await api("/api/setup/first-run/ai", { name: "claude" })).slice(0, 300));
+// ...ON node:http, WITH NO CLOCK (the gateway walk, 2026-11-20): setting up a gateway card tests its models one by one, 15-25 s each, and
+// fetch's own 300 s wait for the answer's headers threw before the card was saved - the walk never started
+const api = (p, body) => new Promise((ok, no) => { const u = new URL(`${h.fixtureApi}${p}`), data = body ? JSON.stringify(body) : undefined;
+  const r = http.request(u, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", "X-Taskuary-Token": h.token } },
+    (res) => { let t = ""; res.setEncoding("utf8"); res.on("data", (c) => (t += c)); res.on("end", () => { try { ok(JSON.parse(t)); } catch (e) { no(e); } }); });
+  r.on("error", no); r.setTimeout(0); r.end(data); });
+if (BRAIN === "gateway") {
+  const { url, key, model } = GW;
+  if (!url || !key) throw new Error("EVAL_BRAIN=gateway needs EVAL_AI_URL and EVAL_AI_KEY (or ~/.taskuary-eval.json)");
+  const r = await api("/api/setup/first-run/key", { type: "hipaa_ai", key, config: { base_url: url, ...(model ? { model, strong_model: model } : {}) } });
+  console.log("ai", JSON.stringify({ ok: r.ok, why: r.why }).slice(0, 300));         // ...never the key
+  if (!r.ok) throw new Error(`the gateway card did not take: ${r.why}`);
+} else console.log("ai", JSON.stringify(await api("/api/setup/first-run/ai", { name: BRAIN === "codex" ? "codex" : "claude" })).slice(0, 300));
 await api("/api/setup/dismiss", { dismissed: true });
 console.log("outbox", JSON.stringify(await api("/api/fixture/outbox", {})));
 const page = await h.newPage();

@@ -125,9 +125,10 @@ def test_an_explicit_pick_wins_with_exactly_its_own_model(real):
     with mock.patch.object(config, 'load', lambda: cfg):
         r = brainroute.choose(s, 'report', want_pick=f'connector:{cid}', want_model='claude-opus-5')
         assert (r.pick, r.model, r.rule) == (f'connector:{cid}', 'claude-opus-5', 'you chose it')
-        # a session's own pick keeps the model it came with - '' is the brain's own, not the saved assistant_model
+        # a session's own pick keeps the model it came with - none is the brain's own normal gear (climodels.gears: the owner's ruling,
+        # 2026-11-20), never the saved assistant_model
         r = brainroute.choose(s, 'general', want_pick='cli:claude')
-        assert (r.pick, r.model) == ('cli:claude', '')
+        assert (r.pick, r.model) == ('cli:claude', 'sonnet@medium')
         # ...and an empty pick is what blank means - the reading build_llm always made of it, now said on the route
         assert brainroute.choose(s, 'general', want_pick='').pick == llm.effective_pick(s, '')
 
@@ -222,13 +223,14 @@ def test_the_default_question_lists_every_cli_that_can_take_work_and_ends_with_t
         brainroute.cool(s, 'cli:claude', datetime.now() + timedelta(hours=2))
         note = agents.default_ask(s)['note']
         assert ' are all connected ' in note and 'left out' not in note
-        assert f"Claude Code (resting until {brainroute.cooldowns(s)['cli:claude'].strftime('%H:%M')})" in note
+        from taskuary.timewords import clock
+        assert f"Claude Code (resting until {clock(brainroute.cooldowns(s)['cli:claude'])})" in note
         # ...THE ONE IT TOOK, RESTING (rendered 2026-11-11): the card's RUNS line named the CLI that had the work meanwhile and the question
         # under it still said "work runs on" the resting one - it does once it is back; and a card whose AI rests with nothing to
         # take its work says until when, as the "right now" rows do
         assert 'once it is back' not in note
         brainroute.cool(s, 'cli:codex', datetime.now() + timedelta(hours=2))
-        till = brainroute.cooldowns(s)['cli:codex'].strftime('%H:%M')
+        till = clock(brainroute.cooldowns(s)['cli:codex'])
         assert f'so work runs on OpenAI Codex CLI, the first one ready, once it is back.' in agents.default_ask(s)['note']
         s.set_setting('triage_backup_ai', '', 'owner')
         gen, rows = aidefaults.resolve(s, cfg, 'assistant_ai'), brainroute.now(s, cfg)
@@ -364,3 +366,23 @@ def test_a_blank_anthropic_card_reads_mail_on_its_light_model_and_keeps_its_own_
         assert brainroute._words(s, f'connector:{cid}', cfg)['quick'] == llm.PROVIDER_LIGHT['anthropic']
         c = s.get_connector(cid); s.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps({**json.loads(c.get('ConfigJson') or '{}'), 'model': 'claude-sonnet-5'})}, 'owner')
         assert llm.PROVIDER_LIGHT['anthropic'] not in brainroute.choose(s, 'triage').model, 'a model he typed is his'
+
+
+def test_an_ai_cards_quick_agent_work_is_its_own_model_thinking_less_and_its_light_model_only_the_one_shot_jobs(real):
+    """A gateway card set up with a light model (firstrun.tier_models: a Flash) ran every agent task triage judged quick on it, and the agent
+    did the work badly (the owner, 2026-11-20). Its light box is for the one-shot jobs; an agent's quick gear is the card's own model at low
+    effort, normal its model, hard its strong one."""
+    s, cfg, cid = _home((), connector='hipaa_ai', settings={'ai_route_mode': 'auto'})
+    c = s.get_connector(cid)
+    s.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps({**json.loads(c.get('ConfigJson') or '{}'), 'base_url': 'https://gw.example',
+                      'model': 'gem-hydrogen', 'light_model': 'gem-flash', 'strong_model': 'gem-neon'})}, 'owner')
+    p = f'connector:{cid}'
+    for k in ('assistant_ai', 'triage_ai'): s.set_setting(k, p, 'owner')
+    with mock.patch.object(config, 'load', lambda: cfg):
+        assert brainroute.choose(s, 'triage').model in ('', 'gem-flash')       # ...the card's light box, swapped in by its gear
+        assert brainroute.choose(s, 'triage').gear == 'light'
+        q = brainroute.choose(s, 'general', difficulty='quick')
+        assert (q.pick, q.model) == (p, 'gem-hydrogen@low'), q.why
+        assert brainroute.choose(s, 'general', difficulty='standard').model in ('', 'gem-hydrogen')
+        assert 'gem-neon' in brainroute.choose(s, 'general', difficulty='hard').model or brainroute.choose(s, 'general', difficulty='hard').gear == 'strong'
+        assert brainroute._words(s, p, cfg)['quick'] == 'gem-hydrogen, low effort'

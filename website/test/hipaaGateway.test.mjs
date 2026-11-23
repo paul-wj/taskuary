@@ -2,7 +2,10 @@
 // said the key was wrong (the owner, 2026-10-20: "you forgot the field to put in the url"). The card asks for the address too.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { needsGateway } from "../src/aiShelf.js";
+
+const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
 
 test("Connect waits for an address only when the build ships none", () => {
@@ -13,4 +16,3 @@ test("Connect waits for an address only when the build ships none", () => {
   assert.equal(needsGateway({ ...card, GatewayBuiltIn: true }, {}), false);
   assert.equal(needsGateway({ Type: "groq" }, {}), false);
 });
-

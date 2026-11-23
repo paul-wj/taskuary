@@ -42,11 +42,11 @@ test("every press is the one post, with the one patience", async () => {
   assert.deepEqual(a.calls[1], { url: "/api/reviews/8/decide", body: { final_text: null, note: null, verb: "reject" }, opts: { timeout: DECIDE_TIMEOUT } });
 });
 
-test("a turn's held steps go together, and the step that stopped them is the reason", async () => {
+test("a turn's held steps go together through the one decide door, and the step that stopped them is the reason", async () => {
   const a = api({ ok: false, done: [{ review: 4 }], failed: { review: 5, step: 2, error: "exit 1" }, left: [6] });
   const o = await pressSteps(a, [4, 5, 6], "approve");
-  assert.deepEqual([o.kind, o.why, a.calls[0].url, a.calls[0].opts.timeout], ["failed", "exit 1", "/api/reviews/steps", DECIDE_TIMEOUT * 3]);
-  assert.deepEqual(a.calls[0].body, { ids: [4, 5, 6], verb: "approve" });
+  assert.deepEqual([o.kind, o.why, a.calls[0].url, a.calls[0].opts.timeout], ["failed", "exit 1", "/api/reviews/4/decide", DECIDE_TIMEOUT * 3]);
+  assert.deepEqual(a.calls[0].body, { final_text: null, note: null, verb: "approve", steps: [4, 5, 6] });
   assert.equal((await pressSteps(api({ ok: true, done: [{ review: 4 }], failed: null, left: [] }), [4], "approve")).kind, "ok");
   assert.equal(failLine(await pressSteps(api({ code: "ETIMEDOUT" }), [4], "approve"), "run"), STILL);
 });
@@ -60,3 +60,18 @@ test("a road that reports what is thrown gets the answer, the line, or the reque
   assert.throws(() => sure(outcomeOf(null, refusal)), (e) => e === refusal, "its reader knows a refusal's fix: the error itself, not a copy of its words");
 });
 
+
+// A PRESS LANDS BEFORE THE PAGE MOVES (design round 5, I2: "Send and close" walked on to the next task with nothing sent, and a second press
+// sent it): the card hands the page its Send only on a receipt that says it went, and the walk's close puts the task down at its answer
+test("the page moves on from a Send only once the server says it went, and the walk's close only at its answer", async () => {
+  const { landedSend } = await import("../src/press.js");
+  assert.ok(landedSend({ ok: true, status: "approved", sent: { channel: "email" }, delivery: "sent" }));
+  assert.ok(landedSend({ ok: true, status: "sent" }));
+  assert.ok(!landedSend({ ok: true }), "an answer with no sent state moves nothing");
+  assert.ok(!landedSend({ ok: true, status: "pending", send_error: "delivery unknown" }));
+  assert.ok(!landedSend({ ok: false, status: "approved" }));
+  assert.match(read("ReviewDecision.jsx"), /verb === "approve" \? landedSend\(data\)/);
+  const page = read("TaskPage.jsx"), at = page.indexOf('const d = await walkLeave("sent")');
+  assert.ok(at > 0 && !/onLeave\?\.\(\);\s*$/.test(page.slice(page.lastIndexOf("if (closes && walkLeave)", at), at).trim()), "never put down before the answer");
+  assert.match(page, /if \(d\?\.kept\) \{[^\n]*\} else onLeave\?\.\(\); \}/);
+});

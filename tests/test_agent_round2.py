@@ -142,6 +142,12 @@ class SearchBeforeAskingTests(unittest.TestCase):
         self.assertIn('SEARCH BEFORE YOU ASK', general.HISTORY_LINE); self.assertIn('SEARCH BEFORE YOU ASK', general.SEARCHED_LINE)
         said, prior = general.history_brief(s, tid, hands=False)                        # a brain with no search is handed them
         self.assertIn('V-2231', prior); self.assertIn('WHAT EARLIER TASKS SETTLED', said)
+        # ...AND QUICK WORK FINDS ITS SEARCH DONE, its own still there (the speed round, 2026-11-20: a quick reply's agent searched the sender's
+        # mail itself first - one more model round and a shell call, 4-6 s of an 11 s turn)
+        self.assertEqual(general.history_brief(s, tid, hands=True), (general.HISTORY_LINE, ''))
+        said, prior = general.history_brief(s, tid, hands=True, quick=True)
+        self.assertIn('V-2231', prior); self.assertIn('ALREADY SEARCHED', said); self.assertIn('taskuary --search', said)
+        self.assertNotIn('NO SEARCH OF ITS OWN', said)
 
 
 # ── 8. check-backs ──────────────────────────────────────────────────────────────────────────
@@ -153,8 +159,22 @@ class CheckBackTests(unittest.TestCase):
         self.assertIn('The agent will check back', s.list_comments(tid)[-1]['Body'])
         for when, what in (('someday', 'x'), ('tomorrow', ''), ('tomorrow', 'password: hunter2-Secret!9')):
             with self.assertRaises(ValueError): checkback.set_check(s, tid, when, what)
-        s.update_task(tid, {'Status': 'done'}, 'owner')
-        self.assertFalse(s.get_task(tid).get('CheckBackAt'))                         # a closed task is checked back on by nobody
+        s.update_task(tid, {'Status': 'dropped'}, 'owner')
+        self.assertFalse(s.get_task(tid).get('CheckBackAt'))                         # a task let go is checked back on by nobody
+
+    def test_a_check_back_outlives_mark_done_and_brings_the_task_back_with_its_turn(self):
+        # the owner, 2026-11-20: Mark done on a task showing "Checks back Sat 8 AM" - at its time the agent checks, and the task comes back
+        from taskuary import concierge
+        s = MemoryStore(); tid = owner_task(s)
+        checkback.set_check(s, tid, 'in 2 hours', 'the refund cleared on the card')
+        concierge.close_task(s, tid, 'owner')
+        self.assertEqual(s.get_task(tid)['Status'], 'done'); self.assertTrue(checkback.of_task(s.get_task(tid)))   # ...its chip still says so
+        fired = []
+        with mock.patch.object(checkback, 'fire', side_effect=lambda st, t, what: fired.append((t, what))),              mock.patch('taskuary.ingest._spawn', lambda fn, *a: fn(*a)), mock.patch('taskuary.ingest.has_room', return_value=True):
+            remind.tick(s, datetime.now() + timedelta(hours=3))
+        self.assertEqual(fired, [(tid, 'the refund cleared on the card')])
+        self.assertEqual(s.get_task(tid)['Status'], 'open')                             # back on the rail, the check's turn under way
+        self.assertIn('check_back', [r['Action'] for r in s.list_audit('task', tid)])
 
     def test_the_owner_cancels_it_and_a_session_cannot(self):
         s = MemoryStore(); tid = owner_task(s); checkback.set_check(s, tid, 'tomorrow 9am', 'the refund cleared on the card')

@@ -10,6 +10,7 @@ import {
 } from "@mui/material";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import FilterAltIcon from "@mui/icons-material/FilterAlt";
+import AutoAwesomeOutlinedIcon from "@mui/icons-material/AutoAwesomeOutlined";
 import api from "./api";
 import { label as bLabel, hint as bHint } from "./buttons.js";
 import { errorPresentation, errorText } from "./apiError.js";
@@ -18,7 +19,7 @@ import { fadeBand } from "./timelineFade.js";
 import { syncFace, syncLine, syncPhaseLabel } from "./syncTiming.js";
 import { observeSync } from "./syncObserver.js";
 import { onWrote } from "./wrote.js";
-import { availablePickerChannels, channelsForCategory } from "./feedFilters.js";
+import { availablePickerChannels, channelsForCategory, filterPanel } from "./feedFilters.js";
 import { splitTimelineMeetings } from "./timelineMeetings.js";
 import { onLive } from "./live.js";
 import { feedHeaders, feedOk, takeFeed } from "./feedLoad.js";
@@ -35,7 +36,6 @@ import NewSheet from "./NewSheet.jsx";
 import AddIcon from "@mui/icons-material/Add";
 import { processingErrorMessage, processingTransportLimit, unreadProcessingRows } from "./processingAll.js";
 import { fyiTail, pileRows } from "./funnelPile.js";
-import { onRoom, roomWanted } from "./browserSplit.js";
 
 // All and Unread are the only Timeline views. Kind and source remain independent filters.
 // The pill row is a fixed set of CATEGORIES - it must not grow as connections do (a
@@ -82,14 +82,22 @@ export const filterLabel = (cat, pick, cats = CATEGORIES, labels = CHANNEL_LABEL
   return [kind, src].filter(Boolean).join(" \u00b7 ") || t("All items");
 };
 
-import AutoAwesomeOutlinedIcon from "@mui/icons-material/AutoAwesomeOutlined";
+// ...A NAV HINT SAYS WHERE A PRESS GOES, AND GOES WITH THE PRESS (walk, 2026-11-22: "The reports you run, and a new one" stayed over the opened
+// page's title while the pointer rested on the button): shown on hover, shut by the press until the pointer leaves
+function NavTip({ title, children }) {
+  const [open, setOpen] = useState(false), [pressed, setPressed] = useState(false);
+  return <Tooltip title={title} placement="right" open={open && !pressed} onOpen={() => setOpen(true)} onClose={() => { setOpen(false); setPressed(false); }}>
+    <span style={{ display: "block" }} onClickCapture={() => setPressed(true)}>{children}</span></Tooltip>;
+}
 // the sidebar buttons' marks, one per SIDE_NAV key
 const NAV_ICONS = { new: AddIcon, reports: BarChartIcon, connections: PowerOutlinedIcon, hub: TravelExploreIcon, skills: AutoAwesomeOutlinedIcon, settings: TuneIcon };
 
-function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChange }) {
+function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChange, page = "" }) {
+  const [panel, setPanel] = useState({ at: null, on: page });
   useLocale();
-  const [el, setEl] = useState(null);
-  const close = () => { setEl(null); setSrcQ(""); };
+  const el = panel.at;
+  const close = () => { setPanel((st) => filterPanel(st, { type: "close" })); setSrcQ(""); };
+  useEffect(() => { setPanel((st) => filterPanel(st, { type: "page", page })); }, [page]);
   const narrowed = !!cat || !!pick;
   const q = srcQ.trim().toLowerCase();
   const label = filterLabel(cat, pick);
@@ -98,8 +106,8 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
       {/* THE ROW'S ONE CONTROL since the Timeline tab went (the owner, 2026-10-15: "replace it with the filter being a little
           larger"): full width, and it says on its face what the rail is narrowed to - it was an icon beside Work | Timeline
           that left that to its tooltip. It fills in when the rail is narrowed. */}
-      <Box component="button" type="button" onClick={(e) => setEl(e.currentTarget)}
-        data-tq-filter="true" aria-label={t("Filter the rail - {label}", { label })}
+      <Box component="button" type="button" onClick={(e) => { setPanel((st) => filterPanel(st, { type: "press", target: e.currentTarget, page })); setSrcQ(""); }}
+        data-tq-filter="true" aria-expanded={!!el} aria-label={t("Filter the rail - {label}", { label })}
         sx={{ flex: 1, minWidth: 0, height: 30, display: "flex", alignItems: "center", gap: 0.75, px: 1.25,
           borderRadius: "8px", border: `1px solid ${narrowed ? "var(--tq-border, #b9c3cb)" : BORDER}`, bgcolor: narrowed ? "var(--tq-inset, #e4e9ee)" : PANEL,
           cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, color: narrowed ? INK : DIM, textAlign: "left",
@@ -191,7 +199,7 @@ function NextIn({ atRef, render }) {
   return render(atRef.current ? Math.max(0, Math.round((atRef.current - Date.now()) / 1000)) : null);
 }
 
-export default function FeedView({ onOpenTask, active = true, top = null, stage = null, onPull = null, railOnNarrow = false, onInventoryFilter = null, unreadInventory = null, onGo = null, navOn = "", openNew = 0, setupMode = false, setupRail = null }) {
+export default function FeedView({ onOpenTask, active = true, top = null, stage = null, onPull = null, railOnNarrow = false, onInventoryFilter = null, unreadInventory = null, onGo = null, onPress = null, navOn = "", openNew = 0, setupMode = false, setupRail = null }) {
   useLocale();
   // below md there is no stage beside the rail; whatever is opened slides over it instead, so a
   // tap on a row is never a tap that did nothing
@@ -201,10 +209,9 @@ export default function FeedView({ onOpenTask, active = true, top = null, stage 
   const visibleStage = stage;
   // SETUP IS A SCREEN OF ITS OWN (the owner, 2026-11-03: "the welcome screen should take up the entire screen not just the left side"): no
   // sidebar and no rail while setting up - the stage takes the width, its steps a strip across its top (setupRail). The rail stays mounted, hidden
-  // ...and folded the same way while a chat's browser needs the owner and the room (browserSplit.wantRoom) - back when it goes
-  const [roomy, setRoomy] = useState(roomWanted);
-  useEffect(() => onRoom(setRoomy), []);
-  const folded = setupMode || (roomy && !narrow);
+  // ...and NEVER for a chat's browser (design round 6, D8: it folded while a page waited on the owner, and his task list went with it - twice):
+  // the page sits beside the chat, inside the task
+  const folded = setupMode;
   const railShown = !folded && (!narrow || !visibleStage || railOnNarrow);
   const stageShown = setupMode || !narrow || (!!visibleStage && !railOnNarrow);
   const calEvents = useCalToday();
@@ -549,7 +556,7 @@ export default function FeedView({ onOpenTask, active = true, top = null, stage 
           {SIDE_NAV.map((n) => {
             const Icon = NAV_ICONS[n.key];
             return (
-              <Tooltip key={n.key} title={t(n.hint)} placement="right">
+              <NavTip key={n.key} title={t(n.hint)}>
                 <Box component="button" type="button" data-tq-nav={n.key} aria-current={navOn === n.key ? "page" : undefined}
                   onClick={() => (n.key === "new" && !onGo ? setNewOpen(true) : onGo?.(n.go, n.key))}
                   sx={{ display: "flex", alignItems: "center", gap: 1.25, width: "100%", height: 30, px: 1.25, border: 0,
@@ -558,7 +565,7 @@ export default function FeedView({ onOpenTask, active = true, top = null, stage 
                     "& svg": { fontSize: 16, color: "var(--tq-secondary, #6e685f)" }, "&:hover": { bgcolor: navOn === n.key ? "var(--tq-inset, #e4e9ee)" : PANEL2 } }}>
                   <Icon />{t(n.label)}
                 </Box>
-              </Tooltip>
+              </NavTip>
             );
           })}
         </Box>
@@ -569,8 +576,10 @@ export default function FeedView({ onOpenTask, active = true, top = null, stage 
               should show up on assistant canvas regardless not on the task view") */}
           {/* ...and QUIET: a pick is not something the owner said, so no "Tell me about ..." bubble rides in above the task
               (the owner, 2026-10-15: "why does the gray thing show up when clicking on searched task. Just show the task") */}
+          {/* ...A TASK HIT IS A PRESS OF ITS RAIL ROW (onPress - AssistantView pressRow, the Assistant's own opens' road): drawn at the click, the
+              walk's light on its row; a task on no row (a closed one) by its link (the owner, 2026-11-18: "it does nothing then moves to new one slowly") */}
           <SearchEverything open={searchOpen} query={searchQ} onClose={() => { setSearchOpen(false); setSearchQ(""); }}
-            onOpenTask={(tid, h) => { searchPicked(); return onPull ? onPull({ TaskId: tid, Title: h?.title }, { quiet: true }) : onOpenTask?.(tid); }}
+            onOpenTask={(tid, h) => { searchPicked(); return onPress ? onPress(tid, h) : onOpenTask?.(tid); }}
             onOpenMessage={(mid, h) => { searchPicked(); return onPull ? (onPull({ MessageId: mid, TaskId: h?.tid, Subject: h?.title }, { quiet: true }), true) : false; }}
             onPickSource={(next) => {
               searchPicked();
@@ -581,7 +590,7 @@ export default function FeedView({ onOpenTask, active = true, top = null, stage 
           {/* THE FILTER TAKES THE ROW. Work | Timeline sat here; with the Timeline gone (the owner, 2026-10-15) the filter
               is the row's one control and says on its face what the rail is narrowed to. */}
           <Box sx={{ display: setupMode ? "none" : "flex", alignItems: "center", minWidth: 0 }}>
-            <FilterButton cat={cat} pick={pickerChannels.length ? pick : ""} channels={pickerChannels}
+            <FilterButton cat={cat} pick={pickerChannels.length ? pick : ""} channels={pickerChannels} page={navOn}
               srcByChannel={srcByChannel} srcQ={srcQ} setSrcQ={setSrcQ}
               onChange={(nextCat, nextPick) => {
                 loadRequest.current += 1;

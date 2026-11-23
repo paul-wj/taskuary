@@ -35,16 +35,13 @@ class TheMarker(unittest.TestCase):
 
 class TheBrief(unittest.TestCase):
     def test_a_captcha_is_the_owners_and_is_handed_over_on_the_view(self):
-        for held in (True, False):
-            b = browserview.brief(held=held)
-            self.assertIn(browserview.TURN_LINE, b)
-            self.assertIn('NEVER SOLVE, CLICK OR WORK AROUND A CAPTCHA', b)
-            self.assertIn('[[TASKUARY-YOURTURN:', b)
-            self.assertNotIn('card number is for the owner to type in the pane: ask with the ask marker', b)
-        # where the hold exists the agent runs the submit and the hold asks; where it does not, the agent still asks first
-        self.assertIn('never ask the owner in words whether to submit, register or pay', browserview.brief(held=True))
-        self.assertNotIn('never ask the owner in words whether to submit', browserview.brief(held=False))
-        self.assertIn(browserview.ASK_FIRST_LINE, browserview.brief(held=False))
+        b = browserview.brief()
+        self.assertIn(browserview.TURN_LINE, b)
+        self.assertIn('NEVER SOLVE, CLICK OR WORK AROUND A CAPTCHA', b)
+        self.assertIn('[[TASKUARY-YOURTURN:', b)
+        self.assertNotIn('card number is for the owner to type in the pane: ask with the ask marker', b)
+        # the agent runs the press and the hold asks, on every AI (gatecmd) - one card in the chat
+        self.assertIn('never ask him in words to approve or click it', b)
 
 
 class YourTurn(unittest.TestCase):
@@ -57,7 +54,7 @@ class YourTurn(unittest.TestCase):
             req = ws.status(self.s, self.tid)['requests']
         self.assertTrue(rid.startswith(browserview.TURN_PREFIX))
         self.assertEqual([r['request_id'] for r in req], [rid])
-        self.assertEqual(req[0]['text'], 'Your turn in the browser on events.trainly.example: tick the box')
+        self.assertEqual(req[0]['text'], 'Your turn in the browser on trainly.example: tick the box')
         self.assertEqual(req[0]['choices'], [browserview.TURN_DONE])
 
     def test_a_terminal_cli_gets_no_chooser_and_a_page_with_no_address_still_says_what(self):

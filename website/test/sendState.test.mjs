@@ -1,13 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { label } from "../src/buttons.js";
 import { sendBlockLine, draftState, failureHead, replyEnvelope, replySendFailure, reviewDeliveryState, sendFix } from "../src/sendState.js";
 
 // AN APPROVED STEP THAT FAILED IS NOT A REPLY THAT FAILED (2026-10-29): a held push that failed read "The reply was not sent."
 test("a proposal's failure stands alone; a reply's still says it was not sent", () => {
   const f = replySendFailure({ send_error: "The held step failed: rejected (fetch first)", delivery: "failed" });
   assert.equal(failureHead(f, true), "");
-  assert.notEqual(failureHead(f), failureHead(f, true));
-  assert.notEqual(failureHead({ ...f, unknown: true }, true), failureHead(f, true));
+  assert.equal(failureHead(f), "The reply was not sent.");
+  assert.equal(failureHead({ ...f, unknown: true }, true), "Delivery has not been confirmed.");
+  const dec = readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
+  assert.match(dec, /<b>\{failureHead\(failure, !!proposal\)\}<\/b> \{failureWhy\(failure\)\}/);
+  assert.match(dec, /\{\(failure\.unknown \|\| !proposal\) && <Box/);     // no "the draft stays on the task" under an act
 });
 
 test("reply envelopes preserve exact saved To and CC and distinguish other delivery kinds", () => {
@@ -49,7 +54,7 @@ test("unknown delivery keeps the attempted text and envelope and offers only a c
     Deliver: JSON.stringify({ kind: "reply", to: ["new@example.com"] }), DeliveryEnvelope: JSON.stringify(attempted) });
   assert.equal(state.frozen, true); assert.equal(state.active, false); assert.equal(state.canCheck, true);
   assert.equal(state.body, attempted.body); assert.deepEqual(state.envelope, attempted.envelope);
-  assert.ok(state.label); assert.ok(state.line);
+  assert.equal(state.label, "Check delivery"); assert.match(state.line, /missing receipt will not send it again/);
 });
 
 test("a live claim disables another check and failed sends keep normal editing", () => {
@@ -67,22 +72,17 @@ test("a live claim disables another check and failed sends keep normal editing",
 // fact the server states, and every surface shows the same reason instead of a send button.
 
 test("a blocked channel yields the server's reason, an open one yields nothing", () => {
-  const reason = "replies are off for teams (Settings → Replies)";
-  assert.ok(sendBlockLine({ CanSend: false, Channel: "teams", SendBlock: reason }).includes(reason));
-  assert.ok(sendBlockLine({ CanSend: false, Channel: "github", SendBlock: "" }).includes("GitHub"));
+  assert.equal(sendBlockLine({ CanSend: false, Channel: "teams", SendBlock: "replies are off for teams (Settings → Replies)" }),
+    "Cannot send from here: replies are off for teams (Settings → Replies). The draft stays here to copy or edit.");
+  assert.equal(sendBlockLine({ CanSend: false, Channel: "github", SendBlock: "" }), "Cannot send from here: GitHub replies are off (GitHub card). The draft stays here to copy or edit.");
   assert.equal(sendBlockLine({ CanSend: true, Channel: "email", SendBlock: "" }), "");
   assert.equal(sendBlockLine(null), "");
 });
 
 test("the draft state names a failed draft with its reason and offers the retry", () => {
-  const failed = draftState({ HasDraft: 0, DraftError: "no AI connector is set up to write replies" });
-  assert.equal(failed.state, "failed");
-  assert.equal(failed.retry, true);
-  assert.ok(failed.line.includes("no AI connector is set up to write replies"));
-  const undrafted = draftState({ HasDraft: 0, DraftError: "" });
-  assert.equal(undrafted.state, "undrafted");
-  assert.equal(undrafted.retry, true);
-  assert.ok(undrafted.line);
+  assert.deepEqual(draftState({ HasDraft: 0, DraftError: "no AI connector is set up to write replies" }),
+    { state: "failed", line: `Draft failed: no AI connector is set up to write replies. Press ${label("redraft", "none")} again or write the answer yourself.`, retry: true });
+  assert.deepEqual(draftState({ HasDraft: 0, DraftError: "" }), { state: "undrafted", line: "No draft yet — draft it with AI or write the answer.", retry: true });
   assert.deepEqual(draftState({ HasDraft: 1, DraftError: "" }), { state: "drafted", line: "", retry: false });
   assert.deepEqual(draftState({ DraftText: "hello", DraftError: null }), { state: "drafted", line: "", retry: false });
 });
@@ -92,8 +92,12 @@ test("what the writer needs is a plain line, whole, never a failure - and the re
   assert.deepEqual(draftState({ HasDraft: 0, DraftNeeds: why }),
     { state: "needs", line: "Not drafted - it needs the October invoice run. An agent can work it out and draft the reply, or Redraft with it", retry: true });
   assert.equal(draftState({ HasDraft: 1, DraftNeeds: why }).state, "drafted");
-
+  const rd = readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
+  assert.match(rd, /\["needs", "failed", "empty", "kept"\]\.includes\(draftState\(r\)\.state\)/);
+  const job = readFileSync(new URL("../src/replyDraft.js", import.meta.url), "utf8");
+  assert.match(job, /needs: data\?\.needs/);
 });
+
 
 test("a failed send keeps the place that fixes it - from the answer, and after a reload from the envelope", () => {
   const fix = { label: "Connect a mailbox", href: "#connections=Email" };
@@ -114,9 +118,16 @@ test("a send that failed is still said after a reload: the card reads it from th
   const r = { Status: "pending", DeliveryState: "failed", Reason: "Not sent: the mail server refused erin@northwind.example (5.1.1 no such user).",
     Deliver: JSON.stringify({ delivery: "failed", fix }) };
   assert.deepEqual(savedSendFailure(r), { message: "the mail server refused erin@northwind.example (5.1.1 no such user).", unknown: false, fix, saved: true });
+  assert.equal(failureHead(savedSendFailure(r)), "The reply was not sent.");
   assert.equal(failureWhy(savedSendFailure(r)), "The mail server refused erin@northwind.example (5.1.1 no such user).");
+  // an older row that knows its state only from the envelope, and one with no reason kept
+  assert.equal(savedSendFailure({ Status: "pending", Deliver: JSON.stringify({ delivery: "failed" }) }).message, "the send was refused");
   // nothing failed, it went, the attempt is still open (its own delivery line says so), or the review is decided: no failure to say
   for (const x of [{}, null, { Status: "pending" }, { Status: "pending", DeliveryState: "sent" }, { Status: "pending", DeliveryState: "unknown" },
     { Status: "pending", DeliveryState: "failed", DeliveryClaim: "p1" }, { Status: "approved", DeliveryState: "failed" }])
     assert.equal(savedSendFailure(x), null);
+  const card = readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
+  assert.match(card, /savedSendFailure\(r\)/, "the reply's card reads the saved failure");
+  assert.doesNotMatch(card, /\{sendErr && \(/, "and draws one failure, wherever it was read from");
+  assert.match(readFileSync(new URL("../src/assistantCards.jsx", import.meta.url), "utf8"), /savedSendFailure\(mate \|\| rv\)/, "the walk's card reads it too");
 });

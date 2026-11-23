@@ -1,56 +1,44 @@
+// THE RAIL IS THE MAP OF SETTINGS. Configuration used to be one page behind a strip of eleven
+// pills, and eleven pills do not fit across a 980px page - "Display" was cut in half by the right
+// edge, and the answer to "there will be more settings" was a strip that could hold fewer of them
+// (the owner, 2026-09-18). So every group is a section of one scrolling page, the rail lists them
+// under Configuration, and picking one scrolls to it. These tests pin the three things that have
+// to agree: what the rail draws, what the page stamps an id on, and what search says the path is.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import schema from "../../taskuary/settings_schema.json" with { type: "json" };
-import { sectionOffset, scrollToSection } from "../src/settingsMap.js";
 
-test("section scrolling accounts for the sticky bar and ignores missing headings", () => {
-  const oldDocument = globalThis.document, oldWindow = globalThis.window;
-  const calls = [];
-  globalThis.document = { getElementById: (id) => id === "target"
-    ? { getBoundingClientRect: () => ({ top: 200 }) } : null };
-  globalThis.window = { scrollY: 300, scrollTo: (where) => calls.push(where) };
-  try {
-    assert.equal(scrollToSection("missing"), false);
-    assert.deepEqual(calls, []);
-    assert.equal(scrollToSection("target"), true);
-    assert.deepEqual(calls, [{ top: 426, behavior: "smooth" }]);
-  } finally {
-    if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument;
-    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
-  }
-});
+const read = (f) => fs.readFileSync(path.join(process.cwd(), "src", f), "utf8");
+const src = read("SettingsView.jsx"), about = read("AboutYou.jsx"), map = read("settingsMap.js");
 
-test("a section at the bottom is considered landed even when it cannot reach the bar", () => {
-  const oldDocument = globalThis.document, oldWindow = globalThis.window;
-  let top = 174;
-  globalThis.document = { getElementById: (id) => id === "target"
-    ? { getBoundingClientRect: () => ({ top }) } : null, documentElement: { scrollHeight: 1000 } };
-  globalThis.window = { innerHeight: 400, scrollY: 300 };
-  try {
-    assert.equal(sectionOffset("missing"), null);
-    assert.deepEqual(sectionOffset("target"), { off: 100, landed: false });
-    top = 76;
-    assert.deepEqual(sectionOffset("target"), { off: 2, landed: true });
-    top = 174;
-    globalThis.window.scrollY = 600;
-    assert.deepEqual(sectionOffset("target"), { off: 100, landed: true });
-    top = 20;
-    assert.deepEqual(sectionOffset("target"), { off: -54, landed: false });
-  } finally {
-    if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument;
-    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
-  }
-});
 
-// "Other" is a group with no knobs of its own: it catches a stray key, and on an install with
-// no stray key Configuration does not draw it. A rail entry for it would scroll nowhere.
-test("the rail offers only the sections the page will actually draw", () => {
-  assert.equal(Object.values(schema.knobs).filter((k) => k.group === "Other").length, 0,
-    "Other is empty in the schema by design - it is a catch-all, not a page");
-});
-
-// The pill strip ran off the edge (the redesign, owner-approved 2026-10-21): Configuration is one long
-// stack of sections in the schema's order, not a strip of tabs
 test("Configuration is one page, not a strip of tabs", () => {
+  assert.ok(!/FilterPills/.test(src), "the pill strip is gone - it was the thing that ran off the edge");
+  assert.ok(!/cfgTab/.test(src), "and so is the state that remembered which tab you were on");
+  // (Notifications lost its panel with the notify pushes, 2026-10-02 - its sound and desktop switches are plain rows)
+  // (the phone's panel moved to Settings > Phone & chats with its knobs, 2026-11-06)
+  assert.ok(src.includes(`"How mail is sorted":`), "How mail is sorted still gets its panel above its knobs");
+  assert.match(src, /assistant=\{<><PhoneDoorways [^>]*\/>\{rowsOf\(PHONE_GROUP\)\.map\(knobRow\)\}/, "the phone's panel sits above its knobs on Phone & chats");
   assert.ok(schema.groups.length > 8, "the point of the change: there are a lot of them, and more coming");
+});
+
+
+test("the rail offers only the sections the page will actually draw", () => {
+  // "Other" is a group with no knobs of its own: it catches a stray key, and on an install with
+  // no stray key Configuration does not draw it. A rail entry for it would scroll nowhere.
+  assert.equal(schema.knobs && Object.values(schema.knobs).filter((k) => k.group === "Other").length, 0,
+    "Other is empty in the schema by design - it is a catch-all, not a page");
+  assert.match(src, /useEffect\(\(\) => \{ onSections\(cfgKey \? cfgKey\.split\("\|"\) : \[\]\); \}, \[cfgKey, onSections\]\);/,
+    "the page tells the rail what it drew");
+  assert.match(src, /const sectionsOf = useCallback\(\(k\) => \(k === "config" && cfgSecs\)/,
+    "the rail, the scroll-spy and the search crumbs all read one list");
+  assert.match(src, /\|\| \(k === "docs" \? docsTree\(docCat\) : null\) \|\| SECTIONS\[k\] \|\| \[\], \[cfgSecs, docCat\]\);/,
+    "...and Docs contributes its tree to that same list");
+  // Docs is the one page whose entries SWITCH the document instead of scrolling to a heading, so
+  // it contributes its page heading to the scroll-spy and nothing else - its entries are objects,
+  // not heading names, and there is nothing under them to measure.
+  assert.match(src, /\.\.\.\(k === "docs" \? \[\] : sectionsOf\(k\)\.map\(\(n\) => \(\{ page: k, section: n, id: secId\(k, n\) \}\)\)\)/,
+    "the scroll-spy skips the entries that have nothing to scroll to");
 });

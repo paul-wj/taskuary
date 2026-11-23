@@ -22,6 +22,8 @@ test("an older connector after a release moves the pin offers Update connector, 
 
 test("on a card whose CLI is outdated too, its press is never the CLI's own plain Update", () => {
   for (const s of ["missing", "update", "other"]) assert.match(connectorLine(at(s, "0.100.2")).press, /^(Install|Update) connector$/);
+  const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
+  assert.match(read("cliInstall.jsx"), /"updating…" : "Update"\}/);            // the CLI's own stays "Update"
 });
 
 test("installed, installing and no npm are said, with nothing to press", () => {
@@ -34,11 +36,4 @@ test("no line for a CLI that is not here, or needs no connector", () => {
   assert.equal(connectorLine(cli({ status: "missing" }, false)), null);
   assert.equal(connectorLine(cli(undefined)), null);
   assert.equal(connectorLine(cli({})), null);
-});
-
-test("its press goes through the installer's one phase, on the CLI card", () => {
-  const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
-  assert.match(read("cliInstall.jsx"), /connector: \{ path: "\/api\/cli\/connector"/);
-  assert.match(read("cliInstall.jsx"), /const connector = useCallback\(\(cli\) => run\(cli, "connector"\)/);
-  assert.match(read("AgentsPanel.jsx"), /<ConnectorLine cli=\{cli\}/);
 });

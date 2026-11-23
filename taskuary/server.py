@@ -111,6 +111,17 @@ _WALK_THREAD = [None]
 WALK_WAIT = 15                   # a reset that hangs (a locked store) must not hold the app shut for ever; it logs and lets go
 
 
+def slim_records():
+    "The agents' records kept before slim(), written again in its form, once (codingchat.slim_kept) - a lifespan thread the tests stop."
+    from . import codingchat
+    codingchat.slim_kept()
+
+
+def prime_adapters():
+    "The agents' ACP adapters, started once and let go a while after launch (agents.prime_adapters) - a lifespan job of its own name."
+    hub_agents.prime_adapters()
+
+
 def _warm_reads():
     """THE PAGE'S FIRST READS, MADE BEFORE IT ASKS (the owner's restart, 2026-11-16: the setup, first-run and agents reads each looked for
     every AI CLI on every PATH folder, and the rail was built from nothing, all inside the page's first requests - 2-6 s each, on top of the
@@ -183,7 +194,12 @@ async def _lifespan(_app):
         try:                                          # Recently deleted keeps a report, a rule or a profile KEEP_DAYS, then it goes for good
             from . import recentlydeleted; recentlydeleted.purge(store)
         except Exception as e: logger.warning(f'Recently deleted not purged: {e}')
-        backups.start(config.db_path())               # a copy of the database and its files once a day, kept a week
+        backups.start(config.db_path())               # a copy of the database and its files once a day, the newest three kept
+        try:                                          # ...and the copy before the chat's log, on its own thread from the start: never in a read
+            from . import chatlog; chatlog.backed_up(store)
+        except Exception as e: logger.warning(f'the copy before the chat log was not begun: {e}')
+        # ...and the agents' records kept before slim(), written again in its form, once
+        threading.Thread(target=slim_records, daemon=True, name='taskuary-slim-records').start()
     else:
         # THE DEMO WORLD IS A FINISHED INSTALL: the settle above never runs for it, so its flag stayed unset and read as "not finished" -
         # every demo, and every browser test in CI, opened on setup instead of the day (2026-10-15)
@@ -249,6 +265,8 @@ async def _lifespan(_app):
     except Exception as e: logger.warning(f'reminders on start skipped: {e}')
     _start_new_walk()              # a relaunch opens a NEW chat rather than resuming the last one - off the window's path
     threading.Thread(target=_warm_reads, daemon=True, name='warm-reads').start()     # the page's first reads, made before it asks
+    if not demo.enabled():          # ...and the agents' adapters, loaded once in the background so his first ask does not wait on a cold start
+        threading.Thread(target=prime_adapters, daemon=True, name='prime-adapters').start()
     catch_up_on_startup()          # defined below; resolved when the app actually starts
     try:                           # archived chats past their keep-days go on the app's own clock (PW-158), never on a history read
         from . import retention
@@ -545,6 +563,7 @@ class TaskBody(BaseModel):
     Title: str | None = None; Summary: str | None = None; Kind: str | None = None
     Priority: str | None = None; Status: str | None = None; Tags: str | None = None
     Assignee: str | None = None; DoneWhen: str | None = None; DueAt: str | None = None; ParentId: int | None = None
+    Files: list[str] | None = None   # ...what he attached to the ask (New), beside his words: saved uploads only (prompt_images)
 class ReadAskBody(BaseModel): goal: bool = False
 class MsgBody(BaseModel):
     external_id: str | None = None; channel: str = 'api'; subject: str | None = None
@@ -567,6 +586,7 @@ class DecideBody(BaseModel):
     subject: str | None = None
     fields: dict | None = None       # an action card's choices the owner changed (who sees a post, now or a draft): connectorcatalog.owner_edits
     closes: bool = False             # Send and close: the task's close as the send goes, before its agent is told (verdicts.decide)
+    steps: list[int] | None = None   # a turn's held steps pressed as one card: this one first, the rest in order (shellgate.approve_steps)
 class CodeBody(BaseModel):
     repo: str | None = None; agent: str | None = None
     model: str | None = None; instruction: str | None = None
@@ -584,6 +604,7 @@ class DispatchBody(BaseModel):
     # general session resolves and saves; a cli_connections key would mean nothing to it.
     agent: str | None = None; brain: str | None = None; pick: str | None = None
     instruction: str | None = None; model: str | None = None
+    files: list[str] = []           # ...what he attached to the instruction, beside his words: saved uploads only (prompt_images)
     standing: bool = False          # a REPORT run only: learn this as a rule for every run, not a one-off use of this run
     # The button says "Send to agent".  The task's Kind remains authoritative once a task
     # exists; this hint is only how an unpromoted message says which kind of task to create.
@@ -1093,7 +1114,9 @@ def _review_send_state(memo: dict, r: dict) -> tuple:
     try: env = json.loads(r.get('Deliver') or '{}') or {}
     except (TypeError, ValueError, AttributeError): env = {}
     if env.get('kind') in outbound.OWN_ROAD: return True, ''
-    return _send_state(memo, r.get('Channel') or env.get('channel'), bool(r.get('MessageId')) or bool(env.get('to')))
+    # ...and a card that says Connect instead is no Send (the walk, 2026-11-21: "ready to send" over "No mailbox is connected")
+    ok, why = _send_state(memo, r.get('Channel') or env.get('channel'), bool(r.get('MessageId')) or bool(env.get('to')))
+    return (False, fix['says']) if ok and (fix := _review_connect(memo, r)) else (ok, why)
 
 
 @app.get('/api/feed')
@@ -1116,6 +1139,25 @@ def _processing_live():
         return hub_term.live_sessions(tail=0)
     except Exception:
         return None  # Unavailable observation is distinct from an observed empty roster.
+
+
+def _sayer():
+    from . import say
+    return say
+
+
+# EVERY REFUSAL THE PAGE TOASTS IS SAID IN HIS WORDS (say.plain): a route that raised with a tool's raw text - an exception's class, a provider's
+# JSON, a path - answered it to the page as it came. Taskuary's own sentences pass as they are; the raw text is logged here
+from starlette.exceptions import HTTPException as _StarletteHTTP
+from fastapi.exception_handlers import http_exception_handler as _http_answer
+@app.exception_handler(_StarletteHTTP)
+async def _plain_refusal(request, e: _StarletteHTTP):
+    # ...the page's: an agent's door answers its refusal as written - its next step quotes the lines to copy, and flattened to "That didn't
+    # work" the agent was left with no way on
+    if isinstance(e.detail, str) and _sayer().raw(e.detail) and not request.url.path.startswith(('/api/agent/', '/api/mcp')):
+        logger.info(f'{request.method} {request.url.path} -> {e.status_code}: {e.detail[:500]}')
+        e = HTTPException(e.status_code, _sayer().plain(e.detail, 'any'), headers=getattr(e, 'headers', None))
+    return await _http_answer(request, e)
 
 
 @app.exception_handler(processing_all.AllError)
@@ -1145,14 +1187,18 @@ def processing_item_detail(item_id: str, kind: str = None, id: int = None, view_
 def _queued_info(q):
     """The card's hover text for a held-back dispatch: what it waits for, and why."""
     if not q: return None
+    from .general import RETRY_TURN
     b = q.get('BehindTaskId')
     return {'behind': task_ref(b) if b else None, 'value': q.get('Value'), 'why': q.get('Why'),
             'behindTitle': (store.get_task(b) or {}).get('Title') if b else None,
             'reason': q.get('Reason'), 'since': q.get('CreatedAt'),
             # the retry budget (PW-085..087): waiting | retrying | failed, how many tries, the last error and the next one
-            'state': q.get('State') or 'waiting', 'attempts': int(q.get('Attempts') or 0), 'lastError': q.get('LastError'), 'nextAt': q.get('NextAt'),
+            # ...its last error in his words (say.plain): the raw text stays on the queue row, where the start and its retries read it
+            'state': q.get('State') or 'waiting', 'attempts': int(q.get('Attempts') or 0), 'lastError': _sayer().plain(q.get('LastError'), 'start'), 'nextAt': q.get('NextAt'),
             # a setup error fails every Start the same way, so the card must not offer Start as the fix (blackboard.failed_line)
-            'permanent': q.get('State') == 'failed' and blackboard.is_permanent(q.get('LastError'))}
+            'permanent': q.get('State') == 'failed' and blackboard.is_permanent(q.get('LastError')),
+            # ...a turn Taskuary tries again by itself (general.queue_retry): its failed turn's own line in the chat says it, with Cancel there
+            'retryTurn': q.get('Turn') == RETRY_TURN}
 
 
 def _playbook_brief(task, books=None):
@@ -1220,18 +1266,30 @@ def _rail_tids() -> set:
     except Exception as e:
         logger.warning(f'tasks: the rail could not be read for OnWorkToday: {e}'); return set()
 
-def _read_hand_task(tid: int, text: str, goal: bool = False):
+def _read_hand_task(tid: int, text: str, goal: bool = False, store=None):
     """A task typed into + New skips triage, so it had no checklist - one block of words with no boxes (the owner, 2026-10-09:
     "when i create task the task list looks weird?? (no checkboxes?)"). The same reading a promoted message gets
     (triage.extract_ask), off the request: each distinct thing asked becomes a box, an email it asks for becomes one of the
     task's emails. The owner's own words stay the summary. A brain that fails leaves the task as typed. A goal's boxes are
     its steps (plan_goal)."""
     if goal: return plan_goal(tid, text)
+    store = store or globals()['store']          # ...the one start (concierge.handoff_task) reads its task in the store it made it in
     try:
         from . import concierge, slots, triage
+        from .ingest import own_addresses
+        from .responder import owner_of
         ask = triage.extract_ask({'body': text}, concierge.brain(store, fast=True))
         if ask.get('checklist') and not store.task_checklist(tid): store.set_task_checklist(tid, ask['checklist'], 'triage')
-        if ask.get('outputs'): slots.add(store, tid, ask['outputs'], 'triage')
+        # ...AND A TITLE THAT IS ONLY A LINK IS NAMED FROM THE ASK (walk 5, 2026-11-19: "http://127.0.0.1:18803/" stood on the rail): the
+        # model's reading of what he asked, its first sentence - a link alone says nothing of the work
+        link = re.compile(r'\s*<?https?://\S+>?\s*')
+        said = ' '.join(str(ask.get('summary') or '').split())
+        if link.fullmatch(str((store.get_task(tid) or {}).get('Title') or '')) and said and not link.fullmatch(said):
+            store.update_task(tid, {'Title': re.split(r'(?<=[.!?])\s', said)[0][:120]}, 'triage')
+        # ...HIS OWN ASK OWES HIM NO EMAIL (a walk, 2026-11-18): "set it up for my press" was read as an email owed to the owner, and its
+        # agent drafted "please approve the note" to him - he is this ask's sender, and his press on the card is the approval
+        me = {'name': owner_of(store), 'address': min(own_addresses(store), default='')}
+        if ask.get('outputs'): slots.add(store, tid, ask['outputs'], 'triage', sender=me)
     except Exception as e: logger.info(f'could not read the checklist of {task_ref(tid)}: {e}')
 
 
@@ -1257,21 +1315,45 @@ def read_hand_task(task_id: int, background: BackgroundTasks, body: ReadAskBody 
 def create_task(body: TaskBody):
     if not body.Title: raise HTTPException(422, 'Title is required')
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if 'Files' in fields: fields['Files'] = prompt_images(fields['Files'])
     # A TITLE IS A LINE, NOT THE ASK (TQ-1215, the owner: "task name is 300 words. it should be limited"): + New filed its whole request
     # as the title. Cut at a word the way the assistant's own tasks are; the words as typed stay the Summary.
-    from .concierge import _title_cut
-    if len(fields['Title']) > 120: fields = {**fields, 'Summary': fields.get('Summary') or fields['Title'], 'Title': _title_cut(' '.join(fields['Title'].split()))}
+    # ...and a title that is his words is made by the one road (general.title_of) and marked his, so its agent may name it (take_name)
+    from . import general
+    words = fields.get('Summary') or fields['Title']
+    his = general.title_of(fields['Title']) == general.title_of(words)
+    if his or len(fields['Title']) > 120:
+        fields = {**fields, 'Title': general.title_of(fields['Title']), **({'Summary': words} if len(fields['Title']) > 120 else {})}
     # made by the owner on the page: an ask from the desktop once an agent works it (asks.py)
     tid = store.create_task({**fields, 'AskedVia': 'desktop', 'OriginBase': 'owner'}, ACTOR)
+    if his: general.own_title(store, tid, words)
     # ...and a file attached in New is the task's own, in its folder - named under attachments/, its agent's Read was refused (2026-11-17)
     from . import outputs
-    outputs.take_in_summary(store, tid, ACTOR)
+    outputs.take_in_ask(store, tid, ACTOR)
     # A task created by the owner is their durable TODO. Agent runs may come and go without
     # silently completing it; only routed/triaged work is eligible for automatic completion.
     from . import selfclose
     selfclose.claim(store, tid, ACTOR)
     store.audit('task', tid, 'create', ACTOR)
     return {'taskId': tid, 'ref': task_ref(tid)}
+
+
+class StartBody(BaseModel):
+    text: str = ''
+    images: list[str] = []           # ...the files on his box: saved uploads only (prompt_images)
+
+@app.post('/api/start')
+def start_from_words(body: StartBody):
+    """NEW'S BOX IS THE ONE START (F1, the walks 2026-11-18): his words and files, as typed, to the one start (concierge.handoff_task) - the
+    task made and its agent at work. Its answer went through the Assistant's model, which picked a form: "send me this every Monday" with a
+    CSV landed on an empty SQL report, and a code fix was refused "No coding tool is connected" behind Developer mode. The agent does the
+    kind with its tools; a start that cannot happen is the 422 every start door answers, with its way past it (StartRefused)."""
+    from . import concierge
+    words = str(body.text or '').strip()
+    if not words: raise HTTPException(422, 'say what the agent should do')
+    try: made = concierge.handoff_task(store, words, 'general', ACTOR, said=words, files=prompt_images(body.images), door='New')
+    except ValueError as e: _start_refused(None, None, e)
+    return {'taskId': made['taskId'], 'ref': made['ref'], 'started': bool(made.get('started')), 'joined': bool(made.get('joined'))}
 
 
 @app.post('/api/assistant/dock')
@@ -1443,20 +1525,18 @@ def _run_kind(op: dict, background: BackgroundTasks):
     kind, tid, mid, p = op['kind'], op['target'], op['target'], op['params'] or {}
     # TRUST AND START (the owner, 2026-10-22: "if i hit go then it should start anyway"): the owner's word on the sender first - the
     # page's Trust them - then the very start that was refused, so one press does both
-    if p.get('trust') and op.get('targetKind') == 'task' and store.get_task(tid):
-        from . import origin
-        origin.raise_to(store, tid, 'trusted', ACTOR)
+    if p.get('trust') and op.get('targetKind') == 'task' and store.get_task(tid): _vouch(tid)
     if kind == 'task.create_from_message':
         k = str(p.get('kind') or 'task').lower()
         # WHAT THE OWNER SAID IN THE AGENT BOX starts it with those words (the owner, 2026-10-23): the chat road opened on the task's
         # own summary and dropped them. Said nothing and chose nothing, it is the chat road as it always was - the item is the ask
-        if k == 'general' and any(p.get(f) for f in ('instructions', 'agent', 'pick', 'model')):
+        if k == 'general' and any(p.get(f) for f in ('instructions', 'agent', 'pick', 'model', 'files')):
             return dispatch_message(mid, DispatchBody(kind='general', agent=p.get('agent'), pick=p.get('pick'), model=p.get('model'),
-                                                      instruction=p.get('instructions')), background)
+                                                      instruction=p.get('instructions'), files=p.get('files') or []), background)
         if k == 'general': return chat_message(mid, background)
         if k == 'coding':
             out = dispatch_message(mid, DispatchBody(kind='coding', agent=p.get('agent'), brain=p.get('brain'),
-                                                     instruction=p.get('instructions'), model=p.get('model')), background)
+                                                     instruction=p.get('instructions'), model=p.get('model'), files=p.get('files') or []), background)
             # a repository still to choose is a decision, not a start: the item stays where it is (PW-135)
             if out.get('dispatch') == 'needs_repo':
                 raise operations.Halt(f"{out.get('ref') or 'it'} needs a repository first - {out.get('reason') or 'pick one'}", out)
@@ -1472,7 +1552,7 @@ def _run_kind(op: dict, background: BackgroundTasks):
         # checkout this belongs in" as a dead end - and its advice named a task menu the card redesign
         # had already removed (the owner, 2026-09-22: "don't see anywhere on agent or task to choose repo").
         out = dispatch_task(tid, DispatchBody(kind=p.get('kind'), agent=p.get('agent'), brain=p.get('brain'),
-                                              instruction=p.get('instructions'), model=p.get('model')), background)
+                                              instruction=p.get('instructions'), model=p.get('model'), files=p.get('files') or []), background)
         if out.get('dispatch') == 'needs_repo':
             raise operations.Halt(f"{out.get('ref') or 'it'} needs a repository first - {out.get('reason') or 'pick one'}", out)
         return out
@@ -1612,7 +1692,8 @@ def _run_kind(op: dict, background: BackgroundTasks):
     if kind == 'task.reopen':
         if not store.get_task(tid): raise HTTPException(404, 'task not found')
         # ONE REOPEN (T13): back in progress, and an old Remind me date cleared - it reopened straight into Upcoming
-        store.update_task(tid, {'Status': 'open', 'RemindAt': ''}, ACTOR); return {'status': 'open'}
+        from . import general
+        general.reopen(store, tid, ACTOR, 'reopen', also=('waiting', 'in_progress')); return {'status': 'open'}
     # THE TASK PAGE AS TOOLS (2026-09-25): each is the page's own handler, so the card and the click agree
     if kind == 'task.update':
         from .processing_order import known, level
@@ -1709,10 +1790,11 @@ def _run_kind(op: dict, background: BackgroundTasks):
     if kind == 'task.create_from_text':
         from . import concierge
         return concierge.handoff_task(store, str(p.get('text') or ''), str(p.get('kind') or 'coding'), ACTOR, title=p.get('title'),
-                                      repo=str(p.get('repo') or '') or None, profile=str(p.get('profile') or '') or None, said=p.get('said'))
+                                      repo=str(p.get('repo') or '') or None, profile=str(p.get('profile') or '') or None, said=p.get('said'),
+                                      files=p.get('files'))     # ...saved uploads, as the door that took them checked (prompt_images)
     if kind == 'task.setup':
         from . import concierge
-        return concierge.setup_task(store, str(p.get('text') or ''), ACTOR, title=str(p.get('title') or ''), said=p.get('said'))
+        return concierge.setup_task(store, str(p.get('text') or ''), ACTOR, title=str(p.get('title') or ''), said=p.get('said'), files=p.get('files'))
     if kind == 'message.archive': return file_message(mid, NotATaskBody(learn=False, archive=True), background)
     if kind == 'preference.exclude_sender': return not_mine(mid, NotMineBody(scope=str(p.get('scope') or 'sender')), background)
     # the bigger hammer, down the SAME road the card's own button took (ignore_sender, how='rule')
@@ -1799,11 +1881,13 @@ def _run_kind(op: dict, background: BackgroundTasks):
         # Let it go is a turn-down on the follow-up; answered elsewhere is a done. Only a step somebody OWES is dropped or closed -
         # a thread's own task is never touched for its follow-up (the review, 2026-10-12)
         if iid: assistant.act(store, iid, 'dismiss' if kind == 'task.let_go' else 'done', ACTOR)
+        # ...and closed through the one close (concierge.close_task), so a draft or an agent on it goes with it
         status = 'put down'
-        if step and kind == 'task.let_go':
-            store.add_comment(tid_, ACTOR, 'human', 'Let it go - nobody is chasing this further.'); store.update_task(tid_, {'Status': 'dropped'}, ACTOR); status = 'dropped'
-        elif step:
-            store.add_comment(tid_, ACTOR, 'human', f"Answered elsewhere{': ' + text if text else ''}."); store.update_task(tid_, {'Status': 'done'}, ACTOR); status = 'done'
+        if step:
+            from . import concierge
+            let = kind == 'task.let_go'; status = 'dropped' if let else 'done'
+            concierge.close_task(store, tid_, ACTOR, status=status,
+                                 note='Let it go - nobody is chasing this further.' if let else f"Answered elsewhere{': ' + text if text else ''}.")
         outcomes.record(store, 'chase.let_go' if kind == 'task.let_go' else 'chase.elsewhere', 'task' if tid_ else 'message', tid_ or item.get('mid') or 0, ACTOR,
                         facts={'who': who, **({'where': text} if text else {})})
         return {'status': status, 'who': who}
@@ -1851,12 +1935,12 @@ def _run_kind(op: dict, background: BackgroundTasks):
         return out
     if kind == 'agent.answer':
         # the exact outstanding request of the run that asked (PW-138/139); nothing asked = the waiting room (PW-140)
-        from . import workerstate as ws
+        from . import general
         # ...in the owner's words, never a "yes" made up for them (B12, 2026-10-11): an empty answer reached a permission
         # prompt as yes, and "which branch?" as the word yes
         said = ' '.join(str(p.get('text') or '').split())
         if not said: raise ValueError('say what to tell the agent')
-        out = ws.answer_open(store, tid, said, ACTOR, owner=p.get('owner') or None)
+        out = general.to_agent(store, tid, said, ACTOR, frm='owner', request='open', owner=p.get('owner') or None)
         if out['state'] == 'no_request': return waitroom_add(tid, {'text': said, 'owner': p.get('owner')})
         if not out['delivered']: raise RuntimeError(f"{out['state']}: {out.get('why') or ''}")
         return out
@@ -2082,13 +2166,12 @@ def worker_answer(task_id: int, body: WorkerAnswerBody):
     """Deliver an answer to ONE outstanding request of the run that asked it (PW-139/141): once; 409 when it is
     resolved already or the run changed; 422 when there is no live worker or delivery failed."""
     if not store.get_task(task_id): raise HTTPException(404, 'task not found')
-    from . import workerstate as ws
-    try: out = ws.answer(store, task_id, body.request_id, body.text, ACTOR, press=body.press)
+    from . import general
+    try: out = general.to_agent(store, task_id, body.text, ACTOR, frm='owner', request=body.request_id, press=body.press)
     except ValueError as e: raise HTTPException(422, str(e))
     # ...words that are no answer to its buttons are his next line, on the one road a line takes (general.take_line)
     if out['state'] == 'line':
-        from . import general
-        general.take_line(store, task_id, body.text, None, ACTOR, wait=False)
+        general.to_agent(store, task_id, body.text, ACTOR, frm='owner', wait=False)
         return {'delivered': True, 'state': 'line'}
     if not out['delivered']:
         raise HTTPException(409 if out['state'] in ('resolved', 'stale') else 422, f"{out['state']}: {out.get('why') or ''}")
@@ -2124,11 +2207,8 @@ def task_trust(task_id: int, scope: str = ''):
     if not store.get_task(task_id): raise HTTPException(404, 'task not found')
     # ...a press that lifts nothing starts nothing (pressed twice, or on the phone and the desk): the second handed the same thread over again
     lifts = store.task_has_tag(task_id, _ing.HOLD_TAG) or origin.of_task(store, task_id)[0] == 'stranger'
-    org = None
-    if scope == 'org':
-        try: org = senders.trust_org(store, task_id, ACTOR)
-        except ValueError as e: raise HTTPException(422, str(e))
-    else: origin.raise_to(store, task_id, 'trusted', ACTOR)    # ...which remembers the sender its press named (senders.vouch, the one road)
+    try: org, others = _vouch(task_id, scope)
+    except ValueError as e: raise HTTPException(422, str(e))
     o, why = origin.of_task(store, task_id)
     # ...A START THAT BREAKS IS KEPT ON THE TASK with its retry (blackboard.record_failure), never a bare 500 under "You trusted the sender"
     # with nobody at work (2026-11-17)
@@ -2136,7 +2216,25 @@ def task_trust(task_id: int, scope: str = ''):
     except Exception as e:
         from . import blackboard as bb
         logger.warning(f'task {task_id}: the start Trust makes failed - {e}'); bb.record_failure(store, task_id, e, 'assistant'); started = ''
-    return {'origin': o, 'why': why, 'started': started, **({'org': org} if org else {})}
+    return {'origin': o, 'why': why, 'started': started, **({'org': org} if org else {}), **({'released': others} if others else {})}
+
+
+def _vouch(task_id: int, scope: str = '') -> tuple:
+    """THE ONE TRUST PRESS (the task page, the phone, Trust and start): the sender its press names is trusted (origin.raise_to ->
+    senders.vouch), or with scope 'org' their organisation (senders.trust_org) - and since a trust is a person's, not a task's, every
+    other task their words held starts at once, as this one does (the owner, 2026-11-11). -> (org or None, [the other tasks it started]).
+    Raises ValueError where there is no organisation to name."""
+    from . import origin, senders
+    was = origin.held_tasks(store, but=task_id)
+    org = senders.trust_org(store, task_id, ACTOR) if scope == 'org' else origin.raise_to(store, task_id, 'trusted', ACTOR)
+    others = []
+    for t in origin.released(store, was):
+        # ...each start that breaks is kept on its own task (blackboard.record_failure), never in the way of the one he pressed
+        try: _trusted_starts(t); others.append(t)
+        except Exception as e:
+            from . import blackboard as bb
+            logger.warning(f'task {t}: the start a Trust on {task_id} made failed - {e}'); bb.record_failure(store, t, e, 'assistant')
+    return org, others
 
 
 @app.get('/api/trusted')
@@ -2216,29 +2314,48 @@ def _offer_of(task_id) -> str:
 
 
 @app.get('/api/tasks/{task_id}')
-def task_detail(task_id: int):
+def task_detail(task_id: int, rev: str = '', opened: bool = False):
+    """ONE TASK AS ITS PAGE DRAWS IT, read every 3 s while an agent works. Each setting and document its many readers ask (the owner's addresses,
+    the AI pick, trusted organisations, SOUL.md for the owner's name) is read once for the whole read (store.held_settings)."""
+    with store.held_settings(): return _task_detail(task_id, rev, opened)
+
+def _task_detail(task_id: int, rev: str = '', opened: bool = False):
     d = store.task_detail(task_id)
     if not d: raise HTTPException(404, 'task not found')
     # ONE CARD AT A TIME (cardqueue): what waits behind the card that stands is not the page's to draw yet
     from . import cardqueue
     q = cardqueue.state(store, task_id)
-    if (held := set(q['held'])): d['reviews'] = [r for r in d['reviews'] if r['ReviewId'] not in held]
+    held = set(q['held'])
+    d['reviews'] = [r for r in d['reviews'] if r['ReviewId'] not in held and not cardqueue.obsolete_read(store, task_id, r)]
+    # ...and on a task a stranger's words hold, no card waits for a press until he trusts them: the hold and its Trust are the one move
+    # (the judge's browser round, 2026-11-19: the reply drafted on a stranger's mail stood as the email card where the hold belonged)
+    from . import origin as _origin
+    # ...only where a stranger STARTED the task (origin.keeps_him): one who joined a task he or a known person started holds back their own
+    # words, never Send on the reply to the known person (the ruling, 2026-11-19)
+    if _origin.keeps_him(store, task_id):
+        past_ = set(q['past'])
+        d['reviews'] = [r for r in d['reviews'] if r.get('Status') != 'pending' or r['ReviewId'] in past_]
+    d['queue'] = {'live': q['live'], 'held': q['held']}       # ...the page's reply door reads it: none beside a front that is another card
     # ...and what the chat moved past reads as it will once its agent hears that (proposals.written_past): greyed in place, from this read on
-    from .proposals import SET_ASIDE, passed, passed_why
+    from .proposals import SET_ASIDE
     past = q['past']
     for r in d['reviews']:
         if r['ReviewId'] in past: r.update(Status='superseded', DecideNote=SET_ASIDE)
-        # ...and why, in the sentence the chat and a press say (2026-11-17): the kept draft read "closed without sending" over his own answer
-        if passed(r): r['Why'] = passed_why(store, r)
     # a session that has ended still leaves work to close out, so the page has to know one
     # happened - the Done and Pause buttons used to vanish with the pty
     tr = store.last_transcript(task_id)
     rs = _resumable(task_id)[0]
     from . import assistant, concierge, general, origin, workflows
+    # ...A TASK PAGE OPENED (`opened`: its page's first read of it - never a prefetch, a rail card or a poll) starts the judgement its chat's
+    # next turn will read (general.warm): made while the owner reads and types, the first turn's prompt no longer waits seconds on it
+    if opened: general.warm(store, task_id, d.get('task'))
     # ...and whether its channel can carry a reply, as /api/reviews says: without it a Teams draft offered Send, and
     # the press came back "not sent" instead of the card offering Copy & close from the start
     memo, sigs, here = {}, {}, {m['MessageId']: m for m in d.get('messages') or []}
+    from . import chatlog as _chatlog
     for r in d.get('reviews') or []:
+        # ...AND WHAT AN OWED REPLY NEEDS IS SAID ONCE: by the turn it stands in, where that turn said anything (chatlog.card_said - the ask's one rule)
+        if r.get('DraftNeeds') and not str(r.get('DraftText') or '').strip() and _chatlog.card_said(store, task_id, r['ReviewId']): r['DraftNeeds'] = None; r['NeedsSaid'] = True
         r['CanSend'], r['SendBlock'] = _review_send_state(memo, r)
         r['Connect'] = _review_connect(memo, r)
         r['Signature'] = signatures.for_review(store, r, here.get(r.get('MessageId')), memo=sigs)     # what goes under it: the reply box shows it
@@ -2271,7 +2388,7 @@ def task_detail(task_id: int):
     # table carries (_pile_payload), so the task page and the canvas light one button and neither asks the Advisor
     from . import rulebook
     known = {'task': d['task'], 'story': story, 'judged': judged, 'ended': ran, 'messages': msgs}       # ...and asks nothing this read knows
-    return {**d,'task': {**d['task'], 'Playbook': _playbook_brief(d['task'])}, 'recommended': rulebook.recommended_task(store, task_id, known),
+    return _revisioned({**d,'task': {**d['task'], 'Playbook': _playbook_brief(d['task'])}, 'recommended': rulebook.recommended_task(store, task_id, known),
             'origin': {**o,                                                                  # who's words are on it (origin.py)
                        # ...and the presses that trust them, in the same words as the held box's (senders.trust_offer)
                        **({'trust': _trust_offer(task_id, msgs)} if o['origin'] == 'stranger' else {}),
@@ -2300,16 +2417,18 @@ def task_detail(task_id: int):
             # task's reply source, so Close out says "Answering <them>" and the row leads with Reply (store.promised_in, 2026-10-26)
             'owed': _owed(d),
             'artifacts': [_artifact_row(a) for a in d.get('artifacts') or []],
-            # The detail page only needs lifecycle here; its terminal pane and optional WorkStrip
-            # load their own rich data. Do not block selecting a task on git status.
+            # The detail page only needs lifecycle here; its terminal pane loads its own rich data.
+            # Do not block selecting a task on git status.
             'session': session,
-            # ...and a start UNDER WAY before it has a session (general.OPENING: a quick call, a Continue, a carried-on turn), or one waiting
+            # ...and a start UNDER WAY before it has a session (general.OPENING: a Continue, a carried-on turn), or one waiting
             # on a free agent slot: the Agent section says "Starting…" or "Waiting its turn" at once, not when the session first speaks (2026-11-04)
             'starting': task_id in general.OPENING,
             'queued': _queued_info(store.get_dispatch(task_id)),
             # ...and what the task IS, the list's own State (taskstate): the table opens a task with no list row, and without it an
             # agent's own close read "stopped and saved" and opened on Close out (the owner, 2026-10-21)
             'state': (st := _task_state(task_id, d, session)),
+            # ...and ITS STATUS IN WORDS, said once (taskstate.status): the header's pill draws it as the phone and the bell say it
+            'status': _task_status(task_id, d, session, st),
             # ...and WHERE IT IS UP TO, at rest (stages.json, the owner 2026-10-26): the page reads its own from what it draws, the same rules
             'stage': stages.of_task(store, d['task'], st, session, msgs),
             # ...and who closed it and why, one line, when its agent did (taskstate.closed_why)
@@ -2320,8 +2439,8 @@ def task_detail(task_id: int):
             # says so (the owner, 2026-11-03: "it's asking me question but the ai closed the agent why?")
             # ...but a SIGN-IN it was waiting on is not answered in words (the owner, 2026-11-03: "agent is closed but it shows answer it??"):
             # its Continue opens the session and its browser again, and the agent asks for the sign-in there - `leftSignin` names the site
-            'leftAsking': [r['text'] for r in left if not str(r.get('request_id') or '').startswith('signin:')],
-            'leftSignin': next((str(r['request_id'])[7:] for r in left if str(r.get('request_id') or '').startswith('signin:')), ''),
+            'leftAsking': [r['text'] for r in left if r.get('ask') != 'signin'],
+            'leftSignin': next((r['site'] for r in left if r.get('ask') == 'signin'), ''),
             'transcript': {'sid': tr['Sid'], 'agent': tr['Agent'], 'cwd': tr['Cwd'], 'brain': tr['Brain'],
                            'at': tr['CreatedAt'], 'chars': len(tr['Text'] or '')} if tr else None,
             # ...and WHICH BRAIN ACTUALLY RAN IT, for a session that has ended (_ran_on)
@@ -2335,7 +2454,10 @@ def task_detail(task_id: int):
             # ...and what the agent step says when nothing is live: why it never started, or what it did before it went
             'agentStory': story,
             # ...and whether it works in a checkout: the header's Changes and the chat's landing card show then only, any kind (landing.has_checkout)
-            'checkout': _land.has_checkout(store, task_id, (session or {}).get('cwd') or (tr or {}).get('Cwd') or ''),
+            # - and only where the card is his to see (landing.shown: Developer mode, or a checkout he named). The page drew them on its own
+            # coding switch instead, so a general agent's Push card in his named checkout was raised, told to its agent, and never drawn
+            # (design round 6, D1: "Press Push" three times on both CLIs, no card on screen)
+            'checkout': _land.shown(store, task_id) and _land.has_checkout(store, task_id, (session or {}).get('cwd') or (tr or {}).get('Cwd') or ''),
             # ...and whether Fix it can run on its items: an outsider's only in GitHub's cloud, and only once the owner turned that
             # on - a button that could only say "turn it on" was offered anyway (the owner, 2026-10-12: "what does this do?")
             'batchOutside': batch_outside,
@@ -2351,7 +2473,7 @@ def task_detail(task_id: int):
             # stays here: the page needs to know a conversation is waiting, not how to address it.
             'resumable': {'sid': rs['Sid'], 'agent': rs['Agent'], 'cwd': rs['Cwd'], 'at': rs['CreatedAt']} if rs else None,
             # ...and a coding task running on an AI card is a chat, as a general task's is (general.on_card)
-            'onCard': _gen_on_card(task_id)}
+            'onCard': _gen_on_card(task_id)}, rev)
 
 
 def _task_state(task_id: int, d: dict, session=None):
@@ -2363,6 +2485,14 @@ def _task_state(task_id: int, d: dict, session=None):
         return taskstate.state(store, t, session, store.get_dispatch(task_id))
     except Exception as e:
         logger.debug(f'task {task_id}: state skipped - {e}'); return None
+
+
+def _task_status(task_id: int, d: dict, session=None, key=None):
+    "taskstate.status for one task's page, from the state already read - None where it could not be read (the page then reads its own)."
+    if not key: return None
+    try: return taskstate.status(store, d['task'], session, store.get_dispatch(task_id), key=key)
+    except Exception as e:
+        logger.debug(f'task {task_id}: status skipped - {e}'); return None
 
 
 def _writeup_state(task_id: int):
@@ -2416,8 +2546,9 @@ def _ran_on(task_id: int, tr=None):
             c = store.get_connector(int(pick.split(':', 1)[1])) or {}
             name = c.get('Name') or c.get('Type') or 'AI connector'
         else: name = pick.split(':', 1)[-1] or pick
-        return {'brain': name, 'model': saved.get('Model') or ''}
-    if tr and tr['Brain']: return {'brain': tr['Brain'], 'model': ''}
+        return {'brain': name, 'model': saved.get('Model') or '', 'pick': pick}
+    # ...with the pick it is in the AI pickers (`pick`), so the task's head marks the one at work (TaskPage's SwitchAi)
+    if tr and tr['Brain']: return {'brain': tr['Brain'], 'model': '', 'pick': f"cli:{tr['Brain']}"}
     return None
 
 
@@ -2439,13 +2570,14 @@ def _workerstate():
 
 
 def _assistant_payload(task_id: int, session=None):
-    from . import general, proposals as _proposals
+    from . import cardqueue as _cardqueue, general, proposals as _proposals
     task = store.get_task(task_id)
     if not task: raise HTTPException(404, 'task not found')
     # ...READ on any task but a coding one (the owner, 2026-11-06: one prompt box everywhere): a reply task, or a closed one from before the chat,
     # opens on its chat; what is typed there makes it the general agent's (_chat_kind), as Send to agent's dispatch did
     if str(task.get('Kind') or '') == 'coding':
         raise HTTPException(422, 'a coding task is worked in its terminal, not a chat')
+    _left_now(task_id)
     session = session or general.session_for(task_id)
     was = general.at_work(task_id)                        # ...and whether a turn works, before it too (line_state `was`)
     kept = general.waiting_lines(store, task_id)          # ...BEFORE the conversation: a turn takes a line from one into the other (line_state)
@@ -2524,7 +2656,7 @@ def _assistant_payload(task_id: int, session=None):
             # ...and a chat agent's question after its process idled out or the server restarted (taskstate.open_question, the owner 2026-11-07):
             # still open, and `resting` - typing answers it as the next turn, which starts the agent again
             # ...and a step handed over on a page that has closed since says so, its one press bringing it back (browsergate.shown_ask)
-            'asking': taskstate.asking(store, task, session),
+            'asking': (asking_ := taskstate.asking(store, task, session)),
             # pages its Claude session published (claude_artifacts) and files it chose to show (selfclose.SHOW_LINE) - the
             # conversation draws each in the turn that made it, by the cards' one rule (at_turn): a turn stopped or failed has no answer, and
             # its page went to the NEXT turn's (the overnight walk, 2026-11-11); lists any it cannot place at its foot
@@ -2536,24 +2668,56 @@ def _assistant_payload(task_id: int, session=None):
                                if _proposals._action(r) in ('write_playbook', 'amend_playbook')],
             # ...AND A HELD BROWSER ACT, the same way (2026-10-25): its card sat inside the hidden Close out, so the owner reached it only
             # by Stop and save - which closed the agent's browser, and then Approve said "the agent's browser is closed"
-            'browserActs': [r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' "
-                                                   "ORDER BY ReviewId", (task_id,)) if _proposals._action(r) in _proposals.HELD_ACTS],
+            # ...ONLY THE ONE THE LINE HAS AT ITS FRONT (cardqueue; a hard rule): one held behind it is its front's "next" and nothing more
+            'browserActs': (acts_ := taskstate.browser_acts(store, task_id)),
+            # ...and WHETHER HE HAS A PART ON THE PAGE, said once here (taskstate.needs_owner) - the page drew its own answer from the ask's id
+            'needsOwner': taskstate.needs_owner(asking_, acts_, getattr(session, 'sid', '') if session else ''),
             # triage's reading of the thread (who asks what, the owner's part, the mails aside): None before the first verdict
             'thread': store.task_thread(task_id),
             'session': session.info(tail=3) if session else None}
 
+def _revisioned(got, rev: str = ''):
+    """ONE ANSWER TO "UNCHANGED" FOR EVERY POLLED READ (the conversation's `rev`, now the task's own read and the chat's state): `rev` is the
+    name of what the page holds - when it is still the answer, only that name comes back (`same`), not 5-9 KB the page already draws. A live
+    session's idle clock and screen lines are outside the name: they move on every read of a working agent, and the page draws them over its
+    own socket (the page's calming poll leaves them out the same way)."""
+    if not isinstance(got, dict): return got
+    def calm(v):
+        if isinstance(v, dict):
+            return {k: calm(x) for k, x in v.items() if not ('sid' in v and k in ('idle', 'tail'))}
+        return [calm(x) for x in v] if isinstance(v, list) else v
+    import hashlib
+    name = got.get('rev') or hashlib.sha1(json.dumps(calm(got), default=str, sort_keys=True).encode()).hexdigest()[:16]
+    # ...AND A TURN'S MOMENT IS PART OF IT (the owner, 2026-11-22: "Waiting for the agent to start" for 39 s): a chat's `rev` names its log, and
+    # whether the turn at work is still starting, or what it is writing, is read fresh off its session (chatlog._now) - so the page asked every
+    # 3 s, was told "same", and drew "Waiting" for 15 s after its agent was at work
+    if got.get('rev') and (live := [(x.get('opening'), x.get('doing')) for x in got.get('items') or [] if isinstance(x, dict) and x.get('kind') == 'turn'
+                                    and (x.get('opening') or x.get('doing'))]):
+        name = f"{name}~{hashlib.sha1(json.dumps(live, default=str).encode()).hexdigest()[:8]}"
+    return {'rev': name, 'same': True} if rev and rev == name else {**got, 'rev': name}
+
 @app.get('/api/tasks/{task_id}/assistant')
-def assistant_state(task_id: int):
-    return _assistant_payload(task_id)
+def assistant_state(task_id: int, rev: str = ''):
+    return _revisioned(_assistant_payload(task_id), rev)
+
+def _left_now(task_id: int) -> None:
+    """A HELD STEP WHOSE BROWSER HAS LEFT ITS PAGE IS GREYED BEFORE IT IS SERVED (browsergate.left_now; the walk, 2026-11-19: an Approve looked
+    live after the browser moved on, and his press failed) - the page's every read of the task asks, so it is never drawn as a live Approve."""
+    from . import browsergate
+    try: browsergate.left_now(store, task_id)
+    except Exception as e: logger.debug(f'TQ-{task_id}: held browser steps were not checked against their page - {e}')
+
 
 @app.get('/api/tasks/{task_id}/conversation')
-def conversation_list(task_id: int, rev: str = ''):
-    """THE TASK'S CHAT, ONE LIST FOR EVERY KIND OF AGENT (conversation.items): what the page draws, in order, and what waits by the box.
-    `rev`: the list the page already holds - unchanged, only its name comes back."""
-    from . import conversation
+def conversation_list(task_id: int, rev: str = '', level: str = ''):
+    """THE TASK'S CHAT, ONE LOG FOR EVERY KIND OF AGENT (chatlog.serve): what the page draws, in order, and what waits by the box.
+    `rev`: the list the page already holds - unchanged, only its name comes back. `level`: how much of the work it shows, the chat's own
+    choice (summary, steps, everything) - else its kind's setting."""
+    from . import chatlog
     if not store.get_task(task_id): raise HTTPException(404, 'task not found')
-    got = conversation.items(store, task_id)
-    return {'rev': got['rev'], 'same': True} if rev and rev == got['rev'] else got
+    _left_now(task_id)
+    got = chatlog.serve(store, task_id, level or None)
+    return _revisioned(got, rev)
 
 @app.post('/api/tasks/{task_id}/assistant/session')
 def assistant_session(task_id: int, body: AssistantSessionBody = None):
@@ -2585,15 +2749,6 @@ def _chat_failed(e):
     c = failures.classify(e, act='assistant.message')
     return JSONResponse(status_code=422, content={'detail': c['sentence'], 'fix': c['fix'], 'retry': c['retry']})
 
-def _chat_kind(task_id: int):
-    """WHAT IS TYPED IN A TASK'S ONE BOX STARTS THE GENERAL AGENT (the owner, 2026-11-06: no separate Send to agent form): a task of another
-    kind - a reply, your own task - becomes the general agent's first, as Send to agent's dispatch switched it. A coding task is never one."""
-    from . import general
-    t = store.get_task(task_id) or {}
-    if not t or general.handles(t) or str(t.get('Kind') or '') == 'coding' or general.is_dock(t): return
-    store.update_task(task_id, {'Kind': 'general'}, ACTOR)
-    store.audit('task', task_id, 'kind_by_typing', ACTOR, detail={'from': t.get('Kind')})
-
 def _demo_turn(task_id: int, text: str, line_id=None):
     """THE DEMO HAS NO AI (the owner, 2026-11-05: "of course no prompts work since there is no AI"): what is typed into a task's chat is
     kept, and the answer under it says so in plain words - never "No AI is connected" over a chat whose turns were all written in
@@ -2613,7 +2768,6 @@ def assistant_message(task_id: int, body: AssistantMessageBody):
     use the same code when it comes to interactions so there should be no difference"). A chat answers with its turn, as it always did; a
     coding session's turn is its own, and this answers once the line is kept and handed on."""
     from . import codingchat, general
-    _chat_kind(task_id)
     if (said := _demo_turn(task_id, body.text, _line_id(body))) is not None: return {'reply': said, **_assistant_payload(task_id)}
     # ...A LINE SENT WHILE A TURN WORKS IS KEPT, AND THIS ANSWERS (the flood, 2026-11-11: fifty lines held fifty requests open until the turn
     # ended): it waits by the box (conversation.items `pending`) and the turn that takes it is the one that answers for it
@@ -2639,11 +2793,27 @@ def waiting_now(task_id: int):
     if not conversation.items(store, task_id).get('now'): return {'ok': False, 'why': 'this agent takes it when its turn ends'}
     return {'ok': True, **waitroom.deliver(store, task_id)}
 
+class ViaBrowserBody(BaseModel):
+    final_text: str | None = None
+@app.post('/api/reviews/{rid}/via-browser')
+def post_via_browser(rid: int, body: ViaBrowserBody):
+    "A post card's Post via the browser: proposals.via_browser."
+    from . import proposals
+    return proposals.via_browser(store, rid, body.final_text, ACTOR)
+
+@app.post('/api/tasks/{task_id}/again')
+def try_again(task_id: int):
+    """TRY AGAIN IS A PRESS (the owner, 2026-11-22: "yes fix" - it sent "Try again." as his own line): the agent is told he pressed it, on the one
+    road a press takes (to_agent), and the button says what became of it. -> {ok, how} - never ok where nothing was started or told."""
+    from . import general
+    how = general.to_agent(store, task_id, general.AGAIN_PRESS + ' ' + general.made_line(task_id), ACTOR, start=True)
+    return {'ok': bool(how), 'how': how} if how else {'ok': False, 'why': 'The agent could not be started - check that an AI is connected in Settings.'}
+
 def _say(task_id: int, body, **kw):
     "A typed line on the one road (general.take_line), as the chat's doors send it - his words straight to the agent, nothing fetched first."
     from . import general
     chat = general.handles(store.get_task(task_id))
-    out = general.take_line(store, task_id, body.text, body.attachments, ACTOR, _line_id(body),
+    out = general.to_agent(store, task_id, body.text, ACTOR, frm='owner', files=body.attachments, line_id=_line_id(body),
                             **({k: v for k, v in (('connector_id', body.connector_id), ('model', body.model), ('pick', body.pick)) if v} if chat else {}), **kw)
     # ...a line KEPT, no turn taken (a held stranger's task: take_line's {'kept', 'held'}) is a chat's (no session, no reply) - both chat doors
     # unpacked the dict as (session, reply) and died on 'kept'.info(), his line drawn with an error under it while it waited behind Trust
@@ -2721,7 +2891,7 @@ async def assistant_stream(task_id: int, body: AssistantMessageBody):
     files its reply on the task.
     """
     from . import general
-    await run_in_threadpool(_chat_kind, task_id)             # a store write: off the loop
+    # ...the kind switch his words make is general.take_line's, the one road his line takes (fce96f199)
     if (said := await run_in_threadpool(_demo_turn, task_id, body.text)) is not None:
         payload = await run_in_threadpool(_assistant_payload, task_id)
         line = json.dumps({'type': 'done', 'reply': said, 'payload': payload}) + '\n'
@@ -2846,9 +3016,10 @@ def update_task(task_id: int, body: TaskBody, background: BackgroundTasks = None
             is_chat = getattr(live, 'mode', '') == 'assistant'
             wants_chat = general.handles({'Kind': next_kind})
             if is_chat != wants_chat or next_kind == 'task': hub_term.close(live.sid)
-    # Status done through here is Mark done too - the one close (concierge.close_task), whichever page sent it
-    closing = fields.get('Status') == 'done' and t.get('Status') not in ('done', 'dropped')
-    if closing: fields.pop('Status')
+    # Status done or dropped through here is the one close too (concierge.close_task), whichever page sent it: a drop
+    # left the draft waiting for a yes on a task nobody would open again
+    closing = fields.get('Status') in ('done', 'dropped') and t.get('Status') not in ('done', 'dropped')
+    if closing: closing = fields.pop('Status')
     store.update_task(task_id, fields, ACTOR)
     # the owner's own priority call is evidence: every task from one sender marked urgent by hand is a rule worth asking about (promote.py)
     if fields.get('Priority'):
@@ -2861,28 +3032,20 @@ def update_task(task_id: int, body: TaskBody, background: BackgroundTasks = None
         _teach_line(task_id, 'priority', f"triage made it {level(t.get('Priority'))}; the owner made it {fields['Priority']}", background)
     if closing:
         from . import concierge
-        try: concierge.close_task(store, task_id, ACTOR)
+        try: concierge.close_task(store, task_id, ACTOR, save=closing == 'done', status=closing)
         except concierge.KeptOpen as e: raise HTTPException(409, str(e))      # the live agent's save failed: still open, and why
     if t.get('Status') in ('done', 'dropped') and fields.get('Status') in ('open', 'in_progress', 'waiting'):
         # A self-close is remembered in-process to prevent duplicate hooks. Reopening is a new
         # lifecycle, so a later automated run must be allowed to settle again.
         from . import selfclose
         selfclose.forget(task_id)
-    # A task DROPPED (or one already closed, marked again) ends its agent too: a live session left
-    # running on a finished task is an agent nobody is coming back for. close() files the transcript
-    # first, so the record survives the pty as always. Mark done never reaches here - its Status was
-    # popped above and concierge.close_task stopped the agent and settled the item itself.
+    # A task already closed, marked again, ends an agent left on it too: a live session left running on a finished task is an agent
+    # nobody is coming back for. close() files the transcript first, so the record survives the pty as always.
     if fields.get('Status') in ('done', 'dropped'):
         live = hub_term.session_for(task_id)
         if live and live.alive:
             hub_term.close(live.sid)
             store.add_comment(task_id, ACTOR, 'human', 'Task closed - ended the live agent session with it.')
-        # the same read receipt concierge.close_task writes: a task dropped leaves Unread too, and a
-        # later arrival on it is unread again (the owner, 2026-09-07)
-        if fields['Status'] == 'dropped' and t.get('Status') not in ('done', 'dropped'):
-            from . import funnel as _funnel
-            try: _funnel.settle(store, f'task:{task_id}', 'done', ACTOR, note='the task was closed')
-            except Exception as e: logger.debug(f'the closed task did not settle its item: {e}')
     # The kind control is a VERDICT, not a field edit. It used to be the only door to "this is
     # mine, not the agent's" that taught nothing - the tray button beside it reached the identical
     # end state and wrote the lesson - so the owner's correction was given and dropped on the floor
@@ -3078,6 +3241,40 @@ class ContinueBody(BaseModel):
     note: str | None = None          # what to tell it as it picks up - optional
     context: str | None = None       # ...and what the Assistant added to the owner's words, Taskuary's own (general.relayed)
     images: list[str] = []           # pictures to go with it (/api/prompt-image)
+    pick: str | None = None          # ...ON ANOTHER AI: `cli:<key>` / `connector:<id>`, as the pickers name them (_take_ai)
+    model: str | None = None
+
+
+def _take_ai(task_id: int, pick: str, model: str | None) -> str | None:
+    """HAND THE TASK TO ANOTHER AI (the owner, 2026-11-18: "i need way to hand this to new AI agent instead of the one that blocked me"): the
+    chosen AI must be one ready here; what works the task now is stopped - a chat's turn stopped and its session closed, a coding session paused
+    with its handover filed - the press is his line in the chat, and Continue's own road then wakes the chosen AI on the saved conversation.
+    The CLI key a coding start takes, else None (a chat's session, opened here on the pick, carries it - and the task's later turns)."""
+    from . import agents as hub_agents, general
+    task = store.get_task(task_id)
+    if not task: raise HTTPException(404, 'task not found')
+    coding = str(task.get('Kind') or '').lower() in hub_agents.CODING_KINDS
+    ready = hub_agents.coding_options(store) if coding else [{**o, 'value': o['pick']} for o in general.brain_options(store)]
+    o = next((o for o in ready if o['value'] == pick and o.get('ready', True)), None)
+    if not o: raise HTTPException(422, f"That AI is not ready here - connect it under {words.name('ai')}, then pick it again.")
+    if (s := general.session_for(task_id)):
+        if s.busy and general.stop_turn(store, task_id):
+            end = time.time() + 5
+            while s.busy and time.time() < end: time.sleep(0.05)
+        hub_term.close(s.sid)
+    elif (live := hub_term.session_for(task_id)) and live.alive:
+        try: _pause_task(task_id)
+        except HTTPException: hub_term.close(live.sid)       # nothing of it to save: it goes all the same
+    store.audit('task', task_id, 'ai_switched', ACTOR, detail={'to': o['label'] + (f' ({model})' if model else ''), 'pick': pick, 'model': model or ''})
+    brain = pick[4:] if coding and pick.startswith('cli:') else None
+    if coding: general.on_card(store, task, None if brain else pick, brain)
+    if coding and not brain:
+        try: general.place_coding(store, task_id)
+        except ValueError as e: raise HTTPException(422, str(e))
+    if not brain:
+        try: general.start_session(store, task_id, model=model or None, pick=pick, actor=ACTOR)
+        except (ValueError, RuntimeError) as e: raise HTTPException(422, str(e))
+    return brain
 
 
 @app.post('/api/tasks/{task_id}/continue-work')
@@ -3087,6 +3284,7 @@ def continue_work(task_id: int, body: ContinueBody = None):
     coding agent reopens its own CLI session by the id its CLI gave it, or - where there is none to reopen - a fresh
     one seeded with the handover. The owner's note, when there is one, is the first thing it hears."""
     from . import general as _g
+    brain = _take_ai(task_id, body.pick, body.model) if body and body.pick else None
     if (t := store.get_task(task_id)) and not _g.on_card(store, t) and (why := _brainless(not _g.handles(t))): raise HTTPException(422, why)
     from . import asks
     asks.mark(store, task_id)          # the owner picked it up again: it reports back like an ask
@@ -3096,8 +3294,9 @@ def continue_work(task_id: int, body: ContinueBody = None):
     if task.get('Status') == 'dropped': raise HTTPException(409, 'This task was dismissed.')
     note = ' '.join(str((body.note if body else '') or '').split())[:4000]
     imgs = prompt_images(body.images if body else [])
-    # ...A HELD STRANGER'S TASK CONTINUES BEHIND ITS TRUST, as every start does (origin.hold): its note waits by the box (take_line, below), and a
-    # bare Continue says the hold's line - it opened a session whose turn the hold refused, and answered "continued" with nothing at work
+    # ...A HELD STRANGER'S TASK CONTINUES BEHIND ITS TRUST, as every start does (origin.hold): a note is his line (take_line, below - kept behind
+    # Trust on a task a stranger's mail started, on to the agent on his own), and a bare Continue says the hold's line - it opened a session
+    # whose turn the hold refused, and answered "continued" with nothing at work
     from . import origin
     if (h := origin.hold(store, task_id)) and not note and not imgs: raise HTTPException(409, h['line'])
     # ...A PICTURE WITH NO WORDS IS A LINE OF HIS TOO (the attach stress rounds, 2026-11-18): Continue's box sends one alone, and only a note
@@ -3108,7 +3307,7 @@ def continue_work(task_id: int, body: ContinueBody = None):
         # (its own conversation, else a fresh one with the handover), one that idled out, one at rest. What came in since rides as Taskuary's
         extra = general.relayed(note, (body.context if body else '') or '')
         told = '\n\n'.join(x for x in [continuity.news_block(store, task_id), f'{general.RELAY} {extra}' if extra else ''] if x) if general.handles(task) else ''
-        try: out = general.take_line(store, task_id, note, imgs or None, ACTOR, wait=False,
+        try: out = general.to_agent(store, task_id, note, ACTOR, frm='owner', files=imgs or None, wait=False,
                                      **({'delivery_instructions': told} if told else {}))
         except (ValueError, RuntimeError) as e: raise HTTPException(422, str(e))
         kind = 'general' if general.handles(task) else 'coding'
@@ -3148,14 +3347,15 @@ def continue_work(task_id: int, body: ContinueBody = None):
         from . import outcomes
         outcomes.record(store, 'agent.continued', 'task', task_id, ACTOR, next_move='', facts={'door': 'continue-work', 'kind': 'general'})
         return {'continued': True, 'taskId': task_id, 'kind': 'general'}
-    row, _why = _resumable(task_id)
+    # ...handed to another CLI, its conversation is the one CLI's it was made in: the new one starts fresh, seeded with the handover
+    row, _why = (None, '') if brain else _resumable(task_id)
     # CONTINUE IS THE SAME CLI (the owner, 2026-09-30: "it should start as codex if i hit continue of course"): the one that made
     # the conversation, else the one that last worked the task - never whatever the default happens to be today
     last = row or store.last_transcript(task_id) or {}
-    brain = (last.get('Brain') or None) if isinstance(last, dict) else None
+    brain = brain or ((last.get('Brain') or None) if isinstance(last, dict) else None)
     # ...and a reply the owner has since SENT is said too: a fresh session told nothing drafted it again (2026-10-20)
     sent = continuity.sent_block(store, task_id, quote=0, cmd='`taskuary --follow-up --reply "<text>"`')
-    fresh = lambda: continue_task(task_id, CodeBody(brain=brain, instruction=continuity.RESUME_PROMPT + (f'\n\n{sent}' if sent else '')))
+    fresh = lambda: continue_task(task_id, CodeBody(brain=brain, model=(body.model if body and body.pick else None) or None, instruction=continuity.RESUME_PROMPT + (f'\n\n{sent}' if sent else '')))
     if row:
         # the conversation belongs to the CLI that made it; when THAT CLI cannot open now (out of sessions, signed out), a fresh
         # session seeded with the handover is the way on - not an error (the owner, 2026-09-30, TQ-0887: codex made it, codex was
@@ -3210,7 +3410,7 @@ def resume_previous_work(task_id: int, background: BackgroundTasks):
         task = store.get_task(task_id)
         if not task: raise HTTPException(404, 'task not found')
         if task.get('Status') == 'dropped': raise HTTPException(409, 'This task was dismissed.')
-        review = store.pending_review(task_id)
+        review = store.waiting_on_owner(task_id)
         if review: return {'action': 'review', 'reviewId': review['ReviewId'], 'taskId': task_id}
         # A finished task is not a closed conversation. The agent's own session is still there to
         # pick up - and picking it up means there is live work again, so the task comes back to the
@@ -3474,6 +3674,15 @@ class NotATaskBody(BaseModel):
     # no way to hold a system that is not a git repository at all (TQ-0501: clocking in is ADP).
     belongs_to: str | None = None
 
+def report_not_for_me(m: dict, src: str, title: str = '') -> str:
+    """A REPORT'S FINDING PUT DOWN FOR GOOD (the owner's GO, 2026-11-19): one plain line in his memory - the report, and what this finding
+    is about - written as it stands (memorylines.say). The routing judge and triage read the whole memory (reports.judge_memory), so the
+    next run of that finding makes no task. A finding has no sender or subject to key a verdict on; this is its whole lesson."""
+    about = ' '.join(str(title or m.get('TriageTitle') or m.get('Subject') or 'this').split())[:160]
+    line = f"Not for me: {m.get('SourceName') or 'this report'} findings about {about}"
+    return memorylines.say(store, 'not_ours', src, line) or line
+
+
 def _teach_not_a_task(m: dict, background=None):
     """The NOT A TASK verdict, written the SAME way whichever door it came through - the task
     list's "Not a task" and the timeline's "Not a task - just conversation" are one judgement
@@ -3488,6 +3697,10 @@ def _teach_not_a_task(m: dict, background=None):
     chat has no address, and a two-word subject has no topic - there is nothing to key a note
     to, and a note keyed to nothing is a verdict against everyone, so none is written. The
     thread is still ruled either way: that is the ignore route the callers add."""
+    # ...a report's finding is one plain line, the report and what it is about (report_not_for_me) - no sender, no subject to key it on
+    if m.get('Channel') == 'report':
+        src = f"msg{m['MessageId']}"
+        report_not_for_me(m, src, (store.get_task(m['TaskId']) or {}).get('Title') if m.get('TaskId') else ''); return src
     em, topic = (m.get('FromEmail') or '').lower(), _topic_key(m)
     if not (em or topic): return None
     # ...what it teaches about the owner, in words, or nothing (memorylines.teach - the owner, 2026-10-27): the line is the record, its
@@ -4369,6 +4582,7 @@ def not_mine(mid: int, body: NotMineBody, background: BackgroundTasks = None):
     note = (body.note or '').strip() or _not_mine_note(m, scope, key if scope == 'subject' else None)
     src = f'msg{mid}'
     tid = m.get('TaskId')
+    was_title = (store.get_task(tid) or {}).get('Title') if tid else ''      # ...what the finding's task was called, before it is filed
     fate = ''
     if tid and store.get_task(tid):
         store.audit('task', tid, 'not_mine_delete', ACTOR, detail={'message_id': mid, 'learned': src})
@@ -4376,6 +4590,13 @@ def not_mine(mid: int, body: NotMineBody, background: BackgroundTasks = None):
     store.set_message_status(mid, 'ignored')
     store.add_route(mid, None, 'ignore', None, f'not ours - {note[:200]}', [], ACTOR)
     store.audit('message', mid, 'not_mine', ACTOR, detail={'scope': scope, 'key': key, 'from': em, 'was': m.get('Status')})
+    # A REPORT'S FINDING HAS NO SENDER OR SUBJECT TO KEY ON (the owner's GO, 2026-11-19): From now on on a report's task is one plain line in
+    # his memory - the report, and what this finding is about - which the routing judge and triage read whole (reports.judge_memory), so the
+    # next run of that finding makes no task. Just this once (scope None: learn=False) writes nothing, as before
+    if m.get('Channel') == 'report':
+        line = report_not_for_me(m, src, was_title)
+        return {'ok': True, 'learned': src, 'note': line, 'scope': scope, 'scopeKey': key, 'taskDeleted': fate == 'deleted',
+                'taskArchived': fate == 'archived', 'ref': task_ref(tid) if tid else None, 'alsoCovered': []}
     # "not ours" draws a responsibility boundary: what it says about the owner - whose work this kind is, and why - is a line in their
     # memory, in words, or nothing (memorylines.teach, 2026-10-27); the owner's own words, when they typed some, are its best evidence
     memorylines.teach_soon(store, 'not_ours', src, _verdict_facts(m, said=f"the owner's words: {body.note.strip()}" if (body.note or '').strip() else ''),
@@ -4427,8 +4648,8 @@ def file_message(mid: int, body: NotATaskBody = None, background: BackgroundTask
         # never delete work: a task an agent has been on is CLOSED and kept, report and all
         fate = 'archived' if (body is not None and body.archive) else _file_task(tid, 'filed from the pipe')
         if fate == 'archived' and store.get_task(tid) and store.get_task(tid).get('Status') not in ('done', 'dropped'):
-            store.update_task(tid, {'Status': 'done'}, ACTOR)
-            store.add_comment(tid, ACTOR, 'human', 'Archived from the pipe - closed, not deleted.')
+            from . import concierge
+            concierge.close_task(store, tid, ACTOR, save=False, note='Archived from the pipe - closed, not deleted.')
     learned = _teach_not_a_task(m, background) if (body is None or body.learn) else None
     verdict, route_id = operations.verdict_of_message(store, m)
     store.set_message_status(mid, 'ignored')
@@ -4563,7 +4784,7 @@ def _brainless(coding: bool) -> str:
     where = words.name('ai')
     if coding and not hub_agents.cli_ready(store):
         return f'{hub_agents.NO_AI} that can run a coding agent - connect a command-line AI (Claude Code, Codex) under {where}, then start it again'
-    if not coding and not capabilities.has_ai(store): return f'{hub_agents.NO_AI} to run this agent - connect one under {where}, then start it again'
+    if not coding and not capabilities.has_ai(store, 'general'): return f'{hub_agents.NO_AI} to run this agent - connect one under {where}, then start it again'
     return ''
 
 def _no_brain(task: dict | None, body: DispatchBody, kind: str = '') -> str:
@@ -4579,9 +4800,10 @@ def _no_brain(task: dict | None, body: DispatchBody, kind: str = '') -> str:
 def _dispatch_task_to_its_agent(tid: int, body: DispatchBody, background: BackgroundTasks) -> dict:
     # ...WHAT HE ATTACHED ON THE BOX IS THE TASK'S OWN at this door too, as on his typed line (general.take_line): Send to agent on a report,
     # a dashboard or an FYI named the upload under Taskuary's own attachments, a path the agent's Read is refused
-    if body is not None and body.instruction and not body.app_words:
+    # ...a field beside his words (DispatchBody.files), never written into them
+    if body is not None and body.files and not body.app_words:
         from . import outputs
-        body = body.model_copy(update={'instruction': outputs.take_in_text(tid, body.instruction)})
+        body = body.model_copy(update={'files': outputs.take_in(tid, prompt_images(body.files))})
     with _STARTING_LOCK: gate = _STARTING.setdefault(int(tid), threading.Lock())
     waited = not gate.acquire(blocking=False)
     if waited: gate.acquire()
@@ -4650,7 +4872,7 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
         from . import origin
         if (h := origin.hold(store, tid)):
             if (typed := str(body.instruction or '').strip()) and not body.app_words:
-                general.wait_line(store, tid, **general.split_files(typed))      # ...its files kept as files, a pill each, as take_line keeps them
+                general.wait_line(store, tid, typed, body.files)      # ...its files kept as files, a pill each, as take_line keeps them
                 return {'dispatch': 'held', 'started': False, 'existing': False, 'held': h['line'], 'taskId': tid, 'ref': task_ref(tid)}
             # ...and a press with no words of his is a start refused at the door, said with its way on (Trust) - as the offer's press is
             # (accept_offer): kept on the task for the Advisor, said as not done on the phone (2026-11-17, CI)
@@ -4670,12 +4892,9 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
         if card:                                    # ...a coding task on an AI card works in the checkout its CLI would have
             try: general.place_coding(store, tid)
             except ValueError as e: raise HTTPException(422, str(e))
-        # THE OWNER'S OWN START TAKES THE SAME ROAD AS AN ARRIVAL'S (the owner, 2026-11-13: "that warm agent should be open for all the easy
-        # tasks"): quick and normal work is the warm agent's turn (quickwork.again), on the AI he picked if he picked one; the rest the full agent's
-        from . import ingest as _ing, quickwork
-        quick = not card and not had_session and _ing._reads_quick(store, tid)
+        # ...the task's one agent, as an arrival's is: work judged quick runs on its light gear (brainroute), never a warm agent first
         try:
-            session = general.start_session(store, tid, model=body.model, pick=body.pick or card or None, actor=ACTOR, quick=quick)
+            session = general.start_session(store, tid, model=body.model, pick=body.pick or card or None, actor=ACTOR)
         except (ValueError, RuntimeError) as e:
             raise HTTPException(422, str(e))
         # The source messages and their files are injected by GeneralSession.send_prompt.  On a
@@ -4683,8 +4902,11 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
         # an explicit new instruction is sent, so clicking twice cannot duplicate the task.
         history = general.history(store, tid)
         typed = prompt = str(body.instruction or '').strip()
+        files = list(body.files or [])
         if not prompt and not history:
             prompt = str(task.get('Summary') or task.get('Title') or '').strip()
+            from .store import files_of
+            files = files or files_of(task)            # ...the ask's own files with it: the turn names them (send_prompt's attachments)
             # ...and a task triage left to the owner is the agent's now: its Summary said "Alex makes both changes by hand", and the agent
             # the owner sent it to read that as its orders and did nothing (the overnight run, 2026-11-03)
             if (was not in task_kinds.AGENT or body.handed) and prompt: prompt += '\n\n' + HANDED_OVER
@@ -4694,7 +4916,7 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
         if prompt:
             def turn():
                 brief = not typed or body.app_words
-                try: quickwork.again(store, tid, session, prompt, brief=brief) if getattr(session, 'quick', False) is True else session.send_prompt(prompt, brief=brief)
+                try: session.send_prompt(prompt, attachments=files or None, brief=brief)     # ...his files ride as the turn's own (send_prompt's attachments)
                 finally: general.OPENING.discard(tid)
             general.OPENING.add(tid)
             background.add_task(turn)
@@ -4707,7 +4929,8 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
     # THE BRAIN TRAVELS WITH THE ROLE. This called start_session without it, so a picked CLI got as
     # far as the door and no further: "chose devin from start coding agent screen but it started
     # claude code" (the owner, 2026-09-22). agent = who works it, brain = what runs it.
-    ses = start_session(store, tid, agent, body.model, body.instruction, brain=body.brain)
+    # ...a coding CLI is told his files under his words, the block built for its prompt from the field (general.with_files)
+    ses = start_session(store, tid, agent, body.model, general.with_files(body.instruction or '', body.files) if body.files else body.instruction, brain=body.brain)
     existing = bool((ses or {}).get('existing'))
     return {'dispatch': 'session', 'agent': agent, 'brain': body.brain, 'model': body.model, 'started': not existing, 'existing': existing,
             'accepted': (ses or {}).get('accepted'),      # the prompt was submitted, not merely typed (PW-209)
@@ -5174,6 +5397,13 @@ def decide(rid: int, body: DecideBody, background: BackgroundTasks = None):
     if not rv: raise HTTPException(404, 'review not found')
     from .verdicts import VERB2STATUS, context_moved, decide as land
     if body.verb not in VERB2STATUS: raise HTTPException(422, 'bad verb')
+    # ...ONE PRESS ROAD FOR EVERY CARD (walk 8, 2026-11-20): a turn's held steps are one card whose press runs each step through this same door,
+    # in order, stopping at the first that fails - never a road of its own (it was /api/reviews/steps)
+    if body.steps:
+        from . import shellgate
+        if body.verb not in ('approve', 'reject'): raise HTTPException(422, 'held steps are approved or dismissed')
+        try: return shellgate.approve_steps(store, [rid, *[i for i in body.steps if i != rid]], land, ACTOR, body.verb)
+        except ValueError as e: raise HTTPException(422, str(e))
     # ...in the demo a card can be put down and never sent (demo.refuse_verdict - the path alone cannot tell Dismiss from Send)
     if (why := demo.refuse_verdict(body.verb, rv.get('Kind'))):
         demo.refused(store, f'/api/reviews/{rid}/decide', why)
@@ -5233,19 +5463,6 @@ def decide(rid: int, body: DecideBody, background: BackgroundTasks = None):
     return land(store, rv, body.verb, body.final_text, body.note, ACTOR,
                 learn_async=(background.add_task if background is not None else None), cc=body.cc, reply_text=body.reply_text, anyway=body.anyway, fields=body.fields,
                 blanks_ok=body.blanks_ok, bcc=body.bcc, subject=body.subject, closes=body.closes)
-
-class StepsBody(BaseModel):
-    ids: list[int]; verb: str = 'approve'
-@app.post('/api/reviews/steps')
-def decide_steps(body: StepsBody):
-    """ONE APPROVE FOR A TURN'S HELD STEPS (the owner, 2026-11-09: "one action button and one card"): each step through the one decide door
-    (verdicts.decide), in order, stopping at the first that fails - shellgate.approve_steps. Dismiss dismisses them all."""
-    from . import shellgate
-    from .verdicts import decide as land
-    if body.verb not in ('approve', 'reject'): raise HTTPException(422, 'bad verb')
-    try: out = shellgate.approve_steps(store, body.ids, land, ACTOR, body.verb)
-    except ValueError as e: raise HTTPException(422, str(e))
-    return out
 
 # A BULK CARD (bulkcard.py): one press does every act on it, by each act's own road, in the background - its progress read here, drawn as a bar.
 # The owner's alone: no agent door (guard.AGENT_WRITES) lists it
@@ -5597,6 +5814,7 @@ class OutboxBody(BaseModel):
     channel: str; to: str | list[str]; about: str; mode: str = 'draft'
     cc: list[str] = []
     subject: str | None = None; repo: str | None = None
+    files: list[str] = []           # ...what he attached to the ask, beside his words: saved uploads only (prompt_images)
 
 @app.post('/api/outbox')
 def outbox(body: OutboxBody):
@@ -5608,7 +5826,7 @@ def outbox(body: OutboxBody):
     review does, through the one door every outgoing message already goes through."""
     from . import outbox as ob
     try: return ob.compose(store, body.channel, body.to, body.about, body.mode, body.subject,
-                           body.repo, ACTOR, cc=body.cc)
+                           body.repo, ACTOR, cc=body.cc, files=prompt_images(body.files))
     except ValueError as e: raise HTTPException(422, str(e))
     except Exception as e: raise HTTPException(422, str(e)[:400])
 
@@ -5698,9 +5916,16 @@ def _owner_history(request: Request, tid: int):
     o, why = origin.of_task(store, tid)
     if o == 'stranger':
         # ...said with its reason and the way on, which the agent passes to the owner: "refused" alone left it nothing to say (2026-10-28)
-        raise HTTPException(403, f"a stranger's task does not read the owner's mail: this task carries a message from someone the owner has "
-                                 f"not vouched for ({why}). Work from what the task itself holds - read_message opens the task's own "
-                                 f"messages. If the owner knows the sender, they can press Trust by that name on the task.")
+        # ...and the way on is one this session can take (the truth judge, 2026-11-18): the task's own messages it may read - those the owner
+        # vouched for (agenttools.unvouched) - and with none, "read_message opens the task's own messages" answered 403; with some, only those
+        from . import agenttools
+        own = [m['MessageId'] for m in store.list_messages(tid) or [] if agenttools.own_message(store, tid, {'id': m['MessageId']})]
+        may = [m for m in own if not agenttools.unvouched(store, tid, {'id': m})]
+        raise HTTPException(403, agenttools.refusal(
+            f"a stranger's task does not read the owner's mail: this task carries a message from someone the owner has not vouched for ({why}). "
+            "If the owner knows the sender, they can press Trust by that name on the task.",
+            'work from what the task itself holds' if may else 'work from what your brief already shows of this task',
+            see=('read_message', "opens the task's own messages" if len(may) == len(own) else "opens the task's messages you may read") if may else ()))
 
 @app.get('/api/agent/messages')
 def agent_messages(request: Request, task_id: int, sender: str = '', subject: str = '', words: str = '', since: str = '', until: str = '',
@@ -5727,7 +5952,7 @@ def agent_message(mid: str, request: Request, task_id: int):
         if agenttools.unvouched(store, task_id, {'id': n}): raise HTTPException(403, agenttools.UNVOUCHED)
     else: _owner_history(request, task_id)
     m = mailsearch.message(store, n)
-    if not m: raise HTTPException(404, f'Taskuary has no saved message m{n} - `taskuary --search` finds a message and its id')
+    if not m: raise HTTPException(404, agenttools.no_message(n))
     return m
 
 @app.get('/api/agent/memory')
@@ -5783,7 +6008,8 @@ def agent_draft(body: AgentDraftBody, request: Request):
     from . import wrapup
     files = _agent_files(body.files, body.task_id)
     out = slots.draft(store, body.task_id, body.text, body.to, body.subject, body.slot, body.agent, cc=body.cc, mailbox=body.mailbox, guessed=body.guessed)
-    return {**out, **wrapup.attach_files(store, out['review_id'], files, body.agent)} if out.get('ok') and files else out
+    if out.get('ok') and files: out = {**out, **wrapup.attach_files(store, out['review_id'], files, body.agent)}
+    return {**out, **wrapup.carries(store, out['review_id'])} if out.get('ok') and out.get('review_id') else out
 
 class AgentWaitBody(BaseModel): task_id: int; who: str; agent: str = 'agent'
 
@@ -5869,8 +6095,15 @@ def agent_browser(body: AgentBrowserBody, request: Request):
     s = hub_term.SESSIONS.get(str(body.sid)) or general._live_of(body.task_id)
     if s is None or not getattr(s, 'alive', False) or getattr(s, 'task_id', None) != body.task_id:
         raise HTTPException(409, 'no session of this task is running to open a browser for')
-    if not (browserview.wanted(t) or general.browser_offered(store, body.task_id, getattr(s, 'pick', '') or 'cli:')):
-        raise HTTPException(403, 'this task has no browser: it carries a message from someone the owner has not vouched for')
+    # ...asked of the road its turns are offered the browser on (GeneralSession.road - an API card's agent runs as its harness CLI): asked of
+    # the card's pick, HIPAA AI's first `taskuary --browser` was refused while its prompt offered the browser (the HIPAA walk, 2026-11-22),
+    # and refused as "a message from someone the owner has not vouched for" on his own New task - the refusal says its own reason
+    road = s.road() if callable(getattr(s, 'road', None)) else (getattr(s, 'pick', '') or 'cli:')
+    if not (browserview.wanted(t) or general.browser_offered(store, body.task_id, road)):
+        from . import origin
+        if origin.of_task(store, body.task_id)[0] == 'stranger':
+            raise HTTPException(403, 'this task has no browser: it carries a message from someone the owner has not vouched for')
+        raise HTTPException(403, general.no_browser_line(store, road))
     try: return {'ok': True, **browserview.ask_open(str(s.sid), body.url)}
     except ValueError as e: raise HTTPException(422, str(e))
 
@@ -5942,6 +6175,14 @@ def agent_new_task(body: AgentNewTaskBody, request: Request):
         if new and (general.history(store, new) or general.starting(new) or getattr(hub_term.session_for(new), 'alive', False)):
             return {'ok': True, 'task': task_ref(new), 'title': title, 'already': True, 'started': True,
                     'next': f'{task_ref(new)} was already started from here and is working on it - nothing new was made'}
+        # ...AND THE SAME WORK ALREADY OPEN ELSEWHERE IS THAT TASK (the owner's live app 2026-11-18): the ask arrives as a message does - triage
+        # reads whether an open task is it (ingest.arrive_words), and its agent hears it there in Taskuary's words, never a line in his name
+        from . import ingest
+        if not new and (same := (ingest.arrive_words(store, f'{title}. {ask}', 'taskuary', ACTOR, skip={body.task_id},
+                                                     said=f'From {task_ref(body.task_id)}: {ask}') or {}).get('tid')):
+            store.add_comment(body.task_id, body.agent, 'agent', f'Handed to {task_ref(same)}, which is already that work: {title}')
+            return {'ok': True, 'task': task_ref(same), 'title': title, 'already': True, 'started': True,
+                    'next': f'{task_ref(same)} is already that same work - its agent was told; nothing new was made. Say so in one line'}
         made = not new
         if made:
             # ...the owner's ask, made at the door they asked from - the task they spoke on's ("agent" is no door: the Assistant named it one)
@@ -5977,7 +6218,7 @@ def _start_new_task(new: int, kind: str, ask: str, model: str) -> dict:
     if got.get('dispatch') == 'needs_repo': return {'started': False, 'why': got.get('reason'), 'next': 'the owner picks its checkout on that task'}
     return {'started': bool(got.get('started') or got.get('existing')), 'next': f'say in one line that {task_ref(new)} is working on it'}
 
-class AgentRememberBody(BaseModel): task_id: int; note: str = ''; about: str = ''; replaces: str = ''; agent: str = 'agent'
+class AgentRememberBody(BaseModel): task_id: int; note: str = ''; about: str = ''; replaces: str = ''; section: str = ''; agent: str = 'agent'
 AGENT_KEEPS = 5          # new memory lines one task's agent may write in a day; a correction (`replaces`) adds none and is always taken
 
 @app.post('/api/agent/remember')
@@ -6003,18 +6244,25 @@ def agent_remember(body: AgentRememberBody, request: Request):
     if int((kept or {}).get('n') or 0) >= AGENT_KEEPS and not body.replaces.strip() and not memoryedit.said(store.get_doc('learned'), body.note):
         raise HTTPException(422, f"not kept: {AGENT_KEEPS} facts from this task are in the owner's memory since yesterday, and it holds only what "
                                  "changes how future work is handled. Carry on with the task; a fact that corrects one of them is kept with `replaces`.")
-    try: r = memoryedit.remember(store, body.note, body.about, replaces=body.replaces)
+    try: r = memoryedit.remember(store, body.note, body.about, body.section, replaces=body.replaces, actor=f'agent:{body.agent}')
     except LookupError:
         # ...a line to replace that the memory does not hold: the lines about them, to copy one from - or kept beside them, with no `replaces`
         near = [l['text'] for l in memoryedit.about(store, body.about)['lines']][:8] if body.about.strip() else []
-        raise HTTPException(422, f"not kept: no line of the memory reads {body.replaces!r}. " + (f"The lines about {body.about}: {json.dumps(near, ensure_ascii=False)} - "
-                                 "call again with the one it makes untrue copied exactly, or with no `replaces`." if near else
-                                 "Call again with no `replaces`, or read the lines first (owner_memory) and copy the one it makes untrue."))
+        from .agenttools import echo, refusal
+        raise HTTPException(422, refusal(f"not kept: no line of the memory reads {echo(body.replaces)!r}",
+                                         f"call again with the line it makes untrue copied exactly from these about {echo(body.about)}: "
+                                         f"{json.dumps(near, ensure_ascii=False)} - or with no `replaces`" if near else
+                                         "call again with no `replaces`, or copy the line it makes untrue", see=() if near else ('owner_memory', 'reads the lines')))
     except ValueError as e: raise HTTPException(422, str(e))
     if not r.get('already'): store.audit('task', body.task_id, 'agent_remembered', body.agent, 'agent', {'line': r['text'][:400], 'section': r.get('section'), 'closed': (r.get('closed') or {}).get('text')})
     c = r.get('closed') or {}
     # ...and the other lines about the same person, for the one this makes untrue: two lines that disagree are read as two truths
     rest = [] if c or r.get('already') or not body.about.strip() else [l['text'] for l in memoryedit.about(store, body.about)['lines'] if l['text'] != r['text']][:6]
+    if r.get('section') == memoryedit.SIGNATURE:
+        # ...and HE SEES IT CHANGED, where it happened (round 4, 2026-11-22: a memory sentence became his signature, said nowhere)
+        store.add_comment(body.task_id, 'taskuary', 'agent', f"Your email signature now reads: {r['text']!r} - Settings, Email signature, changes it.")
+        return {'ok': True, **r, 'says': f"Kept as the owner's saved signature, exactly as it goes under every email: {r['text']!r}. Every email set up from now carries it, "
+                                       "and the drafts waiting for his Send were re-signed with it. Carry on."}
     return {'ok': True, **r, 'says': (f"Already in the owner's memory: {r['text']}" if r.get('already') else f"Kept in the owner's memory, in use from now: {r['text']}")
             + (f" - and {c['text']!r} is closed as no longer true." if c else '')
             + (f" The memory's other lines about {body.about}: {json.dumps(rest, ensure_ascii=False)} - if this makes one of them untrue, call again "
@@ -6087,18 +6335,18 @@ def agent_propose_land(body: AgentLandBody, request: Request):
 @app.get('/api/tasks/{tid}/landing')
 def task_landing(tid: int, full: bool = False):
     """A coding task's work against where it started - the diff stat (and with `full` the diff) and the landing question. Developer
-    mode only: with it off there is no coding UI to ask it in."""
+    mode, or a checkout the owner named on the task (landing.shown): elsewhere there is no coding UI to ask it in."""
     from . import landing
     if not store.get_task(tid): raise HTTPException(404, 'no such task')
-    if not hub_agents.developer_mode(store): return {'data': None}
+    if not landing.shown(store, tid): return {'data': None}
     return {'data': landing.state(store, tid, full=full)}
 
 @app.get('/api/tasks/{tid}/changes')
 def task_changes(tid: int):
-    "A coding task's work so far as one diff (landing.changes) - the header's Changes, while the agent works. Developer mode only."
+    "A coding task's work so far as one diff (landing.changes) - the header's Changes, while the agent works. Where its card is (landing.shown)."
     from . import landing
     if not store.get_task(tid): raise HTTPException(404, 'no such task')
-    if not hub_agents.developer_mode(store): return {'data': None}
+    if not landing.shown(store, tid): return {'data': None}
     return {'data': landing.changes(store, tid)}
 
 @app.get('/api/tasks/{tid}/coding-chat')
@@ -6174,7 +6422,7 @@ def task_land_revert(tid: int, body: RevertBody, request: Request):
     from . import landing
     _owner_only(request, "what is taken out of a branch before it lands is the owner's review")
     if not store.get_task(tid): raise HTTPException(404, 'no such task')
-    if not hub_agents.developer_mode(store): raise HTTPException(409, 'Developer mode is off (Settings, Developer mode)')
+    if not landing.shown(store, tid): raise HTTPException(409, 'Developer mode is off (Settings, Developer mode)')
     try: return landing.revert(store, tid, body.parts, ACTOR)
     except landing.Refused as e: raise HTTPException(409, str(e))
     except ValueError as e: raise HTTPException(422, str(e))
@@ -6187,7 +6435,7 @@ def task_landing_answer(tid: int, body: LandBody, request: Request):
     from . import landing
     _owner_only(request, "how a branch lands is the owner's answer")
     if not store.get_task(tid): raise HTTPException(404, 'no such task')
-    if not hub_agents.developer_mode(store): raise HTTPException(409, 'Developer mode is off (Settings, Developer mode)')
+    if not landing.shown(store, tid): raise HTTPException(409, 'Developer mode is off (Settings, Developer mode)')
     try: return landing.land(store, tid, body.how, ACTOR)
     except landing.Refused as e: raise HTTPException(409, str(e))
     except ValueError as e: raise HTTPException(422, str(e))
@@ -6196,6 +6444,24 @@ def task_landing_answer(tid: int, body: LandBody, request: Request):
 class AgentProposeBody(BaseModel):
     model_config = {'extra': 'allow'}
     task_id: int; action: str; why: str = ''
+
+@app.post('/api/agent/gate')
+async def agent_gate(body: dict, request: Request):
+    """An agent's `agent-browser` or `agent-desktop` command asks before it runs (gatecmd, on every AI's road): {'why': ''} runs it,
+    else why it waits - a press that can't be undone is held on the session's OWN task for the owner. On the permits' threads, as the
+    hooks are: a snapshot and a verdict take seconds."""
+    from . import gatecmd
+    tid = int(body.get('task') or 0) if str(body.get('task') or '').isdigit() else 0
+    _own_task_only(request, tid)
+    from . import browsergate
+    sid, cmd = str(body.get('sid') or ''), str(body.get('cmd') or '')
+    # ...TASKUARY'S OWN VERB (`agent-browser signup`): done here, its result the command's own output (gatecmd.own)
+    if not body.get('after') and (own := gatecmd.own(cmd)):
+        ok, said = await asyncio.get_running_loop().run_in_executor(_PERMIT_POOL, lambda: gatecmd.run_own(store, tid, sid, own))
+        return {'why': '', 'own': True, 'ok': ok, 'said': said}
+    go = ((lambda: browsergate.outcome(sid, store)) if body.get('after') else lambda: gatecmd.judge(store, tid, sid, cmd, str(body.get('cwd') or '')))
+    return {'why': await asyncio.get_running_loop().run_in_executor(_PERMIT_POOL, go)}
+
 
 @app.post('/api/agent/propose')
 def agent_propose(body: AgentProposeBody, request: Request):
@@ -6249,7 +6515,7 @@ def agent_meeting(body: AgentMeetingBody, request: Request):
 
 @app.post('/api/agent/share')
 def agent_share(body: AgentShareBody, request: Request):
-    """A report or dashboard the agent made, set up to share on the session's OWN task (sharing.agent_share) - sent only on the owner's press."""
+    """A report or dashboard of the owner's (one they have, or a routine saved from this task), set up to share on the session's OWN task (sharing.agent_share) - sent only on the owner's press."""
     from . import sharing
     return _agent_set_up(request, body.task_id, lambda: sharing.agent_share(store, body.task_id, body.report, body.to, body.text, body.via))
 
@@ -6320,7 +6586,7 @@ async def mcp_rpc(request: Request, task: int = 0):
              'todos': lambda tid, a: agent_todos(AgentTodosBody(**{k: v for k, v in a.items() if k in ('add', 'reword', 'merge')}, task_id=tid), request),
              'remind': lambda tid, until: agent_remind(AgentRemindBody(task_id=tid, until=until), request),
              'new_task': lambda tid, a: agent_new_task(AgentNewTaskBody(**{**{k: v for k, v in a.items() if k in AgentNewTaskBody.model_fields}, 'task_id': tid}), request),
-             'remember': lambda tid, note, about='', replaces='': agent_remember(AgentRememberBody(task_id=tid, note=note, about=about, replaces=replaces), request),
+             'remember': lambda tid, note, about='', replaces='', section='': agent_remember(AgentRememberBody(task_id=tid, note=note, about=about, replaces=replaces, section=section), request),
              'ask_stronger': lambda tid, q, c: agent_ask_stronger(AgentAskStrongerBody(task_id=tid, question=q, context=c), request),
              'reply': lambda tid, text, to='', files=(), **who: agent_reply(AgentReplyBody(task_id=tid, text=text, to=to, files=list(files), **who), request),
              'draft': lambda tid, text, to, subject, files=(), cc=(), mailbox='', guessed=(), slot='': agent_draft(AgentDraftBody(task_id=tid, text=text, to=to, subject=subject, slot=slot, files=list(files), cc=list(cc), mailbox=mailbox, guessed=list(guessed)), request),
@@ -6333,6 +6599,8 @@ async def mcp_rpc(request: Request, task: int = 0):
              'propose_land': lambda tid, how, why, deploy='': agent_propose_land(AgentLandBody(task_id=tid, how=how, why=why, deploy=deploy), request),
              'use_repo': lambda tid, target, why: agent_use_repo(AgentUseRepoBody(task_id=tid, path_or_name=target, why=why), request)}
     def run(name, args):
+        with agenttools.door('tool'): return _run(name, args)       # ...the door is known before any check below can refuse
+    def _run(name, args):
         cls = agenttools.TOOLS[name][0]
         if cls == 'read' and name not in ('my_task', 'list_systems', 'run_system', 'ask_stronger', 'show', 'guide', 'find_tools') and not (
                 name == 'read_message' and agenttools.own_message(store, task, args)): _owner_history(request, task)
@@ -6342,11 +6610,13 @@ async def mcp_rpc(request: Request, task: int = 0):
         return out.body.decode() if isinstance(out, JSONResponse) else out
     from .wrapup import no_correspondent
     from .general import GENERAL_KINDS
+    from . import harness
     skip = (agenttools.REPLY_TOOLS if no_correspondent(store, task) else ()) + (
-        agenttools.CODING_TOOLS if (store.get_task(task) or {}).get('Kind') in GENERAL_KINDS else ())
+        agenttools.CODING_TOOLS if (store.get_task(task) or {}).get('Kind') in GENERAL_KINDS else ()) + (
+        () if (card := harness.on_card(store, task)) else ('web_search',))         # ...the web through the card, only for its harness CLI (harness.py)
     # ...a stranger's session is served the owner's harmless tools and nothing else (agenttools.STRANGER_TOOLS)
     if guard.scope_of(cfg['server'], request.headers) == guard.STRANGER: skip = tuple(n for n in agenttools.TOOLS if n not in agenttools.STRANGER_TOOLS)
-    def one(m): return agenttools.rpc(m, run, skip) if isinstance(m, dict) else {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32600, 'message': 'not a request'}}
+    def one(m): return agenttools.rpc(m, run, skip, card) if isinstance(m, dict) else {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32600, 'message': 'not a request'}}
     out = await run_in_threadpool(lambda: [r for r in map(one, msg if isinstance(msg, list) else [msg]) if r is not None])   # the doors are sync
     if not out: return Response(status_code=202)
     return JSONResponse(out if isinstance(msg, list) else out[0])
@@ -6637,7 +6907,7 @@ class RailWalkBody(BaseModel):
     away: bool = False                  # a close whose row is no longer the one on the page's table: the act, and no move (railwalk.leave)
 class ConciergeSayBody(BaseModel):
     text: str; key: str | None = None; context_mid: int | None = None; open_card: str | None = None; images: list[str] = []
-    view: dict | None = None; react: str = ''
+    view: dict | None = None
 class ConciergeActBody(BaseModel): key: str; verb: str; hours: float | None = None
 
 def _encoded(content) -> Response:
@@ -6982,7 +7252,6 @@ class ConciergeStreamBody(BaseModel):
     open_card: str | None = None                  # the card browsed open in the canvas, said in words
     images: list[str] = []                        # pictures sent with the line (/api/prompt-image)
     view: dict | None = None                      # the page on screen, read when the owner asked (pageview.py) - secrets as their state only
-    react: str = ''                               # what the owner just did on that page, inside a conversation they started about it
     from_key: str | None = None                   # the row the page had on screen: Next and Back move from it (railwalk)
     press: str | None = None
     read: list[str] = []
@@ -7040,7 +7309,7 @@ async def concierge_stream(body: ConciergeStreamBody):
             elif body.mode == 'back': out = railwalk.back(store, body.from_key, ACTOR, press=body.press)
             elif body.mode == 'start': out = railwalk.start(store, ACTOR, press=body.press)
             else: out = concierge.say(store, body.text or '', body.key, actor=ACTOR, trace=trace, cancel=cancel, item=freshness.get('item'),
-                                      open_card=body.open_card, images=prompt_images(body.images), view=body.view, react=body.react)
+                                      open_card=body.open_card, images=prompt_images(body.images), view=body.view)
             if notice: out['context_update'] = notice
             # THE CARD FIRST, THE RAIL AFTER IT (the owner, 2026-10-20): the rail that rides along (design B) is read after the
             # turn's writes, and that read was most of a press - the card waited on it. `done` goes now and says the rail
@@ -7144,7 +7413,7 @@ def concierge_say(body: ConciergeSayBody):
         # Nothing is lost. The act boundary guards itself: operations.propose pins ContextRevision and
         # execute refuses a moved one (409), and verdicts.decide re-checks before a reply can leave.
         return concierge.say(store, body.text, body.key, actor=ACTOR, open_card=body.open_card, images=prompt_images(body.images),
-                             view=body.view, react=body.react)
+                             view=body.view)
     except ValueError as e: raise HTTPException(422, str(e))
 
 class ConciergeLineBody(BaseModel): text: str = ''; status: str = ''; steps: list[dict] = []
@@ -7181,6 +7450,7 @@ class ConciergeProposeBody(BaseModel):
     press: bool = False
     # THE AGENT BOX'S ANSWERS (RunForm.AgentAsk): which profile, brain and model a hand-off runs on - the words ride in `text`
     agent: str | None = None; brain: str | None = None; pick: str | None = None; model: str | None = None
+    files: list[str] = []           # ...and what he attached on that box, beside the words (a hand-off's, AGENT_PICKS)
 
 @app.post('/api/concierge/propose')
 def concierge_propose(body: ConciergeProposeBody):
@@ -7191,7 +7461,7 @@ def concierge_propose(body: ConciergeProposeBody):
         tgt = rulebook.target_of(store, body.key)
         if tgt and rulebook.revision(store, *tgt) != body.revision:
             raise HTTPException(409, 'That one changed since its button was filled - read it again before pressing.')
-    picks = {'agent': body.agent, 'brain': body.brain, 'pick': body.pick, 'model': body.model}
+    picks = {'agent': body.agent, 'brain': body.brain, 'pick': body.pick, 'model': body.model, 'files': prompt_images(body.files)}
     try: return concierge.propose_direct(store, body.verb, body.key, body.text or '', ACTOR, table=body.table, exact=body.exact, picks=picks, press=body.press)
     except ValueError as e: raise HTTPException(422, str(e))
 
@@ -7272,7 +7542,8 @@ def waitroom_list(tid: int):
 def waitroom_add(tid: int, body: dict):
     """Queue a note for this task's agent. It is typed in the moment the agent parks at its
     prompt - and at once, as the answer, when it is already parked on a question for you."""
-    try: return waitroom.add(store, tid, str((body or {}).get('text') or ''), ACTOR, owner=(body or {}).get('owner') or None)
+    from . import general            # ...by the one road into the agent (general.to_agent), kept for its next stop
+    try: return general.to_agent(store, tid, str((body or {}).get('text') or ''), ACTOR, frm='owner', wake=False, owner=(body or {}).get('owner') or None)
     except ValueError as e: raise HTTPException(422, str(e))
 
 @app.post('/api/tasks/{tid}/waitroom/bulk')
@@ -7327,12 +7598,6 @@ def prompt_images(paths) -> list[str]:
             if p.is_file() and p.is_relative_to(root): out.append(str(p))
         except (OSError, ValueError): continue
     return out
-
-
-def with_images(text: str, paths) -> str:
-    "The words, then the files this server saved - general.with_files, the one block every door writes."
-    from .general import with_files
-    return with_files(text, prompt_images(paths))
 
 
 def _upload_name(request: Request, ext: str = '') -> str:
@@ -7586,7 +7851,7 @@ def retriage_message(mid: int):
         # Most AI failures are deliberately recorded as errors by ingest_message. This catches only
         # an unexpected pipeline failure so Retry never leaves the row spinning forever.
         now = store.get_message(mid) or {}
-        store.place_message(mid, now.get('TaskId'), 'error')
+        store.arrive(mid, now.get('TaskId'), 'error', decided=True)
         store.add_route(mid, now.get('TaskId'), 'file', None,
                         f'triage retry failed ({str(e)[:200]}) - unclassified; retry available', [], 'triage',
                         parse_error=str(e)[:1000])
@@ -7597,16 +7862,22 @@ def retriage_message(mid: int):
 def sources():
     # default_repo rides along so the Board's repo picker preselects it; a report carries its route in
     # the server's own words, so the page never re-derives the rules (reports.route_words)
-    from .reports import route_words, route_words_i18n
+    from .reports import route_words, schedule_words
     rows = store.list_sources(active_only=False)
     for r in rows:
         if r.get('Channel') != 'report': continue
-        try:
-            report_cfg = json.loads(r.get('ConfigJson') or '{}')
-            r['RouteWords'] = route_words(report_cfg)
-            r['RouteWords_i18n'] = route_words_i18n(report_cfg)
+        # ...and its clock in the server's one phrase (reports.schedule_words): the page draws it, never says it again
+        try: c = json.loads(r.get('ConfigJson') or '{}'); r['RouteWords'], r['ScheduleWords'] = route_words(c), schedule_words(c)
         except ValueError: pass
     return {'data': rows, 'default_repo': (cfg.get('github') or {}).get('default_repo')}
+
+@app.post('/api/schedule-words')
+def schedule_words_of(body: dict):
+    """A clock the editor holds and has not saved, said as every surface says it once saved (reports.schedule_words) - with why the
+    scheduler could not read it, if it could not (schedule_error)."""
+    from .reports import schedule_error, schedule_words
+    c = body.get('cfg') if isinstance(body.get('cfg'), dict) else {}
+    return {'words': schedule_words(c), 'error': schedule_error(c)}
 
 @app.post('/api/sources')
 def save_source(body: SourceBody):
@@ -7636,37 +7907,13 @@ def save_source(body: SourceBody):
     patch = fields.pop('ConfigPatch', None)
     if patch is not None and (not was or fields.get('ConfigJson') is not None):
         raise HTTPException(422, 'a config patch is for a saved source, and never beside a whole ConfigJson')
-    # a report's card is checked whole (below): its patch is laid over what is stored and saved the old way
-    if patch is not None and channel == 'report':
-        try: base = json.loads(was.get('ConfigJson') or '{}') or {}
-        except ValueError: base = {}
-        fields['ConfigJson'] = json.dumps({k: v for k, v in {**base, **patch}.items() if v is not None}); patch = None
-    # a workflow's steps are checked before they are kept: a broken list would only fail on its first scheduled run (flow.validate)
-    if fields.get('ConfigJson') and channel == 'report':
-        try: rcfg = json.loads(fields['ConfigJson']) or {}; flow_cfg = rcfg.get('flow')
-        except (ValueError, AttributeError): rcfg, flow_cfg = {}, None
-        # a clock the scheduler cannot read is refused, never saved as "scheduled" (reports.schedule_error, B3)
-        from .reports import schedule_error
-        if isinstance(rcfg, dict) and (why := schedule_error(rcfg)): raise HTTPException(422, f'Not saved: {why}.')
-        # ...and a dashboard's spec, the same check its composer ran: a component bound to no source never draws (dashboards.validate)
-        if isinstance(rcfg, dict) and rcfg.get('type') == 'dashboard':
-            from . import dashboards
-            ok, why = dashboards.validate(rcfg, store)
-            if not ok: raise HTTPException(422, f'Not saved: {why}.')
-            if (named := dashboards.keyed(rcfg)) != rcfg: fields['ConfigJson'] = json.dumps(named)     # kept under the names it was checked by
-        if flow_cfg is not None:
-            from . import flow
-            ok, why = flow.validate(store, flow_cfg)
-            if not ok: raise HTTPException(422, f'The steps cannot be saved yet: {why}.')
+    # ...a routine or a report saves by the one save every door of a routine takes (workflows.save): checked whole, then kept
+    if channel == 'report':
+        from . import workflows
+        try: return {'sourceId': workflows.save(store, {**fields, **({'ConfigPatch': patch} if patch is not None else {})}, ACTOR)}
+        except ValueError as e: raise HTTPException(422, str(e))
     sid = store.save_source(fields, ACTOR) if set(fields) - {'SourceId'} else fields['SourceId']
     if patch: store.merge_config('source', sid, patch)
-    # A NEW WORKFLOW STARTS ON ITS NEXT SLOT, not on the next tick. A source never run is due at once (reports.is_due) - right
-    # for a report you want to see, wrong for a job that opens tasks and drafts mail: a weekly Monday workflow saved on a
-    # Wednesday ran seconds later, beside the editor's "Saved - runs Mon at 08:00", and again beside its own Save & run now -
-    # two laptop tasks, two approvals (walk 2026-10-21). Run now is the door for running it now.
-    if not was and channel == 'report':
-        from . import workflows
-        if workflows.is_workflow(store.get_source(sid)): store.touch_source(sid)
     # SWITCHING SOMETHING ON MUST LOOK BACK. The watermark advances on every poll, including
     # polls that deliberately read nothing from this source (a repo whose issues were 'off',
     # a chat not yet approved) - so flipping it on would otherwise only ever catch what
@@ -7831,13 +8078,15 @@ def connectors(request: Request):
     ScopeDefault rides along so the card can show what an unset Authority actually means -
     which is per type (winrm starts at admin, a tracker at read), not one global floor.
     Agents still list cards (they have to pick a tool) but ConfigJson drops credential keys."""
-    from . import problems, scopes
-    # SignedOut: a stored token is not a sign-in - Microsoft can let it lapse, and the card said "Signed in" over it
-    # LastErrorPlain: the card's red line in words - LastError stays raw for problems.lapsed and the Advisor's facts
+    from . import connectorcatalog, scopes
+    # State: is it connected - connected / not_signed_in / signed_out / failing / off, its plain line and its fix (connectorcatalog.state),
+    # the one answer every spot on the page reads. SignedOut rides on it: a stored token is not a sign-in - Microsoft can let it lapse
+    # LastErrorPlain: the card's red line in words - LastError stays raw for connectorcatalog.lapsed and the Advisor's facts
     from .channels import card_error
     # IsAI: an AI card (llm.AI_TYPES) - what agents think with, never a system they act in: Agent permissions leaves it out
     from .llm import AI_TYPES
-    rows = [c | {'ScopeDefault': scopes.default_scope(c['Type']), 'SignedOut': problems.signed_out(c),
+    srcs = store.list_sources()
+    rows = [c | {'ScopeDefault': scopes.default_scope(c['Type']), 'State': (st := connectorcatalog.state(c, srcs)), 'SignedOut': st['state'] == 'signed_out',
                  'LastErrorPlain': card_error(c), 'IsAI': c['Type'] in AI_TYPES} for c in store.list_connectors()]
     # FellBack: the card's calls are answered by another model than the one asked for (brainroute.fell_line) - the bell's own line
     from .brainroute import fell_line
@@ -7845,11 +8094,15 @@ def connectors(request: Request):
     # GatewayBuiltIn: this build ships the organisation gateway's address, so its card's address field is optional (llm.gateway_base)
     from .llm import OPENAI_COMPATIBLE
     rows = [c | {'GatewayBuiltIn': bool(OPENAI_COMPATIBLE['hipaa_ai'][0])} if c['Type'] == 'hipaa_ai' else c for c in rows]
+    # Harness: the CLI an API card's agent runs on - Codex or OpenCode, its choice and its one line (harness.line); an active card's starts installing
+    from . import harness
+    rows = [c | {'Harness': h} if c['IsAI'] and (h := harness.line(store, c)) else c for c in rows]
     # ReadsBack: the days this card's first read will go back while that read is still due - its "How far back to bring in", 0 for a
     # reader that is not asked by date or has been read (channels.reads_back)
-    from .channels import first_read_hours, reads_back
-    srcs = store.list_sources()
-    rows = [c | {'ReadsBack': round(first_read_hours(store, c) / 24) if reads_back(store, c, srcs, unsourced=True) else 0} for c in rows]
+    # LastRead: what its last read brought in, from the read's own counts (channels.read_line) - the line under its Sync now
+    from .channels import first_read_hours, read_line, reads_back
+    rows = [c | {'ReadsBack': round(first_read_hours(store, c) / 24) if reads_back(store, c, srcs, unsourced=True) else 0,
+                 'LastRead': read_line(store, c)} for c in rows]
     # PeopleMissing: the contacts/people permissions this card's sign-in predates - the card says signing in again adds them
     from .peoplesearch import missing
     rows = [c | {'PeopleMissing': missing(c.get('ConfigJson'), c['Type'])} if c['Type'] in ('outlook', 'teams', 'gmail') else c
@@ -8016,7 +8269,7 @@ def save_connector(body: ConnectorBody):
             discovery['said'] = (f"authenticated as {discovery.get('login')} · {discovery.get('repos')} repos discovered · "
                                  f"{discovery.get('added')} sources added · repo map written to SOUL.md")
         except Exception as e:
-            from .channels import plain_failure
+            from .say import plain_failure
             discovery = {'error': plain_failure(e)}      # shown under Save: "401 Client Error ... api.github.com" helped nobody
     # an AI card switched on or given its key here fills its empty model boxes from what it lists (firstrun.fill_tiers)
     from . import llm as _llm
@@ -8908,7 +9161,9 @@ def tool_run(body: dict, request: Request):
     except ValueError as e: raise HTTPException(422, str(e))
     # ...a number that is no card is said as that: "no connection card an owner turned on" was untrue of a card standing on
     if connector_id and not conn:
-        raise HTTPException(404, f'there is no connection {connector_id} - YOUR SYSTEMS (list_systems) names each one with its connector_id')
+        from .agenttools import echo, refusal
+        raise HTTPException(404, refusal(f'there is no connection {echo(connector_id)}', 'YOUR SYSTEMS in your brief names each one with its connector_id',
+                                         see=('list_systems', 'lists them')))
     if conn and conn.get('Type') != card_of(t):
         raise HTTPException(422, f'connector {connector_id} is {conn.get("Type")}, not {card_of(t)}')
     if not conn:
@@ -8916,6 +9171,11 @@ def tool_run(body: dict, request: Request):
         # card (sqlite, local_file, agent, rest) used to run for anyone holding the API: any file on
         # disk, any database, another agent run (audit 2026-09-02)
         raise HTTPException(403, f'{t} has no connection card an owner turned on - it is not an agent tool')
+    # ...AN AGENT'S POST ON A NETWORK NOT CONNECTED is its card all the same, Connect where Post would be (outbound.review_connect): "the
+    # connection is off - turn it on" sent the agent to say in words what the card's own Connect does (design round 2, 2026-11-18)
+    from . import connectorcatalog
+    if not conn.get('Active') and connectorcatalog.action_for(t) and guard.scope_of(cfg['server'], request.headers) == guard.AGENT:
+        return _agent_proposes(request, t, conn, body, scopes.reaches(t, body) or f'{t} reaches people')
     if not conn.get('Active'):
         raise HTTPException(403, f"the {t} connection is off - turn it on under {words.name('connections')}")
     if 'tool' not in store_mod.roles_of(conn):
@@ -8955,7 +9215,7 @@ def tool_run(body: dict, request: Request):
         # ...in the words every Taskuary tool's failure takes (agenttools.failed): a field it needs and was not given is named, never "'query'"
         from .agenttools import failed
         store.audit('tool', (conn or {}).get('ConnectorId', 0), 'run_failed', actor, detail={'type': t, 'error': str(e)[:300]})
-        return {'ok': False, 'error': failed(t, e)[:1000]}
+        return {'ok': False, 'error': failed(t, e)}               # ...bounded there, its next step kept
     store.audit('tool', (conn or {}).get('ConnectorId', 0), 'run', actor, detail={'type': t, 'headline': str(head)[:200]})
     return {'ok': True, 'headline': head, 'output': (out or '')[:20000]}
 
@@ -9787,12 +10047,6 @@ def first_run_about_skip():
     from . import firstrun
     firstrun.skip_about(store)
     return firstrun.state(store)
-
-@app.post('/api/setup/first-run/suggest-connections')
-def first_run_suggest_connections():
-    """What to connect next, from the setup answers and the job - the Advisor's line on More connections."""
-    from . import firstrun
-    return firstrun.suggest_connections(store)
 
 @app.post('/api/setup/first-run/finish')
 def first_run_finish():
@@ -10897,11 +11151,9 @@ def _refresh_chat_key(key: str = None, seen_mid: int = None, on_fetched=None) ->
     # the poll may have landed lines; only then is a second build worth its cost
     fresh = (funnel.next_item(store, key) or funnel.item_for_key(store, key) or item) if out.get('newer') or out.get('added') else item
     after = _latest_context_message(fresh.get('tid'), fresh.get('mid'))
-    # `stale` catches a background sync that landed before this request; seen_mid catches the
-    # narrower race where it landed after the browser's last five-second pile refresh.
-    out['newer'] = bool(out.get('newer') or
-                        (seen_mid and after and after.get('MessageId') != seen_mid) or
-                        (seen_mid is None and fresh.get('stale')))
+    # seen_mid catches a line that landed after the browser's last five-second pile refresh (a draft an unheard line came after
+    # is off the pile already: store.off_table)
+    out['newer'] = bool(out.get('newer') or (seen_mid and after and after.get('MessageId') != seen_mid))
     out['item'] = fresh
     out['after'] = after or out.get('after')
     return out

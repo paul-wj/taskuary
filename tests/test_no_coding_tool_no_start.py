@@ -37,4 +37,23 @@ class NoCodingTool(unittest.TestCase):
             self.assertFalse(agents.coding_ready.real(self.s))
 
 
+class TheLineNamesTheCheckThatRefused(unittest.TestCase):
+    """The walks, 2026-11-18: "No coding tool is connected ... connect one under Connections" over a Codex that Connections showed connected -
+    the start was refused by Developer mode. With it off a coding job is a general agent's, as at the dispatch door (concierge.handoff_task):
+    nothing refuses it. In Developer mode with no command-line AI the line says that, and its button connects one (agents.no_coding_fix)."""
+    def test_developer_mode_off_refuses_nothing_and_a_missing_cli_names_itself(self):
+        from taskuary import concierge
+        s = MemoryStore()
+        real = mock.patch.multiple(agents, coding_ready=agents.coding_ready.real, developer_mode=agents.developer_mode.real)
+        real.start(); self.addCleanup(real.stop)
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True):
+            with mock.patch.object(agents, 'cli_ready', return_value=False):
+                self.assertEqual(concierge.start_refusal(s, 'coding'), '')                    # Developer mode off: a general agent's job
+                s.set_setting(agents.DEV_MODE, '1', 'owner')
+                said = concierge.start_refusal(s, 'coding')
+                self.assertTrue(said.startswith('No command-line AI (Claude Code, Codex) is connected'), said)
+                self.assertEqual(concierge.no_start_chip(s, 'coding')['label'], 'Connect a coding tool')
+            with mock.patch.object(agents, 'cli_ready', return_value=True): self.assertEqual(concierge.start_refusal(s, 'coding'), '')
+
+
 if __name__ == '__main__': unittest.main()

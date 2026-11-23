@@ -12,7 +12,7 @@ import { chatHint, chatUrl, noChats } from "./chatPicker.js";
 import { ACCENT, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 
 const btn = { minHeight: 30, py: 0, px: 1.3, fontSize: 12.5, textTransform: "none" };
-const card = { my: 1.5, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)" };
+const card = { my: 0, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)" };
 const Head = ({ children }) => <Typography sx={{ color: "var(--tq-link, #55697a)", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", mb: 0.4 }}>{children}</Typography>;
 const why = (e, d) => e?.response?.data?.detail || e?.message || d;
 
@@ -35,12 +35,12 @@ export function PermissionCards({ taskId, items = [], onAnswered }) {
   return items.map((p) => { const l = permissionLead(p); return (
     <div key={p.id} className="tq-aui-message tq-aui-agent"><div className="tq-aui-agent-body">
     <Box data-tq-permission={p.id} sx={card} role="group" aria-label="The agent asks permission">
-      <Head>THE AGENT ASKS</Head>
+      <Head>The agent asks</Head>
       <Typography variant="body2" sx={{ color: INK }}>{l.lead}</Typography>
       {l.why && <Typography variant="caption" sx={{ display: "block", color: DIM, mt: 0.2 }}>{l.why}</Typography>}
       {l.command && <Box component="details" open={l.open || undefined} data-tq-permission-command sx={{ mt: 0.4, fontSize: 12, color: DIM, "& summary": { cursor: "pointer" },
         "& code": { display: "block", whiteSpace: "pre-wrap", overflowWrap: "anywhere", mt: 0.4, fontSize: 11.5, fontFamily: mono, color: INK } }}>
-        <summary>Show the command</summary><code>{l.command}</code></Box>}
+        <summary>What it runs</summary><code>{l.command}</code></Box>}
       <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", mt: 0.8 }}>
         {p.options.map((o) => <Button key={o.kind} size="small" disableElevation disabled={!!busy[p.id]} data-tq-permission-answer={o.kind}
           variant={o.kind === "allow_once" ? "contained" : "outlined"}
@@ -60,7 +60,7 @@ export const PERM_SAID = { allow_once: "Allowed", allow_always: "Allowed, from n
 export function AnsweredPermission({ perm, at = "" }) {
   return (
     <Box data-tq-permission-answered={perm.answer} sx={{ ...card, bgcolor: "transparent", borderStyle: "dashed", opacity: 0.75 }} role="group" aria-label="The agent asked permission">
-      <Head>THE AGENT ASKED</Head>
+      <Head>The agent asked</Head>
       <Typography variant="body2" sx={{ color: INK }}>{perm.asked || "a step of its work"}</Typography>
       <Typography variant="caption" data-tq-permission-said="" sx={{ display: "inline-block", mt: 0.6, color: DIM, fontWeight: 600 }}>
         {String(perm.answer).startsWith("allow") ? "✓ " : "✗ "}{PERM_SAID[perm.answer] || "Answered"}{at ? ` · ${at}` : ""}</Typography>
@@ -162,6 +162,6 @@ export default function AgentChannels({ taskId, pop = false }) {
   return (
     <details className="tq-aui-working-fold" data-tq-agent-channels="" open={!!v?.channels.length || undefined} hidden={!v || undefined}>
       <summary>Talk to this agent from…</summary>
-      <Box sx={{ ...card, mt: 1 }}><ChannelSetup taskId={taskId} onLoaded={setV} /></Box>
+      <Box sx={{ ...card, mt: 1, mb: 1.5 }}><ChannelSetup taskId={taskId} onLoaded={setV} /></Box>
     </details>);
 }

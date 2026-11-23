@@ -8,7 +8,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Button, CircularProgress, Typography } from "@mui/material";
 import { AgentPicker, TaskuaryMark, useAgents } from "./ui.jsx";
-import { usePromptImages, withImages } from "./promptImages.jsx";
+import { usePromptImages } from "./promptImages.jsx";
 import { PromptBox } from "./AgentSummary.jsx";
 import { cannotStart, useCapabilities } from "./capabilities.js";
 import { choice, label as btn } from "./buttons.js";
@@ -57,7 +57,7 @@ export function AgentAsk({ coding: wantCoding = false, title, what, placeholder 
   const [text, setText] = useState("");
   const pics = usePromptImages();
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
-  const why = cannotStart(caps, { coding, read: agentsRead, brains: generalBrains, codingReady });
+  const why = cannotStart(caps, { coding, read: agentsRead, codingReady });
   const box = useRef(null);
   useViewExtras(box, view ? { item: view.item, title: view.title } : {});
   useEffect(() => { box.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }); }, []);
@@ -66,7 +66,7 @@ export function AgentAsk({ coding: wantCoding = false, title, what, placeholder 
     setBusy(true); setErr("");
     try {
       await onStart?.({ verb: coding ? "coding_agent" : "regular_agent", kind: coding ? "coding" : "general",
-        text: withImages(text.trim(), pics.paths) || "", agent: coding ? null : run.agent || null,
+        text: text.trim(), files: pics.paths, agent: coding ? null : run.agent || null,
         brain: coding ? run.brain || null : null, pick: coding && run.brain ? null : run.pick || null, model: run.model || null });
     } catch (e) { setErr(e?.response?.data?.detail || e?.message || { key: "It did not start - press it again." }); }
     finally { setBusy(false); }

@@ -1,9 +1,14 @@
-// Connection edits carry only changed keys, preserving poller-owned state.
+// EVERY FIELD ON A CONNECTION CARD SAVES ITSELF (the owner, 2026-11-05: "what saves with one click while other hit the save buttons.
+// it's just confusing"). The rules in connectorDraft.js - the draft holds only what changed and saves it as a patch (#242) - and a
+// guard that no card carries a Save button or a Save bar any more.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applied, cfgPatch, changes, patched, prune, saveBody, stage, stageable } from "../src/connectorDraft.js";
+import { readFileSync } from "node:fs";
+import { applied, cfgPatch, changes, patched, prune, saveBody, stage, stageable, tickWords } from "../src/connectorDraft.js";
 
 const conn = { ConnectorId: 3, Active: 1, Roles: "trigger", Scope: "read", ConfigJson: JSON.stringify({ bulk: "clear", reply_comments: false }) };
+const src = readFileSync(new URL("../src/ConnectorsView.jsx", import.meta.url), "utf8");
+const draft = readFileSync(new URL("../src/ConnectorDraft.jsx", import.meta.url), "utf8");
 
 test("a control's settings post is held; an action is not", () => {
   assert.equal(stageable({ ConnectorId: 3, ConfigJson: "{}" }, "ConnectorId"), true);
@@ -52,3 +57,20 @@ test("what the server now holds drops out of the draft; what it does not stays",
   assert.equal(prune({ ...back, ConfigJson: JSON.stringify({ bulk: "rank", reply_comments: true }) }, want), null);
 });
 
+test("the tick says Saved, or Not saved and why", () => {
+  assert.equal(tickWords({ state: "saved" }), "Saved");
+  assert.equal(tickWords({ state: "error", why: "a imap connector named 'Work mail' already exists" }), "Not saved - a imap connector named 'Work mail' already exists");
+  assert.equal(tickWords({ state: "saving" }), "");
+  assert.equal(tickWords(null), "");
+});
+
+
+test("a card's boxes save themselves: the typing on its pause, a secret when its box is left, each with its own tick", () => {
+  for (const part of ["need", "maybe", "late"])
+    assert.match(src, new RegExp(`\\{${part}\\.map\\(\\(f\\) => <ConfigField [^\\n]*tick=\\{boxes\\.tick\\(f\\[1\\]\\)\\} onBlur=\\{boxes\\.flush\\} />\\)\\}`), part);
+  assert.equal((src.match(/InputProps=\{\{ endAdornment: boxes\.tick\("Secret"\) \}\}/g) || []).length, 2, "the mail card's key and the generic card's");
+  assert.match(draft, /if \(!all\) wo\.forEach\(\(k\) => delete patch\[k\]\);/, "a write-only key waits for its box to be left");
+  assert.match(draft, /const keys = Object\.keys\(patch\), withSecret = all && !!s;/, "...and so does the secret");
+  // the first run's simple card keeps its one Connect
+  assert.match(src, /useBoxesSave\(\{ off: simple,/);
+});

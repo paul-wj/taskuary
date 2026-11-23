@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { STORY_CHIP, startLabel, storyAlarm, storyPlace, storyShown } from "../src/agentStory.js";
 
 const held = { kind: "held", line: "Waiting for you. pat@vendor.example is not on your domain and you have never written to them, so no agent starts on their words by itself. Start the coding agent, or do it yourself." };
@@ -20,6 +22,10 @@ test("only the two that wait on the owner, and a run that failed, wear the alarm
   assert.deepEqual(Object.keys(STORY_CHIP).filter(storyAlarm), ["held", "interrupted", "failed"]);
 });
 
+// a failed run is said as a failure (owner-approved, 2026-10-21): it read "not started" or "stopped" over its own reason
+test("a failed run's chip says failed", () => {
+  assert.equal(STORY_CHIP.failed, "failed");
+});
 
 
 // by what the agent IS, from the task's kind - "Start coder" named a profile as if it were a worker (the owner, 2026-10-16)
@@ -43,7 +49,7 @@ test("the story is the record's first line when there is a record, and the whole
 });
 
 
-
 test("a run that finished wears the list's word for it, never 'not started' (G7)", () => {
+  assert.equal(STORY_CHIP.finished, "agent finished");
   assert.equal(startLabel({ kind: "finished", line: "The coding agent finished its work" }, "coding", true), null);
 });

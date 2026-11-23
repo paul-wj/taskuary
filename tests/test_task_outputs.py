@@ -39,6 +39,18 @@ class TaskOutputsTests(unittest.TestCase):
         p = mock.patch.object(server, 'store', self.store); p.start(); self.addCleanup(p.stop)
         self.client = TestClient(server.app)
 
+    def test_a_picture_carries_its_own_shape_so_the_page_reserves_it(self):
+        """The design round, 2026-11-18: every picture in a turn was squeezed into one fixed height - a square drawn half the chat's width.
+        The page draws it at its own shape, its room reserved before it loads: its pixels, read off the file's header."""
+        import struct, zlib
+        png = b'\x89PNG\r\n\x1a\n' + struct.pack('>I', 13) + b'IHDR' + struct.pack('>IIBBBBB', 1200, 630, 8, 2, 0, 0, 0) + b'\0' * 4 + zlib.compress(b'')
+        gif = b'GIF89a' + struct.pack('<HH', 300, 900) + b'\0' * 8
+        jpg = b'\xff\xd8' + b'\xff\xe0' + struct.pack('>H', 16) + b'JFIF\0' + b'\0' * 9 + b'\xff\xc0' + struct.pack('>HBHH', 17, 8, 768, 1024) + b'\0' * 12
+        for name, body, dims in (('post.png', png, [1200, 630]), ('tall.gif', gif, [300, 900]), ('photo.jpg', jpg, [1024, 768])):
+            (self.dir / name).write_bytes(body)
+            self.assertEqual(outputs.row(self.tid, self.dir / name, name).get('dims'), dims, name)
+        self.assertNotIn('dims', outputs.row(self.tid, self.dir / 'notes.md', 'notes.md'))
+
     def test_the_folder_is_the_one_the_agent_picked(self):
         self.assertEqual(outputs.folder(17), config.home() / 'scratch' / 'outputs' / 'TQ-0017')
 
@@ -109,7 +121,9 @@ class TaskOutputsTests(unittest.TestCase):
         import threading, time
         whole = (self.dir / 'vendor comparison.xlsx').read_bytes(); half = self.dir / 'census.xlsx'
         half.write_bytes(whole[:len(whole) // 2])
-        threading.Timer(1.0, lambda: half.write_bytes(whole)).start()
+        # ...its writer pauses well under the second a file must stand still to count as done (outputs.settled): a pause of a whole second
+        # tied with it, and on a slow runner the check read the half file as finished (Windows CI, 2026-11-18)
+        threading.Timer(0.3, lambda: half.write_bytes(whole)).start()
         got = self.client.get(f'/api/task-outputs/{self.tid}/census.xlsx', params={'preview': 'true'})
         self.assertEqual(got.status_code, 200, got.text)
         self.assertEqual(got.json()['sheet'], 'Vendors')
@@ -299,7 +313,7 @@ class HisFilesAreNotMadeTests(unittest.TestCase):
         pic = d / '20990301-090909-abc125-shot.png'; pic.write_bytes(b'\x89PNG fake'); self.addCleanup(pic.unlink, missing_ok=True)
         p = mock.patch.object(server, 'store', self.s); p.start(); self.addCleanup(p.stop)
         self.c = TestClient(server.app)
-        self.tid = self.c.post('/api/tasks', json={'Title': 'what is this', 'Summary': general.with_files('what is this', [str(pic)]), 'Kind': 'general'}).json()['taskId']
+        self.tid = self.c.post('/api/tasks', json={'Title': 'what is this', 'Summary': 'what is this', 'Files': [str(pic)], 'Kind': 'general'}).json()['taskId']
         (outputs.folder(self.tid) / 'answer.md').write_text('# It is a chart', encoding='utf-8')
 
     def test_the_chat_lists_only_what_the_agent_made(self):
@@ -311,3 +325,68 @@ class HisFilesAreNotMadeTests(unittest.TestCase):
         turn = outputs.turns_folder(self.tid); turn.mkdir(parents=True, exist_ok=True); self.addCleanup(shutil.rmtree, turn, True)
         (turn / '7.json').write_text('[{"path": "shot.png", "size": 1, "mtime": 1}]', encoding='utf-8')
         self.assertEqual({r['name'] for r in outputs.made(self.s, self.tid)}, {'answer.md', 'shot.png'})
+
+
+def test_a_file_written_back_as_it_was_is_no_change_of_that_turn():
+    """The walk, 2026-11-18: the agent saved its posts file again each turn, word for word, and the chat drew it whole under every answer. A
+    turn that writes a file back as it was is not the turn that made it; one that changes a word is."""
+    import time
+    tid, f = 41, outputs.folder(41) / 'posts.txt'
+    f.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        f.write_text('LinkedIn: the portal launches Monday.', encoding='utf-8'); t0 = time.time() - 5
+        assert [k['path'] for k in outputs.keep_turn(tid, 3, t0)] == ['posts.txt']
+        os.utime(f, (time.time() + 2, time.time() + 2)); f.write_text('LinkedIn: the portal launches Monday.', encoding='utf-8')
+        assert outputs.keep_turn(tid, 9, t0) == []
+        assert outputs.made_by(tid) == {'posts.txt': 'comment-3'} and outputs.turn_versions(tid) == []
+        f.write_text('LinkedIn: the portal launches Tuesday.', encoding='utf-8')
+        assert [k['path'] for k in outputs.keep_turn(tid, 12, t0)] == ['posts.txt'] and outputs.made_by(tid)['posts.txt'] == 'comment-12'
+    finally:
+        shutil.rmtree(outputs.folder(tid), True); shutil.rmtree(outputs.turns_folder(tid), True)
+
+
+class TasksSharingAFileHearItChange(unittest.TestCase):
+    """Design round 6, D7: a research task added a "Print vendors" sheet to the board pack's workbook (another task's file); the pack's agent,
+    told nothing, rebuilt the pack for a new headcount and wiped it; the research agent then said the files "still show 212" minutes after
+    they showed 214. Whoever changes a file another live task uses, that task's agent hears it - and the task the file is of, when another
+    wrote into it. Plain code over the folders: no per-task rule."""
+    def setUp(self):
+        import time
+        from taskuary import general
+        self.s, self.t0 = MemoryStore(), time.time() - 1
+        self.pack = self.s.create_task({'Title': 'Build the Q3 board pack', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+        self.research = self.s.create_task({'Title': 'Compare print vendors', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+        self.done = self.s.create_task({'Title': 'An old look at the pack', 'Kind': 'general', 'Status': 'done'}, 'owner')
+        self.addCleanup(shutil.rmtree, config.home() / 'scratch' / 'outputs', True)
+        self.book = outputs.folder(self.pack) / 'Q3 board pack working.xlsx'; _book(self.book)
+        (outputs.folder(self.pack) / 'Q3 board report.pdf').write_bytes(b'%PDF-1.4 headcount 212')
+        self.told = []
+        p = mock.patch.object(general, 'to_agent', lambda store, tid, said, actor='owner', heard=None: self.told.append((tid, said)) or 'told')
+        p.start(); self.addCleanup(p.stop)
+
+    def turn(self, tid, *cmds):
+        return [{'type': 'tool_call', 'name': 'PowerShell', 'detail': {'args': {'command': c}}} for c in cmds]
+
+    def test_a_file_written_into_by_another_task_and_then_rebuilt_is_heard_by_each_side(self):
+        from taskuary import sharedfiles
+        path = str(self.book).replace('/', os.sep)
+        # ...the research turn adds its sheet into the pack's workbook: the pack's agent hears its file changed
+        os.utime(self.book, None)
+        got = sharedfiles.turn_ended(self.s, self.research, self.turn(self.research, f'py print_vendors.py "{path}"'), self.t0, [])
+        self.assertEqual(got, [(self.pack, 'Q3 board pack working.xlsx')])
+        self.assertIn("TQ-%04d's agent just changed Q3 board pack working.xlsx (this task's)" % self.research, self.told[-1][1])
+        self.assertIn('Read it again before you say what it holds', self.told[-1][1])
+        # ...and when the pack's agent rebuilds it for 214, the research task that uses it hears - the done task does not
+        self.s.audit('task', self.done, sharedfiles.USED, 'taskuary', 'system', {'task': self.pack, 'paths': ['Q3 board pack working.xlsx']})
+        self.told.clear()
+        got = sharedfiles.turn_ended(self.s, self.pack, [], self.t0, [{'path': 'Q3 board pack working.xlsx'}, {'path': 'Q3 board report.pdf'}])
+        self.assertEqual(got, [(self.research, 'Q3 board pack working.xlsx')])
+        self.assertEqual(len(self.told), 1); self.assertIn(f"({task_ref(self.pack)}'s, which you use)", self.told[0][1])
+
+    def test_a_file_only_read_is_used_and_a_turn_that_names_no_file_uses_none(self):
+        from taskuary import sharedfiles
+        old = self.t0 - 3600; os.utime(self.book, (old, old))
+        got = sharedfiles.turn_ended(self.s, self.research, self.turn(self.research, f'cd "{outputs.folder(self.pack)}"; py -c "read" "Q3 board pack working.xlsx"'), self.t0, [])
+        self.assertEqual((got, self.told), ([], []), 'reading changes nothing, and nobody is told')
+        self.assertEqual(sharedfiles.users(self.s, self.pack, 'Q3 board pack working.xlsx'), {self.research})
+        self.assertEqual(sharedfiles.named('Get-ChildItem C:/work', self.research), {})

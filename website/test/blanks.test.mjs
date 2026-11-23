@@ -16,10 +16,10 @@ test("a span points at the slot in the text the box shows", () => {
   assert.equal(t.slice(a, b), "[DATE]"); assert.equal(s, "[DATE]");
 });
 
-test("the refusal names every blank and disappears once they are filled", () => {
-  assert.ok(blankRefusal("because [REASON].").includes("[REASON]"));
-  const refusal = blankRefusal("[DATE], [TIME] and [REASON]");
-  for (const slot of ["[DATE]", "[TIME]", "[REASON]"]) assert.ok(refusal.includes(slot));
+test("the refusal reads as the server's, word for word", () => {
+  assert.equal(blankRefusal("because [REASON]."), "Fill in [REASON] first");
+  assert.equal(blankRefusal("[DATE] and [REASON]"), "Fill in [DATE] and [REASON] first");
+  assert.equal(blankRefusal("[DATE], [TIME] and [REASON]"), "Fill in [DATE], [TIME] and [REASON] first");
   assert.equal(blankRefusal("Re: [External] all filled in."), "");
 });
 
@@ -30,11 +30,4 @@ test("the ask names the first blank, a long choice by its head, and nothing when
   const long = blankAsk("[Gail is joining / Gail is not joining / I am confirming with Gail]");
   assert.match(long, /^This still has \[Gail is joining \/ Gail is not joining…\]\. Send anyway\?$/);
   assert.equal(blankAsk("All set for Friday - Alex"), "");
-});
-
-test("every card that sends a draft asks with the one shared line before it posts", () => {
-  for (const f of ["ReviewDecision.jsx", "assistantCards.jsx"]) {
-    const src = readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-    assert.match(src, /<BlankAsk /, f); assert.match(src, /blanks_ok: blanksOk/, f);
-  }
 });

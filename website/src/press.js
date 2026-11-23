@@ -24,11 +24,17 @@ const post = async (api, url, body, wait) => {
   catch (e) { return outcomeOf(null, e); } };
 // `wait`: how many times the one patience this press is given - an act that runs something takes longer than a reply handed to its provider
 export const press = (api, rid, body, wait = 1) => post(api, `/api/reviews/${rid}/decide`, { final_text: null, note: null, ...body }, wait);
-// ...and a turn's held steps, approved or dismissed together (/api/reviews/steps): it stops at the first that fails, and `why` is that step's
-export const pressSteps = async (api, ids, verb) => { const o = await post(api, "/api/reviews/steps", { ids, verb }, ids.length);
+// ...and a turn's held steps, approved or dismissed together: the same decide door, the rest of the card's steps with it (`steps`) - it stops at
+// the first that fails, and `why` is that step's
+export const pressSteps = async (api, ids, verb) => { const o = await press(api, ids[0], { verb, steps: ids }, ids.length);
   return o.data?.failed ? { ...o, kind: "failed", why: String(o.data.failed.error || "") } : o; };
 
 export const landed = (o) => o.kind === "ok" || o.kind === "partial";
+// ...AND AN ANSWERED PRESS IS OVER (the owner's live app, 2026-11-19: a held step ran and its decide answered, and the bar's Approve read
+// "running…" until a re-read minutes behind took the bar away): what it did - a press decided elsewhere did it too - or why it did not
+export const afterPress = (o, verb) => (landed(o) || o.kind === "already" ? { busy: "", done: verb, err: "" } : { busy: "", done: "", err: failLine(o) });
+// ...a yes the server says went: decided (approved, edited, sent) or with its delivery's receipt - what a page may move on from (design round 5, I2)
+export const landedSend = (data) => !!data?.ok && !data.send_error && (["approved", "edited", "sent"].includes(data.status) || !!data.sent || data.delivery === "sent");
 // what a card says under a press that did not land: the server's reason, else that nothing was `done` ("sent", "posted", "run") - and never
 // that after no answer, when it may be going still (verdicts' claim: a second press of a running act or send does nothing)
 export const STILL = "No answer yet - it may still be going. Nothing runs twice.";

@@ -17,13 +17,14 @@ from fastapi.testclient import TestClient
 
 from taskuary import buttons, concierge, funnel, ingest, operations, server, terminal
 from taskuary.store import MemoryStore
+from taskuary.testing import mailbox
 
 
 def ago(hours=0): return (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def store():
-    s = MemoryStore()
+    s = mailbox(MemoryStore())
     s.upsert_agent('coding', 'coding', 'cli', '{}')
     for k in ('calendar_enabled', 'auto_draft_enabled'): s.set_setting(k, '0', 't')
     s.set_setting('coding_auto_enabled', '1', 't'); s.set_setting('team_domains', 'ours.com', 't'); s.set_setting('owner_email', 'owner@ours.com', 't')
@@ -247,7 +248,8 @@ class ExecutionTests(unittest.TestCase):
         p = out['proposal']
         self.assertEqual((p['kind'], p['params']['kind']), ('task.create_from_text', 'coding')); self.assertIn('bulk approve', p['params']['text'])
         self.assertEqual(s.list_tasks(active_only=True), [])
-        with mock.patch.object(ingest, '_spawn') as spawn:
+        from taskuary import capabilities                 # ...an AI to run it: the one start refuses before making a task without one
+        with mock.patch.object(ingest, '_spawn') as spawn, mock.patch.object(capabilities, 'has_ai', return_value=True):
             r = run(s, p)
         t = s.get_task(r.json()['outcome']['taskId'])
         self.assertEqual(t['Kind'], 'coding'); self.assertTrue(spawn.called); self.assertIn('did not stick', t['Summary'])

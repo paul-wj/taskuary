@@ -2,8 +2,11 @@
 // about when, or how many, asks here; taskuary/timewords.py is the server's twin and a test holds the two to the same words. Each
 // surface had grown its own: the walk said "40 min" where the task list said "40m ago", the Hub "47h ago" where the page said
 // "2d ago", and "asked you 5m ago" was typed twice (2026-10-18).
+// ...ONE STAMP READER: a server stamp is the SERVER's local time (dates.asUtc), never the browser's - read here as a browser-zone string, the
+// rail's age and the task's "5m ago" (ui.timeAgo, through asUtc) said two ages of one stamp whenever the two zones differ
+import { asUtc } from "./dates.js";
 import { t } from "./i18n.js";
-const ms = (x) => (x instanceof Date ? x.getTime() : typeof x === "number" ? x : new Date(String(x).replace(" ", "T")).getTime());
+const ms = (x) => (x instanceof Date ? x.getTime() : typeof x === "number" ? x : asUtc(String(x)).getTime());
 
 export const plural = (n, one, many) => `${n} ${t(n === 1 ? one : many || `${one}s`, {}, one === "day" ? "duration" : "")}`;
 // what came with a task: its files and the documents its messages link to - "6 attachments · 2 links", '' for neither
@@ -49,7 +52,10 @@ export const bandUntil = (at, now) => {
   const m = minsSince(at, now);
   if (m == null) return "";
   const r = Math.round(-m);
-  return r <= 0 ? "" : r < 30 ? t("in 30m") : r < 60 ? t("in 1h") : t("in {time}", { time: span(r) });
+  // ...a day off or more is counted BY THE CALENDAR (the walk, 2026-11-21: Next week, kept as 7 days on at 7 AM, read "in 6d" that evening)
+  if (r >= 1440) { const day = (x) => { const d = new Date(ms(x)); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    return `in ${Math.round((day(at) - day(now ?? Date.now())) / 864e5)}d`; }
+  return r <= 0 ? "" : r < 30 ? "in 30m" : r < 60 ? "in 1h" : `in ${span(r)}`;
 };
 // how long something has RUN, to the second while it is fresh: "45s", "12m", "1.5h" - an agent's turn, a step, a session
 export const dur = (s) => (s == null || Number.isNaN(Number(s)) ? "" : s < 90 ? t("{count}s", { count: Math.round(s) }) : s < 5400 ? t("{count}m", { count: Math.round(s / 60) }) : t("{count}h", { count: (s / 3600).toFixed(1) }));

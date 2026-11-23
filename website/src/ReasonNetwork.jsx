@@ -13,7 +13,7 @@ import { repoLabel } from "./repoNames.js";
 const said = (e, d) => e?.response?.data?.detail || { source: d, values: {} };
 const Section = ({ title, children }) => (
   <Box sx={{ mt: 2.5 }}>
-    <Typography variant="overline" sx={{ color: FAINT, letterSpacing: ".08em" }}>{title}</Typography>
+    <Typography variant="overline" sx={{ color: FAINT }}>{title}</Typography>
     <Box sx={{ mt: .5 }}>{children}</Box>
   </Box>
 );

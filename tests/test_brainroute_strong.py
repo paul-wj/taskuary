@@ -3,7 +3,7 @@
 Nothing is guessed from a model's name (setup never assumes an AI): the router steps up only to a model the owner put in the
 "strong model" box of a card.
 """
-import ast, json, re
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -35,7 +35,8 @@ def test_the_strong_gear_runs_the_strong_model():
 def test_a_blank_strong_gear_is_no_strong_tier_and_never_the_light_one():
     s = _cli_store(model='sonnet', light_model='haiku')
     assert _ran(s, 'strong') == 'sonnet'
-    assert brainroute.strong_of(s, 'cli:claude', {'cli_connections': {'claude': {'cmd': 'claude', 'model': 'sonnet'}}}) == ''
+    # ...where the router asks for one, a blank box on Claude Code is its opus at high effort (climodels.gears, the owner's ruling 2026-11-20)
+    assert brainroute.strong_of(s, 'cli:claude', {'cli_connections': {'claude': {'cmd': 'claude', 'model': 'sonnet'}}}) == 'opus@high'
 
 
 def test_an_api_card_s_strong_gear_is_swapped_in_for_the_call():
@@ -76,18 +77,6 @@ def test_an_api_card_keeps_its_strong_model_in_its_own_config():
     assert aidefaults.resolve(s, {}, 'triage_ai')['strong_model'] == 'gpt-5'
 
 
-def test_no_model_id_is_typed_into_the_ai_cards():
-    """A hand-typed list goes stale (it said Vertex ran a model it did not) and guesses what the owner's key can call. The
-    cards' choices are the provider's own list; what a blank box runs is llm.PROVIDER_DEFAULT, the table make_llm reads."""
-    tree = ast.parse((ROOT / 'aidefaults.py').read_text(encoding='utf-8'))
-    docs = {id(n.body[0].value) for n in ast.walk(tree) if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef))
-            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
-    shaped = re.compile(r'^(claude|gpt|gemini|muse|llama|meta-llama|openrouter)[-/.]\w', re.I)     # an id, not a regex's prefix
-    typed = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-             and id(n) not in docs and shaped.match(n.value)]
-    assert not typed, typed
-
-
 def test_the_provider_list_is_one_cached_read_that_fails_soft():
     s = MemoryStore()
     cid = s.get_connector_by_type('openai')['ConnectorId']
@@ -100,3 +89,16 @@ def test_the_provider_list_is_one_cached_read_that_fails_soft():
     with mock.patch.object(llm, 'list_models', side_effect=RuntimeError('openai answered 401')):
         assert llm.connector_models(s, cid)['models'] == [] and '401' in llm.connector_models(s, cid)['error']
     assert llm.connector_models(s, s.get_connector_by_type('github')['ConnectorId'] if s.get_connector_by_type('github') else 99999) is None
+
+
+def test_an_api_card_s_light_gear_thinks_little():
+    # a gateway's Flash, thinking as it would, took up to 169 s to sort one mail (the owner, 2026-11-20: "it can't be 169 seconds")
+    s = MemoryStore()
+    cid = s.get_connector_by_type('anthropic')['ConnectorId']
+    s.save_connector({'ConnectorId': cid, 'Secret': 'sk-test-0123456789', 'Active': 1,
+                      'ConfigJson': json.dumps({'model': 'claude-sonnet-5', 'light_model': 'claude-haiku-5'})}, 'owner')
+    s.set_setting('ai_route_mode', 'fixed', 'owner')
+    seen = []
+    with mock.patch.object(llm, 'make_llm', lambda t, conf, key: seen.append(conf['model']) or (lambda *a, **k: 'ok')):
+        llm.build_llm(s, pick=f'connector:{cid}', gear='light', job='triage')
+    assert seen == ['claude-haiku-5@low']

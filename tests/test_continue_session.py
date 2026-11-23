@@ -142,6 +142,41 @@ class OneRoadTests(unittest.TestCase):
             TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={})
         fresh.assert_called_once()
 
+    # HANDED TO ANOTHER AI (the owner, 2026-11-18: "i need way to hand this to new AI agent instead of the one that blocked me"): the AI picked
+    # at the task's head takes the conversation on, told what happened so far, and the press is his one line in the chat
+    def test_a_chat_at_work_is_stopped_and_handed_to_the_ai_he_picked(self):
+        from taskuary import general, terminal
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Compare payroll vendors', 'Kind': 'general', 'Status': 'in_progress'}, 'o')
+        old, new = mock.Mock(alive=True, busy=True, sid='old'), mock.Mock(alive=True)
+        def stop(store, t): old.busy = False; return True
+        ready = [{'pick': 'cli:claude', 'label': 'Claude Code'}, {'pick': 'cli:codex', 'label': 'Codex CLI'}]
+        with mock.patch.object(server, 'store', s), mock.patch('taskuary.general.handles', return_value=True),              mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch('taskuary.general.brain_options', return_value=ready),              mock.patch('taskuary.general.session_for', side_effect=[old, new, new, new, new]), mock.patch('taskuary.general.stop_turn', side_effect=stop) as stopped,              mock.patch.object(terminal, 'close') as closed, mock.patch('taskuary.general.start_session', return_value=new) as start,              mock.patch('threading.Thread', side_effect=lambda target, **k: mock.Mock(start=target)):
+            out = TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={'pick': 'cli:codex', 'model': 'gpt-6.2'}).json()
+        self.assertTrue(out['continued']); stopped.assert_called_once(); closed.assert_called_once_with('old')
+        self.assertEqual((start.call_args_list[0].kwargs['pick'], start.call_args_list[0].kwargs['model']), ('cli:codex', 'gpt-6.2'))
+        self.assertTrue(new.send_prompt.call_args.args[0].endswith(continuity.RESUME_PROMPT), 'the new AI picks the work up from the saved conversation')
+        self.assertIn('You handed this to Codex CLI (gpt-6.2).', [m['content'][0]['text'] for m in general.press_lines(s, tid)])
+
+    def test_a_coding_task_handed_to_another_cli_starts_it_fresh_with_the_handover(self):
+        from taskuary import agents, general
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Fix the export', 'Kind': 'coding', 'Status': 'open'}, 'o')
+        ready = [{'value': 'cli:claude', 'label': 'Claude Code', 'ready': True}, {'value': 'cli:codex', 'label': 'Codex CLI', 'ready': True}]
+        with mock.patch.object(server, 'store', s), mock.patch('taskuary.general.handles', return_value=False),              mock.patch.object(agents, 'coding_options', return_value=ready), mock.patch('taskuary.general.session_for', return_value=None),              mock.patch.object(server.hub_term, 'session_for', return_value=mock.Mock(alive=True, sid='pty')),              mock.patch.object(server, '_pause_task') as paused, mock.patch.object(server, '_brainless', return_value=''),              mock.patch.object(server, '_resumable', side_effect=AssertionError('the old CLI is not reopened')),              mock.patch.object(server, 'continue_task', return_value={'session': 'sid'}) as fresh:
+            TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={'pick': 'cli:codex'})
+        paused.assert_called_once_with(tid)
+        self.assertEqual(fresh.call_args.args[1].brain, 'codex')
+        self.assertIn('You handed this to Codex CLI.', [m['content'][0]['text'] for m in general.press_lines(s, tid)])
+
+    def test_an_ai_that_is_not_ready_is_refused_and_nothing_is_stopped(self):
+        from taskuary import agents
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Fix the export', 'Kind': 'coding', 'Status': 'open'}, 'o')
+        with mock.patch.object(server, 'store', s), mock.patch.object(agents, 'coding_options', return_value=[{'value': 'cli:codex', 'label': 'Codex CLI', 'ready': False}]),              mock.patch.object(server, '_pause_task', side_effect=AssertionError('nothing stops for an AI that cannot take it')):
+            r = TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={'pick': 'cli:codex'})
+        self.assertEqual(r.status_code, 422); self.assertIn('not ready', r.json()['detail'])
+
     def test_a_coding_continue_with_only_a_picture_hands_the_picture_over(self):
         """Continue on a coding task with a screenshot and no words: the coding branch never looked at the pictures, so the session
         reopened on the resume prompt alone and what he attached was lost. It is a line like any other (take_line), its file the task's."""
@@ -212,14 +247,13 @@ class BriefInParagraphsTests(unittest.TestCase):
 
 class PhoneTests(unittest.TestCase):
     def test_a_note_held_behind_trust_is_said_as_held_never_as_continuing(self):
-        """The Continue round, 2026-11-18: Continue from the phone on a stranger's task. The note was kept by the box behind Trust - nothing went
-        to an agent - and the phone said "Continuing TQ-0001 with your note - it picks up where it left off". It says what happened: kept, and why."""
+        """The Continue round, 2026-11-18: Continue from the phone on a task a stranger's mail started. The note was kept by the box behind Trust -
+        nothing went to an agent - and the phone said "Continuing TQ-0001 with your note - it picks up where it left off". It says what happened."""
         from taskuary import general, origin
         s = MemoryStore()
         tid = s.create_task({'Title': 'Quote request', 'Kind': 'general', 'Status': 'done'}, 'o')
         line = 'You have not trusted Pat Lee (pat@vendor.example) yet - nothing goes to an agent until you do.'
-        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}), \
-             mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''):
+        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}),              mock.patch.object(origin, 'his_own', return_value=False),              mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''):
             said = ra._continue(s, str(tid), 'send them our price list')
         self.assertNotIn('Continuing', said); self.assertNotIn('picks up', said)
         self.assertIn('Your note waits on TQ-0001', said); self.assertIn(line, said)
@@ -232,12 +266,24 @@ class PhoneTests(unittest.TestCase):
         tid = s.create_task({'Title': 'Quote request', 'Kind': 'general', 'Status': 'done'}, 'o')
         dock = s.create_task({'Title': 'Assistant', 'Kind': 'general', 'Status': 'open'}, 'o')
         line = 'You have not trusted Pat Lee (pat@vendor.example) yet - nothing goes to an agent until you do.'
-        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}), \
-             mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''), \
-             mock.patch.object(concierge, 'continuable', return_value=True):
+        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}),              mock.patch.object(origin, 'his_own', return_value=False),              mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''),              mock.patch.object(concierge, 'continuable', return_value=True):
             out = concierge._task_writes(s, dock, 'agent.continue', tid, {'note': 'send them our price list'}, 'TQ-0001', 'owner',
                                          said='send them our price list')
         self.assertEqual(out['say'], f'Your note waits on TQ-0001 - {line}')
+
+    def test_his_note_on_his_own_task_a_stranger_joined_goes_on_never_held_behind_trust(self):
+        """Design round 4 (H4): on his own task a stranger's mail only joined, his note is his line and goes to the agent (general.take_line)
+        - never kept behind the stranger's Trust (origin.keeps_him)."""
+        from taskuary import general, origin
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Quote request', 'Kind': 'general', 'Status': 'done'}, 'o')
+        line = 'You have not trusted Pat Lee (pat@vendor.example) yet - nothing goes to an agent until you do.'
+        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}), \
+             mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''), \
+             mock.patch.object(general, 'take_line', return_value={'kept': 1}) as took:
+            said = ra._continue(s, str(tid), 'send them our price list')
+        self.assertIn('Continuing TQ-0001 with your note', said); self.assertNotIn(line, said)
+        self.assertEqual(took.call_args.args[1:3], (tid, 'send them our price list'))
 
     def test_the_pick_asks_and_the_next_typed_line_is_the_note(self):
         s = MemoryStore()
@@ -252,7 +298,7 @@ class PhoneTests(unittest.TestCase):
              mock.patch.object(concierge, 'say', side_effect=AssertionError('the note is not words for the model')), \
              mock.patch.object(ra, '_continue', return_value='Continuing') as cont:
             ra.respond(s, 'whatsapp', JID, 'run the tests first', None)
-        cont.assert_called_once_with(s, str(tid), 'run the tests first')
+        cont.assert_called_once_with(s, str(tid), 'run the tests first', [])
 
 
 if __name__ == '__main__': unittest.main()

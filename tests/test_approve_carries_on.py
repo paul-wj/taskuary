@@ -30,19 +30,21 @@ class HeldStep(unittest.TestCase):
 
     def test_over_acp_the_note_is_taskuarys_never_the_owners(self):
         got = []
-        sess = SimpleNamespace(sid='run1', acp=True, task_id=self.tid, prompt=lambda text, brief=False, shown=None, done=None: got.append((text, brief)),
+        sess = SimpleNamespace(sid='run1', acp=True, alive=True, task_id=self.tid, waiting=lambda: True, status_tail=lambda n=8: [],
+                               prompt=lambda text, brief=False, shown=None, done=None: got.append((text, brief)),
                                say=lambda *a, **k: self.fail('an approval note went in as an owner prompt'))
-        self.approve(sess)
+        with mock.patch.dict(term.SESSIONS, {'run1': sess}, clear=True): self.approve(sess)      # ...by the one road in (general.to_agent)
         end = time.time() + 5
         while not got and time.time() < end: time.sleep(.01)
         [(text, brief)] = got
         self.assertTrue(brief, 'drawn as Taskuary\'s brief (_meta.taskuary), never a "You" bubble')
-        self.assertIn('The owner approved it', text); self.assertIn('what comes next', text)
+        self.assertIn('The owner approved it', text)
 
     def test_on_a_pty_the_note_is_kept_as_a_seed_and_the_record_reads_it_as_a_brief(self):
         typed = []
-        sess = SimpleNamespace(sid='run1', task_id=self.tid, cli='claude', write=lambda s: typed.append(s), n=0)
-        with mock.patch.object(term, 'in_box', return_value=None), mock.patch.object(term, 'SEED_CHUNK_GAP', 0), mock.patch.object(term, 'SEED_ENTER', 0):
+        sess = SimpleNamespace(sid='run1', task_id=self.tid, cli='claude', write=lambda s: typed.append(s), n=0, alive=True, waiting=lambda: True,
+                               tail=lambda n=8: [], status_tail=lambda n=8: [])
+        with mock.patch.object(term, 'in_box', return_value=None), mock.patch.object(term, 'SEED_CHUNK_GAP', 0), mock.patch.object(term, 'SEED_ENTER', 0),              mock.patch.dict(term.SESSIONS, {'run1': sess}, clear=True):      # ...a pane at rest: the waiting room types it in (general.to_agent)
             self.approve(sess)
             end = time.time() + 5
             while not typed and time.time() < end: time.sleep(.01)
@@ -80,9 +82,9 @@ class EveryYesCarriesOn(unittest.TestCase):
             self.assertTrue(verdicts.decide(self.s, rv, 'approve')['ok'])
         [n] = self.s.waiting_notes(self.tid)
         self.assertEqual(n['CreatedBy'], 'router', 'Taskuary\'s note - never drawn as the owner\'s (codingchat.waiting, waitroom.batch)')
-        self.assertIn('pressed Approve', n['Note']); self.assertIn(SAID, n['Note']); self.assertIn('what comes next', n['Note'])
+        self.assertIn('pressed Approve', n['Note']); self.assertIn(SAID, n['Note'])
         # ...and nothing invites a line about a link that did not come (agent walk 2, 2026-11-10: "No link came back with it", after every Send)
-        self.assertNotIn('if it gave one', n['Note']); self.assertIn('where it gave none, say nothing about links', n['Note'])
+        self.assertNotIn('if it gave one', n['Note'])
 
     def test_a_resting_general_agent_that_answered_is_woken_once_never_as_the_owner(self):
         self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'The reply is ready - press Send.')
@@ -130,8 +132,7 @@ class EveryYesCarriesOn(unittest.TestCase):
             end = time.time() + 5
             while not tried and time.time() < end: time.sleep(.01)
             time.sleep(.1)
-        did = general.owner_did(self.s, self.tid)
-        self.assertEqual(len(did), 1, did); self.assertIn(f'rv{rid}', did[0])
+        self.assertIn(f': rv{rid}, the email to paula@northwind.example', general.turn_facts(self.s, self.tid).split('- Sent ')[1])   # ...as it stands, every turn
     def test_a_second_press_while_the_first_wake_is_starting_rides_in_that_turn(self):
         # two held steps on two cards, pressed a few seconds apart on a resting agent: the second found its answer already woken and no session
         # up yet, so its words went nowhere - and the turn that started answered past it, so the agent never heard it
@@ -139,8 +140,8 @@ class EveryYesCarriesOn(unittest.TestCase):
         told = []
         def start(*a, **kw): time.sleep(0.3); return SimpleNamespace(send_prompt=lambda text, **k: told.append((text, k)))
         with mock.patch.object(general, 'start_session', side_effect=start), mock.patch.object(general, 'handles', return_value=True):
-            self.assertEqual(general.tell(self.s, self.tid, 'The owner approved it and Taskuary ran `git push origin deploy`.'), 'woke')
-            self.assertEqual(general.tell(self.s, self.tid, 'The owner approved it and Taskuary ran `git push origin --tags`.'), 'woke')
+            self.assertEqual(general.to_agent(self.s, self.tid, 'The owner approved it and Taskuary ran `git push origin deploy`.'), 'woke')
+            self.assertEqual(general.to_agent(self.s, self.tid, 'The owner approved it and Taskuary ran `git push origin --tags`.'), 'woke')
             end = time.time() + 5
             while not told and time.time() < end: time.sleep(.01)
             time.sleep(0.1)
@@ -178,7 +179,7 @@ class EveryYesCarriesOn(unittest.TestCase):
 
     def test_an_approval_reaches_a_coding_agent_whose_session_ended(self):
         """The north-star audit, 2026-11-10: an approved merge or comment on a coding task whose session had ended was told nobody, and
-        nothing said so - while a landing on the same task reopened its agent through the waiting room. One road (general.tell) now."""
+        nothing said so - while a landing on the same task reopened its agent through the waiting room. One road (general.to_agent) now."""
         tid = self.ended()
         rid = Factory(self.s).review(tid, kind='action', reason='The agent asks', draft=json.dumps({'action': 'comment_issue', 'body': 'Fixed.'}))
         rv = self.s.get_review(rid if isinstance(rid, int) else rid['ReviewId'])
@@ -195,6 +196,39 @@ class EveryYesCarriesOn(unittest.TestCase):
         went.assert_not_called(); self.assertEqual(self.s.waiting_notes(self.tid), [])
         said = [c for c in self.s.list_comments(self.tid) if 'none was told' in c['Body']]
         self.assertEqual(len(said), 1, said)
+
+
+class OneRoadIntoTheAgent(unittest.TestCase):
+    """ONE ROAD INTO THE AGENT (one road per decision, #10): a press, a browser hand-over closed and a sign-in done each woke the agent their own
+    way - a chat heard a press only on the waiting room's next look (up to 10 s, the chat at rest meanwhile) and a page's Done at once."""
+    def setUp(self):
+        self.s = MemoryStore(); self.tid = Factory(self.s).task('Pay the toll invoice'); general._WOKEN.clear()
+
+    def test_a_press_and_a_page_done_reach_a_live_chat_the_same_way_at_once(self):
+        from taskuary import browsergate
+        told = []
+        sess = SimpleNamespace(sid='run1', task_id=self.tid, alive=True, send_prompt=lambda text, **kw: told.append((text, kw)))
+        with mock.patch.dict(term.SESSIONS, {'run1': sess}, clear=True), mock.patch.object(waitroom, 'tick', side_effect=AssertionError('no clock')):
+            t0 = time.time()
+            self.assertEqual(general.approved(self.s, self.tid, 'Send', 'the reply was sent'), 'told')
+            browsergate._tell(self.s, self.tid, "The owner pressed I'm done: they say they finished the step.", wake=True)
+            end = time.time() + 5
+            while len(told) < 2 and time.time() < end: time.sleep(.01)
+        self.assertLess(time.time() - t0, 2, "heard at once - never on the waiting room's clock")
+        self.assertEqual([kw for _t, kw in told], [{'as_owner': False}] * 2, "one road: the same call for both, never the owner's line")
+        self.assertIn('pressed Send', told[0][0]); self.assertIn("I'm done", told[1][0])
+        self.assertEqual(self.s.waiting_notes(self.tid), [], 'nothing left for a clock to deliver')
+
+    def test_who_it_is_from_says_the_road(self):
+        with self.assertRaises(ValueError): general.to_agent(self.s, self.tid, 'hi', frm='the assistant')
+        with mock.patch.object(ws, 'answer', return_value={'delivered': True}) as ans, mock.patch.object(general, 'take_line', return_value={'kept': 1}) as line:
+            general.to_agent(self.s, self.tid, 'Yes', frm='owner', request='q1')
+            general.to_agent(self.s, self.tid, 'Also check March', frm='owner', wait=False)
+        self.assertEqual(ans.call_args.args[2:4], ('q1', 'Yes')); self.assertEqual(line.call_args.args[1:3], (self.tid, 'Also check March'))
+        with mock.patch.object(waitroom, 'deliver', return_value={}):
+            general.to_agent(self.s, self.tid, 'Kept for its next stop', frm='owner', wake=False)
+            general.to_agent(self.s, self.tid, 'Erin Blake on Teams: the file is up', frm='sender')
+        self.assertEqual([n['CreatedBy'] for n in self.s.waiting_notes(self.tid)], ['owner', waitroom.TEAMMATE])
 
 
 class ParkedOnItsOwnQuestion(unittest.TestCase):
@@ -233,7 +267,7 @@ class ParkedOnItsOwnQuestion(unittest.TestCase):
             turn.set()
             [(text, kw)] = told
             self.assertTrue(kw.get('brief'), "Taskuary's brief in the chat (general.BRIEF_ACTOR) - never the owner's line")
-            self.assertIn('pressed Send', text); self.assertIn('what comes next', text)
+            self.assertIn('pressed Send', text)
             self.after()
 
     def test_on_a_pty_it_is_kept_as_a_seed_the_record_reads_as_a_brief(self):
@@ -266,7 +300,7 @@ class ParkedOnItsOwnQuestion(unittest.TestCase):
         sess = self.parked(send_prompt=lambda text, **kw: told.append((text, kw)))
         with mock.patch.dict(term.SESSIONS, {'a': sess}, clear=True):
             self.asked(sess)
-            self.assertEqual(waitroom.add(self.s, self.tid, 'Yes, send it as it is')['state'], 'answered')
+            self.assertEqual(waitroom.add(self.s, self.tid, 'Yes, send it as it is', 'owner')['state'], 'answered')
         [(text, kw)] = told
         self.assertEqual(text, 'Yes, send it as it is'); self.assertFalse(kw.get('brief'))
         [ev] = [e for e in ws.events(self.s, self.tid) if e['Kind'] == 'answered']
@@ -323,7 +357,7 @@ def _line(s, tid, agent, said):
         a.store, a.task_id = s, tid
         return a._begins([(said, False, [], None)], said)[0]
     told = []                                     # a coding agent in a terminal: its prompt hook, then Taskuary's next line
-    with mock.patch.object(general, 'tell', lambda st, t, note, actor='owner': told.append(note) or 'told'):
+    with mock.patch.object(general, 'to_agent', lambda st, t, note, actor='owner': told.append(note) or 'told'):
         hooks._events(SimpleNamespace(store=s, task_id=tid, sid='run1', bg={}), {'hook_event_name': 'UserPromptSubmit', 'prompt': said})
     return '\n'.join(told)
 
@@ -344,7 +378,7 @@ def test_a_card_he_writes_past_greys_in_its_place_on_every_agents_road_and_its_a
     heard = _line(s, tid, agent, 'What does that step change?')
     rv = s.get_review(rid)
     assert proposals.passed(rv), rv
-    assert proposals.PASSED_TOLD in heard and f'rv{rid}' in heard, heard
+    assert cardqueue.SCREEN_HEAD in heard and f'rv{rid}' in heard.split('Greyed, will not go')[1], heard
     # ...and it keeps its record: never pressable, said so
     out = verdicts.decide(s, s.get_review(rid), 'approve')
     assert (out['ok'], out['send_error']) == (False, proposals.passed_why(s, rv)), out
@@ -372,7 +406,7 @@ def test_a_prompt_that_is_not_his_never_sets_his_waiting_reply_aside(acp, tmp_pa
     s._exec("UPDATE review SET CreatedAt='2026-01-01 09:00:01' WHERE ReviewId=?", (rid,))
     told, note = [], 'A note for you from the agent on TQ-0009: it changed totals.py in this checkout - read its diff before you edit the same lines.'
     sess = SimpleNamespace(store=s, task_id=tid, sid='run1', bg={}, acp=acp)
-    with mock.patch.object(general, 'tell', lambda st, t, n, actor='owner': told.append(n) or 'told'):
+    with mock.patch.object(general, 'to_agent', lambda st, t, n, actor='owner': told.append(n) or 'told'):
         sessionrecord.keep_seed(tid, note)                         # Taskuary typed it (terminal.type_into `brief`)
         hooks._events(sess, {'hook_event_name': 'UserPromptSubmit', 'prompt': note})
         assert s.get_review(rid)['Status'] == 'pending' and not told, (s.get_review(rid)['Status'], told)
@@ -380,6 +414,16 @@ def test_a_prompt_that_is_not_his_never_sets_his_waiting_reply_aside(acp, tmp_pa
     # ...his own line in a terminal is heard here; over ACP the hook leaves it to the turn's own beginning
     assert s.get_review(rid)['Status'] == ('pending' if acp else 'superseded')
     assert bool(told) == (not acp)
+
+
+
+def test_taskuarys_words_typed_into_a_chat_go_in_as_its_brief_never_his_line():
+    """The HIPAA walk, 2026-11-21: the waiting room handed a chat agent Taskuary's word of an approved sign-up by typing it into its composer,
+    which sent it as the owner's own line - a "You" bubble speaking of him in the third person, [[TASKUARY-SIGNIN]] marker and all."""
+    got, typed, done = [], [], threading.Event()
+    sess = SimpleNamespace(task_id=1, write=typed.append, send_prompt=lambda text, **k: got.append((text, k)))
+    term.type_into(sess, 'The owner approved the sign-up on 127.0.0.3.', done=lambda ok: done.set(), brief=True)
+    assert done.wait(5) and got == [('The owner approved the sign-up on 127.0.0.3.', {'brief': True})] and typed == []
 
 
 if __name__ == '__main__': unittest.main()
@@ -524,7 +568,7 @@ class AFailedSendIsHandedBack(unittest.TestCase):
         sent = lambda st, m, body, to=None, cc=None, **k: {'channel': 'email', 'to': to, 'cc': cc or []}
         with mock.patch('taskuary.outbound.reply_to_message', side_effect=sent), mock.patch.object(outbound, 'send_block', return_value=''), \
              mock.patch.object(verdicts, 'context_moved', return_value=(False, None)), \
-             mock.patch.object(general, 'tell', side_effect=lambda st, tid, said, actor='owner', **k: heard.append(said) or 'told'):
+             mock.patch.object(general, 'to_agent', side_effect=lambda st, tid, said, actor='owner', **k: heard.append(said) or 'told'):
             out = verdicts.decide(self.s, self.s.get_review(self.rid), 'approve', None, None, 'owner', cc=['ray@northwind.example'])
         self.assertTrue(out['ok'], out)
         [said] = heard
@@ -557,9 +601,9 @@ class AFailedSendIsHandedBack(unittest.TestCase):
 
 class OneCardAtATime(unittest.TestCase):
     """THE OWNER, 2026-11-16: "where there are 2 action cards, like approve push then email, it should wait on each approval step or action
-    card, so the agent should wait on it and then go to next steps". Every kind of card stands in one line (cardqueue): the next is shown only
-    once the one before it was pressed and its agent has heard how it went - so a failed push holds back the email announcing it, and a no
-    is the agent's to decide on before anything behind it stands. Invented people."""
+    card, so the agent should wait on it and then go to next steps". Every kind of card stands in one line (cardqueue), one drawn at a time -
+    and EACH PRESS BRINGS THE NEXT AT ONCE (the owner, 2026-11-20: the hold while the agent went on from a press hid the rest of three posts):
+    the agent hears each press as it is made, with what now waits, and takes back what the press changed. Invented people."""
     setUp, coding_ended, card, press = (AFailedPressIsHandedBack.setUp, AFailedPressIsHandedBack.coding_ended, AFailedPressIsHandedBack.card,
                                         AFailedPressIsHandedBack.press)
 
@@ -581,13 +625,13 @@ class OneCardAtATime(unittest.TestCase):
             out = self.press(push)
         self.assertFalse(out['ok']); [n] = self.s.waiting_notes(tid)
         self.assertIn('branch is protected', n['Note'])
-        self.assertIn(f'rv{note} (the email to erin@northwind.example) is shown to the owner once this turn ends', n['Note'], 'it hears what waits, in the same hand-back')
-        self.assertEqual(cardqueue.held(self.s, tid), {note}, 'never shown as-is while its agent goes on from the failure')
+        self.assertIn(f'Waiting for his press now: rv{note}, the email to erin@northwind.example', n['Note'], 'it hears what waits, in the same hand-back')
+        self.assertEqual((cardqueue.state(self.s, tid)['live'], cardqueue.held(self.s, tid)), ([note], set()), 'the press brings the next at once')
         verdicts.withdraw(self.s, tid, 'the push was refused - nothing is live', 'agent', which=str(note))
         self.answered(tid, 'GitHub refused the push; I took the note to Erin back.')
-        self.assertEqual(cardqueue.state(self.s, tid)['units'], [], 'nothing of it ever stood in front of the owner')
+        self.assertEqual(cardqueue.state(self.s, tid)['live'], [], 'its agent took it back: nothing waits')
 
-    def test_a_push_that_went_brings_the_email_forward_once_its_agent_has_heard_it(self):
+    def test_a_push_that_went_brings_the_email_forward_at_the_press(self):
         tid = self.coding_ended(); self.s.set_setting('agent_push_enabled', '1', 'test')
         self.answered(tid, 'The push and the note to Erin are set up.', '2000-01-01 00:00:00')
         push, note = self.card(tid, '', 'open_pr'), self.email(tid, 'erin@northwind.example', 'Erin - the ledger fix is live.')
@@ -595,26 +639,22 @@ class OneCardAtATime(unittest.TestCase):
         with mock.patch('taskuary.ci.open_for_task', return_value={'url': 'https://github.com/northwind/ledger/pull/12'}):
             self.assertTrue(self.press(push)['ok'])
         [n] = self.s.waiting_notes(tid); self.assertIn('it went through', n['Note']); self.assertIn(f'rv{note}', n['Note'])
-        self.assertEqual(cardqueue.held(self.s, tid), {note})
-        self.answered(tid, 'The pull request is open.')
         self.assertEqual((cardqueue.state(self.s, tid)['live'], cardqueue.held(self.s, tid)), ([note], set()))
 
-    def test_a_no_to_the_first_card_tells_its_agent_whose_no_it_was_and_the_next_waits_for_it(self):
+    def test_a_no_to_the_first_card_tells_its_agent_whose_no_it_was_and_the_next_comes_forward(self):
         tid = Factory(self.s).task('Answer Gail and tell Ray'); self.answered(tid, 'Both letters are set up.', '2000-01-01 00:00:00')
         first, second = self.email(tid, 'gail@northwind.example', 'Gail - the rate is 4%.'), self.email(tid, 'ray@northwind.example', 'Ray - Gail has the rate.')
         told = []
-        with mock.patch.object(general, 'tell', lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('woke')) or 'woke'):
+        with mock.patch.object(general, 'to_agent', lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('woke')) or 'woke'):
             self.assertTrue(verdicts.decide(self.s, self.s.get_review(first), 'reject')['ok'])
         [said] = told
         self.assertIn(f'turned down rv{first} (the email to gail@northwind.example) - their own no', said); self.assertIn(f'rv{second}', said)
-        self.assertEqual(cardqueue.held(self.s, tid), {second}, 'the line does not go on past a no by itself')
-        self.answered(tid, 'Leaving the note to Ray as it is.')
-        self.assertEqual(cardqueue.state(self.s, tid)['live'], [second])
+        self.assertEqual((cardqueue.state(self.s, tid)['live'], cardqueue.held(self.s, tid)), ([second], set()), 'the press brings the next at once')
 
     def test_a_no_with_nothing_behind_it_wakes_nobody(self):
         tid = Factory(self.s).task('Answer Gail'); self.answered(tid, 'The letter is set up.', '2000-01-01 00:00:00')
         only = self.email(tid, 'gail@northwind.example', 'Gail - the rate is 4%.')
-        with mock.patch.object(general, 'tell', side_effect=AssertionError('a no with nothing behind it is heard with his next line')):
+        with mock.patch.object(general, 'to_agent', side_effect=AssertionError('a no with nothing behind it is heard with his next line')):
             self.assertTrue(verdicts.decide(self.s, self.s.get_review(only), 'reject')['ok'])
 
 
@@ -647,7 +687,7 @@ class TheChatMovedOn(unittest.TestCase):
         conversation.hear(self.s, self.tid, ['l-deploy'])                                          # ...its agent takes the line
         r = self.s.get_review(rid)
         self.assertTrue(proposals.passed(r), 'set aside for good as the agent hears it')
-        self.assertTrue(any(f"rv{rid}" in x for x in proposals.passed_since(self.s, self.tid, '')), 'and the agent is told, to raise it again')
+        self.assertIn(f'rv{rid}', cardqueue.screen(self.s, self.tid).split('Greyed, will not go')[1], 'and the agent is told, to raise it again')
 
     def test_a_mail_that_came_in_after_it_greys_it_too(self):
         self.s.set_setting('owner_email', 'alex@northwind.example', 'owner')                  # ...a colleague's mail: no stranger held behind trust
@@ -724,3 +764,67 @@ class TheChatMovedOn(unittest.TestCase):
         rid = self.closeout()
         general.wait_line(self.s, self.tid, 'what needs to deploy?', line_id='l-deploy')
         self.assertEqual(proposals.passed_why(self.s, self.s.get_review(rid)), 'Not sent - you wrote "what needs to deploy?" after it')
+
+
+def test_a_post_its_agent_is_told_of_reads_as_the_card_it_was_never_the_tools_rows():
+    """The owner's live task, 2026-11-18: he pressed Post to LinkedIn and his agent was woken with "pressed Approve on what you set up, and it
+    went through: run tool - headline: 1 row, output: [{"id": "urn:...", "author": ...}]" - the tool's raw rows. Its provider's safety check
+    refused that turn, and every turn after it. The note names the press and the card as he saw them, and the result by its link."""
+    s = MemoryStore(); tid = Factory(s).task('Announce the ledger portal')
+    p = {'action': 'run_tool', 'type': 'linkedin_post', 'text': 'The Northwind ledger portal is live.'}
+    rid = Factory(s).review(tid, kind='action', reason='the agent proposes to write linkedin post on LinkedIn - the portal launch', draft=json.dumps(p))
+    rv = s.get_review(rid if isinstance(rid, int) else rid['ReviewId'])
+    rows = json.dumps([{'id': 'urn:li:share:700000001', 'author': 'urn:li:person:alexdoyle', 'visibility': 'PUBLIC',
+                        'url': 'https://www.linkedin.example/feed/update/urn:li:share:700000001'}])
+    press, said = verdicts.pressed(s, rv, {'result': {'headline': '1 row', 'output': rows, 'url': ''}})
+    assert press == 'Post to LinkedIn'
+    assert 'write linkedin post on LinkedIn' in said and 'https://www.linkedin.example/feed/update/urn:li:share:700000001' in said
+    assert 'urn:li:person' not in said and '"author"' not in said and 'run tool' not in said
+
+
+
+# AS FAR AS THE RESULT GOES (a walk, 2026-11-18): told "what it did" after a payment note was sent, the agent said Accounts Payable "received"
+# it - nobody had answered. Every approval's note says a thing sent is sent, never received or acted on until someone answers
+def test_the_note_after_a_press_never_lets_sent_read_as_received():
+    s = MemoryStore(); tid = Factory(s).task('Get the vendor invoice paid'); seen = []
+    with mock.patch.object(general, 'to_agent', lambda st, t, said, *a, **k: seen.append(said) or 'told'):
+        general.approved(s, tid, 'Send', 'the email to ap@northwind.example was sent')
+    assert 'never received, read or acted on until someone answers' in seen[0]
+
+
+# WHAT STANDS ON HIS SCREEN, IN ONE FACT (the design round, 2026-11-18): a walk's agent set up three posts that stood one at a time, then told
+# him "each has its own Post button" when only the first was drawn and his next line had greyed it - nothing told it what the page showed.
+# cardqueue.screen reads the same line the page draws (state, written_past, each card's settled state) and says it in plain words, every turn
+def test_the_screen_fact_says_what_waits_what_is_held_what_is_greyed_and_what_happened():
+    s = MemoryStore(); f = Factory(s); tid = f.task('Announce the ledger portal')
+    general_answer = s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Three posts are set up.')
+    s._exec("UPDATE comment SET CreatedAt='2000-01-01 00:00:00' WHERE CommentId=?", (general_answer,))
+    post = lambda kind, words: s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': f'post on {kind}',
+                                              'DraftText': json.dumps({'action': 'run_tool', 'type': f'{kind.lower()}_post', 'text': words})})
+    sent = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'DraftText': 'Gail - the portal launches Monday.', 'Reason': 'assistant wrote this email',
+                         'Deliver': json.dumps({'channel': 'email', 'to': ['gail@northwind.example'], 'subject': 'Portal'})})
+    s.decide_review(sent, 'approved', 'Gail - the portal launches Monday.', 'owner')
+    s._exec("UPDATE review SET DeliveryState='sent', DecidedAt='1999-12-31 09:00:00' WHERE ReviewId=?", (sent,))     # ...heard by the answer after it
+    x, reddit = post('X', 'The portal launches Monday.'), post('Reddit', 'Northwind ledger portal: invoices in one place.')
+    said = cardqueue.screen(s, tid)
+    assert f'rv{x}' in said.split('Waiting for his press now:')[1].split('\n')[0] and 'The portal launches Monday.' in said, said
+    assert f'rv{reddit}' in said.split('Not on his screen yet')[1].split('\n')[0], said
+    assert f'rv{sent}' in said.split('Sent')[1].split('\n')[0] and 'gail@northwind.example' in said, said
+    s._exec("UPDATE review SET CreatedAt='2000-01-01 00:00:01' WHERE ReviewId IN (?,?)", (x, reddit))
+    general.wait_line(s, tid, 'Give me a button for each', line_id='l-each')                 # ...his line greys both, the moment it is sent
+    said = cardqueue.screen(s, tid)
+    assert 'Waiting for his press now' not in said and 'Nothing waits for his press' in said, said
+    assert said.count('Greyed') == 2 and 'Not sent - you wrote "Give me a button for each" after it' in said, said
+    assert 'run_tool' not in said and 'superseded' not in said and 'pending' not in said, 'his words, never the rows'
+
+
+def test_a_card_set_aside_while_it_waited_its_turn_is_greyed_in_the_chat_never_gone():
+    # the Hydrogen walk, 2026-11-19: "the Reddit post is up next" - card 6 of 6, set aside by his line before its turn came, had no row and vanished
+    from taskuary import chatlog
+    s = MemoryStore(); f = Factory(s); tid = f.task('Announce the ledger portal')
+    post = lambda kind, words: s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': f'post on {kind}',
+                                              'DraftText': json.dumps({'action': 'run_tool', 'type': f'{kind.lower()}_post', 'text': words})})
+    x, reddit = post('X', 'The portal launches Monday.'), post('Reddit', 'Northwind ledger portal: invoices in one place.')
+    for r in (x, reddit): s.decide_review(r, 'superseded', None, 'taskuary', proposals.SET_ASIDE)     # his line moved past both
+    cards = [c['review'] for i in chatlog.read(s, tid)['items'] for c in ([i] if i['kind'] == 'card' else i.get('cards') or [])]
+    assert reddit in cards, 'greyed where it stood, never gone'

@@ -969,11 +969,11 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
     """Answer synchronously; the poller runs this on a serialized background worker. `cancel` is set when a pick
     arrives behind this turn: the model's answer is dropped, never sent after the pick's.
     `images`: the pictures the owner sent with it, kept under attachments/ - shown to the Assistant as the desktop's are, and named
-    to an agent the words go on to (general.with_files)."""
+    to an agent the words go on to - as files beside the words (a hand-off's `files`, Continue's `images`), named in a prompt only (with_files)."""
     from . import concierge, general
     images = list(images or [])
     if images and not str(question or '').strip(): question = PICTURE_ONLY
-    told = general.with_files(question, images)                 # the words as they go on to an agent: the pictures named with them
+    told = general.with_files(question, images)                 # the words as a drafter's prompt reads them: the pictures named with them
     # `heard`: the words are a voice note's, as transcribed - the answer says them back first (A17)
     _ASKING.chat = {'channel': channel, 'chat': chat, 'connector_id': connector_id, **({'heard': question} if heard else {})}
     owner_spoke(store, channel, chat)                 # the owner wrote here: the chat may answer, for the session's window
@@ -1041,7 +1041,7 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
                 forget_offered(store, channel, chat)
                 try: was = json.loads(hand)
                 except ValueError: was = {}
-                send(store, channel, chat, run_act(store, {'t': 'hand', 'key': was.get('key') or '', 'verb': was.get('verb') or '', 'how': told}, item),
+                send(store, channel, chat, run_act(store, {'t': 'hand', 'key': was.get('key') or '', 'verb': was.get('verb') or '', 'how': question, 'files': images}, item),
                      connector_id)
                 return
             if hand: store.set_setting(f'{AGENT_KEY}:{channel}:{chat}', '', 'assistant')
@@ -1050,7 +1050,7 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
             if pending and not picked:
                 # the line typed after "Continue" is what to tell the agent - a text field, not a word to read
                 forget_offered(store, channel, chat)
-                send(store, channel, chat, _continue(store, pending, told), connector_id)
+                send(store, channel, chat, _continue(store, pending, question, images), connector_id)
                 return
             if act and act.get('t') == 'page':
                 # the same list, the next page - kept whole again (the pick spent it above) so a typed number still answers
@@ -1189,7 +1189,8 @@ def answer_the_agent(store, item: dict | None, words: str, picked: bool, actor: 
     # match to pill action"): typed "next" over an asking agent went to the agent as its answer. The AI matches them - an answer is
     # answer_agent, which runs at once (concierge.AUTO), so it still goes straight in (2026-10-02); Next is Next.
     if not picked or words not in agent_answers(item): return ''
-    out = ws.answer_open(store, int(item['tid']), words, actor) if item.get('tid') else {'delivered': False, 'state': 'no_request'}
+    from . import general           # ...by the one road into the agent (general.to_agent): his answer to what it asks
+    out = general.to_agent(store, int(item['tid']), words, actor, frm='owner', request='open') if item.get('tid') else {'delivered': False, 'state': 'no_request'}
     who = item.get('agent') or 'the agent'
     if out.get('delivered'):
         # ...never the last word: it is followed up here when the agent is done with it, and the walk goes on meanwhile
@@ -1199,8 +1200,7 @@ def answer_the_agent(store, item: dict | None, words: str, picked: bool, actor: 
     if out.get('state') == 'no_request':
         # ...and SAVED, as the desktop saves it (server agent.answer -> waitroom_add): the phone said "it is in its
         # waiting room" and kept nothing (A12, 2026-09-25). It reaches the agent when it next stops.
-        from . import waitroom
-        try: waitroom.add(store, int(item['tid']), words, actor)
+        try: general.to_agent(store, int(item['tid']), words, actor, frm='owner', wake=False)
         except ValueError as e: return f'Could not save that for {who}: {e}'
         return f'{who} is not asking any more - your answer "{words}" is saved and reaches it when it next stops.'
     return f'Could not get that to {who} ({out.get("state")}): {out.get("why") or ""}'.strip()
@@ -1585,14 +1585,15 @@ def _size(n: int) -> str:
 
 
 def task_files(store, item: dict | None) -> list:
-    """The files in the task's own outputs folder (outputs.listing - no link followed, nothing outside it), newest first - each thing it
-    made once, its newest version (outputs.deliverables)."""
+    """The task's files as every surface lists them (outputs.task_files): what came with it, then what its agent made - less a mail's
+    inline logo and a file never kept. A came file's `path` is its attachment id, which send_files resolves on this task's own mail."""
     tid = (item or {}).get('tid')
     if store is None or not str(tid or '').isdigit(): return []
     from . import outputs
-    try: return outputs.deliverables(outputs.listing(int(tid)))
+    try: rows = outputs.task_files(store, int(tid))
     except Exception as e:
         logger.debug(f'the phone could not list the task files: {e}'); return []
+    return [{**r, 'path': r['id']} if r.get('attachment') else r for r in rows if not r.get('chrome') and r.get('saved', True)]
 
 
 def file_picks(rows: list, tid) -> list:
@@ -1609,12 +1610,22 @@ def files_line(rows: list) -> str:
         (f' · and {more} more on the desktop' if more > 0 else '')
 
 
+def _sendable(store, tid: int, rel: str):
+    """The file a 📎 pick names, re-resolved as it goes: one that came on THIS task's own mail by its attachment id (agenttools.mail_file,
+    the lock an agent's attach goes through), else one inside the task's outputs folder (outputs.resolve) - else None."""
+    from . import agenttools, outputs
+    if rel.startswith('attachment:'):
+        try: return agenttools.mail_file(store, tid, rel.split(':', 1)[1])[1]
+        except ValueError: return None
+    return outputs.resolve(tid, rel)
+
+
 def send_files(store, act: dict, actor: str = 'owner') -> str:
     """A 📎 pick: the files themselves, as documents, into the chat the pick came from. Two locks, both in code:
     - THE CHAT is the owner's own Assistant chat, the one that pick came from (asking) - checked again here, so no other road (the
       desktop, an agent, a stranger's chat, the model) can send anything; elsewhere nothing is sent and nothing is said.
-    - THE FILE is re-resolved inside that task's outputs folder (outputs.resolve: no `..`, no absolute path, no link) at the moment it
-      goes - a name kept on the pick is only a name.
+    - THE FILE is re-resolved at the moment it goes (_sendable): inside that task's outputs folder (outputs.resolve: no `..`, no absolute
+      path, no link), or a file on that task's own mail by its id - a name kept on the pick is only a name.
     Too big says so, with the desktop's address; a failed send says why, with Try again. Nothing fails silently."""
     from . import general, messengers, outputs
     from .store import task_ref
@@ -1628,10 +1639,10 @@ def send_files(store, act: dict, actor: str = 'owner') -> str:
     ref, cap = task_ref(tid), messengers.FILE_MAX[ch]
     said, failed, big = [], [], []
     for rel in [str(r) for r in act.get('paths') or []][:FILES_SENT]:
-        p = outputs.resolve(tid, rel)
+        p = _sendable(store, tid, rel)
         name = rel.replace('\\', '/').rsplit('/', 1)[-1] or rel
         if p is None:
-            logger.warning(f'phone files: {ref} has no file {rel!r} in its outputs folder - refused')
+            logger.warning(f'phone files: {ref} has no file {rel!r} - refused')
             said.append(f'{_cut(name, 80)} is not one of {ref}\'s files - it was not sent.'); continue
         size = p.stat().st_size
         if size > cap: big.append((p.name, size)); continue
@@ -1740,7 +1751,7 @@ def _run_act(store, act: dict, item: dict | None, actor: str = 'owner') -> str:
             if not _item_for(store, key, item): return 'That one is not in front of you any more - say next and I show what is.'
             verb = act.get('verb') if act.get('verb') in concierge.AGENT_STARTS[:2] else 'regular_agent'
             prop = concierge.propose_direct(store, verb, key, text=str(act.get('how') or '').strip(), actor=actor,
-                                            table=bool(item and item.get('key') == key), exact=True)
+                                            table=bool(item and item.get('key') == key), exact=True, picks={'files': list(act.get('files') or [])})
             return _settle(store, {**prop, 'alts': []}, item, actor)
         if t == 'trust': return _trust(store, int(act['tid']), act.get('key') or f"task:{int(act['tid'])}", actor)
         if t == 'files': return send_files(store, act, actor)
@@ -1856,16 +1867,16 @@ REDRAFT_KEY = 'remote_redraft'            # a Redraft pick waiting for what to c
 AGENT_KEY = 'remote_agent_ask'            # a Send to agent pick waiting for what it should do: the next typed or spoken line is it
 
 
-def _continue(store, tid, note: str) -> str:
-    """Continue, from the phone: the same road as the desktop's pill (server.continue_work)."""
+def _continue(store, tid, note: str, images=()) -> str:
+    """Continue, from the phone: the same road as the desktop's pill (server.continue_work) - his pictures as its files, beside his words."""
     from .server import ContinueBody, continue_work
     from fastapi import HTTPException
-    try: out = continue_work(int(tid), ContinueBody(note=note or None))
+    try: out = continue_work(int(tid), ContinueBody(note=note or None, images=list(images or [])))
     except HTTPException as e: return stuck(store, f'Could not continue it - {e.detail}.')
     ref = f'TQ-{int(tid):04d}'
     from . import concierge
-    # ...A NOTE HELD BEHIND TRUST went to no agent (general.take_line, origin.hold): said as kept, with why - it read "Continuing ... it picks up
-    # where it left off" while nothing ran (the Continue round, 2026-11-18)
+    # ...A NOTE HELD BEHIND TRUST went to no agent (general.take_line, origin.keeps_him): said as kept, with why - it read "Continuing ... it picks
+    # up where it left off" while nothing ran (the Continue round, 2026-11-18)
     from .general import kept_held
     if (held := kept_held(ref, out)): return stuck(store, held)
     said = f'Continuing {ref}' + (' with your note' if note else '') + ' - it picks up where it left off.'
@@ -1874,8 +1885,10 @@ def _continue(store, tid, note: str) -> str:
 
 
 def plain(e) -> str:
-    from .operations import plain as _p
-    return _p(e)
+    "A failure as the phone says it: in his words (say.plain) - a tool's raw text stays in the log."
+    from .say import plain as said
+    d = getattr(e, 'detail', None)
+    return said(d if isinstance(d, str) else str(e), 'any')
 
 
 def stuck(store, text: str) -> str:
@@ -2036,9 +2049,8 @@ def source_line(item: dict | None) -> str:
     if not item: return ''
     who = ' '.join(str(item.get('who') or '').split())
     ch = str(item.get('channel') or '')
-    # ...and what landed since the owner last opened it, the rail's "+3" said short (processing_unread.news_since_seen)
-    new = f"+{item['new_n']} new" if item.get('new_n') else ''
-    bits = ' · '.join(x for x in (who, ch.replace('_', ' '), str(item.get('ref') or ''), new) if x)
+    # NO "+N new" FOR REPLIES, here as on the desk's rail (the owner, 2026-10-26): what landed since is read by opening it, and Next stops there
+    bits = ' · '.join(x for x in (who, ch.replace('_', ' '), str(item.get('ref') or '')) if x)
     return ' '.join(x for x in (funnel.CHANNEL_MARKS.get(ch, ''), bits) if x) if bits else ''
 
 
@@ -2271,10 +2283,6 @@ def pages(text: str, limit: int = PAGE_CHARS, head: int = 0) -> list:
     return out
 
 
-# words that put a thing DOWN rather than do it: never the card's verb while a real one is offered
-_DOWN = ('close', 'not_ours', 'not_ours_sender', 'block_sender', 'done')
-
-
 # the words that answer "who should take it?" - the move of a task nobody is on (move_title)
 _HAND = ('regular_agent', 'coding_agent')
 
@@ -2306,29 +2314,14 @@ def decision(store, item: dict | None) -> dict:
 
 
 def primary(out: dict, said: dict = None) -> dict | None:
-    """The card's verb: THE ONE DECISION'S, when it lit one of the chips here (`said`, decision()) - the same button as the desk - and, only
-    while it has nothing, the fixed rule: the first word that DOES the thing - a reply with no draft yet leads with drafting it, not with
-    closing the task (the vocabulary lists close first for a waiting draft).
-    ...and the move's own verb where the card names one: "who should take it?" is answered by handing it over,
-    never by a reply (the desktop's button there is Hand to agent, 2026-09-28). {'verb': 'next'} when the decision's move is Next."""
-    chips = [c for c in (out.get('chips') or []) if isinstance(c, dict) and c.get('verb') and c.get('verb') != 'next']
+    """The card's verb: THE ONE DECISION'S (rulebook.decide, `said`), when it lit one of the chips here - the same button as the desk - else
+    None, and the card keeps its chips' own order, as the desk draws them. The phone had fixed rules of its own for a card the decision lit
+    nothing on (the first word that is not a put-down, Hand to agent on "who should take it?", Mark done on a finished agent), so it led with
+    a button the desk left plain. {'verb': 'next'} when the decision's move is Next."""
     it = out.get('item') or {}
-    ours = bool(said) and said.get('key') == it.get('key')
-    if ours and said.get('verb') == 'next': return {'verb': 'next', 'label': said.get('label') or buttons.label('next')}
-    hit = next((c for c in chips if c['verb'] == said.get('verb')), None) if ours and said.get('verb') else None
-    if hit: return hit
-    # ...but never on a stranger's held mail: handing a prompt from an unknown address to an agent is not the first thing to do (F8)
-    if it.get('hold'):
-        mine = [c for c in chips if c['verb'] not in _HAND]
-        return next((c for c in mine if c['verb'] not in _DOWN), (mine or chips or [None])[0])
-    # ...and a move that IS Mark done (a task its agent finished - move_of, the desk's reading too) leads with it
-    if it.get('kind') in STORY_KINDS and move_title(it) == buttons.label('close'):
-        done = next((c for c in chips if c['verb'] == 'close'), None)
-        if done: return done
-    if it.get('kind') in STORY_KINDS and move_title(it) in ('who should take it?', buttons.label('regular_agent')):
-        hand = next((c for c in chips if c['verb'] in _HAND), None)
-        if hand: return hand
-    return next((c for c in chips if c['verb'] not in _DOWN), chips[0] if chips else None)
+    if not said or said.get('key') != it.get('key') or not said.get('verb'): return None
+    if said['verb'] == 'next': return {'verb': 'next', 'label': said.get('label') or buttons.label('next')}
+    return next((c for c in out.get('chips') or [] if isinstance(c, dict) and c.get('verb') == said['verb']), None)
 
 
 def advice_line(out: dict, said: dict) -> str:
@@ -2487,14 +2480,11 @@ def agent_state(item: dict | None, store=None) -> str:
 
 
 def held(item: dict | None) -> bool:
-    """An agent holds this task right now: its row is in the working lane, or a live session is on it."""
+    """An agent is on this task right now (workerstate.on_task, the one answer) - the row's lane only for a row with no task to ask about."""
     it = item or {}
-    if it.get('lane') == 'working': return True
-    if not str(it.get('tid') or '').isdigit(): return False
-    from . import terminal
-    try: s = terminal.session_for(int(it['tid']))
-    except Exception: return False
-    return bool(s and getattr(s, 'alive', False))
+    if not str(it.get('tid') or '').isdigit(): return it.get('lane') == 'working'
+    from .workerstate import on_task
+    return on_task(it['tid'])
 
 
 def subject_of(store, item: dict | None) -> str:

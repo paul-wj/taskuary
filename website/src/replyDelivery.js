@@ -57,8 +57,10 @@ export const deliverySubject = (review) => {
 const ROOMS = ["whatsapp", "teams", "slack", "telegram", "discord", "imessage"];
 // ...and with no room named, the app by its own name - "Erin Blake in teams" read as a typo (the scenario run, 2026-11-06)
 const APP = { teams: "Teams", slack: "Slack", telegram: "Telegram", discord: "Discord", imessage: "iMessage" };
+// ...and AN EMAIL OF ITS OWN BY ITS OWN ENVELOPE (the walks, 2026-11-18): set up on a chat's task it read "To Erin Blake", the chat's sender, and
+// went to gail@ - the envelope's channel is the one the send takes
 export const replyContext = (review, { presentation = false } = {}) => {
-  const channel = String(review?.Channel || "").toLowerCase();
+  const channel = String(deliveryMeta(review).channel || review?.Channel || "").toLowerCase();
   const recipient = deliveryTo(review, { presentation });
   if (!ROOMS.includes(channel)) return recipient;
   // ...by the person's name: a chat's address is a phone or chat id ("Ray Colton <15550000332@s.whatsapp.net>"), nothing a person reads;

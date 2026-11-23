@@ -98,7 +98,7 @@ def fits(store, model: str, pick: str) -> bool:
     it lists, runs now or aliases; with only a built-in list, a name another connected CLI lists is that one's. An AI card, an effort
     alone and anything less certain stay as the owner typed them."""
     if not str(pick or '').startswith('cli:') or not model or model.startswith('effort:'): return True
-    name = climodels.split_pick(model)[0]
+    name = climodels.split_pick(model, pick[4:])[0]
     from . import general
     clis = {o['pick']: o.get('cmd') or '' for o in general.provider_options(store) if o.get('type') == 'cli'}
     if not name or pick not in clis: return True
@@ -301,7 +301,8 @@ def _resolve(store, cfg, slot_key: str) -> dict:
             # light gear, which is triage's (the card showed and saved the light model while every agent ran the main one)
             from .brainroute import _base
             light, dflt, owner = model_on(store, s['model_setting'], f'cli:{key}', settings), _base(store, f'cli:{key}', cfg), 'this page'
-        else: dflt, owner = LIGHT_DEFAULT.get(cli, ''), f'the {key} connection (light model)'
+        # ...triage's quick model a blank box runs (climodels.gears' light model): triage reads at its own effort (brainroute.choose)
+        else: dflt, owner = climodels.split_pick(climodels.gears(cli).get('light') or '', cli)[0] or LIGHT_DEFAULT.get(cli, ''), f'the {key} connection (light model)'
         model, effort = ('', light[7:]) if light.startswith('effort:') else climodels.split_pick(light, cli)
         if slot_key == 'concierge_ai' and not effort:
             from .llm import ASSISTANT_EFFORT
@@ -469,7 +470,9 @@ def apply(store, cfg, slot_key: str, value=None, model=None, effort=None, actor:
     elif now.startswith('cli:') and slot_key == 'assistant_ai':
         # the general agent's own setting, read by general._selected - never the connection's light gear, which triage rides
         from .agents import brain_key
-        keep_model(store, s['model_setting'], f'{model}@{effort}' if (model and effort) else model, actor, f'cli:{brain_key(store, now, cfg)}')
+        key = brain_key(store, now, cfg)
+        keep_model(store, s['model_setting'], f'{model}@{effort}' if (model and effort) else model, actor, f'cli:{key}')
+        if cur.get('cli') == 'omp': _save_gear(store, cfg, key, 'light_model', model)
     elif now.startswith('cli:'):
         from .agents import brain_key
         # codex on a ChatGPT plan has no smaller model, so its cheap gear is effort alone -

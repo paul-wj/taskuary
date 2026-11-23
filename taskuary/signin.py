@@ -37,6 +37,7 @@ Not built yet (next phase): reading a code out of the mail, a code split over on
 port is LAN-only), and a 1Password/Bitwarden provider.
 """
 import hashlib, html as H, ipaddress, json, logging, re, secrets, shutil, subprocess, tempfile, threading, time
+from .say import said as _said            # a failure written to the chat is said in his words (say.py)
 from pathlib import Path
 from urllib.parse import urlsplit
 from loguru import logger
@@ -46,9 +47,9 @@ TTL = 15 * 60                   # a fill link lives this long, and opens once
 AGAIN = 10 * 60                 # a saved sign-in the site asks for again inside this is not tried a second time
 STEP_WAIT = 20.0                # a two-step sign-in: how long the password page is given to appear after the user name
 CODE_WAIT = 15.0                # after the password: how long a site is given to show its code prompt before none is taken as asked
-PREFIX = 'signin:'              # the request id of a sign-in ask: `signin:<site>`
+PREFIX = 'signin:'              # the request id of a sign-in ask: `signin:<site>`, `~N` after it when raised again (workerstate.fresh_id)
+def ask_site(rid) -> str: return str(rid or '')[len(PREFIX):].split('~')[0]      # the site a sign-in ask is for, by its id
 DONE = 'Signed in'
-FAILED_ASK = 'The saved sign-in for {site} did not work - sign in on the page, and it is saved again when it works'
 CODE_ASK = '{site} took the saved sign-in and asks for a code - type it on the page to continue'
 # ...AND THE CODE PAGE IS MADE READY FOR HIM FIRST (the owner, 2026-11-15: "why can't you click save for 30 days when you sign in ... so you
 # won't need it"): the agent, which reads the page, ticks whatever the page offers to remember this browser - so the next task, and one
@@ -127,6 +128,19 @@ def site_of(url) -> str:
     return ''
 
 
+# WHAT A SITE IS CALLED, ONE WAY (the roads audit, 2026-11-19: one payment step read www.toll.example on its card, toll.example on its
+# hand-over and toll.example:8443 on the page). Every card, hand-over and line names a site by this: the name it is registered under
+# (login.bank.example is bank.example), never a port or a www; a bare address by its page's own title where the session is named
+def site_name(where, sid: str = '') -> str:
+    "The site a URL or a host is on, as the owner reads it - '' for none."
+    s = str(where or '').strip()
+    try: h = host_of(urlsplit(s if '://' in s else '//' + s).hostname)
+    except ValueError: return ''
+    if not h: return ''
+    if _ip(h) or '.' not in h: return page_name(sid, h) if sid else h
+    return registrable(h) or h.removeprefix('www.')
+
+
 def on_site(url, site) -> bool:
     """Is this page ON `site` - the site itself or a name under it, by its origin? A lookalike (bank.example.evil.example,
     bank-example.example, a homograph) has another registrable domain and is not."""
@@ -194,7 +208,7 @@ def _seal_key(key) -> str:
     return k
 
 
-def save(store, site, user, pw, by='owner', key=None, extra=None):
+def save(store, site, user, pw, by='owner', key=None, extra=None, keep_old=False):
     """Keep a sign-in for `site`, sealed. The site is the one the owner saw on the fill page - pinned there, at save time. `key`: an
     authenticator key to keep with it; None keeps the one already saved (a changed password is not a new authenticator). `extra`: the
     other boxes its form asks for, {label: value} (a "Customer ID"); None keeps the ones already saved."""
@@ -213,7 +227,9 @@ def save(store, site, user, pw, by='owner', key=None, extra=None):
     old = saved(store, site) or {}
     store._exec('INSERT OR REPLACE INTO signin_vault (Site, User, Secret, Totp, Extra, SavedAt, SavedBy, LastUsed) VALUES (?,?,?,?,?,?,?,?)',
                 (site, u, p, k or old.get('Totp'), x if ex is not None else old.get('Extra'), _now(), by, None))
-    for v in old.get('User'), old.get('Secret'), (old.get('Totp') if k else None), (old.get('Extra') if ex is not None else None): vault.forget(v)
+    # ...`keep_old`: a row that may yet be put back (a sign-up the site has not answered) keeps the secrets it replaced until it is - on macOS
+    # a sealed secret is a keychain entry, and forgetting it here left the put-back row pointing at nothing (CI, 2026-11-19)
+    if not keep_old: forget_row(old, k, ex)
     store.audit('signin', 0, 'signin_saved', by, detail={'site': site, **({'code': True} if k else {})})
 
 
@@ -257,15 +273,6 @@ def _forget_live(site):
             try: c.forget(site)
             finally: c.close()
         except Exception as e: logger.debug(f'signin: {site} cookies not cleared from the live browser of {sid} - {e}')
-
-
-def _unsave(store, site):
-    "A sign-in kept ahead of a sign-up the site turned down: out of the vault, its seals forgotten - no Undo line, no account was made."
-    from . import vault
-    _tables(store)
-    if not (row := saved(store, site)): return
-    store._exec('DELETE FROM signin_vault WHERE Site=?', (str(site).lower(),))
-    for v in row.get('User'), row.get('Secret'), row.get('Totp'), row.get('Extra'): vault.forget(v)
 
 
 def _used(store, site): store._exec('UPDATE signin_vault SET LastUsed=? WHERE Site=?', (_now(), site))
@@ -332,7 +339,7 @@ def pending(store, tid: int) -> dict | None:
     reqs = [r for r in ws.status(store, tid)['requests'] if str(r.get('request_id') or '').startswith(PREFIX)]
     if not reqs: return None
     r = reqs[-1]
-    return {'site': r['request_id'][len(PREFIX):], 'sid': str(r.get('sid') or ''), 'request_id': r['request_id'], 'text': r.get('text')}
+    return {'site': ask_site(r['request_id']), 'sid': str(r.get('sid') or ''), 'request_id': r['request_id'], 'text': r.get('text')}
 
 
 def link(store, tid: int) -> dict:
@@ -425,10 +432,33 @@ def _ask(store, tid, sid, site, rid, text, watch):
     if watch: threading.Thread(target=watch, args=(store, tid, sid, site, rid), daemon=True, name=f'signin-watch-{tid}').start()
 
 
+# A HAND-OVER NAMES THE SITE AS HE KNOWS IT (design round 5, 2026-11-19: "Sign in to 127.0.0.6 to continue" over a vendor's sign-up page): a
+# site reached by a bare address is called by its page's own title; a named one by its name. What a fill is pinned to stays the address
+def page_name(sid: str, site: str) -> str:
+    if not _ip(site): return site
+    try:
+        c = connect(sid)
+        try: got = json.loads(c.js("JSON.stringify([document.title, document.querySelector('meta[property=\'og:site_name\']')?.content || '', "
+                                   "location.href])") or '[]')
+        finally: c.close()
+    except Exception: got = []
+    t, named, href = ([' '.join(str(x or '').split()) for x in got] + ['', '', ''])[:3]
+    return (brand_of(t, href) or named or t)[:60] or site
+# ...THE SITE'S NAME, NOT THE PAGE'S (round 2, 2026-11-22: "Sign in to Sign in - DealFlow Pro to continue"): a title is the page and the site
+# around a separator, either way round ("PermitWatch — Create your account", "Payment | DealFlow Pro"). The site is the part its own address
+# spells (/s/permitwatch/..., dealflow.local) - read off the structure, no words judged; '' where no part is
+TITLE_PARTS = re.compile(r'\s+[-|·—–]\s+')
+def brand_of(title: str, href: str = '') -> str:
+    parts, at = [x.strip() for x in TITLE_PARTS.split(str(title or '')) if x.strip()], re.sub(r'[^a-z0-9]', '', str(href or '').lower())
+    if len(parts) < 2: return ''
+    return next((x for x in parts if len(k := re.sub(r'[^a-z0-9]', '', x.lower())) >= 3 and (k in at or any(w in at for w in re.findall(r'[a-z0-9]{4,}', x.lower()) if w == k[:len(w)]))), '')
+
+
 HANDED_ON = 6
-def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) -> dict:
+def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=..., what: str = '') -> dict:
     """The agent ended its turn asking to be signed in. Record the ask on the existing road and, when the owner keeps a sign-in for
-    the site the browser is actually on, fill it at once on its own thread. `fill`: the filler (tests stand one in)."""
+    the site the browser is actually on, fill it at once on its own thread. `fill`: the filler (tests stand one in). `what`: the step in the
+    agent's own words, where it handed the page over as its turn (browserview.your_turn) - the ask says that, never "sign in"."""
     from . import browserview, workerstate as ws
     if watch is ...: watch = globals()['watch']
     st = browserview.state(sid, fresh=True)
@@ -445,15 +475,20 @@ def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) ->
         ws.record(store, tid, sid, 'input_needed', request_id=ws.request_id_for(text), text=text, choices=[then] if _chat(sid) else None,
                   source='api')
         return {'site': '', 'auto': False}
-    rid, text = f'{PREFIX}{site}', f'Sign in to {site} to continue'
     # A SIGN-UP (the agent's own marker said so - signing_up): Taskuary makes the password, types it and keeps it - nobody is asked
+    # ...A FRESH ID FOR A SIGN-IN ASKED AGAIN (round 3, 2026-11-22: a second hand-over on the same site was recorded under the answered one -
+    # "nothing waits on you" on screen while the agent waited on him, a dead end)
+    rid = ws.fresh_id(store, tid, f'{PREFIX}{site}')
     if signing_up(claimed): return new_account(store, tid, sid, site, rid, fill, watch)
+    name = site_name(site, sid)
+    what = ' '.join(str(what or '').split()).rstrip('.')
+    text = f'{ws.NAMED_STEP} on {name}: {what}' if what else f'Sign in to {name} to continue'      # ...named: the page says these words (workerstate)
     # "Signed in" as a CHOICE only where an answer arrives as words (the chat's own agent): a pty's choices are a chooser, answered
     # by number (workerstate.answer). A pty's ask still has the press - the card draws it for every `signin:` ask, and its answer goes
     # through signed_in, never the chooser (2026-10-25)
     # NO PRESSES ON IT (the owner, 2026-11-03: "remove that stupid box again ... just have the question and link to fill it out securely"):
     # the ask is its words; Taskuary sees the sign-in happen on the page itself (watch), and "done" typed in the chat's box still tells it
-    def ask(said=None): _ask(store, tid, sid, site, rid, said or f'Sign in to {site} to continue', watch)
+    def ask(said=None): _ask(store, tid, sid, site, rid, said or text, watch)
     row, last = saved(store, site), _TRIED.get((tid, site), 0)
     # ...A PAGE THAT ASKS ONLY THE CODE is his step at once, however lately the saved sign-in was typed (its agent made it ready, READY_CODE):
     # not a sign-in "asked again within minutes"
@@ -467,7 +502,8 @@ def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) ->
     # next time just go in and get the data"). The open `signin:` ask is what puts the browser on the owner's screen; raised before the
     # fill, it drew the pane for the seconds the server typed - for a step the owner had nothing to do in. It is raised only when the
     # fill fails, and then the owner is the way on.
-    if row and _now() - last >= AGAIN:
+    # ...or kept anew since it was last tried (the agent reset it, or signed up again): that one has not been tried
+    if row and (_now() - last >= AGAIN or (row.get('SavedAt') or 0) > last):
         _TRIED[(tid, site)] = _now()
         # ...AND THE TASK IS AT WORK WHILE IT IS TYPED, as it is from a mail's hand-over to its pass (general.hand - the one mark): the agent's
         # turn had ended and nothing of its own ran, so for those seconds the header read "agent done" with Mark done lit (2026-11-14)
@@ -514,7 +550,7 @@ def _auto(store, tid, sid, site, rid, fill, ask=None):
         # (the owner's own sign-in, 2026-11-14: the agent asked again on the code page, the saved sign-in was tried on it, "there is no
         # sign-in form", and the task read "the saved sign-in was not used")
         if ask and not code and asks_code(sid) and not on_password_page(sid): return _ready_code(store, tid, sid, site) or ask(CODE_ASK.format(site=site))
-        typing(store, tid, site)
+        typing(store, tid, site, sid)
         got = fill(sid, site, user, pw, **({'code': code} if code else {}), **({'extra': ex} if ex else {})) or {}
         _used(store, site)
         # THE PASSWORD WENT IN AND THE SITE ASKS A CODE NOBODY KEEPS: that step is the owner's, on the page, and it is said in one line - the
@@ -529,14 +565,18 @@ def _auto(store, tid, sid, site, rid, fill, ask=None):
         back(f"Signed in to {site} with the saved sign-in{' and its authenticator code' if got.get('code') else ''}.")
         _continue(store, tid, rid, site, 'taskuary', bool(got.get('code')))
     except NotAccepted as e:
+        # A SAVED SIGN-IN THE SITE REFUSED GOES BACK TO THE AGENT (design round 4, 2026-11-19): it was handed to him - "sign in on the page" - for
+        # an account the agent itself had made a minute before, whose password he never had. The way past it is the agent's first: the site's
+        # reset, a code it emails, a sign-up that never finished. It hands him the page only when only he can do the step
         _audit(store, tid, site, 'vault', False, str(e))
-        why = str(e) if e.own else (f'The saved password for {site} did not work - {site} kept its sign-in form up. '
-                                                      'Sign in on the page, or fill it in securely with the right one - it is saved when it works.')
         back(f'The saved sign-in for {site} did not go in.')
-        store.add_comment(tid, 'taskuary', 'agent', why[0].upper() + why[1:] + ('.' if not why.endswith('.') else ''))
-        # ...and the ask itself says why the page is in front of him (the recorded walk, 2026-11-11: it read "Sign in to ... to continue" over a
-        # form the site had just refused the saved password on)
-        if ask: ask(None if e.own else FAILED_ASK.format(site=site))
+        why = str(e) if e.own else f'{site} kept its sign-in form up - the saved password was refused'
+        store.add_comment(tid, 'taskuary', 'agent', f'The saved sign-in for {site} did not go in: {why}.')
+        _continue(store, tid, rid, site, 'taskuary', words=(f'The saved sign-in for {site} did not go in', f'The saved sign-in for {site} did not go '
+                  f"in: {why}. Find the way past it yourself first - the site's own password reset "
+                  f'(on its new-password form run `agent-browser '
+                  'signup`), a code it emails (Taskuary types it), or a sign-up that never finished. Only a step nobody but the owner can do is '
+                  'handed to them, with the your-turn marker.'))
     except Exception as e:
         why = str(e) if isinstance(e, SignInError) else 'the browser could not be reached'
         _audit(store, tid, site, 'vault', False, why)
@@ -561,12 +601,9 @@ def _code_of(key):
     from . import totp, vault
     raw = vault.unseal(key) if key else ''
     if not raw: return None
-    try: cfg = totp.loads(raw) if raw.lstrip().startswith('{') else totp.parse(raw)
+    try: totp.loads(raw) if raw.lstrip().startswith('{') else totp.parse(raw)
     except (ValueError, KeyError, TypeError): return None
-    def now():
-        if totp.left(cfg) < 3: time.sleep(totp.left(cfg) + .2)
-        return totp.code(cfg)
-    return now
+    return lambda: totp.current(raw)
 
 
 def by_owner(store, tok, user, pw, keep: bool, fill=None, key: str = '') -> dict:
@@ -657,13 +694,13 @@ def signed_in(store, tid: int, rid: str) -> dict:
     """The owner signed in by hand and said so (workerstate.answer). Told as a fill is (_continue), on every kind of agent: a terminal
     CLI's ask had no Signed in press, only a box to type it in, and the bare words reached its prompt with no site and no "continue"
     (the owner, 2026-10-25: both kinds of agent ask alike)."""
-    told = _through(store, tid, rid, rid[len(PREFIX):], seen=False)
+    told = _through(store, tid, rid, ask_site(rid), seen=False)
     return {'delivered': True, 'state': 'delivered'} if told else {'delivered': False, 'state': 'failed', 'why': 'the agent could not be told - see the task'}
 
 
-def _audit(store, tid, site, how, ok, why='', saved=None, code=None):
+def _audit(store, tid, site, how, ok, why='', saved=None, code=None, signup=False):
     d = {'site': site, 'how': how, 'ok': bool(ok), **({'why': why} if why else {}), **({'saved': saved} if saved is not None else {}),
-         **({'code': code} if code is not None else {})}
+         **({'code': code} if code is not None else {}), **({'signup': True} if signup else {})}
     store.audit('task', tid, 'signin_fill', 'taskuary' if how == 'vault' else 'owner', 'system' if how == 'vault' else 'human', d)
 
 
@@ -757,7 +794,7 @@ def keep_typed(store, tid, site) -> bool:
     if t.get('site') != site or not t.get('pw'): return False
     try: save(store, site, t.get('user') or '', t['pw'], by='owner', extra=t.get('extra') or None)
     except ValueError as e:
-        store.add_comment(tid, 'taskuary', 'agent', f'Your {site} sign-in was not saved: {e}.'); return False
+        store.add_comment(tid, 'taskuary', 'agent', f'Your {site} sign-in was not saved: {_said(e)}.'); return False
     store.add_comment(tid, 'taskuary', 'agent', SAVED_LINE.format(site=site, where=words.name('signins')))
     return True
 
@@ -804,21 +841,88 @@ def mailed_code(store, site: str, after: int, brain=None):
     return None
 
 
-_TYPING = {}                    # (task, site) -> (the newest mail, when) as Taskuary typed a password there: a code the site mails for it comes after
+_TYPING = {}                    # (task, site) -> (the newest mail, when, session) as an act of its agent's went to that site: a code it mails comes after
 CODE_FRESH = 10 * 60            # ...and is looked for from there this long; past it, from when the ask's watch begins
+CODE_EVERY = 2.0                # the agent's own sign-up: how often its page is looked at for the code step (code_watch)
 
 
 def _newest_mail(store) -> int: return (store._one('SELECT MAX(MessageId) AS m FROM message') or {}).get('m') or 0
 
 
-def typing(store, tid, site): _TYPING[(int(tid), site)] = (_newest_mail(store), _now())
+def typing(store, tid, site, sid: str = ''): _TYPING[(int(tid), site)] = (_newest_mail(store), _now(), str(sid or ''))
 
 
 def mail_since(store, tid, site) -> int:
     """The mail a code for this sign-in can be in: from just before Taskuary typed its password - the site mails the code as the password goes,
     and the code step is raised a turn later (its agent makes the page ready), when the code was in the inbox already - else from now."""
-    mid, at = _TYPING.pop((int(tid), site), (None, 0))
+    mid, at, _ = _TYPING.get((int(tid), site), (None, 0, ''))
     return mid if mid is not None and _now() - at < CODE_FRESH else _newest_mail(store)
+
+
+# THE AGENT'S OWN SIGN-UP COMES BACK AS MAIL (the vendor walks, 2026-11-18): it pressed Create account itself, the site emailed its code, and the
+# code landed on his rail as four "unverified sender" FYI rows while the agent asked for it again. An act of the agent's that went to a site
+# (browsergate lets it run) is marked here; a mail from that site, holding a code, while it is fresh, is that act returning - kept off the
+# inbox (ingest, ahead of triage, as an auto-reply is: triage itself is unchanged) and typed into that site's page only, never shown to the agent.
+def acting(store, tid, sid: str, site: str) -> None:
+    "An act of this agent's went to `site`: a code it mails from now is the agent's own (take_code). Kept from its first act while fresh."
+    if not site or not str(tid or '').isdigit(): return
+    k = (int(tid), site)
+    if k in _TYPING and _now() - _TYPING[k][1] < CODE_FRESH: _TYPING[k] = (*_TYPING[k][:2], str(sid))
+    else: typing(store, tid, site, sid)
+
+
+_CODE_WATCHED = set()           # (task, site) whose code watch runs
+def take_code(store, msg: dict, watch=..., brain=None) -> int | None:
+    """The task whose agent's own act this mail answers - its sender the site that agent acted on lately, a code-shaped number in it - with its
+    code watch started (code_watch); else None."""
+    frm, text = str(msg.get('from_email') or ''), f"{msg.get('subject') or ''}\n{msg.get('body') or ''}"
+    if '@' not in frm or not (found := set(CODE_RE.findall(text))): return None
+    site = registrable(frm.rsplit('@', 1)[-1])
+    tid, sid = next(((t, x) for (t, s), (_, at, x) in list(_TYPING.items()) if s == site and _now() - at < CODE_FRESH), (None, ''))
+    if tid is None:
+        logger.info(f'signin: a mail from {site} holds a code-shaped number, and no agent acted on {site} lately - it is his mail'); return None
+    # ...and only a mail the model reads as a one-time code: an invoice from a site the agent just used holds numbers too, and is his
+    if not _pick_code(store, text, found, brain):
+        logger.info(f'signin: a mail from {site} came while task {tid} acted there, and was not read as a one-time code - it is his mail'); return None
+    if watch is ...: watch = code_watch
+    if watch and (tid, site) not in _CODE_WATCHED:
+        _CODE_WATCHED.add((tid, site))
+        def run():
+            try: watch(store, tid, sid, site)
+            finally: _CODE_WATCHED.discard((tid, site))
+        threading.Thread(target=run, daemon=True, name=f'code-watch-{tid}').start()
+    return tid
+
+
+def code_watch(store, tid: int, sid: str, site: str, every: float = CODE_EVERY, until: float = CODE_FRESH, conn=None, url: str = '') -> bool:
+    """While the agent's act on `site` is fresh: when its page there asks for a code and a mail from the site holds one, type it on the pinned
+    page (as the sign-in ask's watch does) and tell the agent to look. A sign-in ask open on the site watches for itself (watch). `url`: the code
+    page the sign-up left - where the agent has gone on to another site, the code is typed there, in a tab of Taskuary's own (tab_at)."""
+    end, after = time.time() + until, mail_since(store, tid, site)
+    while time.time() < end:
+        time.sleep(every)
+        if ask_site((pending(store, tid) or {}).get('request_id')) == site: return False
+        got = None
+        try:
+            c = conn or connect(sid)
+            try:
+                f = c.fields('')
+                here = f.get('top') and on_site(f.get('href'), site) and code_step(f)
+                if not here and not (url and conn is None): continue
+                if not (got := mailed_code(store, site, after)): continue
+                if here: _code_from_mail(store, tid, site, c, *got)
+                else:
+                    with tab_at(sid, url) as (t, _):
+                        if not code_step(t.fields('')): return False          # ...that page asks no code any more: nothing to type
+                        _code_from_mail(store, tid, site, t, *got)
+            finally:
+                if conn is None: c.close()
+        except SignInError: continue
+        if got[1]:
+            from .browsergate import _tell
+            _tell(store, tid, f'Taskuary typed the code {site} emailed for your sign-up into its page and sent it. Look at the page and continue.', wake=True)
+        return True
+    return False
 
 
 def _code_from_mail(store, tid, site, c, mid, code) -> bool:
@@ -828,7 +932,7 @@ def _code_from_mail(store, tid, site, c, mid, code) -> bool:
         return True
     try: _type_code(c, site, lambda: code)
     except SignInError as e:
-        store.add_comment(tid, 'taskuary', 'agent', f'{site} emailed you {mail}, and its code could not be typed ({e}) - type it on the page.')
+        store.add_comment(tid, 'taskuary', 'agent', f'{site} emailed you {mail}, and its code could not be typed ({_said(e)}) - type it on the page.')
         return True
     _audit(store, tid, site, 'vault', True, 'the code it emailed', code=True)
     store.add_comment(tid, 'taskuary', 'agent', f'Typed the code {site} emailed you ({mail}).')
@@ -836,25 +940,15 @@ def _code_from_mail(store, tid, site, c, mid, code) -> bool:
 
 
 def _through(store, tid, rid, site, seen=True):
-    """The sign-in or sign-up is past - seen on the page (watch), or the owner said so (`seen` False, signed_in): keep what was typed for it,
-    and tell the agent once, in words that say who did it."""
-    up = SIGNING_UP.pop((int(tid), site), None)
-    # ...A SIGN-UP'S PASSWORD IS TASKUARY'S OWN, known without hearing it: he said "done" before the watch saw the page through (or no watch
-    # could reach it), and the password the site was sent - typed by Taskuary, seen by nobody - was never kept
-    if up and up.get('pw'):
-        t = _TYPED.get(tid) or {}
-        if t.get('site') != site: t = _TYPED[tid] = {'site': site, 'user': '', 'pw': ''}
-        t['pw'] = t.get('pw') or up['pw']
-    # ...and a sign-up's user name is a box the page names as the user's (NAMED): a wizard's last step shows a Company box over the password
-    if up is not None and not (_TYPED.get(tid) or {}).get('named'): (_TYPED.get(tid) or {}).pop('user', None)
+    """The sign-in is past - seen on the page (watch), or the owner said so (`seen` False, signed_in): keep what was typed for it, and tell the
+    agent once, in words that say who did it."""
     kept = keep_typed(store, tid, site)
-    # ...A SIGN-UP IS SAID AS ONE (the real-CLI walk, 2026-11-16: every account it made read "You signed in to ..."), and one Taskuary
-    # sent is never said as his press
-    if up and up.get('sent'):
-        _audit(store, tid, site, 'vault', True, 'signed up', saved=True)
-        return _continue(store, tid, rid, site, 'taskuary', words=signed_up_words(site, up.get('user') or ''))
-    if seen: _audit(store, tid, site, 'page', True, 'signed up' if up is not None else '', saved=kept)
-    return _continue(store, tid, rid, site, 'owner', words=signed_up_words(site, sent=False) if up is not None else None)
+    if seen: _audit(store, tid, site, 'page', True, saved=kept)
+    # ...AND HIS PRESS IS SAID AS A PRESS (round 3, 2026-11-22: "I'm done" on a sign-up page, nothing typed, told the agent "the owner signed in
+    # on the page themselves"): seen on the page, he signed in; only pressed, the agent looks at the page before it goes on
+    if not seen: return _continue(store, tid, rid, site, 'owner', words=(f'You pressed {DONE} on {site}', f"The owner pressed {DONE} on the {site} "
+                                  "page. Look at the page before you go on - nothing says what, if anything, was done on it."))
+    return _continue(store, tid, rid, site, 'owner')
 
 
 def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: float = WATCH_EVERY, until: float = WATCH_FOR):
@@ -950,13 +1044,15 @@ STILL = "(() => { " + DEEP + " const a = deepActive(); return { href: location.h
 class Cdp:
     """One DevTools connection to a session's Chrome, attached to the tab the agent is on. A refusal is said by WHICH call, never
     with the call's parameters - one of them is the password."""
-    def __init__(self, ws_url: str, target: str):
+    def __init__(self, ws_url: str, target: str, exact: bool = False):
         from websockets.sync.client import connect
         kw = dict(open_timeout=5, max_size=8 * 1024 * 1024, logger=_QUIET)   # no Origin: Chrome refuses a browser-looking client
         try: self.ws = connect(ws_url, proxy=None, **kw)
         except TypeError: self.ws = connect(ws_url, **kw)              # websockets before 15 has no proxy setting
-        self.n, self.session, self.events = 0, None, []
-        self.session = self.call('Target.attachToTarget', {'targetId': self.tab(target), 'flatten': True}, top=True)['sessionId']
+        self.n, self.session, self.events, self.url = 0, None, [], ws_url
+        # the tab it is on: a held step names it (browsergate.held_tab) - and attaches to that tab only, `exact`, never a stand-in for it
+        self.target = target if exact else self.tab(target)
+        self.session = self.call('Target.attachToTarget', {'targetId': self.target, 'flatten': True}, top=True)['sessionId']
 
     def tab(self, target: str) -> str:
         """The tab to attach to: agent-browser's own word for it when that tab is still there - its .target file is not rewritten every
@@ -972,12 +1068,16 @@ class Cdp:
         self.n += 1; i = self.n
         m = {'id': i, 'method': method, 'params': params or {}}
         if self.session and not top: m['sessionId'] = self.session
-        self.ws.send(json.dumps(m))
+        # ...A SOCKET THAT FAILS IS A BROWSER THAT DID NOT ANSWER, said as one (the vendor walk, 2026-11-19): a page hung on a site that never
+        # answered raised the socket's own TimeoutError, which no caller expects - the code watch died on it, and a code the site emailed sat unread
+        try: self.ws.send(json.dumps(m))
+        except Exception: raise SignInError('the browser did not answer') from None
         end = time.time() + timeout
         while True:
             left = end - time.time()
             if left <= 0: raise SignInError('the browser did not answer in time')
-            r = json.loads(self.ws.recv(timeout=left))
+            try: r = json.loads(self.ws.recv(timeout=left))
+            except Exception: raise SignInError('the browser did not answer in time') from None
             if r.get('method') == 'Runtime.bindingCalled' and len(self.events) < 200: self.events.append(r)   # the page's own events are not kept
             if r.get('id') == i:
                 if 'error' in r: raise SignInError(f'the browser refused {method.split(".")[0]}')
@@ -1170,19 +1270,24 @@ def type_in(sid: str, site: str, user: str, pw: str, code=None, extra=None) -> d
         finally: c.close()
 
 
-# ── A SIGN-UP: the password is Taskuary's to make, type and keep; the sending is the owner's press (the real-CLI walk, 2026-11-16) ──────
-# Asked to sign up on ten sites, the agent filled nine forms and handed every one back for the owner to type a password into - it may not make
-# one up and hold it, and nothing else could. It ends its turn with [[TASKUARY-SIGNUP: <domain>]] instead (selfclose.signin_marker): on the
-# sign-in's own road - the page's site pinned, checked before every keystroke, the screencast held - Taskuary types a strong new password into
-# every password box. SENDING the form makes an account somewhere: what can't be undone is his press (browsergate - which held a wizard's
-# Next on the same walk), so the page is then his, as a sign-in's is - and what he sends on it is kept and the agent told (watch). The agent
-# never sees the password, and he never types one.
-ENDED_WAIT = 30                 # how long a sign-up's answer waits for the turn that asked to end
-SIGNING_UP = {}                 # (task, site) whose open ask is a sign-up -> {pw, sent: Taskuary sent the form, user}: the watch says "signed up"
-                                # when it goes through, never "signed in"
-MAILED_ASK = '{site} emailed a code to finish the sign-up - Taskuary types it from the mail when it comes, or type it on the page'
+# ── A SIGN-UP: one command in the agent's turn - Taskuary makes the password, types it, keeps it and sends the form (design round 4, 2026-11-19) ──
+# The marker road (end the turn with [[TASKUARY-SIGNUP]], be woken a turn later) cost a turn a site - thirteen vendors took 25-35 minutes - and it
+# lost what it made: a form the agent pressed itself, or a held card pressed after the agent had moved on, made an account whose password nobody
+# kept ("already exists" on five sites, of its own making). Now:
+# - `agent-browser signup` (gatecmd's own verb; the API agent's browser_signup) on the page whose boxes the agent filled: Taskuary types a strong
+#   new password into every password box, SEALS it to the vault before the form goes, sends it, and prints what the site answered - the command's
+#   own result. An account counts as made only where that result says the site let it in (on the site, no password box, no error).
+# - A CODE the site emails is waited for inside the command and typed from the mail; past the wait, the code watch keeps going on that page.
+# - ANY PRESS of the agent's that sends a password box's value (it typed one, or pressed the form itself) seals what the box held first (pressing),
+#   kept once the site takes it (settled) - so nothing a site was sent is lost.
+# - HELD (a sign-up he did not ask for, or one that costs) it is one card, tied to the job: the form's boxes are kept with it, and his press fills
+#   the page again in a tab of Taskuary's own when the agent has moved on, then sends it (send_held). Nothing he presses fails on a page gone.
 NEW = 'new:'                    # signin_marker's claim for a sign-up: this, then the site the agent named
 def signing_up(claimed) -> bool: return str(claimed or '').startswith(NEW)
+ENDED_WAIT = 30                 # the marker's answer waits this long for the turn that asked to end
+CODE_INLINE = 60.0              # inside the command: how long a code the site emails is waited for
+_USERS = {}                     # (task, site) -> the user name a box of the site named on a page the agent pressed on (a wizard's first step)
+_PRESSED = {}                   # session -> (task, site, the row it replaced): a press that sent a password, until the site answered it
 
 
 def new_password(n: int = 20) -> str:
@@ -1200,14 +1305,31 @@ PASSBOX = r"""(i) => { """ + DEEP + r"""
   const ps = deepAll('input[type=password]').filter(vis), el = ps[i];
   if (el) { el.focus(); try { el.select(); } catch (_) { el.value = ''; } }
   return { n: ps.length, top: window === window.top, href: location.href, focused: !!el && deepActive() === el }; }"""
+# THE FORM AS IT STANDS: the user name a box names as the user's, whether a password box holds one, and the boxes the agent filled - by name, never a
+# password or a card's - so a held card can fill the page again. FORM_PW, the password itself, is read only to seal it (pressing), never kept elsewhere
+FORM = "(() => { " + DEEP + r"""
+  const vis = (e) => { const r = e.getBoundingClientRect(); return !e.disabled && r.width > 2 && r.height > 2; };
+  const ins = deepAll('input, select, textarea').filter(vis), texty = (e) => ['text', 'email', 'tel', ''].includes(e.type);
+  const user = ins.find((e) => texty(e) && e.value && """ + NAMED + r""".test([e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.placeholder].join(' ')));
+  const keep = ins.filter((e) => (e.name || e.id) && e.type !== 'password' && e.type !== 'hidden' && !/^cc-/.test(e.autocomplete || '')
+    && (e.type === 'checkbox' || e.type === 'radio' ? e.checked : e.value));
+  return { href: location.href, top: window === window.top, title: document.title, user: user ? String(user.value).slice(0, 200) : '',
+           pw: deepAll('input[type=password]').some((e) => !!e.value), password: ins.some((e) => e.type === 'password'),
+           fields: keep.slice(0, 30).map((e) => ({ k: e.name || e.id, t: e.type,
+             v: e.type === 'checkbox' || e.type === 'radio' ? (e.value || 'on') : String(e.value).slice(0, 300) })) }; })()"""
+FORM_PW = "(() => { " + DEEP + " const e = deepAll('input[type=password]').find((x) => !!x.value); return e ? e.value : ''; })()"
+REFILL = "((fs) => { " + DEEP + r"""
+  let n = 0; for (const f of fs) { const e = deepAll('input, select, textarea').find((x) => (x.name || x.id) === f.k && (f.t !== 'radio' || x.value === f.v));
+    if (!e) continue; if (f.t === 'checkbox' || f.t === 'radio') e.checked = true; else e.value = f.v;
+    e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); n++; } return n; })"""
 
 
-def type_new(sid: str, site: str, pw: str) -> int:
+def type_new(sid: str, site: str, pw: str, c=None) -> int:
     """Type a new password into every password box of the sign-up page (its confirm box too), each focused and looked at on the pinned site
-    first - and send nothing. -> how many boxes."""
+    first - and send nothing. -> how many boxes. `c`: the page's connection (a tab of Taskuary's own); else the agent's tab."""
     from . import browserview
     with browserview.filling(sid):
-        c = connect(sid)
+        own = c is None; c = c or connect(sid)
         try:
             _guard(c, site, '')
             n = (c.js(f'({PASSBOX})(-1)') or {}).get('n') or 0
@@ -1217,58 +1339,8 @@ def type_new(sid: str, site: str, pw: str) -> int:
                 if not b.get('top') or not on_site(b.get('href'), site) or not b.get('focused'): raise SignInError('the page changed under the sign-up - nothing was typed')
                 c.type(pw)
             return n
-        finally: c.close()
-
-
-def new_account(store, tid, sid, site, rid, fill=None, watch=...) -> dict:
-    """The agent ended its turn on a sign-up form, everything but the password filled. A site the owner already keeps a sign-in for is
-    signed in to, never signed up on twice; else the password is typed and the page is his to send. On a thread of its own, after the turn
-    that asked has ended (the real-CLI walk, 2026-11-16: told inside it, the agent never heard, and the chat read "Thinking..." for good)."""
-    if watch is ...: watch = globals()['watch']
-    kept = bool(saved(store, site))
-    from . import general
-    general.hand(tid)
-    def run():
-        try:
-            # ...AND ONLY ONCE THE TURN THAT ASKED HAS ENDED (the real-CLI walk, 2026-11-16): told in the same instant, that turn ended a beat after
-            # the news was stamped, send_prompt read it as news a later turn had worked past (`since`), dropped it - and the agent never woke
-            from . import workerstate as ws
-            end = time.time() + ENDED_WAIT
-            while time.time() < end and getattr(ws._live(tid), 'busy', False): time.sleep(.1)
-            if kept: _continue(store, tid, rid, site, 'taskuary', words=(f'Already signed up on {site}', f'The owner already has an account on '
-                               f'{site}, kept with the saved sign-ins - do not sign up again. Open its sign-in page and end your turn with '
-                               f'[[TASKUARY-SIGNIN: {site}]].'))
-            else: _signup(store, tid, sid, site, rid, fill or type_new, watch)
-        finally: general.hand(tid, -1)
-    threading.Thread(target=run, daemon=True, name=f'signup-{tid}').start()
-    return {'site': site, 'auto': False}
-
-
-def signed_up_words(site, user='', sent=True) -> tuple[str, str]:
-    "(the task's receipt, what the agent is told) for a sign-up that went through - sent by Taskuary as he asked, or by his press on the page."
-    who = f' as {user}' if user else ''
-    how = ('As the owner asked, Taskuary made a strong password, typed it and sent the form' if sent else
-           "The owner pressed the site's button; the password Taskuary made")
-    return f'Signed up on {site}{who}', f"Signed up on {site}{who} - continue. {how}{'; it' if sent else ''} is kept with the owner's saved sign-ins."
-
-
-def _signup(store, tid, sid, site, rid, fill, watch):
-    pw = new_password(); typing(store, tid, site)
-    try: fill(sid, site, pw)
-    except Exception as e:
-        why = str(e) if isinstance(e, SignInError) else 'the browser could not be reached'
-        _audit(store, tid, site, 'vault', False, why)
-        return _continue(store, tid, rid, site, 'taskuary', words=(f'The sign-up on {site} was not filled', f'The password for {site} was not '
-                         f'typed: {why}. Look at the page and go on from what it shows.'))
-    _audit(store, tid, site, 'vault', True, 'a new password typed')
-    # ...HE ASKED FOR IT, SO IT IS SENT (the owner, 2026-11-17: "If you ask it to sign up to those sites it should do it, nothing else required"):
-    # the browser gate's own verdict, given his words - asked for, Taskuary presses the form's Enter and keeps the password it made; else his press
-    from . import browsergate
-    if not browsergate.judge(store, [{'verb': 'press', 'args': [], 'raw': f'send the filled sign-up form on {site}, creating an account there'}], browsergate.page(sid),
-                             said=browsergate.asked(store, tid))[0]['hold']:
-        return _sent_up(store, tid, sid, site, rid, pw, watch=watch)
-    SIGNING_UP[(int(tid), site)] = {'pw': pw}       # memory only, as what he types on the page is (_TYPED)
-    _ask(store, tid, sid, site, rid, f'Sign up on {site}: check the form and press its button - the password is made and kept for you', watch)
+        finally:
+            if own: c.close()
 
 
 USER = "(() => { " + DEEP + " const a = deepActive(); return a && a.type !== 'password' ? String(a.value || '').slice(0, 200) : ''; })()"
@@ -1276,56 +1348,306 @@ SAYS = (r"(() => [...document.querySelectorAll('[role=alert], [aria-invalid=true
         r".map((e) => e.innerText.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 240))()")
 
 
-def send_new(sid: str, site: str) -> dict:
+def send_new(sid: str, site: str, c=None) -> dict:
     """Send the sign-up form the password was typed into: Enter in its password box on the pinned site. {'ok', 'user', 'why'} - `why` the
     page's own error marks when the form stayed up; the password boxes emptied after either way."""
     from . import browserview
     with browserview.filling(sid):
-        c = connect(sid)
+        own = c is None; c = c or connect(sid)
         try:
             f, user = _guard(c, site, ''), ''
             # ...the user box only where the page NAMES it so (FIELDS `named`): a wizard's last step shows a Company box over the password, and
             # read as the user box the account was kept as the company - and the next sign-in typed it into the email box
             if f.get('user') and f.get('named'): _guard(c, site, 'user'); user = str(c.js(USER) or '')
-            _guard(c, site, 'password'); c.enter()
+            _guard(c, site, 'password')
+            try: c.js(LEAVING)
+            except SignInError: pass
+            c.enter()
             time.sleep(SETTLE)
-            ok, why = accepted(c, site), ''
-            if not ok:
+            # ...AND WHAT THE SITE ANSWERED, by its status (the vendor walk, 2026-11-18): a 500 page has no password box either, and a site
+            # crashing on its form was kept as an account nobody could sign in to; one that never answered was "the browser could not be reached"
+            try: ok, why, status = accepted(c, site), '', answered(c)
+            except Exception: ok, why, status = False, '', None
+            if status is None:
+                browserview.unstick(sid, every=True)
+                return {'ok': False, 'user': user, 'why': f'the site did not answer in {SETTLE + REJECT_WAIT + ANSWER_WAIT:.0f} s, so the load was stopped'}
+            if status >= 400: ok, why = False, f'the site answered with an error (HTTP {status})'
+            elif not ok:
                 try: why = str(c.js(SAYS) or '')
                 except SignInError: pass
             try: c.js(CLEAR)
             except SignInError: pass
             return {'ok': ok, 'user': user, 'why': why}
-        finally: c.close()
+        finally:
+            if own: c.close()
 
 
-def _sent_up(store, tid, sid, site, rid, pw, send=None, watch=None):
-    # KEPT BEFORE IT IS SENT (the timeline stress round, 2026-11-18): held only in memory while the form went and the page settled, a restart in
-    # those seconds left an account on the site that nobody could sign in to. Sealed now, its user name added once the page is past; taken
-    # out again if the site keeps its form up. A site with a saved sign-in never reaches here (new_account signs in to it instead)
-    try: save(store, site, '', pw, by='taskuary'); early = True
-    except ValueError: early = False                       # ...no keychain: said below, where the save after the send says it
-    try: got = (send or send_new)(sid, site)
+ANSWER_WAIT = 8.0
+# the document marks that it began to leave: still here after the wait, the site never answered the form (a form posted to its own address
+# reads as the same page with the same status - only the old document knowing it was leaving tells the two apart)
+LEAVING = "window.__tqLeaving = false; addEventListener('beforeunload', () => { window.__tqLeaving = true; }); true"
+def answered(c, wait: float = ANSWER_WAIT) -> int | None:
+    """The HTTP status of the document the page shows once it answers (0 when it does not say) - None when none answered within `wait`:
+    the old document still there and leaving, or nothing readable."""
+    from .browsergate import STATUS_JS
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            f = c.js(STATUS_JS) or {}
+            if c.js('document.readyState') == 'complete' and c.js('window.__tqLeaving === true') is not True: return int(f.get('status') or 0)
+        except Exception: pass
+        time.sleep(.5)
+    return None
+
+
+def forget_row(old, key=True, extra=True):
+    "A replaced row's own secrets out of the keychain: its user and password, and its code key and extras where they were replaced."
+    from . import vault
+    for v in (old or {}).get('User'), (old or {}).get('Secret'), ((old or {}).get('Totp') if key else None), ((old or {}).get('Extra') if extra is not None else None):
+        vault.forget(v)
+
+
+def _kept(prev, now):
+    "The site took the new row: the secrets of the one it replaced go now - never before, while it might still come back."
+    forget_row({k: v for k, v in (prev or {}).items() if v and v != (now or {}).get(k)})
+
+
+# ── the vault row a sign-up replaced comes back when the site turns the form down ───────────────────────────────────────────────────
+def _raw(store, site) -> dict | None:
+    _tables(store)
+    return store._one('SELECT * FROM signin_vault WHERE Site=?', (str(site or '').lower(),))
+
+
+def _restore(store, site, prev):
+    "The site kept its form up: the row kept ahead of the send goes, and the one it replaced (a sign-in that works) comes back as it was."
+    from . import vault
+    now = _raw(store, site)
+    if prev: store._exec('INSERT OR REPLACE INTO signin_vault (Site, User, Secret, Totp, Extra, SavedAt, SavedBy, LastUsed) VALUES (?,?,?,?,?,?,?,?)',
+                         tuple(prev.get(k) for k in ('Site', 'User', 'Secret', 'Totp', 'Extra', 'SavedAt', 'SavedBy', 'LastUsed')))
+    else: store._exec('DELETE FROM signin_vault WHERE Site=?', (str(site).lower(),))
+    for k in ('User', 'Secret', 'Extra'):
+        if now and now.get(k) and now.get(k) != (prev or {}).get(k): vault.forget(now[k])
+
+
+# ── the page a step belongs to: the agent's own tab while it is there, else a tab of Taskuary's own at it ──────────────────────────────
+def _same(a, b) -> bool: return str(a or '').split('#', 1)[0].rstrip('/') == str(b or '').split('#', 1)[0].rstrip('/')
+
+
+class tab_at:
+    """with tab_at(sid, url) as (c, opened): a DevTools connection to the page at `url` - the agent's tab while it is on it, else a tab Taskuary
+    opens at it in the same browser (its cookies, so a wizard's next step or a code page opens as it was left; `opened` True), closed after. A
+    press held for the owner is tied to the job, not to the agent's tab: the agent moves on, and the press still lands (the vendor walk, 2026-11-19)."""
+    def __init__(self, sid, url, wait: float = 15.0): self.sid, self.url, self.wait, self.c, self.tab = sid, url, wait, None, None
+    def __enter__(self):
+        c = connect(self.sid)
+        try:
+            if _same(c.js('location.href'), self.url): self.c = c; return c, False
+            self.tab = c.call('Target.createTarget', {'url': self.url, 'background': True}, top=True)['targetId']
+            self.c = Cdp(c.url, self.tab)
+        finally:
+            if self.c is not c: c.close()
+        end = time.time() + self.wait
+        while time.time() < end:
+            try:
+                if self.c.js('document.readyState') == 'complete' and _same(self.c.js('location.href'), self.url): break
+            except SignInError: pass
+            time.sleep(.3)
+        return self.c, True
+    def __exit__(self, *a):
+        if self.tab:
+            try: self.c.call('Target.closeTarget', {'targetId': self.tab}, top=True)
+            except SignInError: pass
+        if self.c: self.c.close()
+
+
+# ── the command ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def signup(store, tid, sid) -> tuple[bool, str]:
+    """`agent-browser signup`: the agent filled a sign-up form but its password. -> (made or held, what the command prints)."""
+    from . import browsergate, browserview, proposals
+    st = browserview.state(sid, fresh=True)
+    url = str(st.get('url') or '') if st.get('open') else ''
+    site = site_of(url)
+    if not site: return False, ('Nothing was typed: no page a password may go on is open in this browser (https, or this computer). Open the '
+                                "site's sign-up page, fill every box but the password, and run `agent-browser signup` again.")
+    try: c = connect(sid)
+    except SignInError as e: return False, f'Nothing was typed: {e}.'
+    try:
+        # ...THE FORM IS THE ONE ON THE TAB THE COMMAND WORKS, by that tab's own address (walk 5, 2026-11-19: the card named one site's form while
+        # the address read was another tab's) - the card names that tab, and his press runs there only (browsergate.held_tab)
+        here = str(c.js('location.href') or '')
+        if site_of(here) and site_of(here) != site: url, site = here, site_of(here)
+        pg = browsergate.page(sid)
+        name = site_name(url, sid) or site
+        v = browsergate.judge(store, [{'verb': 'press', 'args': [], 'raw': f'send the filled sign-up form on {name}, creating an account there'}], pg,
+                              said=browsergate.asked(store, tid))[0]
+        if not v['hold']: return _make(store, tid, sid, site, c)
+        f = c.js(FORM) or {}
+        if not f.get('password'): return False, _no_box(site)
+        proposals.queue(store, tid, {'action': 'browser_act', 'sid': str(sid), 'args': ['signup'], 'signup': site, 'url': here or url, 'site': site,
+                                     'name': name, **({'tab': t} if (t := getattr(c, 'target', '')) else {}), 'fields': f.get('fields') or [], 'command': f'send the sign-up form on {name}',
+                                     'what': v['what'], 'why': v['why']}, 'agent')
+        return True, (f'HELD for the owner: {v["what"]} ({v["why"]}). It stands as one card in the chat; their press fills this form again as you '
+                      'left it, makes and keeps the password and sends it - even after you have moved on - and you are told what the site '
+                      'answered. Do not ask them in words; go on with the rest of the work.' + browsergate.stands(store, tid))
+    finally: c.close()
+
+
+def _no_box(site) -> str:
+    return (f'Nothing was typed: this {site} page has no password box. Press its own button for the step before (a Next), then run '
+            '`agent-browser signup` on the page that asks for the password.')
+
+
+def _make(store, tid, sid, site, c, fill=None, send=None, said: dict = None) -> tuple[bool, str]:
+    """Type a new password into the page `c` is on, keep it, send the form, and say what the site answered. Kept BEFORE it is sent: a restart
+    in those seconds left an account nobody could sign in to (2026-11-18). The row it replaced comes back if the site turns the form down."""
+    f = c.js(FORM) or {}
+    if not f.get('password'): return False, _no_box(site)
+    pw, prev = new_password(), _raw(store, site)
+    user = f.get('user') or _USERS.get((int(tid), site), '')
+    typing(store, tid, site, sid)
+    try: (fill or type_new)(sid, site, pw, c)
+    except Exception as e:
+        why = str(e) if isinstance(e, SignInError) else 'the browser could not be reached'
+        _audit(store, tid, site, 'vault', False, why)
+        return False, f'Nothing was sent: the password could not be typed - {why}. Look at the page and go on from what it shows.'
+    try: save(store, site, user, pw, by='taskuary', keep_old=True); kept = ''
+    except ValueError as e: kept = f' The password could not be kept: {e}.'
+    try: got = (send or send_new)(sid, site, c)
     except Exception as e: got = {'ok': False, 'why': str(e) if isinstance(e, SignInError) else 'the browser could not be reached'}
     if not got.get('ok'):
-        if early: _unsave(store, site)
-        _audit(store, tid, site, 'vault', False, got.get('why') or 'the form stayed up')
-        return _continue(store, tid, rid, site, 'taskuary', words=(f'The sign-up on {site} did not go through', f"{site} kept its sign-up form up"
-                         + (f' - it says "{got["why"]}"' if got.get('why') else '') + '. No account was kept. Look at the page: fix what it asks for and '
-                         'end your turn with the sign-up marker again; a box only the owner can fill is theirs - hand it over with the your-turn marker.'))
-    user = got.get('user') or ''
-    try: save(store, site, user, pw, by='taskuary'); kept = ''
-    except ValueError as e: kept = f' The password could not be kept: {e}.'
-    # ...AND A CODE PAGE AFTER IT IS NO SIGN-UP YET: the site emailed its code as the form went, and the agent was told "signed up - continue"
-    # over the page asking for it - the mail had come before any watch began, so nothing ever typed it. The ask's watch reads mail from before
-    # the password was typed (typing) and types the code; the code step is his only when no mail holds one
-    if asks_code(sid):
-        _audit(store, tid, site, 'vault', True, 'a code was asked', saved=not kept)
-        SIGNING_UP[(int(tid), site)] = {'sent': True, 'user': user}
-        return _ask(store, tid, sid, site, rid, MAILED_ASK.format(site=site), watch)
-    _audit(store, tid, site, 'vault', True, 'signed up', saved=not kept)
-    did, said = signed_up_words(site, user)
-    return _continue(store, tid, rid, site, 'taskuary', words=(did, said + kept))
+        if not kept: _restore(store, site, prev)
+        _audit(store, tid, site, 'vault', False, got.get('why') or 'the form stayed up', signup=True)
+        if said is not None: said['why'] = got.get('why') or ''
+        return False, (f'No account: {site} kept its sign-up form up' + (f' - it says "{got["why"]}"' if got.get('why') else '') + '. Nothing was '
+                       'kept. Fix what it asks for and run `agent-browser signup` again; a box only the owner can fill is theirs.')
+    if (u := got.get('user')) and u != user and not kept: user = u; save(store, site, user, pw, by='taskuary', keep_old=True)
+    if not kept: _kept(prev, _raw(store, site))
+    from .browsergate import overcome
+    overcome(store, tid, site, f'Done on a later try: the account on {site} was made', signup=True)
+    return True, _answered(store, tid, sid, site, c, user, kept)
+
+
+def _answered(store, tid, sid, site, c, user, kept) -> str:
+    "After the form went: a code it emailed typed from the mail, and the page read - an account only where the site let it in."
+    who = f' as {user}' if user else ''
+    end, after, coded = time.time() + CODE_INLINE, mail_since(store, tid, site), ''
+    _CODE_WATCHED.add((int(tid), site))               # ...the mail is this command's to type while it waits (take_code starts no watch)
+    try:
+        while True:
+            try: f = c.fields('')
+            except SignInError: f = {}
+            if not (f.get('top') and on_site(f.get('href'), site) and code_step(f)) or time.time() > end: break
+            if (got := mailed_code(store, site, after)) and got[1]:
+                try: _type_code(c, site, lambda: got[1]); coded = ' The code it emailed was typed from the mail.'
+                except SignInError: pass
+                time.sleep(SETTLE); after = got[0]
+            else: time.sleep(1)
+    finally: _CODE_WATCHED.discard((int(tid), site))
+    try: f, look, status = c.fields(''), c.js(FORM) or {}, answered(c, 3)
+    except SignInError: f, look, status = {}, {}, None
+    if f.get('top') and on_site(f.get('href'), site) and code_step(f):
+        threading.Thread(target=code_watch, args=(store, tid, sid, site), kwargs={'url': str(f.get('href') or '')}, daemon=True,
+                         name=f'code-watch-{tid}').start()
+        _audit(store, tid, site, 'vault', True, 'a code was asked', saved=not kept, signup=True)
+        return (f'Not an account yet: {site} took the form{who} and asks for a code it emailed. Taskuary types it from the mail when it comes and tells '
+                f"you; never ask for it. The password is kept with the owner's saved sign-ins.{kept} Go on with the next one meanwhile.")
+    there = f'"{look.get("title") or ""}" ({look.get("href") or f.get("href") or ""})'
+    if f.get('top') and on_site(f.get('href'), site) and not f.get('password') and (status or 200) < 400:
+        _audit(store, tid, site, 'vault', True, 'signed up', saved=not kept, signup=True)
+        return (f"Signed up on {site}{who}, and signed in: the page shows {there}.{coded} Its password is kept with the owner's saved sign-ins - you "
+                f'never need it; to sign in again later, open its sign-in page and end a turn with [[TASKUARY-SIGNIN: {site}]].{kept}')
+    _audit(store, tid, site, 'vault', True, 'sent', saved=not kept)
+    return (f'Sent{who}; the page now shows {there}, not signed in. Not an account yet: open its sign-in page and end a turn with '
+            f'[[TASKUARY-SIGNIN: {site}]] - an account counts once that sign-in goes in.{coded}{kept}')
+
+
+# ── the marker, for an agent that still ends its turn with [[TASKUARY-SIGNUP]]: the same command, answered once that turn has ended ──
+def new_account(store, tid, sid, site, rid, fill=None, watch=...) -> dict:
+    from . import general, workerstate as ws
+    general.hand(tid)
+    def run():
+        try:
+            end = time.time() + ENDED_WAIT
+            while time.time() < end and getattr(ws._live(tid), 'busy', False): time.sleep(.1)
+            ok, line = signup(store, tid, sid)
+            _continue(store, tid, rid, site, 'taskuary', words=(line.split(':')[0].split(',')[0] if ok else f'The sign-up on {site} did not go through', line))
+        finally: general.hand(tid, -1)
+    threading.Thread(target=run, daemon=True, name=f'signup-{tid}').start()
+    return {'site': site, 'auto': False}
+
+
+def send_held(store, tid, sid, p) -> dict:
+    """His press on a held sign-up's card (browsergate.perform): the form filled again where the agent has moved on, sent, and the agent told."""
+    from .browsergate import _tell, held_on
+    site, url = str(p.get('signup') or ''), str(p.get('url') or '')
+    got = {}
+    try:
+        # ...ON THE TAB IT WAS HELD ON while that tab is on its form - never the tab shown now, never another page of the site (walk 5, 2026-11-19:
+        # his yes to one site's sign-up ran on another site's page)
+        if p.get('tab') and held_on(sid, p):
+            c = Cdp(_cdp_url(sid), str(p['tab']), exact=True)
+            try: ok, line = _make(store, tid, sid, site, c, said=got)
+            finally: c.close()
+        # ...ELSE ITS FORM OPENED AGAIN at its own address in a tab of Taskuary's own, its kept boxes filled back (walk 8, 2026-11-20: the agent
+        # took its tab on to the next vendor, as it was told it could, and three held sign-ups went off their cards before he pressed)
+        else:
+            with tab_at(sid, url) as (c, _):
+                if not _same(c.js('location.href'), url): raise SignInError(f'its sign-up page at {url} did not open again')
+                c.js(f'{REFILL}({json.dumps(p.get("fields") or [])})')
+                ok, line = _make(store, tid, sid, site, c, said=got)
+    except SignInError as e: ok, line, got = False, f'Nothing was sent: {e}.', {'why': str(e)}
+    _tell(store, tid, f'The owner approved the sign-up on {site}. {line}', wake=True)
+    # ...his card says what became of it in his words (say.owner) - the agent's own next step ("run `agent-browser signup` again") is the agent's
+    from . import say
+    if not ok: raise RuntimeError(say.owner({'kind': 'signup_failed', 'site': site_name(url or site, sid), 'why': (got or {}).get('why')}))
+    return {'performed': p.get('what') or f'the sign-up on {site}', 'site': site}
+
+
+# ── the agent's own press that sends a password: sealed before it goes, kept once the site takes it ─────────────────────────────────
+def pressing(store, tid, sid, site, conn=None) -> None:
+    """An act of the agent's is about to press on `site`: remember a user name a box there names (a wizard's later step shows none), and seal a
+    password a box holds - the site is sent it now, and nothing else would ever keep it."""
+    if not site or not str(tid or '').isdigit(): return
+    try:
+        c = conn or connect(sid)
+        try: f = c.js(FORM) or {}; pw = c.js(FORM_PW) if f.get('pw') else ''
+        finally:
+            if conn is None: c.close()
+    except Exception: return
+    if not (f.get('top') and on_site(f.get('href'), site)): return
+    if f.get('user'): _USERS[(int(tid), site)] = f['user']
+    if not pw: return
+    prev = _raw(store, site)
+    try: save(store, site, f.get('user') or _USERS.get((int(tid), site), ''), pw, by='agent', keep_old=True)
+    except ValueError as e: return logger.info(f'signin: task {tid} pressed with a password on {site}, not kept - {e}')
+    _PRESSED[str(sid)] = (int(tid), site, prev)
+
+
+def form_fields(sid) -> list:
+    "The boxes the agent filled on the page its browser is on (FORM) - kept with a card held there, so his press can fill it again. [] unread."
+    try:
+        c = connect(sid)
+        try: return (c.js(FORM) or {}).get('fields') or []
+        finally: c.close()
+    except Exception: return []
+
+
+def settled(store, sid, conn=None) -> str:
+    "After that press: the site took it - kept, and said in one line; it kept its form up - the row put back as it was. '' when none was pressed."
+    t = _PRESSED.pop(str(sid), None)
+    if not t: return ''
+    tid, site, prev = t
+    try:
+        c = conn or connect(sid)
+        try: ok = accepted(c, site)
+        finally:
+            if conn is None: c.close()
+    except Exception: ok = True                          # ...unreadable: what the site was sent stays kept - a password lost is the worse
+    if not ok: _restore(store, site, prev); return ''
+    _kept(prev, _raw(store, site))
+    _audit(store, tid, site, 'vault', True, 'kept from a press', saved=True)
+    return (f"TASKUARY: the password that form sent to {site} is kept with the owner's saved sign-ins. Next time run `agent-browser signup` "
+            'and type no password yourself.')
 
 
 # ── the fill page: one site, two boxes, one press - served by the app itself on 127.0.0.1, never on the share port ───────────

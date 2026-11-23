@@ -61,7 +61,6 @@ DENIED = (
     (r'POST|DELETE', r'^/api/agent-channels(/\d+)?$', "which chats reach an agent - and hear it - is the owner's to open and close"),
     # anything that puts a message in front of a human somewhere else
     (r'POST', r'^/api/reviews/\d+/decide$', 'approving a reply sends it - that is the owner\'s'),
-    (r'POST', r'^/api/reviews/steps$', 'approving a turn\'s held steps runs them - that is the owner\'s'),
     (r'POST', r'^/api/tasks/\d+/handoff$', 'handing work to a person sends them a message'),
     (r'POST', r'^/api/outbox$', 'starting an outbound message is the owner\'s door, not an agent\'s'),
     (r'POST', r'^/api/messages/\d+/reply$', 'opening a reply is the first half of sending one'),
@@ -139,6 +138,7 @@ AGENT_WRITES = (
     (r'POST', r'^/api/hooks/claude/(floor|permit)$', "a stranger's session asking the floor, or the owner, before a tool call"),
     (r'POST', r'^/api/hooks/claude/reason$', "the Reason Network hook - a message to someone untrusted is refused, an approval goes to the owner"),
     (r'POST', r'^/api/hooks/claude/browser$', "the browser hook - an act that can't be undone is held for the owner (browsergate)"),
+    (r'POST', r'^/api/agent/gate$', "a browser or desktop command asking before it runs (gatecmd) - a press that can't be undone is held for the owner"),
     (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|check-back|todos|remind|remember|new-task)$',
      "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed/--withdraw-draft/--check-back`, the todos, remind and "
      "remember tools, on the session's OWN task (owns_task); nothing leaves"),
@@ -175,6 +175,13 @@ AGENT_READS = (
 # door is a decision, not something that inherits whatever the table happened to say.
 OWNER_ONLY = (
     (r'POST', r'^/api/skill-library(/.*)?$', "Skill analysis, authoring, review revisions and publication are the owner's decisions"),
+    # his presses on a turn and a post card (2026-11-22): Try again under a turn that stopped, and a post put up through the agent's browser
+    (r'POST', r'^/api/tasks/\d+/again$', "Try again under a turn - his press, never an agent's"),
+    (r'POST', r'^/api/reviews/\d+/via-browser$', "Post via the browser on a post card - his press, never an agent's"),
+    # a clock the routine editor holds, said in words (reports.schedule_words) - it writes nothing, but it is the page's, not an agent's
+    (r'POST', r'^/api/schedule-words$', "the routine editor's own wording of an unsaved clock - the page's"),
+    # New's box, the one start from the owner's words (F1): an agent starts new work by its own new_task, which checks the owner asked
+    (r'POST', r'^/api/start$', "a new task from the owner's own words is the owner's - an agent's is new_task"),
     # a bulk card's press does every act on it, and its Stop ends the rest (bulkcard.py): his alone, as each act's own press is
     (r'POST', r'^/api/reviews/batch/[0-9a-f]+/(run|cancel)$', "a bulk card's press does every act on it - that is the owner's"),
     # the first thing a cornered model would do is mark the send tool it was denied as one that does not send (sendfilter)
@@ -300,7 +307,7 @@ def stranger_tid(server: dict, presented) -> int | None:
 # --draft/--item/--tick`, whose task id owns_task checks in the handler - and `taskuary --note`, whose note the board door pins to
 # the token's own task, so it never reaches another session's seed (blackboard.live_notes, wave B). Not the Hub, the data
 # tools or a report rerun: each of those reaches past its own task.
-_STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft)$'), re.compile(r'^/api/board/notes$'))
+_STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|gate)$'), re.compile(r'^/api/board/notes$'))
 # ...and Taskuary's tools on its own task alone (server.mcp_rpc serves it agenttools.STRANGER_TOOLS only, 2026-11-09)
 _STRANGER_TASK_HOOK = re.compile(r'^/api/(hooks/claude/(floor|permit)|mcp)$')
 _STRANGER_FILE = re.compile(r'^/api/(attachments|task-artifacts)/(\d+)$')
@@ -510,7 +517,7 @@ def without_config_secrets(row: dict) -> dict:
 # the card's form like any field, but once saved it is never sent back to the browser - like the
 # Secret column, it can be replaced and not read. The server keeps spending the stored value.
 # LinkedIn's refresh token lives in ConfigJson too (linkedin._save), so it is held back the same way.
-WRITE_ONLY_CONFIG = {'linkedin': ('client_secret', 'refresh_token'), 'reddit': ('client_secret',),
+WRITE_ONLY_CONFIG = {'linkedin': ('client_secret', 'refresh_token'), 'reddit': ('client_secret', 'totp_key'),
                      'quickbooks': ('client_secret',), 'amazon_sp': ('client_secret',), 'zoho_invoice': ('client_secret',),
                      # the Google cards' OAuth client secret and the Gmail card's calendar refresh token came back readable in plain
                      # boxes on reopen, beside an App Password that was masked (the UI audit, 2026-10-21)

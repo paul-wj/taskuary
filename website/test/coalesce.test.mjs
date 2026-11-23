@@ -6,8 +6,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { coalesce } from "../src/coalesce.js";
 import { DECIDE_TIMEOUT, timedOut } from "../src/sendState.js";
-const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
+const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
 
 test("one read in flight per key: calls meanwhile share ONE re-read, with the newest arguments", async () => {

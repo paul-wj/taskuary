@@ -1,6 +1,7 @@
-// A truncated advisor line exposes its complete text as a tooltip.
+// The Advisor's strip is one line (2026-10-20): the CSS clamps it, the cut sentence is its tooltip, and main.jsx installs that once.
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { cut, titleCut } from "../src/oneLine.js";
 
 

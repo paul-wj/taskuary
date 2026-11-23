@@ -48,13 +48,17 @@ const ASK_ONLY = "the answer here reads the item only";
 // `came`: what the item is, a chip on the box while nothing is handed on (the owner, 2026-11-06: Came-from rides the one box as a chip)
 // `draft`: { text, setText, pics } - his words and files, held by the item (ItemSections) so they stay his when Send to agent moves the box to the
 // Agent section: a box of its own lost what he had typed at the press (the stress round, 2026-11-18)
-export function ItemAsk({ ask, hand = null, onHand = null, came = "", hint = "", draft }) {
-  useLocale();
+const KIND_NOUN = { fyi: "notice", report: "report", dashboard: "dashboard", idea: "idea", review: "draft" };
+// ...his last line in an item's own box, by the item: the box Send to agent opens is drawn anew where the agent's section is, so it is kept here
+const ASKED = new Map();
+export function ItemAsk({ ask, hand = null, onHand = null, came = "", hint = "", draft, itemKey = "" }) {
   const ls = hand ? [] : itemLines(readingOf(ask?.reading));
   const { text, setText, pics } = draft;
   const [busy, setBusy] = useState(false), [said, setSaid] = useState([]), [err, setErr] = useState(""), input = useRef(null);
   useEffect(() => { setSaid([]); setErr(""); }, [ask?.key]);
-  useEffect(() => { if (hand) setTimeout(() => input.current?.focus(), 0); }, [hand]);
+  // ...AND SEND TO AGENT STARTS ON WHAT HE ALREADY WROTE HERE (the judge's walk, 2026-11-19: he asked this box for a fix, was told to press Send to
+  // agent, and the box it opened was empty - his words were gone): his last line in this box stands in it, his to send or change
+  useEffect(() => { if (hand) { const last = ASKED.get(itemKey); if (!text.trim() && last) setText(last); setTimeout(() => input.current?.focus(), 0); } }, [hand]);   // eslint-disable-line react-hooks/exhaustive-deps
   const title = typeof ask?.title === "string" ? ask.title : "";
   const drop = (k) => { const left = hand.items.filter((i) => i.key !== k); onHand?.(left.length ? { ...hand, items: left } : null); };
   const send = async () => {
@@ -62,11 +66,11 @@ export function ItemAsk({ ask, hand = null, onHand = null, came = "", hint = "",
     if (!q || busy || pics.busy) return;
     setBusy(true); setErr("");
     try {
-      if (hand) { await hand.start({ verb: hand.verb, text: q, files: pics.paths, items: hand.items }); setText(""); pics.clear(); onHand?.(null); return; }
+      if (hand) { await hand.start({ verb: hand.verb, text: q, files: pics.paths, items: hand.items }); setText(""); pics.clear(); ASKED.delete(itemKey); onHand?.(null); return; }
       const { data } = await api.post("/api/concierge/say", { text: q, key: ask.key,
         view: { area: "item", title, item: { kind: ask.kind, id: ask.key, title, section: "ask" } } });
-      setSaid((w) => [...w, { q, a: String(data?.say || "") }]); setText("");
-    } catch (e) { setErr(e?.response?.data?.detail || e?.message || (hand ? t("It did not start - press Send again.") : t("That did not go through - try again."))); }
+      setSaid((w) => [...w, { q, a: String(data?.say || "") }]); setText(""); if (itemKey) ASKED.set(itemKey, q);
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || (hand ? "It did not start - press Send again." : "That did not go through - try again.")); }
     finally { setBusy(false); }
   };
   // ...A CHAT, as a task's is (the owner, 2026-11-05: "add the reports/advisor/fyi to chat thing as well without close out"): what it says and what
@@ -83,7 +87,9 @@ export function ItemAsk({ ask, hand = null, onHand = null, came = "", hint = "",
         bgcolor: "var(--tq-inset, #e7efe6)", border: "1px solid var(--tq-border, #cfdccd)", borderRadius: "13px", px: 1.5, py: 1 }}>{t.q}</Typography>
       <Box data-tq-item-answer="" sx={{ fontSize: 13.5, lineHeight: 1.55, color: INK, overflowWrap: "anywhere", "& p": { my: 0.25 } }}><LinkPopups><Md text={t.a} /></LinkPopups></Box>
     </React.Fragment>)}
-    <Box aria-hidden sx={{ flex: "1 1 auto" }} />
+    {/* ...THE BOX IS THE AGENT TAB'S ALONE (the owner, 2026-11-20: "if you put prompt box on the bottom of Came from you are confusing the 2 tabs"):
+        never under the item's own content - it stands once Send to agent has put the item on it as a chip, in the Agent section */}
+    {hand && <><Box aria-hidden sx={{ flex: "1 1 auto" }} />
     <Box sx={{ position: "sticky", bottom: 0, bgcolor: SHADE, pt: 0.5, mx: -0.5, px: 0.5 }}>
       <PromptBox text={text} setText={setText} pics={pics} busy={busy} onSend={send} inputRef={input} sendOff={!text.trim()} cannot={hand ? null : () => ASK_ONLY}
         placeholder={hint || t(MESSAGE)}
@@ -91,7 +97,7 @@ export function ItemAsk({ ask, hand = null, onHand = null, came = "", hint = "",
         chips={hand?.items.length ? hand.items.map((i) => <AttachChip key={i.key} data-tq-item-chip={i.key} name={i.title} onRemove={busy ? null : () => drop(i.key)}
           title={`${btn(hand.verb)} - it gets ${i.title}`} />) : came ? <AttachChip data-tq-came-chip="" name={came} icon={false} title={`Came from: ${came}`} /> : null} />
       {err && <Typography role="alert" sx={{ fontSize: 12.5, color: "var(--tq-danger, #a33)", pt: 0.5 }}>{err}</Typography>}
-    </Box>
+    </Box></>}
   </Box>;
 }
 
@@ -107,7 +113,8 @@ export default function ItemSections({ kind, label, title, aside, sections: all,
   moves = null }) {
   // NO AGENT COLUMN WITH NOTHING OF ITS OWN (the owner, 2026-11-06: "the one bottom box with Came-from as a chip, with no side-column Agent"): the
   // box is at the foot of the section the item is about, its Came-from a chip on it
-  const [open, setOpen] = useState(about), [hand, setHand] = useState(null), noun = String(label || kind || "item").toLowerCase();
+  // ...the item by its kind in his words: "this notice", never "this fyi" (the judge's walk, 2026-11-19)
+  const [open, setOpen] = useState(about), [hand, setHand] = useState(null), noun = KIND_NOUN[kind] || String(label || kind || "item").toLowerCase();
   // ...SEND TO AGENT OPENS THE AGENT'S OWN CANVAS (the owner, 2026-11-17: "why do i see the dashboard? it should be blank agent chat canvas"):
   // the press adds the Agent section - blank, the box at its foot with the item a chip on it - and opens it; the item folds to its tab on the
   // left, as a task's Came from does. Taking the chip off closes it, and the item is back as it was
@@ -132,8 +139,8 @@ export default function ItemSections({ kind, label, title, aside, sections: all,
   }, [itemKey, takes, boxAt]);
   // ...opened where its box now is, the moment it is handed on - and back on the item once the chip is off and the section with it
   useEffect(() => { if (hand) setOpen(boxAt); else setOpen((o) => (sections.some((x) => x.key === o) ? o : about)); }, [hand, boxAt]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const box = (ask || hand) && <ItemAsk ask={ask} hand={hand} onHand={setHand} draft={draft} came={typeof title === "string" ? title : label}
-    hint={hand ? `What do you want to know about this ${noun}?` : ""} />;
+  const box = (ask || hand) && <ItemAsk ask={ask} hand={hand} onHand={setHand} draft={draft} itemKey={itemKey} came={typeof title === "string" ? title : label}
+    hint={hand ? `What should the agent do with this ${noun}?` : ""} />;
   // ...and none once it is handed on: the press is made, the box is where it goes now
   const skip = (v) => (noAgent || !!hand) && AGENT_STARTS.has(String(v?.id || "").split(":").pop());
   const body = useRef(null), [w, setW] = useState(0);

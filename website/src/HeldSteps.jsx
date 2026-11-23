@@ -1,7 +1,7 @@
 // ONE CARD FOR A TURN'S HELD STEPS (the owner, 2026-11-09: "this should be one action button and one card. make it smaller and more
 // combined, an action card if you can"): the steps the agent's turn had held, as one act - its title, why it waits once, the folder once, the
 // steps numbered, every command under one "Show the commands", one Approve that runs them in order through the one decide door
-// (/api/reviews/steps, shellgate.approve_steps: it stops at the first that fails and says which) and one Dismiss. Once pressed it STAYS in the
+// (the one decide door with its `steps`, shellgate.approve_steps: it stops at the first that fails and says which) and one Dismiss. Once pressed it STAYS in the
 // turn (the owner, 2026-11-09: "leave the approval card in the agent turn as well with approved"): the press it took, and what came of it.
 import React, { useState } from "react";
 import { Box, Button, CircularProgress, Typography } from "@mui/material";
@@ -10,13 +10,14 @@ import { heldCard } from "./reviewProposal.js";
 import { useVerbs } from "./actionRow.js";
 import { label as btn } from "./buttons.js";
 import { failLine, pressSteps } from "./press.js";
-import { PressedButton } from "./PassedCard.jsx";
+import { asLive, MovedPast, PressedButton } from "./PassedCard.jsx";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { ALERT_INK, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 
 const MARK = { ran: "✓", dismissed: "✗", failed: "✗", waiting: "" };
-export default function HeldSteps({ reviews, onChanged, toRow = false }) {
-  const c = heldCard(reviews), n = c.steps.length;
+// `past`: the chat moved past it - its steps as they waited, Approve and Dismiss greyed (MovedPast)
+export default function HeldSteps({ reviews, onChanged, toRow = false, past = false }) {
+  const c = heldCard(past ? reviews.map(asLive) : reviews), n = c.steps.length;
   const [busy, setBusy] = useState(""), [err, setErr] = useState(""), [open, setOpen] = useState(false);
   const go = async (verb) => {
     setBusy(verb); setErr("");
@@ -27,13 +28,13 @@ export default function HeldSteps({ reviews, onChanged, toRow = false }) {
     setBusy(""); onChanged?.();
   };
   const id = (v) => `${c.steps[0]?.id}:${v}`, live = !c.pressed;
-  useVerbs(`held:${c.steps[0]?.id}`, live ? [
+  useVerbs(`held:${c.steps[0]?.id}`, live && !past ? [
     { id: id("approve"), group: "decide", tone: "p", label: btn("approve", "action"), disabled: !!busy, run: () => go("approve"), card: true },
     { id: id("reject"), group: "decide", tone: "s", label: "Dismiss", disabled: !!busy, run: () => go("reject"), card: true }] : [], toRow);
-  return (
+  return (<MovedPast on={past}>
     <Box data-tq-held-steps={n} data-tq-act-state={c.pressed || "waiting"} sx={{ mt: 0.5, px: 1.25, py: 0.9, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)" }}>
       <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: INK, lineHeight: 1.3, overflowWrap: "anywhere" }}>{c.title}</Typography>
-      <Typography noWrap title={c.folder} sx={{ fontSize: 11.5, color: FAINT }}>{live ? `${c.why.replace(/\.$/, "")} · in ` : "In "}
+      <Typography noWrap title={c.place || c.folder} sx={{ fontSize: 11.5, color: FAINT }}>{live ? `${c.why.replace(/\.$/, "")} · in ` : "In "}
         <Box component="span" sx={{ color: DIM, fontWeight: 600 }}>{c.folder}</Box></Typography>
       {n > 1 && <Box component="ol" data-tq-held-list="" sx={{ m: 0, mt: 0.5, pl: 2.5, fontSize: 12.5, color: INK, lineHeight: 1.5 }}>
         {c.steps.map((s) => <li key={s.id} data-tq-held-step={s.state}><span style={{ color: s.state === "dismissed" ? FAINT : INK }}>{s.text}</span>
@@ -41,7 +42,7 @@ export default function HeldSteps({ reviews, onChanged, toRow = false }) {
       {/* ...a read outside the task's folders has no command to show (readgate.py) */}
       {c.steps.some((s) => s.command) && <Typography {...pressable(() => setOpen((o) => !o))} data-tq-show-command="" aria-expanded={open}
         sx={{ ...FOCUS_RING, display: "inline-block", mt: 0.4, fontSize: 11.5, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
-        {open ? `Hide the command${n > 1 ? "s" : ""}` : `Show the command${n > 1 ? "s" : ""}`}</Typography>}
+        {open ? "Hide what it runs" : "What it runs"}</Typography>}
       {/* ...A LONG COMMAND SCROLLS IN ITS OWN BOX (the card round, 2026-11-12: a 60-line query opened to 1047 px - the card's title and why went
           off the top of the chat, and its Approve stood a screen under them) */}
       {open && <Box component="pre" data-tq-held-commands="" tabIndex={0} sx={{ m: 0, mt: 0.4, p: 0.75, bgcolor: "var(--tq-inset, #f6f4f1)", borderRadius: 1, fontSize: 11.5, color: DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere",
@@ -65,6 +66,6 @@ export default function HeldSteps({ reviews, onChanged, toRow = false }) {
       {/* ...IN THE CARD'S OWN SENTENCE, the same at the press as after a reload (the card round, 2026-11-12: the press's own line read "Step 1
           failed: The held step failed: ..." over a single step, and "It failed: ..." once the page was read again) */}
       {(err || (!busy && (live || c.pressed === "failed") && c.error)) && <Typography role="alert" sx={{ mt: 0.5, fontSize: 12, color: ALERT_INK }}>{(!busy && c.error) || err}</Typography>}
-    </Box>
+    </Box></MovedPast>
   );
 }

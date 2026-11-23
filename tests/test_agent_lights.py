@@ -66,11 +66,13 @@ def test_the_press_it_waits_on_starts_one_turn_and_no_other_does():
         assert not general.follow_up(s, tid, 'handoff')
         assert general.follow_up(s, tid, 'send') and go.return_value.send_prompt.call_args.kwargs['as_owner'] is False
         assert not general.follow_up(s, tid, 'send'), 'once per turn'
-    tid2 = agent_task(s, {'about': 'a', 'did': 'b'})
+    # ...a yes wakes its agent only where its turn named a next step (the owner, 2026-11-22: "only wake agent where there is next steps")
+    quiet, goes = agent_task(s, {'about': 'a', 'did': 'b'}), agent_task(s, {'about': 'a', 'did': 'b', 'after_press': 'send'})
     with mock.patch.object(general, 'follow_up') as f, mock.patch.object(verdicts, '_decide', return_value={'ok': True}):
-        verdicts.decide(s, {'ReviewId': 1, 'TaskId': tid2}, 'approve', 'text')
-        verdicts.decide(s, {'ReviewId': 1, 'TaskId': tid2}, 'reject')
-    assert [c.args[1:3] for c in f.call_args_list] == [(tid2, 'send')]
+        for t in (quiet, goes):
+            verdicts.decide(s, {'ReviewId': 1, 'TaskId': t}, 'approve', 'text')
+            verdicts.decide(s, {'ReviewId': 1, 'TaskId': t}, 'reject')
+    assert [c.args[1:3] for c in f.call_args_list] == [(goes, 'send')]
 
 
 def test_an_agents_email_draft_with_no_mailbox_lights_nothing():
@@ -80,3 +82,13 @@ def test_an_agents_email_draft_with_no_mailbox_lights_nothing():
                          'BodyText': 'September overtime?', 'Status': 'routed', 'TaskId': tid})
     s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Erin, 2,140 hours.'})
     assert lit(s, tid)['verb'] is None
+
+
+def test_a_turn_worth_another_try_says_so_in_its_summary_and_never_asks_for_a_message():
+    """The 2026-11-18 walks: "For you to do: Send any message on this task when you want the portal tried again." A turn that could not finish
+    and may on another go says `retry` in its summary - the page draws Try again under it (GeneralWorkspace) - and is told never to ask."""
+    from taskuary import selfclose
+    _, summ = selfclose.summary_marker('The portal never loaded. [[TASKUARY-SUMMARY]]{"did": "Tried the portal", "retry": true}[[/TASKUARY-SUMMARY]]')
+    assert summ['retry'] is True
+    assert 'retry' not in selfclose.summary_marker('[[TASKUARY-SUMMARY]]{"did": "x", "retry": "maybe"}[[/TASKUARY-SUMMARY]]')[1]
+    assert '"retry"' in selfclose.SUMMARY_LINE and 'never ask the owner to send a message to try again' in selfclose.SUMMARY_LINE

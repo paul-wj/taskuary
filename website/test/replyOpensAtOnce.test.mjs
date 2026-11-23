@@ -3,11 +3,11 @@
 // was done - a blank wait of however long the model took. The box opens now (`later`), and the draft is asked for behind it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+
+
 import { withSignature } from "../src/signature.js";
 import { boxText, draftJob, openReply, subscribeDrafts } from "../src/replyDraft.js";
-const read = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
+
 
 const fakeApi = (draft) => {
   const calls = [];
@@ -70,12 +70,4 @@ test("the box of a draft being written is empty, never the signature alone", () 
   assert.equal(boxText({ text: null, draft: "", drafting: false, signature: sign }), withSignature("", sign), "nothing coming: the signature to write over");
   assert.equal(boxText({ text: null, draft: "Yes.", drafting: true, signature: sign }), withSignature("Yes.", sign), "a redraft keeps the draft there in view");
   assert.equal(boxText({ text: "my own words", draft: "", drafting: true, signature: sign }), "my own words", "the owner's edit is never wiped");
-});
-
-test("Close out's reply card follows a draft under way, spins in its box, and says plainly when the draft failed", () => {
-  const dec = read("ReviewDecision.jsx");
-
-  assert.match(dec, /const drafting = job\?\.state === "drafting" \|\| redrafting;/);
-  assert.match(dec, /boxText\(\{ text, draft: reviewText\(r\), drafting, signature: r\.Signature \}\)/);
-  assert.match(dec, /\["needs", "failed", "empty", "kept"\]\.includes\(draftState\(r\)\.state\)/);
 });

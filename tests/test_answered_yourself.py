@@ -269,16 +269,6 @@ class TheDraftHisAnswerRetiredStaysWhereItStood(unittest.TestCase):
         said = [c['Body'] for c in s.list_comments(tid) if c['Actor'] == NOTE_ACTOR]
         self.assertEqual(said, ['You answered Erin Blake yourself - no new response needed.'])
 
-    def test_the_task_page_reads_it_the_same(self):
-        from fastapi.testclient import TestClient
-        from unittest import mock
-        from taskuary import server
-        s, tid, rid = self._world()
-        with mock.patch.object(server, 'store', s):
-            r = next(r for r in TestClient(server.app).get(f'/api/tasks/{tid}').json()['reviews'] if r['ReviewId'] == rid)
-        self.assertEqual(r.get('Why'), 'Not sent - you answered Erin Blake yourself')
-
-
     def test_mail_polled_together_after_a_restart_still_says_he_answered(self):
         """Taskuary was off overnight. Erin wrote at 08:00 and he answered from his phone at 09:00; at 10:00 the poll took her mail in, the
         draft was written, and the Sent folder's read brought his answer. His mail was placed by when he SENT it, hers by when it ARRIVED, so
@@ -346,14 +336,13 @@ class AForwardIsNotTheAnswer(unittest.TestCase):
         own = s.get_message(s.thread_messages('c-fw')[-1]['MessageId'])
         self.assertIn('gail@northwind.example', own['RecipientsJson'])
 
-    def test_when_the_agent_hears_it_the_card_says_whom_he_wrote_to(self):
+    def test_her_draft_stays_where_it_stood_greyed_once_his_forward_moved_past_it(self):
+        """The card stays in its place with its buttons greyed - no reason line (the owner, 2026-11-18) - never taken off the chat."""
         from taskuary import conversation
         s, tid, rid = self._world(['gail@northwind.example'])
         card = next(c for x in conversation.items(s, tid)['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])
                     if c['review'] == rid)
         self.assertEqual(card['status'], 'passed')                      # greyed as every card an input moved past, until its agent hears it
-        self.assertNotIn('Erin', card.get('why') or '', card)
-        self.assertIn('gail@northwind.example', card.get('why') or '', card)
 
     def test_with_no_agent_to_hear_it_her_reply_goes_to_an_agent_to_write(self):
         """The reply was the arrival writer's - no agent conversation on the task, so none hears his forward. Greyed as moved past (the chat
@@ -414,3 +403,23 @@ class TheBallIsInTheirCourt(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_his_own_mail_that_is_the_drafted_letter_joins_its_task_and_stands_the_draft_down():
+    """The Codex walk, 2026-11-22: the agent's new email to Gail, "Harbor signage budget", had no thread; he sent Gail that letter from his
+    own mailbox, on a thread of its own - it joined no task, the draft stood "ready to send", and Gail's reply went to an older task. The
+    same subject to someone the draft is to is that letter: it joins the draft's task and the draft is not sent. Another subject is not."""
+    import json
+    from taskuary import channels
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Ask Gail about the signage budget', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    rid = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'DraftText': 'Gail - is the signage budget approved?',
+                        'Deliver': json.dumps({'channel': 'email', 'to': ['gail@northwind.example'], 'cc': [], 'subject': 'Harbor signage budget'})})
+    other = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'DraftText': 'Gail - lunch Friday?',
+                          'Deliver': json.dumps({'channel': 'email', 'to': ['gail@northwind.example'], 'cc': [], 'subject': 'Lunch'})})
+    channels.ingest_own_message(s, {'external_id': 'sent-1', 'channel': 'email', 'conversation_id': 'thread-new', 'subject': 'Harbor signage budget',
+                                    'body': 'Gail - is the Harbor signage budget approved yet? Alex', 'to': ['gail@northwind.example'],
+                                    'sent_at': '2026-11-22 21:00:00'}, 'your own mail')
+    sent = next(m for m in s.list_messages(tid) if m.get('ExternalId') == 'sent-1')
+    assert sent['TaskId'] == tid
+    assert s.get_review(rid)['Status'] != 'pending' and s.get_review(other)['Status'] == 'pending'

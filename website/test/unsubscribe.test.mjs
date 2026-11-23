@@ -2,9 +2,18 @@
 // press is a badge - on the single FYI's folded card, on the handful's line.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { canUnsubscribe, unsubscribeFrom } from "../src/unsubscribe.js";
+import { label as btn, hint } from "../src/buttons.js";
 
+const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 const fakeApi = (data) => { const calls = []; return { calls, post: async (path, body) => { calls.push([path, body]); return { data }; } }; };
+
+test("the button is one of buttons.json's, with its reason in the hover", () => {
+  assert.equal(btn("unsubscribe"), "Unsubscribe");
+  assert.match(hint("unsubscribe"), /one-click/);
+});
 
 test("offered only on a message whose list named a way off", () => {
   assert.equal(canUnsubscribe({ mid: 4, unsub: "post" }), true);
@@ -28,4 +37,3 @@ test("a page or a mail to finish on opens in a tab, and the desktop app has the 
   assert.deepEqual(app.calls[0][1], { open: true });
   assert.deepEqual(none, []);
 });
-

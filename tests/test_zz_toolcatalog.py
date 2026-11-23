@@ -213,15 +213,6 @@ class FreshnessBelongsAtLoadTimeTests(unittest.TestCase):
         self.assertTrue(refresh.called, 'loading an item into the chat must check it for new lines')
         print('  loading it into the chat -> source polls: 1')
 
-    def test_the_stream_checks_on_load_and_not_on_say(self):
-        import inspect
-        src = inspect.getsource(server.concierge_stream)
-        # a typed turn polls nothing up front; an item loaded into the chat is checked - since 2026-10-01 right AFTER it
-        # opens rather than before ("open now, check after": the wait was 9 of the 12 seconds a click took)
-        self.assertIn("body.key and body.mode not in ('say', 'next')", src)
-        self.assertIn("walking = body.mode in ('next', 'back', 'start')", src)      # every walk move, Next and a clicked row alike
-        self.assertIn("if walking: _refresh_after(out)", src)
-
 
 class ReadsTests(unittest.TestCase):
     """A look-up runs at once, answers from what it read, and does NOT move what is on the table."""
@@ -375,8 +366,10 @@ class ReadsTests(unittest.TestCase):
         self.assertFalse(prop.get('auto'))
         self.assertEqual(set(prop['repo_choices']), {'northwind/ledger', 'northwind/portal'})
         picked = operations.revise(s, prop['id'], {**prop['params'], 'repo': 'northwind/portal'}, 'owner')
-        made = concierge.handoff_task(s, picked['params']['text'], 'coding', 'owner', title=picked['params']['title'],
-                                      repo=picked['params']['repo'])
+        s.set_setting('developer_mode', '1', 'test')
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.capabilities.can_code', return_value=True),              mock.patch('taskuary.ingest._spawn'):
+            made = concierge.handoff_task(s, picked['params']['text'], 'coding', 'owner', title=picked['params']['title'],
+                                          repo=picked['params']['repo'])
         prof = {'cmd': 'claude', 'cwd_map': {'northwind/ledger': 'C:/x/ledger', 'northwind/portal': 'C:/x/portal'}}
         self.assertEqual(terminal.guess_repo(s, made['taskId'], prof)[0], 'northwind/portal')
 

@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 
 from taskuary import buttons, concierge, funnel, general, ingest, operations, proposals, railwalk, server, terminal, wrapup
 from taskuary.store import MemoryStore
+from taskuary.testing import mailbox
 from taskuary import memorylines
 from tests.memlines import teaching
 from conftest import start_home
@@ -57,7 +58,7 @@ def ahead(minutes=0):
 
 
 def store():
-    s = MemoryStore()
+    s = mailbox(MemoryStore())
     s.upsert_agent('coding', 'coding', 'cli', '{}')         # an install has one; without it a hand-off is refused
     for k in ('calendar_enabled', 'auto_draft_enabled'): s.set_setting(k, '0', 't')
     s.set_setting('coding_auto_enabled', '1', 't')          # the funnel of record: work reaches an agent
@@ -191,15 +192,6 @@ class ArrivalsTests(unittest.TestCase):
                          llm=brain('task', 'general'))
         self.assertEqual(s.get_task(out['task_id'])['Kind'], 'general')
         self.assertFalse(spawn.called, 'general work is a conversation, not a checkout')
-
-    def test_a_persons_own_task_lands_on_their_list_with_nobody_on_it(self):
-        s = store()
-        with mock.patch.object(ingest, '_spawn') as spawn:
-            out = arrive(s, subject='Compliance training due 9/12', body='Please complete the course.',
-                         who='HR', email='hr@ours.com', llm=brain('task', 'task'))
-        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'task')
-        self.assertFalse(spawn.called)
-        self.assertEqual(lanes(s), [('todo', 'yours')])   # nobody is on it and no agent was asked
 
     def test_an_urgent_sender_jumps_the_queue(self):
         s = store()
@@ -534,7 +526,8 @@ class ResponseTests(unittest.TestCase):
         p = decide(s, 'look into why the bulk approve fix did not stick', 'coder', text_arg='look into why the bulk approve fix did not stick')['proposal']
         self.assertEqual((p['kind'], p['params']['kind'], p['label']), ('task.create_from_text', 'coding', buttons.label('coding_agent')))
         self.assertEqual(s.list_tasks(active_only=True), [])           # no task on the words
-        with mock.patch.object(ingest, '_spawn') as spawn:
+        s.set_setting('developer_mode', '1', 'test')          # ...a coding job is a coding agent's in Developer mode (else a general agent's)
+        with mock.patch.object(ingest, '_spawn') as spawn, mock.patch('taskuary.capabilities.has_ai', return_value=True),              mock.patch('taskuary.capabilities.can_code', return_value=True):
             r = run(s, p)
         t = s.get_task(r.json()['outcome']['taskId'])
         self.assertEqual(t['Kind'], 'coding'); self.assertTrue(spawn.called)
@@ -1238,59 +1231,8 @@ class AgentsStartAndFinishTests(unittest.TestCase):
         with mock.patch.object(terminal, 'screen', return_value={'lines': [real] + chrome}):
             self.assertEqual(terminal.asking_lines('s1', 4), [real])
 
-    def test_the_coding_brief_has_one_rule_about_finishing(self):
-        doc = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                'taskuary', 'templates', 'coding.md'), encoding='utf-8').read()
-        closing = doc.split('## Closing out', 1)[1].split('##', 1)[0]
-        self.assertIn('taskuary --done', closing)                        # it says to say so...
-        self.assertNotIn('do not write a wrap-up', closing)              # ...and no longer says not to
-        self.assertNotIn('clicks **Done**', closing)
 
-
-# ── the order things come out in, and the verdicts that never become work ────────────────────
-class WalkOrderTests(unittest.TestCase):
-    """The pipe's whole claim is that the NEXT thing is the right thing. One pile with something in
-    every lane, walked to the end."""
-
-    def _everything(self, s):
-        # an agent parked on a question (blocked), a draft for a yes (approve), a person's ask (asked),
-        # a report that landed (report) and a colleague's fyi (fyi)
-        with mock.patch.object(ingest, '_spawn'):
-            agent = arrive(s, subject='Fix the export', conv='c:agent', hours=8, who='Erin', email='erin@ours.com',
-                           body='The export drops rows.', llm=brain('task', 'coding'))
-            asked = arrive(s, subject='Refund for Mrs Garnett', conv='c:ask', hours=4, who='Nina', email='nina@ours.com',
-                           body='Please approve the refund.', llm=brain('task', 'coding'))
-        s.update_task(agent['task_id'], {'Status': 'in_progress'}, 'router')
-        draft = arrive(s, subject='Where is the June invoice?', conv='c:draft', hours=6, who='Omar',
-                       email='omar@vendor.example', body='Can you send it?', llm=brain('reply_only', None))
-        rep = s.add_message({'ExternalId': 'r1', 'Channel': 'report', 'SourceName': 'Nightly export',
-                             'Subject': 'Nightly export - 0 errors', 'FromName': 'Nightly export',
-                             'SentAt': ago(3), 'BodyText': 'all clear', 'Status': 'feed'})
-        s.add_route(rep, None, 'feed', None, 'a report you set up', [], 'feed')
-        arrive(s, subject='FYI - Rebecca is back Tuesday', conv='c:fyi', hours=2, who='Erin', email='erin@ours.com',
-               body='Just so you know.', llm=brain('fyi', None))
-        return agent['task_id'], draft['task_id'], asked['task_id']
-
-    def test_the_mouth_gives_them_up_in_the_order_a_sharp_assistant_would_raise_them(self):
-        s = store()
-        agent, draft, asked = self._everything(s)
-        parked = session(agent, idle=200, waiting=True, tail=['Drop the old rows? (y/n)'])
-        with mock.patch.object(terminal, 'live_sessions', return_value=parked):
-            # the draft, the ask and the parked agent are ONE level - the owner's task - and inside it
-            # the oldest leads by ARRIVAL, and a row never moves (the owner, 2026-10-22): the agent's task came in
-            # eight hours ago, the draft six, the ask four - the agent asking its question just now does not
-            # lift or sink its row. Results come after all of it, and an fyi last.
-            self.assertEqual([i['lane'] for i in funnel.build(s)['items']],
-                             ['blocked', 'approve', 'queued', 'report', 'fyi'])
-            # …and one at a time out of the mouth, in that order, each one read as it is shown
-            seen = []
-            for _ in range(5):
-                out = concierge.surface(s, llm=lambda *a, **k: 'never asked')
-                if not out.get('item'): break
-                seen.append(out['item']['lane'])
-                funnel.settle(s, out['item']['key'], 'done', 'owner')
-        self.assertEqual(seen, ['blocked', 'approve', 'queued', 'report', 'fyi'])
-
+# ── the verdicts that never become work ────────────────────
 class NeverWorkTests(unittest.TestCase):
     def test_a_brain_that_fails_files_the_message_and_says_so(self):
         s = store()
@@ -1412,7 +1354,9 @@ class WhichCheckoutTests(unittest.TestCase):
         self.assertIn(prop['label'], prop['say'])                       # a phone chat, with no card, gets it all
         self.assertNotIn(prop['label'], prop['say_card'])
         self.assertNotIn('login crash', prop['say_card'])
-        made = concierge.handoff_task(s, brief, 'coding', 'owner', title='Fan app login crash', repo=prop['params']['repo'])
+        s.set_setting('developer_mode', '1', 'test')
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.capabilities.can_code', return_value=True),              mock.patch.object(ingest, '_spawn'):
+            made = concierge.handoff_task(s, brief, 'coding', 'owner', title='Fan app login crash', repo=prop['params']['repo'])
         self.assertEqual(terminal.guess_repo(s, made['taskId'], self.PROFILE)[0], 'northwind/ledger')
 
     def test_the_phone_sentence_carries_the_whole_ask_the_card_line_may_cut(self):

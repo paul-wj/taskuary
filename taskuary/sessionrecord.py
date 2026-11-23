@@ -12,7 +12,7 @@ pruning its logs next month does not take the record with it.
 A step is {k, text, name?, file?, at?}: k is `you` (what the agent was told), `brief` (what Taskuary told it - keep_seed),
 `thought`, `said`, `tool` (name + what it was pointed at), `plan` (its todo list), `compact` (the CLI compacted its context) or `error`. Tool OUTPUT is left out on purpose - it is the noise the record
 is read past, and the agent's next thought or answer says what it made of it."""
-import json, threading
+import json, threading, time
 import re
 from datetime import datetime
 from pathlib import Path
@@ -72,6 +72,8 @@ def _target(args) -> str:
     v = next((args[k] for k in _TARGET_KEYS if args.get(k)), None)
     if v is None: v = next((x for x in args.values() if isinstance(x, str) and x.strip()), '')
     if (args.get('pattern') or args.get('query')) and args.get('path'): v = f"{v} in {args['path']}"     # a search says where it looked
+    # ...a command as the words it was run with (Codex's ["bash", "-lc", "ls vendors"]): its list's repr read "Ran ['bash', ...]"
+    if isinstance(v, list): v = ' '.join(map(str, v[2:] if len(v) > 2 and str(v[1]) in ('-lc', '-c', '-Command') else v))
     return _cut(' '.join(str(v).split()), TARGET_N)
 
 
@@ -265,9 +267,10 @@ def _copilot_line(st: dict, j) -> None:
     elif t == 'assistant.message':
         if str(d.get('reasoningText') or '').strip(): out.append({'k': 'thought', 'text': _cut(d['reasoningText'], THOUGHT_N), 'at': at})
         if str(d.get('content') or '').strip(): out.append({'k': 'said', 'text': _cut(d['content'], SAID_N), 'at': at})
-    elif t == 'tool.execution_start': out.append(_tool(d.get('toolName'), d.get('arguments'), at))
-    elif t == 'tool.execution_complete' and d.get('success') is False:
-        out.append({'k': 'error', 'text': _cut((d.get('error') or {}).get('message') if isinstance(d.get('error'), dict) else d.get('error') or 'a tool failed', 400), 'at': at})
+    elif t == 'tool.execution_start': out.append(s := _tool(d.get('toolName'), d.get('arguments'), at)); st.setdefault('uses', {})[d.get('toolCallId')] = s
+    # ...A TOOL'S FAILURE IS ITS CALL'S, as Claude's is (design round 5, 2026-11-19): a note of its own drew the tool's words to the agent whole
+    elif t == 'tool.execution_complete' and d.get('success') is False and (s := st.get('uses', {}).get(d.get('toolCallId'))):
+        s['status'], s['output'] = 'failed', _cut((d.get('error') or {}).get('message') if isinstance(d.get('error'), dict) else d.get('error') or 'a tool failed', 400)
 
 
 def _gemini_file(ext: str):
@@ -562,16 +565,41 @@ def cut_turns() -> list:
         except (ValueError, OSError) as e: logger.debug(f'cut turn {p} unreadable - {e}')
         p.unlink(missing_ok=True)
     return out
+# A LINE OF HIS STEERED INTO THE TURN AT WORK CUTS IT WHERE IT WAS HEARD (the owner, 0.4.0.26: "when i type in prompt the agent is typing on top
+# of it then under it"): one CLI turn goes on under his line, but what it wrote before stands above the line as it was drawn, and the turn
+# under it was drawn from the whole trace - its first words over his line and again under it. GeneralSession.steer marks the trace just
+# before the hand-over is written down; what stands under his line, at work and filed, is what came after the newest mark. `upto`: the
+# newest hand-over a read's ledger holds - a mark whose hand-over that read has not seen yet cuts nothing, so no read cuts the turn while
+# his line still waits by the box
+HEARD = 'heard'
+def heard_mark() -> dict: return {'type': HEARD, 'name': '', 'detail': '', 'at': time.time()}
+def since_heard(trace: list, upto: float = float('inf')) -> list:
+    "The part of a turn's trace under the newest line steered into it (heard_mark) - all of it where none was."
+    xs = list(trace or [])
+    cut = max((i for i, e in enumerate(xs) if e.get('type') == HEARD and float(e.get('at') or 0) <= upto), default=-1)
+    return xs[cut + 1:]
 def said(trace: list) -> str:
-    "What a turn said so far: its text, in order."
-    return '\n\n'.join(str(e.get('detail')).strip() for e in trace or []
+    "What a turn said so far, under the newest line steered into it: its text, in order."
+    return '\n\n'.join(str(e.get('detail')).strip() for e in since_heard(trace)
                        if e.get('type') == 'progress' and e.get('name') in ('text', 'agent_message') and str(e.get('detail') or '').strip())
 
 
 def keep_turn(tid: int, reply_id, trace: list):
     """A general turn's tool calls and thinking, filed under the reply they led to (general.send_prompt)."""
-    if not (steps := trace_steps(trace)): return
+    if not (steps := trace_steps(since_heard(trace))): return
     with _gen_path(tid).open('a', encoding='utf-8') as f: f.write(json.dumps({'reply': reply_id, 'steps': steps}) + '\n')
+
+
+def _cut_said(text) -> str:
+    """A failed call's words, cut in what happened and never across the agent's next-step line after it (the UI judge, 2026-11-18: cut at
+    400 characters, a 395-character refusal ended "...on the task. Nex…" in the owner's note, its step no longer a line the page leaves out).
+    The step's line starts after a line break or the app's own mark for one (agenttools.LINE_MARK, as agents._result_text joins them)."""
+    from .agenttools import LINE_MARK, NEXT_STEP, STEP_MAX, WHAT_MAX
+    s = str(text or '').strip()
+    for sep in (f'\n{NEXT_STEP}', f'{LINE_MARK}{NEXT_STEP}'):
+        head, at, step = s.rpartition(sep)
+        if at: return _cut(head, WHAT_MAX + 1) + at + _cut(step, STEP_MAX + 1)
+    return _cut(s, WHAT_MAX + 1)
 
 
 def trace_steps(trace: list) -> list:
@@ -582,7 +610,11 @@ def trace_steps(trace: list) -> list:
         k, name, d = e.get('type'), e.get('name'), e.get('detail')
         # ...A CALL WHOSE RESULT CAME BACK HAS FINISHED (walk evidence, 2026-11-17): left without a status, the newest call read as running until
         # another step came (chatStream.eventsOf) - "Reading notes.md" stood on the working line for 10 s while the model wrote its answer
-        if k == 'tool_result' and isinstance(d, dict) and (s := calls.get(d.get('tool_call_id') or name)): s['status'] = 'completed'
+        # ...and ONE THAT FAILED IS FAILED, its words on it (the real-Claude walk, 2026-11-19: a Write refused with "File has not been read yet"
+        # read completed - its diff drawn as made, then again for the retry - and its error stood as a raw note the page could tie to no row)
+        if k == 'tool_result' and isinstance(d, dict) and (s := calls.get(d.get('tool_call_id') or name)):
+            s['status'] = 'failed' if d.get('is_error') else 'completed'
+            if d.get('is_error') and not s.get('output'): s['output'] = _cut_said(d.get('result'))
         if k == 'tool_call':
             steps.append(s := _tool(name, (d or {}).get('args') if isinstance(d, dict) else d))
             if isinstance(d, dict): calls[d.get('tool_call_id')] = s
@@ -598,7 +630,10 @@ def trace_steps(trace: list) -> list:
             if steps and steps[-1].get('live'): steps.pop()
             steps.append({'k': 'thought', 'text': _cut(d, THOUGHT_N)})
         elif k == 'progress' and name in ('text', 'agent_message') and str(d or '').strip(): steps.append({'k': 'said', 'text': _cut(d, SAID_N)})
-        elif k == 'tool_result' and isinstance(d, dict) and d.get('is_error'): steps.append({'k': 'error', 'text': _cut(d.get('result'), 400)})
+        # ...named by the call it came from, so the page reads a Taskuary tool's refusal as the owner's words alone (stepWhy.forOwner)
+        elif k == 'tool_result' and isinstance(d, dict) and d.get('is_error'):
+            s = calls.get(d.get('tool_call_id') or name)
+            steps.append({'k': 'error', 'text': _cut_said(d.get('result')), **({'name': s['name']} if s else {})})
         elif k == 'error': steps.append({'k': 'error', 'text': _cut((d or {}).get('result') if isinstance(d, dict) else d, 400)})
     return steps
 
@@ -681,7 +716,7 @@ def _marker(tid: int):
 
 def general_steps(store, tid: int) -> list:
     from .general import ASSISTANT_TYPE, chat_rows, is_brief
-    from .quickwork import is_raw
+    from .selfclose import is_raw
     p, by = _gen_path(tid), {}
     if p.is_file():
         for line in p.read_text(encoding='utf-8', errors='replace').splitlines():

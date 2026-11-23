@@ -1,3 +1,4 @@
+import { taskSource } from "./taskSource.mjs";
 // A session can be started from anywhere - the Assistant's "send to the coding agent", the Board,
 // a second window - and the task page has to notice. TQ-0500 (2026-09-11): the Board showed a live
 // coding session while the task page said "agent - not started" and offered to start one, which
@@ -10,8 +11,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+
 import { agentPhase } from "../src/taskLifecycle.js";
 
+const src = taskSource();
 
 test("a live session anywhere means the agent stage is working, not 'not started'", () => {
   assert.equal(agentPhase({ session: { alive: true } }), "agent working");
@@ -21,6 +24,11 @@ test("a live session anywhere means the agent stage is working, not 'not started
   assert.equal(agentPhase({}), "waiting to start");
 });
 
-test("an ended session retains its stopped state", () => {
+
+test("a session that has ENDED is not adopted over the one findTerm kept", () => {
+  // findTerm deliberately keeps a dead session: its scrollback is what Done and Pause read, and
+  // for_task only ever returns a live one, so adopting unconditionally would drop the transcript.
+  const guard = /const live = detail\?\.session;\s*\n\s*if \(!live\?\.alive \|\|/;
+  assert.match(src, guard, "the adoption must be gated on alive");
   assert.equal(agentPhase({ session: { alive: false }, transcript: "scrollback" }), "agent stopped");
 });

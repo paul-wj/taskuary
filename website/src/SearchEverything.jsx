@@ -5,7 +5,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-import { Box, Dialog, InputBase, LinearProgress, Tooltip } from "@mui/material";
+import { Box, Dialog, IconButton, InputBase, LinearProgress, Tooltip } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import MailOutlineIcon from "@mui/icons-material/MailOutline";
@@ -25,6 +25,8 @@ import { ago } from "./timeWords.js";
 import { aloneAs, arrange, asks, channelsFor, countWords, filters, hitAge, kindOf, lineOf, marks, messageLink, meta, nothingMatches, nothingYet, personHits, terms, totalOf } from "./searchHits.js";
 import { ASSISTANT, BORDER, DIM, FAINT, INK, PANEL, PANEL2, PALETTE, PILL_COLORS, ACCENT, mono } from "./theme.jsx";
 import { useAgents } from "./ui.jsx";
+import { useOverlay } from "./overlays.js";
+import CloseIcon from "@mui/icons-material/Close";
 const DONE_TODAY = "done:today";      // search.DONE_TODAY
 
 // colour identifies, it never shouts: each pill is a pale tint with its own ink, from the five colours - never the
@@ -55,7 +57,7 @@ const Marked = ({ text, words }) => marks(text, words).map((p, i) => (p.hit
 
 const Kbd = ({ children }) => (
   <Box component="kbd" sx={{ ...mono, fontSize: 10, color: FAINT, px: 0.6, py: "1px", borderRadius: "5px",
-    border: `1px solid ${BORDER}`, borderBottomWidth: 2, bgcolor: PANEL, lineHeight: 1.4 }}>{children}</Box>
+    border: `1px solid ${BORDER}`, borderBottomWidth: 2, bgcolor: PANEL, lineHeight: 1.4, whiteSpace: "nowrap" }}>{children}</Box>
 );
 
 // The bar on the TOP LINE of the app (the owner, 2026-10-14: "it should be on top line not on top of the work rail"): it looks
@@ -189,6 +191,7 @@ const opened = (h) => {
 export default function SearchEverything({ open, onClose, onOpenTask, onOpenMessage, onPickSource, query = "" }) {
   useLocale();
   const [q, setQ] = useState(""), [res, setRes] = useState(null), [busy, setBusy] = useState(false);
+  useOverlay(open, onClose);              // ...one overlay at a time, shut when the page under it moves (overlays.js)
   const { devMode } = useAgents();       // "pull requests" only where there are any to find (Developer mode)
   const [only, setOnly] = useState(""), [at, setAt] = useState(0);
   // DONE TODAY (the owner, 2026-11-06): the tasks closed today, as a filter of this box - never on the rail. Pressed, the box asks the
@@ -271,9 +274,10 @@ export default function SearchEverything({ open, onClose, onOpenTask, onOpenMess
     // no disableRestoreFocus (verify, 2026-10-20): Esc left focus on the page, and words typed next went nowhere - a cancel gives it
     // back to where it was (the chat's composer); a pick moves it on from there, to what it opened (focusOpened)
     // ...a view of its own to the Assistant (pageView.js: a dialog over the page is the page): its box to type in, its hits to press
-    <Dialog open={open} onClose={onClose} data-tq-search="true" data-tq-view="search" data-tq-view-label={q.trim() ? t("Search everything, for “{query}”", { query: q.trim() }) : t("Search everything")}
+    // ...and a pick puts it away in the frame that draws what it opened: fading out, it stood over the task already drawn under it (2026-11-18)
+    <Dialog open={open} onClose={onClose} data-tq-search="true" data-tq-view="search" data-tq-view-label={q.trim() ? `Search everything, for “${q.trim()}”` : "Search everything"}
       slotProps={{ backdrop: { sx: { bgcolor: "rgba(38,37,33,.28)", backdropFilter: "blur(2px)" } } }}
-      sx={{ "& .MuiDialog-container": { alignItems: "flex-start" } }}
+      sx={{ "& .MuiDialog-container": { alignItems: "flex-start" }, ...(open ? {} : { visibility: "hidden" }) }}
       PaperProps={{ sx: { mt: "9vh", width: 680, maxWidth: "calc(100vw - 32px)", borderRadius: "14px", bgcolor: PANEL,
         border: `1px solid var(--tq-border, #dad4cb)`, boxShadow: "0 24px 64px rgba(30,50,38,.22)", overflow: "hidden", m: 2 } }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, px: 2, height: 56, borderBottom: `1px solid ${BORDER}` }}>
@@ -282,7 +286,7 @@ export default function SearchEverything({ open, onClose, onOpenTask, onOpenMess
           onChange={(e) => { typed.current = e.target.value; if (held.current !== askOf(e.target.value)) held.current = ""; setQ(e.target.value); }}
           placeholder={devMode ? t("Search tasks, mail, chats, pull requests, the Advisor…") : t("Search tasks, mail, chats, the Advisor…")} inputProps={{ "aria-label": t("Search everything"), "data-tq-search-input": "true" }}
           sx={{ fontSize: 16, color: INK, "& input::placeholder": { color: FAINT, opacity: 1 } }} />
-        <Kbd>Esc</Kbd>
+        <Tooltip title="Close (Esc)"><IconButton size="small" aria-label="Close search" data-tq-search-close="" onClick={onClose}><CloseIcon sx={{ fontSize: 18, color: FAINT }} /></IconButton></Tooltip>
       </Box>
       <Box sx={{ height: 2 }}>{busy && <LinearProgress sx={{ height: 2, bgcolor: "transparent", "& .MuiLinearProgress-bar": { bgcolor: ACCENT } }} />}</Box>
       <Box role="tablist" sx={{ display: "flex", gap: 0.6, px: 2, pt: 1, pb: 0.5, flexWrap: "wrap" }}>

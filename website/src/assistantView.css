@@ -35,7 +35,7 @@
 .tq-pile-head .fold { font-style: normal; font-size: 13px; line-height: 1; color: var(--tq-secondary, #6e685f); margin-left: -4px; padding: 2px 4px; cursor: pointer; border-radius: 4px; }
 .tq-pile-head:focus-visible, .tq-pile-head .fold:focus-visible { outline: 2px solid var(--tq-link, #55697a); outline-offset: 2px; }
 .tq-pile-head .fold:hover { background: var(--tq-inset, #ece7e0); }
-.tq-pile-head span { font: 600 10.5px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase;
+.tq-pile-head span { font: 600 11.5px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .01em;
   white-space: nowrap; padding: 2px 10px; border-radius: 99px; border: 1px solid var(--tq-border, #e2dbcf); color: var(--tq-secondary, #6e685f); background: var(--tq-inset, #f3efe8); }
 /* one tint per band, all quiet: the band says what KIND of thing sits under it at a glance */
 /* SOLID PILLS, WHITE WORDS, FIVE COLOURS (the owner, 2026-10-06: variant C, "the pill should be dark and text white like the
@@ -204,7 +204,6 @@
 .tq-chat-head .who span { display: inline; font-size: 10.5px; color: var(--tq-secondary, #6e685f); margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tq-chat-head .grow { flex: 1; }
 /* the way back to the task you were working on: quiet, the size of the header icons, never wider than half the head (a phone) */
-.tq-chat-head .tq-back-work { padding: 3px 10px; font-size: 12px; color: var(--tq-secondary, #4b4740); max-width: 50%; min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
 .tq-stage-mode { display: inline-flex; border: 1px solid var(--tq-border, #ddd6cb); border-radius: 99px; overflow: hidden; flex: 0 0 auto; }
 .tq-stage-mode button { border: 0; background: transparent; padding: 4px 10px; font: 600 10.5px 'IBM Plex Sans', system-ui, sans-serif; color: var(--tq-secondary, #6e685f); cursor: pointer; white-space: nowrap; }
 .tq-stage-mode button.on { background: var(--tq-inset, #eae4d8); color: var(--tq-link, #55697a); }
@@ -341,9 +340,9 @@
 .tq-day-row.lvl-task .n { color: var(--tq-success, #5f7a5f); }
 .tq-day-row.lvl-reports .n, .tq-day-row.lvl-ideas .n { color: var(--tq-warning, #827356); }
 .tq-day-row.lvl-fyi .n, .tq-day-row.lvl-later .n, .tq-day-row.lvl-watching .n { color: var(--tq-warning, #7b7366); }
-/* ...and the label IS the rail's section pill - same fill, same capitals - so a band reads as the one on the rail */
+/* ...and the label IS the rail's section pill - same fill, same words - so a band reads as the one on the rail */
 .tq-day-row .lbl { justify-self: start; max-width: 100%; color: #fff; background: var(--tq-tint-brass, #b8afa1); border-radius: 99px; padding: 2px 10px;
-  font: 600 10.5px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+  font: 600 11.5px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .01em; }
 .tq-day-row.lvl-task .lbl { background: #5f7a5f; }
 .tq-day-row.lvl-reports .lbl, .tq-day-row.lvl-ideas .lbl { background: #827356; }
 .tq-day-row.lvl-fyi .lbl { background: #7b7366; }
@@ -654,11 +653,7 @@
 /* ...and A THIRD OF A LAPTOP NO MORE (the owner, 2026-10-26, 1600x810: "you can't see anything ... button height is too high? you can't see
    what you have to do"): 138px of dock over a task whose reason was out of sight. Each band is as tall as its one line - the strip 30, the
    row its 30px pills in a 3px section (.tq-cl), the box its 34px line - about 115px; a touch screen keeps its 44px targets (pointer: coarse) */
-.tq-dock .tq-next { margin: 0; min-height: 30px; padding: 0 16px; justify-content: flex-start; background: var(--tq-panel, #f6f5f1); border-bottom: 1px solid var(--tq-border, #ece7de); }
-.tq-dock .tq-next .tq-next-why { margin-left: auto; padding-block: 2px; }
-/* NO STRIP (the owner, 2026-10-26: "maybe keep the box but remove the advisor?"): the dock is the row and the box, one line - a .tq-next here
-   is setup's own line (SetupLine), drawn only while setup is in view */
-.tq-dock > .tq-next { border-bottom: 1px solid var(--tq-border, #ece7de); }
+/* NO STRIP (the owner, 2026-10-26: "maybe keep the box but remove the advisor?"; setup's too, 2026-11-20): the dock is the row and the box */
 .tq-dock .tq-arow { width: 100%; margin: 0; min-height: 0; justify-content: center; padding: 3px 12px; box-sizing: border-box; border-bottom: 1px solid var(--tq-border, #ece7de); }
 .tq-dock .tq-compose-box { width: 100%; min-height: 40px; align-items: center; border: 0; border-radius: 0; box-shadow: none; padding: 3px 8px; }
 .tq-compose-box { width: min(980px, 100%); margin: 0 auto; display: flex; align-items: flex-end; gap: 5px; padding: 6px 7px; border: 1px solid var(--tq-border, #d5d0c7); background: var(--tq-panel, #fff); border-radius: 13px; box-shadow: 0 2px 8px #39352d0b; }
@@ -769,10 +764,6 @@
 .tq-chat-pop-body > .tq-msg:first-child > .avatar { visibility: visible; }
 .tq-chat-pop-body > .tq-msg.receipt { margin-bottom: 8px; font-size: 11.5px; color: var(--tq-secondary, #6e685f); }
 .tq-chat-pop-empty { margin: 4px 0 10px; color: var(--tq-muted, #8f8b84); font-size: 12.5px; }
-/* the ×'s question while it helps with a page: one quiet band under the head, the window's own words and two chips */
-.tq-chat-pop-end { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex-shrink: 0; padding: 8px 12px; border-bottom: 1px solid var(--tq-border, #ece7de);
-  background: var(--tq-panel, #f8f6f2); font-size: 12.5px; color: var(--tq-link, #2f3a42); }
-.tq-chat-pop-end span { flex: 1 1 180px; }
 /* ...MINIMIZED, the pill says it can be continued ("Continue chat…") and counts the answers that came while it was put away */
 .tq-compose-box:not([data-tq-open]) { position: relative; }
 .tq-chat-unseen { position: absolute; top: -5px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px;
@@ -913,6 +904,8 @@
    beside it the dock ran the whole window - its line ~1800px across a 1920 screen and Back/Next at its far left, far from the cards. It
    takes the step's own width (FirstRun's 980px column), centred, so its line and Back/Next sit under the cards */
 .tq-dock.tq-setup-dock { width: min(980px, 100%); margin-inline: auto; }
+/* ...and with nothing on its row (Setup complete's own big button) no empty frame stands under the page (2026-11-20) */
+.tq-dock.tq-setup-dock:not(:has(.tq-arow)) { display: none; }
 .tq-arow-verbs.tight > .tq-cl:not(.tq-cl-next) { flex-shrink: 1; }
 /* ...and there MARK DONE KEEPS ITS WORDS (the owner, 2026-11-15: a phone's bar read "Mark d…"): only the lit move beside it is shortened */
 .tq-arow-verbs.tight .tq-ab[data-tq-verb="done"], .tq-arow-verbs.tight .tq-ab[data-tq-verb$=":done"], .tq-arow-verbs.tight .tq-cl-more { flex-shrink: 0; }

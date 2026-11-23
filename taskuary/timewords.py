@@ -2,6 +2,7 @@
 server writes about when, or about how many, asks here; website/src/timeWords.js is the page's twin and a test holds the two to
 the same words. Each surface had grown its own: the wall said "47h ago" where the page said "2d ago", the walk "5 min ago" beside
 the rail's "5m", the asks block "yesterday" for anything a day old, and a stamp a minute ahead read "-1 min ago" (2026-10-18)."""
+import re
 from datetime import datetime
 
 
@@ -10,12 +11,30 @@ def plural(n, one: str, many: str = None) -> str:
     return f"{n} {one if n == 1 else many or one + 's'}"
 
 
-def mins(stamp, now: datetime = None):
-    """Minutes from `stamp` to `now` - past is positive, ahead negative. None when it is no time at all."""
+def stamp(s) -> datetime | None:
+    """ONE STAMP READER: a stored stamp as this machine's local, naive time - what every stamp is kept in (store.norm_stamp) - and one that
+    names its own zone ('...Z', '+02:00') turned into it, never read as if it were local already. None when it is no time at all."""
+    if isinstance(s, datetime): return s.astimezone().replace(tzinfo=None) if s.tzinfo else s
+    t = str(s or '').strip().replace('T', ' ')
+    z = re.search(r'(Z|[+-]\d\d:?\d\d)$', t[19:], re.I) if len(t) > 19 else None
     try:
-        d = stamp if isinstance(stamp, datetime) else datetime.fromisoformat(str(stamp)[:19].replace('T', ' '))
-        return ((now or datetime.now()) - d).total_seconds() / 60
+        d = datetime.fromisoformat(t[:19])
+        if z: d = datetime.fromisoformat(t[:19] + ('+00:00' if z[1].upper() == 'Z' else z[1])).astimezone().replace(tzinfo=None)
+        return d
     except (TypeError, ValueError): return None
+
+
+def clock(at) -> str:
+    """ONE CLOCK (the real-Claude walk, 2026-11-19: "04:15 PM", "16:26" and "4:14 PM" in one chat): '4:15 PM', as the page says it
+    (dates.fmtTime12). '' for a time nothing can read."""
+    d = stamp(at)
+    return '' if d is None else f"{d.hour % 12 or 12}:{d.minute:02d} {'AM' if d.hour < 12 else 'PM'}"
+
+
+def mins(at, now: datetime = None):
+    """Minutes from `at` to `now` - past is positive, ahead negative. None when it is no time at all."""
+    d = stamp(at)
+    return None if d is None else ((now or datetime.now()) - d).total_seconds() / 60
 
 
 def span(m, long: bool = False, exact: bool = False) -> str:
@@ -48,6 +67,9 @@ def until_m(m) -> str:
 def back_in(stamp, now: datetime = None) -> str:
     """'in 30m', 'in 1h', 'in 3h', 'in 2d' until a For later row comes back - "< 30m" read as an age (the owner, 2026-09-30), so it
     reads forward as a meeting's does. '' once due, or for no time. funnelPile.railBack (timeWords.bandUntil) is the rail's live copy."""
-    m = mins(stamp, now)
+    at, m = _stamp(stamp), mins(stamp, now)
     m = None if m is None else round(-m)
+    # ...a day off or more is counted BY THE CALENDAR (the walk, 2026-11-21: Next week, kept as 7 days on at 7 AM, read "in 6d" that evening)
+    if m is not None and m >= 1440: return f'in {(at.date() - (now or datetime.now()).date()).days}d'
     return '' if m is None or m <= 0 else 'in 30m' if m < 30 else 'in 1h' if m < 60 else f'in {span(m)}'
+_stamp = stamp

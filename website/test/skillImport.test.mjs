@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { buildPayload, chosen, clashText, cutBy, isLink, reconcileImport, slug, toRows } from "../src/skillImport.js";
+
+const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
+const wizard = read("SkillImport.jsx");
 
 
 test("a link goes to /fetch and a path to /read, decided in one place", () => {
@@ -8,6 +13,9 @@ test("a link goes to /fetch and a path to /read, decided in one place", () => {
   assert.equal(isLink(" HTTP://x/SKILL.md"), true);
   assert.equal(isLink("~/.claude/skills/x/SKILL.md"), false);
   assert.equal(isLink("C:/Users/me/SKILL.md"), false);
+  assert.match(wizard, /isLink\(target\)/);
+  assert.match(wizard, /"\/api\/skills\/fetch", \{ url: target, paths \}/);
+  assert.match(wizard, /"\/api\/skills\/read", \{ path: target, paths \}/);
 });
 
 
@@ -20,6 +28,11 @@ test("you choose which ones: one skill starts chosen, a catalogue starts unchose
   assert.deepEqual(chosen(many).map((r) => r.name), ["b"]);
   assert.deepEqual(buildPayload(many).map((r) => r.name), ["b"]);       // A and C are never written
   assert.deepEqual(chosen([{ include: true, imported: true }, { include: true, imported: false }]).length, 1);
+  // the markup: a tick per row, select all / none, Next needs at least one chosen
+  assert.match(wizard, /<Checkbox checked=\{!!r\.include\}/);
+  assert.match(wizard, /Select all/); assert.match(wizard, />None</);
+  assert.match(wizard, /disabled=\{busy \|\| !pending\.length \|\| !allNamed\}/);
+  assert.match(wizard, /rows\.map\(\(r, i\) => r\.include && \(/);     // step 3 lists only the chosen
 });
 
 
@@ -29,15 +42,18 @@ const row = (over) => ({ name: "My Skill", purpose: "p", body: "b", kind: "gener
 
 test("nothing reaches the router unless it is ticked, and the label says what the tick does", () => {
   assert.equal(toRows([{ name: "x" }])[0].enabled, false);   // a proposal starts unticked, whatever door it came through
+  assert.match(wizard, /Offer this worker to the router/);
+  assert.match(wizard, /triage never picks it/);
 });
 
 
 test("a clash on an operator document is named as one, not as a profile", () => {
-  assert.ok(clashText({ kind: "research", doc: "" }).includes("research"));
-  assert.ok(clashText({ kind: "general", doc: "triage" }).includes("TRIAGE.md"));
+  assert.equal(clashText({ kind: "research", doc: "" }), 'clashes with an existing "research" profile');
+  assert.equal(clashText({ kind: "general", doc: "triage" }), "would rewrite TRIAGE.md - an operator document, not a profile");
   const rows = [row({ name: "triage" })];
   const after = reconcileImport(rows, { imported: [], clashed: [{ name: "triage", kind: "general", doc: "triage" }] });
   assert.equal(after[0].clash.doc, "triage");
+  assert.match(wizard, /Overwrite \$\{rows\[overwrite\]\.clash\.doc\.toUpperCase\(\)\}\.md\?/);   // the confirm names the document
 });
 
 test("the size warning is the seed's own cut, reported by the server - not a byte count", () => {
@@ -47,8 +63,11 @@ test("the size warning is the seed's own cut, reported by the server - not a byt
   assert.equal(cutBy({ flat: 6100 }, 5600), 500);
   assert.equal(cutBy({ flat: 5600 }, 5600), 0);
   assert.equal(cutBy({ flat: 9000 }, 0), 0);                // an older server sends no cut: no warning invented
+  assert.match(wizard, /setDocChars\(data\.doc_chars/);
+  assert.match(wizard, /past what a session is given - the end is cut/);
+  assert.doesNotMatch(wizard, /LARGE|20000/);
+  assert.match(wizard, /kb\(r\.bytes\)/);
 });
-
 
 
 // Fix round 1: the server slugifies a name before writing it and echoes back the slug, but a row
@@ -79,5 +98,3 @@ test("slug matches the server's own rule (taskuary/skillimport.py's save())", ()
   assert.equal(slug("  --Weird__Name!! "), "weird-name");
   assert.equal(slug(""), "");
 });
-
-

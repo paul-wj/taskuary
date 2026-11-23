@@ -6,26 +6,20 @@ import {
   fitFrame,
   keyMessage, isPaste, pasteMessages,
   isLocalPage,
-  layoutFor,
-  MIN_CHAT_PX,
+  paneLayout,
   mayShape,
   mouseMessage,
   parseMessage,
   ratioFromPointer,
   shortUrl,
   showsBrowser,
-  splitRatio,
   toPage,
   viewportFor,
   viewportMoved,
   viewOnScreen,
   heldOn,
   isTurn,
-  isPress,
   askPlaceholder,
-  needsOwner,
-  PRESS_PREFIX,
-  TURN_PREFIX,
   wheelMessage,
 } from "../src/browserSplit.js";
 
@@ -114,28 +108,21 @@ test("urls are shown without scheme, cut in the middle when long", () => {
 // THE AGENT'S OWN FILE IN ITS BROWSER IS NAMED, never shown as a disk path (the stress test, 2026-11-02: the chip read
 // "browser · file:///C:/Users/<you>/.taskuary/scratch/...")
 test("a page the agent opened from disk is its file's name, never the path to it", () => {
-  assert.ok(shortUrl("file:///C:/Users/alex/.taskuary/scratch/outputs/TQ-0001/desk%20plan.svg").includes("desk plan.svg"));
-  assert.ok(shortUrl("file:///home/alex/out/notes.html#top").includes("notes.html"));
-  assert.ok(shortUrl("FILE:///C:/a/b/").endsWith("b"));
+  assert.equal(shortUrl("file:///C:/Users/alex/.taskuary/scratch/outputs/TQ-0001/desk%20plan.svg"), "file · desk plan.svg");
+  assert.equal(shortUrl("file:///home/alex/out/notes.html#top"), "file · notes.html");
+  assert.equal(shortUrl("FILE:///C:/a/b/"), "file · b");
   assert.doesNotMatch(shortUrl(`file:///C:/Users/alex/${"deep/".repeat(30)}report.html`, 28), /Users|C:|\//);
 });
 
-test("the slot decides: no browser is nothing, a narrow slot is a chip, otherwise the split unless folded", () => {
-  assert.equal(layoutFor(1200, false, false), "none");
-  assert.equal(layoutFor(500, true, false), "chip");
-  assert.equal(layoutFor(1200, true, false), "split");
-  assert.equal(layoutFor(1200, true, true), "folded");
-});
-
-// THE BROWSER IN THE AGENT'S CANVAS (the owner, 2026-10-28): an agent's conversation too narrow to split stacks the view above it -
-// only a phone's width folds it to the chip, its link
-test("an agent's conversation stacks the view above it when narrow, and a phone gets the chip", () => {
-  assert.equal(layoutFor(600, true, false, true), "stack");
-  assert.equal(layoutFor(600, true, true, true), "folded");
-  assert.equal(layoutFor(390, true, false, true), "chip");
-  assert.equal(layoutFor(1200, true, false, true), "split");
-  assert.equal(layoutFor(600, true, false), "chip", "a Wall tile keeps its chip");
-  assert.ok(viewOnScreen("split") && viewOnScreen("stack") && !viewOnScreen("chip") && !viewOnScreen("folded"));
+// ONE LAYOUT FOR EVERY SLOT (the design loop, 2026-11-20): the same hand-over drew as a chip on a coding task (layoutFor: chip under 700/560,
+// the view stacked over the chat) and a split on a chat task (quietLayout: chip under 420)
+test("one rule lays out every pane: nothing, the view beside the chat, folded by his Fold, a chip only at a phone's width", () => {
+  assert.equal(paneLayout(1200, false), "none");
+  for (const w of [0, 420, 555, 600, 700, 900, 1400]) assert.equal(paneLayout(w, true), "split", `${w}px is beside the chat`);
+  assert.equal(paneLayout(390, true), "chip");
+  assert.equal(paneLayout(900, true, true), "folded");
+  assert.equal(paneLayout(390, true, true), "chip", "a phone's width is the chip, folded or not");
+  assert.ok(viewOnScreen("split") && !viewOnScreen("chip") && !viewOnScreen("folded") && !viewOnScreen("none"));
 });
 
 test("what waits on the view: a held act of THIS browser, and the agent's hand-over", () => {
@@ -147,15 +134,8 @@ test("what waits on the view: a held act of THIS browser, and the agent's hand-o
   assert.equal(heldOn(row({ ...act, action: "shell_act" }), "s1"), null, "a shell step is not the browser's");
   assert.equal(heldOn({ ReviewId: 1, DraftText: "not json" }, "s1"), null);
   assert.equal(heldOn(row({ ...act, what: "" }), "s1").what, act.command);
-  assert.ok(isTurn({ request_id: `${TURN_PREFIX}abc` }));
-  assert.ok(!isTurn({ request_id: "signin:bank.example" }) && !isTurn(null));
-});
-
-test("a press handed over is the owner's turn on the page, and only it is a press", () => {
-  const press = { request_id: `${PRESS_PREFIX}abc`, text: 'Your turn: check it and press "Pay $42.00" on the page.' };
-  assert.ok(isPress(press) && isTurn(press), "drawn on the view as the owner's turn (browsergate.hand_over)");
-  assert.ok(needsOwner(press), "the browser shows beside the chat for it");
-  assert.ok(!isPress({ request_id: `${TURN_PREFIX}abc` }) && !isPress(null), "a captcha's hand-over keeps its own line");
+  assert.ok(isTurn({ ask: "turn" }));
+  assert.ok(!isTurn({ ask: "signin", site: "bank.example" }) && !isTurn({ ask: "question" }) && !isTurn(null));
 });
 
 
@@ -178,15 +158,6 @@ test("dragging the splitter does not re-lay-out Chrome for six pixels", () => {
   assert.equal(viewportMoved(was, { w: 1200, h: 1460 }), true);
   assert.equal(viewportMoved(null, was), true, "the first measurement always lands");
   assert.equal(viewportMoved(was, null), false);
-});
-
-// The 2026-10-02 pane pass: a live run of Board -> New task -> "It needs a browser", watched from a desktop and a phone.
-test("the chat keeps a readable width whatever share the browser was dragged to", () => {
-  assert.equal(splitRatio(0.8, 1000), (1000 - MIN_CHAT_PX - 8) / 1000);   // 4/5 of 1000 left the chat ~200px
-  assert.ok((1 - splitRatio(0.8, 1000)) * 1000 - 8 >= MIN_CHAT_PX);
-  assert.equal(splitRatio(0.5, 2000), 0.5);                               // room enough: the owner's ratio stands
-  assert.equal(splitRatio(0.8, 0), 0.8);                                  // not measured yet
-  assert.equal(splitRatio(0.6, 400), 0.3);                                // never below the browser's own floor
 });
 
 test("only a browser open on a page is shown: not one still starting, nor an empty tab (2026-11-04)", () => {
@@ -219,25 +190,17 @@ test("an empty tab is not a page: the view folds to its chip until the agent ope
   assert.equal(isBlankPage(" about:newtab"), true);
   assert.equal(isBlankPage("https://portal.example/login"), false);
   // "your turn - click the page and type" is for a wait ON the page - its hand-over or a sign-in - never a question asked in words
-  assert.equal(waitsOnPage({ request_id: `${TURN_PREFIX}abc` }), true);
-  assert.equal(waitsOnPage({ request_id: "signin:portal.example" }), true);
+  assert.equal(waitsOnPage({ ask: "turn" }), true);
+  assert.equal(waitsOnPage({ ask: "signin", site: "portal.example" }), true);
   assert.equal(waitsOnPage({ request_id: "571e07b97197", text: "First month free, or a price now?" }), false);
   assert.equal(waitsOnPage(null), false);
 });
 
 // A CHAT TASK'S BROWSER (the owner, 2026-11-05): drawn only when the owner has a part on the page, and then beside the chat
 test("a chat task's browser shows only when the owner is needed, side by side", async () => {
-  const { needsOwner, quietLayout, quietRatio, CHAT_SHARE } = await import("../src/browserSplit.js");
-  assert.equal(needsOwner(null), false);                                                   // the agent just browsing
-  assert.equal(needsOwner({ request_id: "q:where" }), false);                              // a question asked in words: the chat's box
-  assert.equal(needsOwner({ request_id: "signin:bank.example" }), true);                   // a sign-in (or its code) the vault does not keep
-  assert.equal(needsOwner({ request_id: "yourturn:captcha" }), true);                      // a captcha handed over
-  assert.equal(needsOwner(null, [{ id: 7 }]), true);                                       // a held step: Approve / Dismiss
-  assert.equal(quietLayout(1200, false), "none");
-  for (const w of [555, 600, 700, 900, 1400]) assert.equal(quietLayout(w, true), "split");     // never stacked at a desktop's width
-  assert.equal(quietLayout(380, true), "chip");                                            // a phone's width: the view as a link
-  assert.equal(quietLayout(900, true, true), "folded");                                    // the owner's own Fold
-  for (const r of [0.3, 0.58, 0.8, NaN]) assert.ok(1 - quietRatio(r) >= CHAT_SHARE - 1e-9 && quietRatio(r) >= 0.3);
+  // ...whether he is needed is the server's answer (taskstate.needs_owner, tests/test_signin.py); the page lays it out
+  const { paneShare, CHAT_SHARE } = await import("../src/browserSplit.js");
+  for (const r of [0.3, 0.58, 0.8, NaN]) assert.ok(1 - paneShare(r) >= CHAT_SHARE - 1e-9 && paneShare(r) >= 0.3);
 });
 
 // THE CHAT'S WIDTH, SAMPLED EVERY PAINTED FRAME while a browser opened, folded, came back and closed beside it (2026-11-11, a 1600px window):
@@ -247,16 +210,13 @@ test("the chat keeps one width at rest and at work, and the browser pane arrives
   const { readFileSync } = await import("node:fs");
   const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
   const term = read("TerminalView.jsx"), page = read("TaskPage.jsx");
-  assert.match(term, /const roomFor = quiet && onScreen;/, "the task list gives its room only while the page is on screen - not to a folded chip");
-  assert.match(term, /React\.useLayoutEffect\(\(\) => \{ if \(!roomFor\) return undefined; const who = \{\}; wantRoom\(who, true\); return \(\) => wantRoom\(who, false\); \}, \[roomFor\]\);/, "asked before the paint");
+  // ...AND THE TASK LIST STAYS WHERE IT IS (design round 6, D8: the list folded for the page and his rail went with it): nothing asks for its room
+  const feed = read("FeedView.jsx");
+  assert.doesNotMatch(term + page + feed + read("browserSplit.js"), /wantRoom|onRoom|roomWanted/);
+  assert.match(feed, /const folded = setupMode;/);
   assert.match(term, /new ResizeObserver\(\(\[e\]\) => flushSync\(\(\) => setWidth\(e\.contentRect\.width\)\)\);/, "the pane's own width is the frame's");
   assert.match(page, /bodyRO\.current = new ResizeObserver\(\(\[e\]\) => flushSync\(\(\) => setBodyW\(Math\.round\(e\.contentRect\.width\)\)\)\);/, "and the task's sections are sized for the width the frame has");
   assert.match(page, /SECTION\(isOpen\("agent"\), openW\("agent"\), sessionView, liveSession, fades\), \.\.\.\(chatPane \? \{ pb: 0\.25, px: 1, pt: 0\.65 \} : \{\}\)/, "a chat's section keeps the live room at rest too");
-  // ...AND IN THE COMMIT THAT MOVES THE LIST (recorded 2026-11-12 as a pane closed: the list back, the chat still 1145 px and its box 197 px past
-  // the window for frames, until the observer spoke): the view hears the fold as it is asked and measures its body before that commit is painted
-  assert.match(page, /useEffect\(\(\) => onRoom\(\(\) => setRoomTick\(\(n\) => n \+ 1\)\), \[\]\);/);
-  assert.match(page, /React\.useLayoutEffect\(\(\) => \{ const el = bodyEl\.current; if \(!roomTick \|\| !el\) return;/);
-  assert.match(page, /if \(w > 0\) setBodyW\(\(b\) => \(b === w \? b : w\)\); \}, \[roomTick\]\);/);
   // ...and a CODING agent's page is shown him too, while he is needed on it (the recorded coding walk, 2026-11-12: it asked to be signed in, and
   // with no chat session to name, no page was ever shown) - its session's own browser
   const chat = readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
@@ -292,9 +252,13 @@ test("the browser's tabs read as a strip: title or host, the active one marked, 
     { tabId: "x;rm", title: "bad", url: "https://bad.example/", active: false }] };
   assert.deepEqual(tabList(m), [
     { id: "t1", name: "Payworth - Sign in", url: "http://localhost:8931/login", active: false },
-    { id: "t2", name: "127.0.0.1:8932", url: "http://127.0.0.1:8932/", active: true },
+    { id: "t2", name: "127.0.0.1", url: "http://127.0.0.1:8932/", active: true },
     { id: "t3", name: "news.example", url: "https://news.example/today", active: false }]);
   assert.deepEqual(tabList({ type: "tabs" }), []);
+  // ...and a page keeps the title it once showed, where the browser names it in the background by its address (design round 5, 2026-11-19)
+  tabList({ type: "tabs", tabs: [{ tabId: "t4", title: "PermitWatch - Sign up", url: "http://127.0.0.6:18791/s/permitwatch/", active: true }] });
+  assert.equal(tabList({ type: "tabs", tabs: [{ tabId: "t4", title: "127.0.0.6:18791/s/permitwatch/", url: "http://127.0.0.6:18791/s/permitwatch/", active: false }] })[0].name,
+    "PermitWatch - Sign up");
   const { readFileSync } = await import("node:fs");
   const pane = readFileSync(new URL("../src/BrowserPane.jsx", import.meta.url), "utf8");
   assert.match(pane, /tabs\.length > 1 &&/, "one tab draws no strip");
@@ -303,10 +267,9 @@ test("the browser's tabs read as a strip: title or host, the active one marked, 
 });
 
 // THE BROWSER AUDIT, 2026-11-15: a step handed over on the page drew "Answer the agent's question..." in the box - it was no question
-test("the box says what waits on him: a sign-in, a step on the page, a press on the page, or a question", () => {
+test("the box says what waits on him: a sign-in, a step on the page, or a question", () => {
   assert.equal(askPlaceholder(null), "");
-  assert.equal(askPlaceholder({ request_id: "signin:bank.example" }), "Message the agent - never your password");
-  assert.equal(askPlaceholder({ request_id: `${TURN_PREFIX}ab12` }), "Your step is on the page - or tell the agent here…");
-  assert.equal(askPlaceholder({ request_id: `${PRESS_PREFIX}ab12` }), "Press it on the page - or tell the agent here…");
+  assert.equal(askPlaceholder({ ask: "signin", site: "bank.example" }), "Message the agent - never your password");
+  assert.equal(askPlaceholder({ ask: "turn" }), "Your step is on the page - or tell the agent here…");
   assert.equal(askPlaceholder({ request_id: "q:1" }), "Answer the agent's question…");
 });

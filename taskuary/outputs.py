@@ -8,7 +8,7 @@ file the agent wrote was on disk and unreachable from the page.
 
 Now the folder is named: <home>/scratch/outputs/TQ-nnnn/ for task nnnn - the very one the agent picked - it is said in the brief
 (brief), and GET /api/task-outputs/<tid>/<file> serves a file in THAT task's folder and nothing else (resolve)."""
-import json, mimetypes, re, shutil
+import functools, json, mimetypes, re, shutil
 from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +17,8 @@ from . import config
 from .store import task_ref
 
 MAX_FILES, MAX_DEPTH = 200, 4
-ROWS, COLS, CELL, SHEETS = 200, 40, 300, 30          # what a preview carries: enough to recognise the sheet, never the whole book
+FIGURES = 'Every figure in it is computed from its source by that script, never typed in.'     # AGENT.md's Files you make (terminal.with_fence_rule)
+ROWS, COLS, CELL, SHEETS, GRID = 200, 40, 300, 30, 2000         # what a preview carries: enough to recognise the sheet, never the whole book
 TYPES = {'.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12',
          '.csv': 'text/csv', '.tsv': 'text/tab-separated-values', '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json',
          '.log': 'text/plain', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -83,11 +84,12 @@ def take_in_text(tid: int, text: str) -> str:
     return re.sub(re.escape(root) + r'[^\r\n]*', lambda m: (take_in(tid, [m.group(0)]) or [m.group(0)])[0], str(text), flags=re.I)
 
 
-def take_in_summary(store, tid: int, actor: str) -> str:
-    "Task `tid`'s Summary with every file it names that this server saved taken into its folder (take_in_text) - kept, and returned."
-    s = str((store.get_task(tid) or {}).get('Summary') or '')
-    if (s2 := take_in_text(tid, s)) != s: store.update_task(tid, {'Summary': s2}, actor)
-    return s2
+def take_in_ask(store, tid: int, actor: str) -> list:
+    "The files of task `tid`'s ask (its Files field) taken into its folder (take_in) - kept as the task's, and returned."
+    from .store import files_of
+    was = files_of(store.get_task(tid))
+    if (now := take_in(tid, was) if was else []) != was: store.update_task(tid, {'Files': now}, actor)
+    return now
 
 
 def resolve(tid: int, rel: str, base: Path = None):
@@ -127,6 +129,43 @@ def rel(tid: int, p: Path) -> str:
 # WHAT IT MADE IS READ WHERE IT IS (the owner, 2026-11-15: he asked for a query to review, the agent saved it as a file, and the chat held only
 # "it is ready for you to review"): a file of a kind with no viewer of its own - a query, a script, a config - that is plain text reads as text.
 # By its bytes, never its name: no list of extensions decides what can be read
+# A SMALL TEXT FILE GOES INTO THE MESSAGE OF AN AI THAT CANNOT OPEN IT (design round 3, 2026-11-18): a two-line .py on his line reached an AI
+# card as its path alone, and its agent said "I could not open the attached totals.py from here". Whole, up to TEXT_EACH, all of them up to
+# TEXT_ALL; a file that is no text (reads_as_text) or too long is left to its path, as before
+TEXT_EACH, TEXT_ALL = 20_000, 60_000
+def texts(paths) -> str:
+    "The block of the small text files among `paths`, each whole under its name - '' where none is."
+    out, room = [], TEXT_ALL
+    for raw in dict.fromkeys(map(str, paths or [])):
+        p = Path(raw)
+        try:
+            if not p.is_file() or p.stat().st_size > min(TEXT_EACH, room) or not reads_as_text(p): continue
+            body = p.read_text(encoding='utf-8', errors='replace')
+        except OSError: continue
+        out.append(f'--- {_STAMPED.sub("", p.name) or p.name} ({p}) ---\n{body.rstrip()}'); room -= len(body)
+    return ('THE TEXT OF THE FILES ABOVE, whole:\n' + '\n'.join(out)) if out else ''
+
+
+# ...AND WHAT AN AI WITH NO HANDS WRITES OUT AS A FILE IS ONE (capabilities.HANDS 'none'): asked for a spreadsheet, a card that takes no tools
+# answered with a CSV in its words and "no spreadsheet file anywhere". A fenced block whose first line names its file - ```csv file=quotes.csv -
+# is saved to the task's folder as the file a CLI would have written there (a .xlsx, .docx, .pdf or .pptx made real, officefiles), and named in its place
+_WRITTEN = re.compile(r'```[\w+.-]*[ \t]+file=([^\s`]+)[^\n]*\n(.*?)\n?```', re.S)
+def keep_written(tid: int, text: str) -> tuple:
+    "(`text` with each named fenced block saved to task `tid`'s folder and said as its name, the paths saved)."
+    from . import officefiles
+    saved = []
+    def save(m):
+        name = re.sub(r'[^\w .()-]', '_', Path(m.group(1)).name).strip(' .') or 'file.txt'
+        d = folder(tid); d.mkdir(parents=True, exist_ok=True)
+        p = d / name
+        try:
+            if officefiles.is_made(p): officefiles.write(p, m.group(2))
+            else: p.write_text(m.group(2) + '\n', encoding='utf-8')
+        except (OSError, ValueError): return m.group(0)
+        saved.append(str(p)); return f'**{name}** (in this task\'s files)'
+    return _WRITTEN.sub(save, str(text or '')), saved
+
+
 def reads_as_text(p: Path) -> bool:
     try: st = p.stat()
     except OSError: return False
@@ -152,13 +191,42 @@ def preview_of(p: Path, name: str = ''):
     return None if how == 'sheet' and not can_sheet() else how
 
 
+# A PICTURE DRAWS AT ITS OWN SHAPE (the owner, 2026-11-18: "images should be able to render however the agent wants it or make sense to
+# show"): the page reserves its real width and height before it loads, so nothing jumps - read here off the file's header, no imaging library
+def pixels(p) -> list | None:
+    "[width, height] of a PNG, GIF, JPEG, WebP or BMP picture, read off its header - None for anything else or a header it cannot read."
+    import struct
+    try:
+        with open(p, 'rb') as f: b = f.read(64 * 1024)
+        if b[:8] == b'\x89PNG\r\n\x1a\n': w, h = struct.unpack('>II', b[16:24])
+        elif b[:6] in (b'GIF87a', b'GIF89a'): w, h = struct.unpack('<HH', b[6:10])
+        elif b[:2] == b'BM': w, h = struct.unpack('<ii', b[18:26]); h = abs(h)
+        elif b[:4] == b'RIFF' and b[8:12] == b'WEBP':
+            k = b[12:16]
+            if k == b'VP8X': w, h = 1 + int.from_bytes(b[24:27], 'little'), 1 + int.from_bytes(b[27:30], 'little')
+            elif k == b'VP8L': v = int.from_bytes(b[21:25], 'little'); w, h = 1 + (v & 0x3FFF), 1 + ((v >> 14) & 0x3FFF)
+            else: w, h = (x & 0x3FFF for x in struct.unpack('<HH', b[26:30]))
+        elif b[:2] == b'\xff\xd8':
+            i = 2
+            while i + 9 < len(b):
+                if b[i] != 0xFF: i += 1; continue
+                m, n = b[i + 1], int.from_bytes(b[i + 2:i + 4], 'big')
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC): h, w = struct.unpack('>HH', b[i + 5:i + 9]); break
+                i += 2 + n
+            else: return None
+        else: return None
+        return [int(w), int(h)] if w > 0 and h > 0 else None
+    except (OSError, struct.error, ValueError): return None
+
+
 def row(tid: int, p: Path, rel: str) -> dict:
     "One file as the page draws it - the same shape as a shown page (page_row), so one list draws both."
     from urllib.parse import quote
-    ext, sheet = p.suffix.lower(), preview_of(p)
+    ext, sheet, kind = p.suffix.lower(), preview_of(p), content_type(p.name)
     st = p.stat()
-    return {'id': f'output:{rel}', 'name': p.name, 'path': rel, 'kind': 'output', 'content_type': content_type(p.name),
+    return {'id': f'output:{rel}', 'name': p.name, 'path': rel, 'kind': 'output', 'content_type': kind,
             'size': st.st_size, 'at': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'), 'preview': sheet, 'url': f'/api/task-outputs/{int(tid)}/{quote(rel)}',
+            **({'dims': d} if kind.startswith('image/') and (d := pixels(p)) else {}),
             **({'note': 'No preview on this install - Download opens it in your spreadsheet app.'} if PREVIEW.get(ext) == 'sheet' and not sheet else {})}
 
 
@@ -171,12 +239,26 @@ def turns_folder(tid: int) -> Path: return config.home() / 'scratch' / 'output-t
 def turn_folder(tid: int, turn: int) -> Path: return turns_folder(tid) / str(int(turn))
 
 
+def _kept_copy(tid: int, path: str, made: list):
+    "The newest copy an earlier turn kept of `path`, from turns_made's list - None where none was kept."
+    turn = next((t for t, ks in reversed(made) for k in ks if k['path'] == path and k.get('kept')), None)
+    return resolve(tid, path, turn_folder(tid, turn)) if turn is not None else None
+
+
+def _same(a, b) -> bool:
+    import filecmp
+    try: return bool(a and b) and filecmp.cmp(a, b, shallow=False)
+    except OSError: return False
+
+
 def keep_turn(tid: int, turn: int, since: float) -> list:
-    "The files turn `turn` (its answer's CommentId) wrote - changed at or after `since`, its start - kept as it left them: [{path, size, mtime, kept}]."
-    got = []
+    """The files turn `turn` (its answer's CommentId) wrote - changed at or after `since`, its start - kept as it left them: [{path, size, mtime,
+    kept}]. A FILE WRITTEN BACK AS IT WAS IS NO CHANGE (the walk, 2026-11-18: an agent saved its posts file again each turn, word for word, and
+    the chat drew the whole file under every answer): its turn stays the one that last changed what it says."""
+    got, made = [], [(t, ks) for t, ks in turns_made(tid) if t != int(turn)]
     for r in listing(tid):
         p = resolve(tid, r['path'])
-        if not p or (st := p.stat()).st_mtime < since: continue
+        if not p or (st := p.stat()).st_mtime < since or _same(_kept_copy(tid, r['path'], made), p): continue
         kept = st.st_size <= TURN_COPY_MAX
         if kept:
             (dest := turn_folder(tid, turn).joinpath(*r['path'].split('/'))).parent.mkdir(parents=True, exist_ok=True)
@@ -244,9 +326,11 @@ def turn_versions(tid: int) -> list:
     for turn, made in made_:
         for k in made:
             cur, p = now.get(k['path']), resolve(tid, k['path'])
-            if cur and p and (p.stat().st_mtime, p.stat().st_size) == (k['mtime'], k['size']): continue
+            c = resolve(tid, k['path'], turn_folder(tid, turn)) if k.get('kept') else None
+            # ...nor one written back since as it was (keep_turn): the file as it is now IS this turn's
+            if cur and p and ((p.stat().st_mtime, p.stat().st_size) == (k['mtime'], k['size']) or _same(c, p)): continue
             mine = {'id': f"output:{k['path']}@{turn}", 'turn': f'comment-{turn}', 'after': f'comment-{turn}'}
-            if k.get('kept') and (c := resolve(tid, k['path'], turn_folder(tid, turn))):
+            if c:
                 out.append({**row(tid, c, k['path']), **mine, 'url': f"/api/task-outputs/{int(tid)}/{quote(k['path'])}?turn={turn}"})
             elif cur: out.append({**cur, **mine, 'later': True, 'note': 'Changed later - this opens its newest version.'})
     return out
@@ -254,11 +338,11 @@ def turn_versions(tid: int) -> list:
 
 def his(store, tid: int) -> set:
     """The files in task `tid`'s folder the owner attached, as he attached them: what a line of his sent (sent), and what the task's own
-    words name (New's ask, general.split_files) - one written since is the agent's."""
-    from . import general
+    ask names (New's, the task's Files field) - one written since is the agent's."""
     from .conversation import ep
+    from .store import files_of
     t, out = store.get_task(tid) or {}, sent(store, tid)
-    for f in general.split_files(t.get('Summary'))['files']:
+    for f in files_of(t):
         try:
             q = folder(tid) / rel(tid, Path(f))
             if q.is_file() and q.stat().st_mtime <= ep(t.get('CreatedAt')) + 2: out.add(rel(tid, Path(f)))
@@ -321,6 +405,25 @@ def deliverables(rows: list) -> list:
     return made
 
 
+
+def task_files(store, tid: int) -> list:
+    """WHICH FILES A TASK HAS, one list for every surface: what CAME with it - its messages' attachments, once each, in message order,
+    `attachment` the id the agent and a Send name it by - then what its agent MADE (deliverables, newest first). The phone's Send files
+    read the outputs folder alone and never offered the contract the task came with; the agent's turn read the attachments alone.
+    `chrome`: a picture inline in a mail - a signature's logo, which the page draws as chrome (Attachments.jsx), not a file sent."""
+    came, seen = [], set()
+    for m in (store.task_detail(int(tid)) or {}).get('messages') or []:
+        for a in store.list_attachments(m['MessageId']) or []:
+            k = str(a.get('Path') or '').strip() or f"attachment:{a.get('AttachmentId')}"
+            if k in seen: continue
+            seen.add(k)
+            came.append({'id': f"attachment:{a['AttachmentId']}", 'name': a.get('Name') or 'a file', 'path': a.get('Path') or '', 'kind': 'attachment',
+                         'attachment': a['AttachmentId'], 'size': a.get('Size') or 0, 'saved': bool(a.get('Path')),
+                         'chrome': bool(a.get('Inline')) and m.get('Channel') == 'email'})
+    try: made = deliverables(listing(int(tid)))
+    except Exception: made = []
+    return came + made
+
 # WHERE IS THE EXCEL THE AGENT MADE (the owner, 2026-10-28: "if I ask the chat assistant to pull up the Excel created by the agent on the
 # task about X, could it find the link to it? It should be able to"). Every task's outputs folder and the pages its agents showed or
 # published, matched by the task's words and the file's own name - the model passes the words and the kind; nothing reads the sentence.
@@ -344,10 +447,16 @@ def _tids() -> list:
     except OSError: return []
 
 
+def _confined(raw):
+    from .session_artifacts import confined
+    return confined(raw)
+
+
 def page_row(a: dict) -> dict:
     "A task's artifact as the page draws it - a page an agent showed or published among them - here, so a look-up never imports the server."
     return {'id': a['ArtifactId'], 'name': a.get('Name') or 'session artifact.md',
             'content_type': a.get('ContentType') or 'text/markdown', 'size': a.get('Size') or 0,
+            **({'dims': d} if str(a.get('ContentType') or '').startswith('image/') and (f := _confined(a.get('Path'))) and (d := pixels(f)) else {}),
             'kind': a.get('Kind') or 'session', 'created_by': a.get('CreatedBy') or '', 'created_at': a.get('CreatedAt'),
             'url': f"/api/task-artifacts/{a['ArtifactId']}" if a.get('Path') else None,
             # a page a Claude session published: its claude.ai link (claude_artifacts); `url` is the local copy
@@ -395,24 +504,90 @@ def _cell(v) -> str:
     return s if len(s) <= CELL else s[:CELL - 1] + '…'
 
 
+_REF = re.compile(r"(?<![A-Za-z_!'])\$?([A-Z]{1,3})\$?(\d+)(?![\w(!])")
+_RANGE = re.compile(r"(?<![A-Za-z_!'])\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)")
+_FNS = {'SUM': lambda *a: sum(_flat(a)), 'AVERAGE': lambda *a: (lambda v: sum(v) / len(v))(_flat(a)), 'MIN': lambda *a: min(_flat(a)),
+        'MAX': lambda *a: max(_flat(a)), 'COUNT': lambda *a: len(_flat(a)), 'ROUND': lambda x, n=0: round(x, int(n)), 'ABS': abs}
+def _flat(a): return [x for v in a for x in (v if isinstance(v, list) else [v]) if isinstance(x, (int, float)) and not isinstance(x, bool)]
+def _col(c: str) -> int: return functools.reduce(lambda n, ch: n * 26 + ord(ch) - 64, c, 0)
+
+
+def worked_out(grid: dict, at: tuple, seen=None):
+    """A formula's value from the sheet's own cells - references, ranges, + - * / ^ and SUM, AVERAGE, MIN, MAX, COUNT, ROUND, ABS - or None
+    where it uses anything else (another sheet, text, a function not here). A workbook an agent writes with openpyxl keeps no values, and its
+    preview read "=B8+E8" where the owner wanted 48,500 (walk 2, 2026-11-21). The formula is parsed and checked node by node, never run."""
+    import ast
+    v, seen = grid.get(at), seen or set()
+    # ...an empty cell is 0 as Excel reads it, a word is '' - skipped in a range, a failure in a sum of its own
+    if not (isinstance(v, str) and v.startswith('=')): return v if isinstance(v, (int, float)) and not isinstance(v, bool) else (0 if v is None else '')
+    if at in seen: return None
+    seen = seen | {at}
+    cell = lambda c, r: worked_out(grid, (int(r), _col(c)), seen)
+    span = lambda a, b, c, d: [cell(c_, r_) for r_ in range(int(b), int(d) + 1) for c_ in (_letters(i) for i in range(_col(a), _col(c) + 1))]
+    vals = {}
+    def put(x): vals[k := f'_v{len(vals)}'] = x; return k
+    e = _RANGE.sub(lambda m: put(span(*m.groups())), v[1:])
+    e = _REF.sub(lambda m: put(cell(*m.groups())), e).replace('^', '**')
+    try: tree = ast.parse(e, mode='eval')
+    except SyntaxError: return None
+    ok = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Load, ast.Name, ast.Call, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.USub, ast.UAdd)
+    for n in ast.walk(tree):
+        if not isinstance(n, ok) or (isinstance(n, ast.Constant) and not isinstance(n.value, (int, float))): return None
+        if isinstance(n, ast.Name) and n.id not in vals and n.id not in _FNS: return None
+        if isinstance(n, ast.Call) and not (isinstance(n.func, ast.Name) and n.func.id in _FNS and not n.keywords): return None
+    if any(x is None or (isinstance(x, list) and None in x) for x in vals.values()): return None
+    try: out = eval(compile(tree, '<cell>', 'eval'), {'__builtins__': {}}, {**_FNS, **vals})
+    except (ArithmeticError, TypeError, ValueError): return None
+    return out if isinstance(out, (int, float)) else None
+def _letters(n: int) -> str: return '' if n <= 0 else _letters((n - 1) // 26) + chr(65 + (n - 1) % 26)
+def _num(x) -> str: return f'{x:.2f}'.rstrip('0').rstrip('.') if isinstance(x, float) and round(x, 2) != int(x) else str(int(round(x)))   # as a stored number reads
+
+
+def formatted(v, fmt: str = ''):
+    """A number as its cell's format shows it in Excel - money with its symbol and thousands, a percent as one, its decimals - else as it
+    is stored (the walk, 2026-11-22: a budget's dollars previewed as 147210, its variance as -0.63). Anything not a number is itself."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool): return v
+    f = re.sub(r'"[^"]*"|\\.|_.|\*.', '', str(fmt or '').split(';')[0])          # ...its first section, without quoted words, escapes, padding
+    sym = next((m.group(1) or m.group(2) for m in [re.search(r'\[\$([^\]-]+)[^\]]*\]|([$€£¥])', f)] if m), '')
+    f = re.sub(r'\[[^\]]*\]', '', f)
+    if f.strip().lower() in ('', 'general', '@') or not re.search(r'[0#?]', f): return _num(v) if isinstance(v, float) else v
+    d = len(m.group(1)) if (m := re.search(r'\.([0#?]+)', f)) else 0
+    if '%' in f: return f'{v * 100:.{d}f}%'
+    n = f'{abs(v):{"," if "," in f else ""}.{d}f}'
+    return f"{'-' if v < 0 else ''}{sym}{n}"
+
+
 def sheet(p: Path, name: str = '') -> dict:
     """A workbook's sheet as rows the page draws: the named one (default the first), capped at ROWS x COLS, each cell at CELL
     characters; values, not formulas (data_only), read without loading the whole book (read_only)."""
+    from itertools import zip_longest
     from openpyxl import load_workbook
     wb = load_workbook(p, read_only=True, data_only=True)
+    # ...AND A FORMULA NOTHING HAS WORKED OUT YET READS AS ITSELF (the walks, 2026-11-21: a workbook an agent wrote with openpyxl has formulas
+    # and no cached values, and its Q4 column previewed blank while the agent said the numbers were there): the formula, as attachtext reads it
+    fx = load_workbook(p, read_only=True, data_only=False)
     try:
         names = wb.sheetnames
         ws = wb[name] if name in names else wb[names[0]]
+        fs = fx[ws.title].iter_rows(values_only=True)
+        # ...and one nothing worked out is worked out here from the sheet's own cells (worked_out), else read as itself
+        grid = {(i + 1, j + 1): g for i, f in enumerate(fx[ws.title].iter_rows(max_row=GRID, values_only=True)) for j, g in enumerate(f) if g is not None}
+        def shown(c, g, at):
+            v, fmt = getattr(c, 'value', None), getattr(c, 'number_format', '') or ''
+            if v is None and isinstance(g, str) and g.startswith('='):
+                if (v := worked_out(grid, at)) is None: return g
+            return formatted(v, fmt)
         rows, more = [], False
-        for i, r in enumerate(ws.iter_rows(values_only=True)):
+        for i, r in enumerate(ws.iter_rows()):
             if i >= ROWS: more = True; break
-            rows.append([_cell(v) for v in r[:COLS]])
+            f = next(fs, ()) or ()
+            rows.append([_cell(shown(c, g, (i + 1, j + 1))) for j, (c, g) in enumerate(zip_longest(r[:COLS], f[:COLS]))][:len(r[:COLS])])
         while rows and not any(rows[-1]): rows.pop()
         width = max((max((j + 1 for j, c in enumerate(r) if c), default=0) for r in rows), default=0)
         cut = (ws.max_column or 0) > COLS
         return {'sheet': ws.title, 'sheets': names[:SHEETS], 'rows': [r[:width] + [''] * (width - len(r[:width])) for r in rows],
                 'more_rows': more, 'more_cols': cut, 'max_rows': ROWS, 'max_cols': COLS}
-    finally: wb.close()
+    finally: wb.close(); fx.close()
 
 
 DOC_BLOCKS = 400                                     # a document preview: its first paragraphs and tables, never the whole book
@@ -441,7 +616,7 @@ def document(p: Path) -> dict:
     return {'blocks': blocks, 'more': more, 'max_blocks': DOC_BLOCKS}
 
 
-PREVIEW_VERSION = 1
+PREVIEW_VERSION = 2                  # 2: a formula with no cached value previews as itself
 def previewed(p: Path, name: str = '', sheet_name: str = '') -> dict:
     """A workbook's sheet (sheet) or a document's words (document) as the page draws them - read once per CONTENT, in the attachment-text
     cache (attachtext.cached), whichever file, route or press asks. Raises ValueError for a file of a kind with no such preview."""

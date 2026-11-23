@@ -6,6 +6,7 @@ peer in another repo is none of its business, and its tokens); a task LIKELY to 
 queues behind the one already working - first agent in has control.
 """
 import contextlib, json, os, re, threading, time
+from .say import said as _said            # a failure written to the chat is said in his words (say.py)
 from loguru import logger
 
 from .store import task_ref
@@ -403,7 +404,7 @@ def live_count() -> int:
     def working(t):
         try: return t.phase() != 'parked'
         except Exception: return True          # a session that cannot say counts, as before
-    return len([t for t in list(term.SESSIONS.values()) if t.alive and getattr(t, 'quick', False) is not True and working(t)])   # a quick answer is one call, no desk
+    return len([t for t in list(term.SESSIONS.values()) if t.alive and working(t)])
 
 def subagent_count() -> int:
     "Subagents the live sessions left running at their last Stop (hooks.py keeps them on the session) - light load, ingest.agent_load."
@@ -444,6 +445,9 @@ def record_failure(store, tid: int, err, agent: str = '', label: str = 'The agen
     # a monitor's task, naming a Trust press that was nowhere): the task's one hold, said once, its Trust the way on (ingest.not_started)
     from .ingest import held_start
     if held_start(store, tid, err): return None
+    # ...and AN AI THAT COULD NOT ANSWER is the turn's own try again, queued and said where it failed (general.queue_retry) - never a second line
+    from . import general
+    if general.provider_down(err): return store.get_dispatch(tid)
     if not store.get_dispatch(tid): store.enqueue_dispatch(tid, None, agent, 'start failed - retrying')
     row = store.dispatch_failed(tid, str(err), is_permanent(err), BACKOFF, MAX_ATTEMPTS)
     if not row: return None
@@ -480,9 +484,9 @@ def schedule_due(store, startup: bool = False):
 def _due(q, now: str) -> bool: return not q.get('NextAt') or str(q['NextAt']) <= now
 
 def _occupied(tid) -> bool:
-    "A live session working the task - not a quick answer's (quickwork), which takes no desk and is what an escalation queued behind."
+    "A live session working the task."
     from . import terminal as term
-    return any(t.task_id == tid and t.alive and getattr(t, 'quick', False) is not True for t in list(term.SESSIONS.values()))
+    return any(t.task_id == tid and t.alive for t in list(term.SESSIONS.values()))
 
 
 def drain(store):
@@ -512,6 +516,8 @@ def drain(store):
             # assistant the owner opened meanwhile takes it next - only a coding session already open makes it moot
             if t.get('Status') not in ('open', 'in_progress', *(('waiting',) if turn else ())) or (_occupied(q['TaskId']) and not (turn and general.handles(t))):
                 store.clear_dispatch(q['TaskId']); continue
+            # ...A TRY AGAIN THE AI OWES (general.queue_retry) runs in its own thread, its row kept until a turn answers
+            if turn == general.RETRY_TURN: general.retry_turn(store, q['TaskId']); continue
             try:
                 if turn:
                     from .ingest import queued_turn
@@ -533,7 +539,7 @@ def drain(store):
                 # and counting that as a failed launch would start the work twice (PW-088)
                 if _occupied(q['TaskId']):
                     store.clear_dispatch(q['TaskId'])
-                    store.add_comment(q['TaskId'], 'router', 'agent', f'Started, but noting it afterwards failed: {str(e)[:200]}')
+                    store.add_comment(q['TaskId'], 'router', 'agent', f'Started, but noting it afterwards failed: {_said(e)}')
                     continue
                 logger.warning(f'queued dispatch failed for task {q["TaskId"]}: {e}')
                 record_failure(store, q['TaskId'], e, q.get('Agent') or '')

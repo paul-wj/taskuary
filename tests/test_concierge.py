@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from taskuary import buttons, concierge, funnel, general, railwalk, server, terminal
 from taskuary.store import MemoryStore
+from taskuary.testing import mailbox
 from taskuary import memorylines
 
 
@@ -16,7 +17,7 @@ def ago(hours=0): return (datetime.now() - timedelta(hours=hours)).strftime('%Y-
 
 
 def store():
-    s = MemoryStore()
+    s = mailbox(MemoryStore())
     # an install has a coding agent - config.toml seeds it at boot. Without one the assistant now
     # says so instead of receipting a hand-off the dispatch would 422 on (2026-09-03).
     s.upsert_agent('coding', 'coding', 'cli', '{}')
@@ -144,7 +145,8 @@ class TurnTests(unittest.TestCase):
         s = store()
         t, m, r = drafted(s)
         concierge.surface(s, key=f'review:{r}', llm=lambda *a, **k: 'Dana needs the corrected export.')
-        out = concierge.say(s, 'make it warmer', key=f'review:{r}', llm=lambda *a, **k: 'CALL: {"kind": "redraft", "params": {"text": "warmer"}}')
+        # ...on the phone; on the desk the task opens and its agent rewrites there (the owner, 2026-11-18 - test_assistant_router)
+        with phone(): out = concierge.say(s, 'make it warmer', key=f'review:{r}', llm=lambda *a, **k: 'CALL: {"kind": "redraft", "params": {"text": "warmer"}}')
         self.assertEqual(out['decision']['verb'], 'redraft')
         self.assertTrue(out['say'].startswith('Rewriting the draft on'), out['say'])
         self.assertNotIn('waits for', out['say'])
@@ -198,7 +200,7 @@ class TurnTests(unittest.TestCase):
         self.assertIn('deep dive', p['params']['text']); self.assertEqual(s.list_tasks(active_only=True), [])   # nothing started on the words
         session = mock.Mock()
         with mock.patch.object(concierge.general, 'start_session', return_value=session), \
-             mock.patch.object(concierge.threading, 'Thread') as thread:
+             mock.patch.object(concierge.threading, 'Thread') as thread, mock.patch('taskuary.capabilities.has_ai', return_value=True):
             r = run(s, p).json()
         task = s.get_task(r['outcome']['taskId'])
         self.assertEqual((task['Kind'], task['SourceRef']), ('general', 'assistant:agent'))
@@ -348,11 +350,11 @@ class DecisionTests(unittest.TestCase):
         # ...run at once by the page, just this once - no "are you sure" (owner-approved, 2026-10-21): From now on follows as a chip
         self.assertTrue(p.get('auto')); self.assertNotIn(concierge.WAITS, out['say'])
         # a reply request drafts at once and sends nothing (PW-126): the words ride into the draft
-        out = concierge.say(s, 'tell her the file is with the developer, Friday', key=f'review:{r}',
+        with phone(): out = concierge.say(s, 'tell her the file is with the developer, Friday', key=f'review:{r}',
                             llm=lambda sy, u, **k: "I'll draft that.\nCALL: {\"kind\": \"reply\", \"params\": {\"text\": \"the file is with the developer, Friday\"}}")
         self.assertEqual(_verb(out['decision']), ('reply', 'the file is with the developer, Friday')); self.assertIsNone(out.get('proposal'))
         told = lambda sy, u, **k: "I'll draft that.\nCALL: {\"kind\": \"reply\", \"params\": {\"text\": \"mention the Friday delivery\"}}"
-        out = concierge.say(s, 'can you mention the Friday delivery in the response', key=f'review:{r}', llm=told)
+        with phone(): out = concierge.say(s, 'can you mention the Friday delivery in the response', key=f'review:{r}', llm=told)
         self.assertEqual(_verb(out['decision']), ('reply', 'mention the Friday delivery'))
         # a remark is not a decision
         out = concierge.say(s, 'who is Dana again?', key=f'review:{r}', llm=lambda *a, **k: 'Dana is the vendor contact on the export.')
@@ -748,7 +750,8 @@ class SetupAndTroubleTests(unittest.TestCase):
         t = s.get_task(out['taskId'])
         self.assertEqual((t['Kind'], t['Status'], t['Source']), ('general', 'open', 'assistant'))
         # with no title named, the owner's sentence as said - a regex used to cut the verb off it (the owner, 2026-10-11)
-        self.assertEqual(out['title'], "set up a report that pulls last month's Zoho invoices every Monday"); self.assertEqual(t['Title'][:6], 'Set up')
+        self.assertEqual(out['title'], t['Title'])     # the receipt names the task as made
+        self.assertEqual(out['title'], "Set up a report that pulls last month's Zoho invoices every Monday")
         self.assertIn('Zoho invoices', t['Summary'])
         self.assertEqual([i['text'] for i in s.task_checklist(out['taskId'])],
                          ["set up a report that pulls last month's Zoho invoices every Monday"])
@@ -1390,3 +1393,26 @@ class SettleBadge(unittest.TestCase):
             self.assertEqual(c.post('/api/funnel/settle', json={'key': 'fyis:msg:1,msg:2', 'pressed': buttons.label('next', 'batch')}).status_code, 200)
             c.post('/api/funnel/settle', json={'key': 'fyis:msg:3', 'pressed': 'Anything I like'})
         self.assertEqual(cards(), {'fyis:msg:1,msg:2': 'All read, next', 'fyis:msg:3': None})
+
+
+class AttachedFileTests(unittest.TestCase):
+    """A FILE ON THE CHAT LINE IS READ, not named (the hammer round, 2026-11-18): a sheet or a PDF dropped into the Assistant's box reached
+    its prompt as a disk path - the API brain has no way to open a path, and the CLI one runs with its tools off - so "what is the total in
+    this?" was answered without the file. Its text rides in the prompt (attachtext, the triage road's reader), fenced as material."""
+    def test_a_sheet_attached_to_a_line_reaches_the_prompt_as_its_words(self):
+        import tempfile, os
+        from pathlib import Path
+        from taskuary import config
+        home = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {'TASKUARY_HOME': home}):
+            d = config.home() / 'attachments' / 'prompt' / '202611'; d.mkdir(parents=True, exist_ok=True)
+            sheet = d / '20261118-090000-abc123-vendor-totals.csv'
+            sheet.write_text('vendor,amount\nPayworth,4180.00\nTrainly,912.50\n', encoding='utf-8')
+            seen = {}
+            def llm(system, user, max_tokens=0, images=None):
+                seen['user'], seen['images'] = user, images; return 'Payworth is 4,180.00 of it.'
+            out = concierge.say(store(), 'what is the biggest line in this?', images=[str(sheet)], llm=llm)
+        self.assertIn('Payworth,4180.00', seen['user'])            # what the sheet SAYS, not only where it lies
+        self.assertIn('⟦', seen['user'])                           # ...fenced: what its author wrote is material, never an order
+        self.assertFalse(seen['images'])                           # a sheet is no picture: nothing goes down the vision road
+        self.assertEqual(out['say'], 'Payworth is 4,180.00 of it.')

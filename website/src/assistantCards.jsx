@@ -64,9 +64,8 @@ import { connError, openBugReport } from "./bugReportOpen.js";
 import { dayLabel, fmtTime } from "./dates.js";
 import { useShare } from "./Share.jsx";
 import ItemSections, { ItemLay, ItemPart, handToItem } from "./ItemSections.jsx";
-import { withImages } from "./promptImages.jsx";
 import { PaneMoves } from "./TaskPage.jsx";   // an FYI's Came from carries its pane's moves as a task's does
-import { TYPE_LABELS, reportSchedule } from "./reportWords.js";
+import { TYPE_LABELS } from "./reportWords.js";
 import { SECTIONS as STEPS } from "./taskLayout.js";   // a task's sections, by name (ItemSections)
 import { WorkstreamLabel } from "./Workstream.jsx";   // the idea's workstream, a small label (the owner, 2026-11-01)
 import { channelName } from "./taskSources.js";
@@ -906,15 +905,15 @@ export function MeetingCard({ card, table = null }) {
 }
 
 // WHAT PRODUCED A REPORT, for its Came from (ItemSections): its source row - when it runs, what it reads, where a run goes, in the Reports
-// tab's own words (reportSchedule.js, the server's RouteWords) - and its newest run's time and note. Read once per report and kept (useFetched)
-const typeWord = (type) => TYPE_LABELS[type] ? t(TYPE_LABELS[type]) : capital(String(type || "").replace(/_/g, " "));
+// tab's own words (the server's ScheduleWords and RouteWords) - and its newest run's time and note. Read once per report and kept (useFetched)
+const typeWord = (t) => TYPE_LABELS[t] || capital(String(t || "").replace(/_/g, " "));
 function useReportSource(sid) {
   useLocale();
   const rows = useFetched(sid != null ? "/api/sources" : null), runs = useFetched(sid != null ? `/api/reports/${sid}/runs?limit=1` : null);
   const row = (rows?.data || []).find((r) => r.SourceId === sid);
   let cfg = {};
   try { cfg = JSON.parse(row?.ConfigJson || "{}") || {}; } catch { cfg = {}; }
-  return { runs: row ? reportSchedule(cfg) : "", reads: !row ? "" : (cfg.sources || []).length > 1 ? cfg.sources.map((x) => x.label || typeWord(x.type)).join(", ") : typeWord(cfg.type), goes: row?.RouteWords_i18n ? translateDescriptor(row.RouteWords_i18n) : row?.RouteWords || "", run: (runs?.data || [])[0] || null };
+  return { runs: row?.ScheduleWords || "", reads: !row ? "" : (cfg.sources || []).length > 1 ? cfg.sources.map((x) => x.label || typeWord(x.type)).join(", ") : typeWord(cfg.type), goes: row?.RouteWords || "", run: (runs?.data || [])[0] || null };
 }
 // WHAT AN ITEM SAYS AND THE BOX UNDER IT (ItemSections ItemAsk): triage's reading rides the message the item is drawn from - the very payload
 // FullText reads, so one fetch serves both. `card` false: not on the table, nothing asked
@@ -1239,6 +1238,7 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
     try {
       const { data } = await api.post(`/api/messages/${card.mid}/dispatch`, {
         kind: o.kind, agent: o.agent || null, brain: o.brain || null, pick: o.pick || null, model: o.model || null, instruction: o.text || null,
+        files: o.files || [],
       });
       if (data.dispatch === "needs_repo") {
         setRepoAsk({ taskId: data.taskId, agent: data.agent || "" });
@@ -1709,7 +1709,7 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
     start: async (o) => {
       const [lead, ...rest] = o.items.map((c) => items.find((x) => x.key === c.key)).filter(Boolean);
       const also = rest.length ? `\n\nTHE OTHER MESSAGES OF THIS LIST IT IS ABOUT (read each with read_message)\n${rest.map((x) => `m${x.mid} - ${whoName(x.who)}: ${x.title || ""}`).join("\n")}` : "";
-      await onAgent?.(lead, { verb: o.verb, text: withImages(`${o.text}${also}`, o.files) });
+      await onAgent?.(lead, { verb: o.verb, text: `${o.text}${also}`, files: o.files });
     } });
   const ask = (i, coding) => { if (!(table != null && handAll(i, coding))) setAsking({ key: i.key, coding }); };
   const actsOf = (i) => (<>

@@ -3,10 +3,13 @@
 // Next never does. Its press is the ordinary proposal road (runChip -> proposeDirect, concierge.AUTO), never a road of its own.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liveVerb } from "../src/buttons.js";
+
+import { label, hint, liveVerb } from "../src/buttons.js";
 import { typeOf, phoneRow } from "../src/actionRow.js";
 
-test("the old Prep me verb stays gone", () => {
+test("Prepare is a button of the one list, and the old Prep me stays gone", () => {
+  assert.equal(label("prepare"), "Prepare");
+  assert.match(hint("prepare"), /writes to nobody/);
   assert.equal(liveVerb("prep"), null);
 });
 
@@ -16,4 +19,3 @@ test("on the row it is an agent's verb, and a phone row keeps Next apart from it
   const ph = phoneRow({ decide: [prep], agent: [], more: [] });
   assert.deepEqual(ph.shown, [prep]);
 });
-

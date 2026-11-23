@@ -58,13 +58,14 @@ OPENAI_COMPATIBLE = {
 
 # THE GATEWAY ADDRESS IS THE CARD'S when the build ships none (HIPAA_AI_URL blank, as this public repo is): it comes with the access
 # code, so the card asks for it - the card that only asked for the code could never connect (the owner, 2026-10-20). Pasted as sent,
-# with or without its /v1; https, since the access code rides it - plain http only to this computer.
-GATEWAY_MISSING = 'Add the gateway address you were sent, then press Connect.'
+# with or without its /v1; https, since the access code rides it - plain http only to this computer. The lines name no button: Setup's
+# AI step says them under Connect, the card under Connections under Test (one said "press Connect" there, over a card with none).
+GATEWAY_MISSING = 'Add the gateway address you were sent, then try again.'
 GATEWAY_NOT_HTTPS = 'The gateway address has to start with https:// - copy it again from the message your access code came in.'
-GATEWAY_SILENT = "Couldn't reach that address - check it and your connection, then press Connect."
+GATEWAY_SILENT = "Couldn't reach that address - check it and your connection, then try again."
 GATEWAY_NOT_GATEWAY = ('That address answered with a web page, not the AI gateway - check you pasted the gateway address you were sent, '
                        'not the admin site.')
-GATEWAY_CODE = "The access code didn't work - copy all of it again and press Connect."
+GATEWAY_CODE = "The access code didn't work - copy all of it once more, then try again."
 GATEWAY_FAULT = 'The gateway answered with an error of its own - try again in a minute, or ask whoever sent your access code.'
 LOCAL_HOSTS = ('localhost', '127.0.0.1', '::1')
 # A GATEWAY THAT SCALES TO ZERO (Cloud Run) answers its first request only once it has started, which took past the 15 s every other
@@ -93,7 +94,11 @@ class BudgetSpent(RuntimeError):
 # LiteLLM counts its fallbacks in a header; where one of them shows another model answered, the call says so (fell_back) and the router
 # keeps it as the card's episode (brainroute.heard) - the card, the bell and the task's "AI used" read one line (fallback_line). A call
 # turned down outright on a quota (429, every retry spent) is the provider's quota, in those words, with the way on (QuotaSpent).
-QUOTA_LINE = "{name}: {model} is over its quota at the provider (it answered 429) - raise the quota there, or pick another model on its card"
+QUOTA_LINE = "{name}: {model} is over its quota at the provider - raise the quota there, or pick another model on its card"
+# ...and A MODEL THAT THOUGHT PAST ITS ROOM, in the same words (the gateway walk, 2026-11-19: "hipaa_ai: ... (finish_reason length)" stood in the log
+# and he read "The AI stopped on an error")
+ROOM_LINE = "The AI stopped before it answered: {name}'s {model} ran out of room, even with {room:,} tokens - pick a model that thinks less on its card"
+def card_name(t: str) -> str: return 'HIPAA AI' if t == 'hipaa_ai' else t
 QUOTA_REST = 600           # seconds before a card over its quota is asked again: a per-minute quota is back by then, a raised one too
 _FAMILY = re.compile(r'claude|gemini|gpt|o\d|llama|mistral|grok|deepseek|qwen|command|sonar|kimi', re.I)
 _FELL = contextvars.ContextVar('tq_llm_fell', default=None)
@@ -102,6 +107,13 @@ _FELL = contextvars.ContextVar('tq_llm_fell', default=None)
 class QuotaSpent(BudgetSpent):
     "The provider turned the call away on its quota (429 after every retry): said as that, and the card rests (brainroute.spend) for QUOTA_REST."
     def __init__(self, line: str): super().__init__(line, QUOTA_REST)
+
+
+# ...AND A PROVIDER THAT COULD NOT ANSWER NOW IS KNOWN BY ITS TYPE (design round 4, H3): down after every retry (5xx), or a model that stopped
+# before it answered - their words unchanged, so every reading of them stands; general.provider_down reads the type and queues the turn again
+class ProviderDown(RuntimeError): "The endpoint itself failed (a 5xx after every retry)."
+class NoAnswer(RuntimeError): "The model stopped before it answered: out of room, or nothing sent back."
+class OutOfRoom(NoAnswer): "The model spent its room thinking and wrote nothing: its card's model is his to change - trying again cannot help."
 
 
 def words(model: str) -> str:
@@ -146,7 +158,12 @@ def refused(t: str, r, url: str, model: str) -> Exception:
     "The error a refused call raises: a quota in plain words with the way on (QuotaSpent), else the provider's own."
     if r.status_code == 429:
         return QuotaSpent(QUOTA_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t, model=words(model) or 'its model'))
-    return RuntimeError(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:300]}')
+    # ...with room for the provider's own reason, which a gateway nests inside its own wrapper (failures.refused reads the innermost)
+    e = (ProviderDown if r.status_code >= 500 else RuntimeError)(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:1200]}')
+    # ...carrying its status, so every reader words it from the code (say.plain_failure; walk 5, 2026-11-22: a connection's Test printed "openrouter
+    # error 401 at https://... {"error": ...}" where "the key was turned down" was meant)
+    e.status_code = r.status_code
+    return e
 
 
 def budget_said(text) -> str:
@@ -288,6 +305,9 @@ ROOM = 8000
 # ...and an answer CUT SHORT by its thinking is no answer either: the HIPAA AI gateway's Gemini spent 360 of the Assistant's 380 tokens
 # reasoning and handed back 16 words with finish_reason 'length' - "Tell me what you'd like the routine to do-what", a CALL cut at
 # `{"params` - and the chat showed the stub (the owner, 2026-11-09). A route seen thinking is asked with ROOM from then on.
+# ...and a card whose own search came back empty or refused is not asked again: a HIPAA AI Hydrogen spent ~35 s on each search that
+# returned nothing before the results page was read (the owner, 2026-11-20: "it should be a quick tool call")
+_NO_SEARCH = set()
 _THINKS = set()            # (type, endpoint, model) whose answers were seen cut by reasoning tokens
 _SAID = {}                 # a CLI conversation's id -> the hash of the instructions it was last typed (make_cli_llm: said once)
 def cut_by_thinking(j: dict) -> bool:
@@ -612,10 +632,11 @@ def effective_pick(store, pick=None) -> str:
     """The pick a brain setting resolves to - the slot's own value (`triage_ai` unless `pick` names one), else
     what blank means (agents.default_pick). '' = no brain: build_llm returns None and mail files untriaged.
     ONE answer for the brain that runs and for every surface that says which one does (setup.state)."""
-    primary = str(pick if pick is not None else store.get_setting('triage_ai') or '').strip()
-    if primary: return primary
-    from .agents import default_pick
-    return default_pick(store)
+    from . import agents
+    # the slot's own reading is the one resolver's (agents.resolve_brain) - it read the setting raw, so a CLI an update saved FOR him that no
+    # longer starts kept reading his mail while every other job had set it aside
+    if pick is None: return agents.resolve_brain(store, 'triage')
+    return str(pick).strip() or agents.default_pick(store)
 
 
 def brain_status(store, pick=None) -> dict:
@@ -744,7 +765,7 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
         if identity not in identities:
             picks.append(candidate); identities.add(identity)
 
-    from . import origin as origin_mod
+    from . import origin as origin_mod, harness
 
     def one(candidate, first=False):
         # the conversation - its resume id and its live process - belongs to the FIRST brain only; a failover
@@ -763,6 +784,11 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
             except hub_agents.NoAI:
                 if first: raise
                 return None
+        # AN API CARD'S AGENT WORK RUNS ON ITS HARNESS CLI (harness.py): the Codex road, pointed at the card - its gear in the card's own models
+        if str(chosen_keep or '').startswith('general:') and (to := harness.road(store, candidate)) != candidate:
+            return _Cooling(store, candidate, make_cli_llm(
+                store, to[4:], harness.spell(store, to, chosen_model) or None, trace=trace, cancel=cancel, resume=chosen_resume, cli_tools=cli_tools,
+                extra_env=extra_env, research=research, gear=gear, keep=chosen_keep, task_id=task_id, hold_sid=hold_sid))
         want = candidate[10:] if candidate.startswith('connector:') else None
         want_id = int(want) if want and want.isdigit() else None
         from .agents import PICKED_ONLY
@@ -777,6 +803,9 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
                 # no such tier) - into the box its requests name, Azure's deployment (firstrun.TIER_BOX)
                 box, tier = ('deployment' if full['Type'] == 'azure_openai' else 'model'), {'strong': 'strong_model', 'light': 'light_model'}.get(gear)
                 if tier and not chosen_model and str(config.get(tier) or '').strip(): config = {**config, box: str(config[tier]).strip()}
+                # ...and the light gear THINKS LITTLE where its box names no effort: a gateway's Flash, thinking as it would, took up to 169 s
+                # to sort one mail (the owner, 2026-11-20: "it can't be 169 seconds, that's broken")
+                if gear == 'light' and not chosen_model and str(config.get('light_model') or '').strip() and full['Type'] in EFFORT_TAKERS                         and not split_effort(config[box])[1]: config = {**config, box: f"{config[box]}@low"}
                 if chosen_model: config = {**config, 'model': chosen_model}
                 return _Cooling(store, candidate, make_llm(full['Type'], config, full.get('Secret')))
         return None
@@ -870,7 +899,7 @@ def ask_json(brain, system: str, user: str, want: dict = None, need=(), **kw) ->
     carries = getattr(brain, 'takes_want', None)
     if want is not None and carries: kw['want'] = want
     # `false` and 0 are answers: reading them as left out asked every "no" a second time, and the second time it said yes
-    def blank(v): return v is None or (not v and not isinstance(v, (bool, int, float)))
+    blank = _blank
     def short(a): return [k for k in need if blank((a.data or {}).get(k))] if carries is False else []
     first = ask(user)
     if first.data is not None and not short(first): return _stepped(brain, system, user, want, need, kw, first)
@@ -967,19 +996,24 @@ def unreadable(raw: str) -> str:
     return f'the AI sent back JSON that was cut off or broken: {q}'
 
 
+def _blank(v) -> bool:
+    "A field the answer left out: missing or empty - never False or 0, which are answers (round 4, 2026-11-22: unfinished: false asked again)."
+    return v is None or (not v and not isinstance(v, (bool, int, float)))
+
+
 def _stepped(brain, system, user, want, need, kw, out: JsonAnswer) -> JsonAnswer:
     """An answer still unreadable after its own retry, or one the model said it was not sure of, is asked ONCE of a strong model -
     where the owner turned that on (brainroute's 'unsure' rule, Auto mode). These jobs only read and write, so asking again cannot
     act twice; a strong answer that is no better leaves the first one standing."""
     if getattr(brain, 'is_step_up', False) is not True: return out      # said out loud: a stand-in brain answers any attribute
     up = brain.step_up
-    bad = out.data is None or any(not out.data.get(k) for k in need)
+    bad = out.data is None or any(_blank(out.data.get(k)) for k in need)
     unsure = not bad and out.data.get('sure') is False
     if not (bad or unsure): return out
     strong = up('unsure' if unsure else 'unreadable')
     if strong is None: return out
     again = ask_json(strong, system, user, want=want, need=need, **{k: v for k, v in kw.items() if k != 'want'})
-    return again if again.data is not None and not any(not again.data.get(k) for k in need) else out
+    return again if again.data is not None and not any(_blank(again.data.get(k)) for k in need) else out
 
 
 def retry_wait(last, attempt: int) -> float:
@@ -1234,6 +1268,67 @@ def blocks(system, marks: int = 4, ttl: bool = True, seconds: bool = False):
 def cached(system, marks: int = 4): return blocks(system, marks) or str(system)
 
 
+def endpoint(t, cfg: dict, key: str) -> tuple:
+    """(urls, headers, model) an OpenAI-shaped card is asked at - its chat completions address(es), its auth header and its model. ONE
+    ANSWER for make_llm's own calls and for the CLI harness its agent runs on (harness.py), so the two never reach different hosts."""
+    if t == 'openai':
+        urls = ['https://api.openai.com/v1/chat/completions']
+        headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or PROVIDER_DEFAULT['openai']
+    elif t == 'openrouter':
+        # one key, the whole catalog behind the OpenAI schema - open-weights models included.
+        # Model strings are OpenRouter's names ('meta-llama/llama-3.3-70b-instruct', ...);
+        # 'openrouter/auto' lets their router pick, so an empty model box still works.
+        urls = ['https://openrouter.ai/api/v1/chat/completions']
+        headers, model = {'Authorization': f'Bearer {key}', 'X-Title': 'Taskuary'}, cfg.get('model') or PROVIDER_DEFAULT['openrouter']
+    elif t == 'meta':
+        # Meta Model API - Muse Spark behind the OpenAI chat-completions schema, so it needs no
+        # branch of its own beyond the base url. This is the road to Muse Spark on a machine that
+        # cannot run the muse CLI at all (its installer is posix-only), and it is a triage brain
+        # only: the CODING side is the CLI. base_url is overridable for the same reason ollama's
+        # is - the surface is standard, so a gateway or proxy in front of it still speaks it.
+        # muse-spark-1.2-contributor is ~12x cheaper AND trains Meta's products on what you send;
+        # the default stays on the private tier, and the card says so rather than deciding for you.
+        base = (cfg.get('base_url') or 'https://api.meta.ai/v1').rstrip('/')
+        urls = [f'{base}/chat/completions']
+        headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or PROVIDER_DEFAULT['meta']
+    elif t == 'ollama':
+        # a LOCAL server speaking the OpenAI surface. Ollama's port out of the box, but base_url
+        # reaches LM Studio (:1234), llama.cpp, vLLM - anything /v1-compatible - so open-source
+        # models triage your mail without a byte leaving the machine. No key unless the server
+        # demands one; the model must be named because only `ollama list` knows what's pulled.
+        base = (cfg.get('base_url') or 'http://127.0.0.1:11434').rstrip('/')
+        if not cfg.get('model'): raise RuntimeError('a local brain needs its model named - `ollama list` shows what is installed')
+        urls, model = [f'{base}/v1/chat/completions'], cfg['model']
+        headers = {'Authorization': f'Bearer {key}'} if key else {}
+    elif t in OPENAI_COMPATIBLE:
+        default_base, default_model = OPENAI_COMPATIBLE[t]
+        base = gateway_base(cfg) if t == 'hipaa_ai' else (cfg.get('base_url') or default_base).rstrip('/')
+        if not base: raise RuntimeError('no gateway address on its card - add the one you were sent with your access code')
+        urls = [f'{base}/chat/completions']
+        headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or default_model
+    elif t == 'vertex_ai':
+        # Google's Agent Platform (Vertex AI): the same chat completions, under a project and a location. Its API key rides
+        # x-goog-api-key - Bearer there wants an OAuth token - and its models are named by publisher (google/, meta/ ...)
+        if not cfg.get('project'): raise RuntimeError('vertex_ai needs its Google Cloud project id')
+        loc = (cfg.get('location') or 'global').strip()
+        host = 'aiplatform.googleapis.com' if loc == 'global' else f'{loc}-aiplatform.googleapis.com'
+        urls = [f"https://{host}/v1/projects/{cfg['project'].strip()}/locations/{loc}/endpoints/openapi/chat/completions"]
+        model = (cfg.get('model') or VERTEX_DEFAULT).strip()
+        headers, model = {'x-goog-api-key': key}, model if '/' in model else f'google/{model}'
+    elif t == 'azure_openai':
+        ep = (cfg.get('endpoint') or '').rstrip('/')
+        if not (ep and cfg.get('deployment')): raise RuntimeError('azure_openai needs endpoint + deployment')
+        # Azure's v1 surface first (no api-version, OpenAI-compatible, all params work);
+        # legacy deployments URL as fallback for resources without it. An explicit
+        # api_version in the config skips straight to legacy with that version.
+        legacy = f"{ep}/openai/deployments/{cfg['deployment']}/chat/completions?api-version={cfg.get('api_version') or '2024-12-01-preview'}"
+        urls = [legacy] if cfg.get('api_version') else [f'{ep}/openai/v1/chat/completions', legacy]
+        headers, model = {'api-key': key}, cfg['deployment']
+    else:
+        raise RuntimeError(f'unknown AI connector type: {t}')
+    return urls, headers, model
+
+
 def make_llm(t, cfg: dict, key: str):
     m, effort = split_effort(cfg.get('model'))
     if effort: cfg = {**cfg, 'model': m}
@@ -1292,61 +1387,7 @@ def make_llm(t, cfg: dict, key: str):
         llm.chat, llm.search = chat, search
         llm.takes_want = llm.takes_web = True
         return llm
-    if t == 'openai':
-        urls = ['https://api.openai.com/v1/chat/completions']
-        headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or PROVIDER_DEFAULT['openai']
-    elif t == 'openrouter':
-        # one key, the whole catalog behind the OpenAI schema - open-weights models included.
-        # Model strings are OpenRouter's names ('meta-llama/llama-3.3-70b-instruct', ...);
-        # 'openrouter/auto' lets their router pick, so an empty model box still works.
-        urls = ['https://openrouter.ai/api/v1/chat/completions']
-        headers, model = {'Authorization': f'Bearer {key}', 'X-Title': 'Taskuary'}, cfg.get('model') or PROVIDER_DEFAULT['openrouter']
-    elif t == 'meta':
-        # Meta Model API - Muse Spark behind the OpenAI chat-completions schema, so it needs no
-        # branch of its own beyond the base url. This is the road to Muse Spark on a machine that
-        # cannot run the muse CLI at all (its installer is posix-only), and it is a triage brain
-        # only: the CODING side is the CLI. base_url is overridable for the same reason ollama's
-        # is - the surface is standard, so a gateway or proxy in front of it still speaks it.
-        # muse-spark-1.2-contributor is ~12x cheaper AND trains Meta's products on what you send;
-        # the default stays on the private tier, and the card says so rather than deciding for you.
-        base = (cfg.get('base_url') or 'https://api.meta.ai/v1').rstrip('/')
-        urls = [f'{base}/chat/completions']
-        headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or PROVIDER_DEFAULT['meta']
-    elif t == 'ollama':
-        # a LOCAL server speaking the OpenAI surface. Ollama's port out of the box, but base_url
-        # reaches LM Studio (:1234), llama.cpp, vLLM - anything /v1-compatible - so open-source
-        # models triage your mail without a byte leaving the machine. No key unless the server
-        # demands one; the model must be named because only `ollama list` knows what's pulled.
-        base = (cfg.get('base_url') or 'http://127.0.0.1:11434').rstrip('/')
-        if not cfg.get('model'): raise RuntimeError('a local brain needs its model named - `ollama list` shows what is installed')
-        urls, model = [f'{base}/v1/chat/completions'], cfg['model']
-        headers = {'Authorization': f'Bearer {key}'} if key else {}
-    elif t in OPENAI_COMPATIBLE:
-        default_base, default_model = OPENAI_COMPATIBLE[t]
-        base = gateway_base(cfg) if t == 'hipaa_ai' else (cfg.get('base_url') or default_base).rstrip('/')
-        if not base: raise RuntimeError('no gateway address on its card - add the one you were sent with your access code')
-        urls = [f'{base}/chat/completions']
-        headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or default_model
-    elif t == 'vertex_ai':
-        # Google's Agent Platform (Vertex AI): the same chat completions, under a project and a location. Its API key rides
-        # x-goog-api-key - Bearer there wants an OAuth token - and its models are named by publisher (google/, meta/ ...)
-        if not cfg.get('project'): raise RuntimeError('vertex_ai needs its Google Cloud project id')
-        loc = (cfg.get('location') or 'global').strip()
-        host = 'aiplatform.googleapis.com' if loc == 'global' else f'{loc}-aiplatform.googleapis.com'
-        urls = [f"https://{host}/v1/projects/{cfg['project'].strip()}/locations/{loc}/endpoints/openapi/chat/completions"]
-        model = (cfg.get('model') or VERTEX_DEFAULT).strip()
-        headers, model = {'x-goog-api-key': key}, model if '/' in model else f'google/{model}'
-    elif t == 'azure_openai':
-        ep = (cfg.get('endpoint') or '').rstrip('/')
-        if not (ep and cfg.get('deployment')): raise RuntimeError('azure_openai needs endpoint + deployment')
-        # Azure's v1 surface first (no api-version, OpenAI-compatible, all params work);
-        # legacy deployments URL as fallback for resources without it. An explicit
-        # api_version in the config skips straight to legacy with that version.
-        legacy = f"{ep}/openai/deployments/{cfg['deployment']}/chat/completions?api-version={cfg.get('api_version') or '2024-12-01-preview'}"
-        urls = [legacy] if cfg.get('api_version') else [f'{ep}/openai/v1/chat/completions', legacy]
-        headers, model = {'api-key': key}, cfg['deployment']
-    else:
-        raise RuntimeError(f'unknown AI connector type: {t}')
+    urls, headers, model = endpoint(t, cfg, key)
     ek = (t, urls[0], model)
     # ...marked as the model it reaches caches (cache_mode): Claude's TTL in its own words, Gemini's cachedContent in seconds
     claude = lambda: bool(_CLAUDE.search(str(_ANSWERED.get(ek) or model or '')))
@@ -1392,8 +1433,9 @@ def make_llm(t, cfg: dict, key: str):
             for url in urls:
                 for tok_param in ('max_completion_tokens', 'max_tokens'):
                     body = {'messages': msgs, tok_param: max_tokens, **({'model': model} if model else {}),
-                            **({'response_format': fmt} if fmt else {}), **({'reasoning_effort': effort} if effort and ek not in _NO_EFFORT else {}),
-                            **({'chat_template_kwargs': {'enable_thinking': False}} if thinking_off else {})}
+                            **({'response_format': fmt} if fmt else {}),
+                            **({'chat_template_kwargs': {'enable_thinking': False}} if thinking_off else {}),
+                            **({'reasoning_effort': thin or effort} if (thin or effort) and ek not in _NO_EFFORT else {})}
                     # a local model may spend its first call loading weights off disk, a reasoning deployment its time on a long
                     # prompt - room to answer, and a quick give-up on an endpoint that is not there
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
@@ -1442,17 +1484,21 @@ def make_llm(t, cfg: dict, key: str):
                     return out
             raise refused(t, last, urls[-1], model)
         # ...and an empty 'stop' is asked once more as it was: Gemini behind the HIPAA AI gateway now and then thinks and writes nothing
-        spent = 0
+        # ...and a model that spends even ROOM thinking is asked once more told to think less, before anyone is asked to change its card: a
+        # HIPAA AI Flash ran out of room on a one-shot job and the owner was told to pick another model (2026-11-20)
+        spent, thin = 0, ''
         while True:
             try: return ask()
             except _Empty as e:
                 spent += 1
                 if str(e) == 'length' and max_tokens < ROOM: max_tokens = ROOM; continue
+                if str(e) == 'length' and not thin and ek not in _NO_EFFORT and str(effort or '').lower() not in ('low', 'minimal', 'none'):
+                    thin = 'low'; continue
                 if str(e) != 'length' and spent < 3: continue
                 if str(e) == 'length':
-                    raise RuntimeError(f'{t}: the model ran out of room before answering, even with {ROOM} tokens (finish_reason {e}) - '
-                                       f'model {model}; pick a non-thinking model on its card') from None
-                raise RuntimeError(f'{t} sent back no answer (finish_reason {e}) - model {model}') from None
+                    raise OutOfRoom(ROOM_LINE.format(name=card_name(t), model=words(model) or 'model', room=ROOM)) from None
+                raise NoAnswer(f"The AI stopped before it answered: {card_name(t)}'s {words(model) or 'model'} sent back nothing (it stopped on '{e}') - "
+                               "pick another model on its card") from None
     # ONE STEP OF A TOOL LOOP (apiagent.py): the model's message - its words and/or tool_calls - for a whole conversation and the tools
     # it may call, in the OpenAI schema every endpoint here speaks. Without it an API brain was one system + one user message and nothing
     # it could DO: a HIPAA-only install, with no CLI, answered "logging in cannot be done from here" (the owner, 2026-11-09). LiteLLM
@@ -1491,16 +1537,20 @@ def make_llm(t, cfg: dict, key: str):
             got = _responses_web(t, cfg, headers, model, SEARCH_ASK, question, None, max(max_tokens, 4000), effort if ek not in _NO_EFFORT else '')
             if (got or '').strip(): return got
         if g := _google_url(t, cfg, model): return _google_search(g, headers, question)
+        if ek in _NO_SEARCH: raise RuntimeError('this card answered no search before')
         body = {'messages': [{'role': 'user', 'content': f'{SEARCH_ASK} {question}'}],
-                'max_tokens': max_tokens, 'web_search_options': {'search_context_size': 'medium'}, **({'model': model} if model else {})}
+                # ...with room and told to think little: Hydrogen given 2,000 tokens thought 3,000 and came back empty after 35 s; at low it
+                # answers with sources in ~5 s (the HIPAA AI gateway, 2026-11-20)
+                'max_tokens': max(max_tokens, ROOM), 'web_search_options': {'search_context_size': 'low'}, **({'model': model} if model else {}),
+                **({'reasoning_effort': 'low'} if t in EFFORT_TAKERS and ek not in _NO_EFFORT else {})}
         r = post_retrying(urls[0], headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
         if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
-        if r.status_code != 200: raise refused(t, r, urls[0], model)
+        if r.status_code != 200: _NO_SEARCH.add(ek); raise refused(t, r, urls[0], model)
         aiusage.openai(r.json())
         m = (r.json().get('choices') or [{}])[0].get('message') or {}
         cites = list(dict.fromkeys(str((a.get('url_citation') or a).get('url') or '') for a in m.get('annotations') or [] if isinstance(a, dict)))
         said = said_text(m).strip()
-        if not said: raise RuntimeError('the search came back empty')
+        if not said: _NO_SEARCH.add(ek); raise RuntimeError('the search came back empty')
         return said + ('\n\nSOURCES\n' + '\n'.join(c for c in cites if c) if any(cites) else '')
     # ...only where the card HAS a search of its own: a model asked with an option it ignores answers from memory as if it had looked
     # (groq, mistral, a local model); without one apiagent's web_search goes to a connected search card and says when there is none
@@ -1717,4 +1767,4 @@ def test_ai(store, cid: int) -> str:
         raise RuntimeError(why)
     out = make_llm(c['Type'], json.loads(c.get('ConfigJson') or '{}'), c.get('Secret'))(
         'Reply with exactly: ok', 'ping')
-    return f'model responded: {(out or "").strip()[:80]} - wired into intent triage'
+    return 'The AI answered - it is ready to use.' if (out or '').strip() else 'The AI was reached but answered nothing - try Test again in a minute.'

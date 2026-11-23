@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { NEAR, flatten, meter } from "../src/docMeter.js";
+
 
 const lim = (chars, flat = false) => ({ chars, flat, reader: "the agent", past: "the end is cut off" });
 
@@ -23,4 +26,3 @@ test("calm under 85%, amber from 85 to 100, red past the limit with what is over
 test("no limit, no meter", () => {
   for (const l of [null, undefined, {}, { chars: 0 }]) assert.equal(meter("words", l), null);
 });
-

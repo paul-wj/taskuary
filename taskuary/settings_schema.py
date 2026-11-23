@@ -19,6 +19,17 @@ def panels() -> dict: return _load().get('panels', {})
 GROUPS = _load()['groups']
 
 
+# ONE ADDRESS FOR A SETTING (design round 5, 2026-11-19: "Settings -> Agents" opened the Settings home, and he hunted for the folder list): its
+# section and the knob itself, held in view (canvasLinks.js) - every sentence and search hit that sends him to a setting links it here
+# ...a panel (saved sign-ins) by its own group, and a row another registry knows (appfacts) by the group it names. Every road builds it here:
+# an inline copy without safe='' opened "Mail / routing" at the wrong anchor (2026-11-19). The page's twin is canvasLinks.settingHref
+def href(key: str, group: str = None) -> str:
+    from urllib.parse import quote
+    if group is None: group = (knobs().get(key) or panels().get(key) or {}).get('group') or ''
+    return f"#settings=config&group={quote(str(group), safe='')}&key={quote(str(key), safe='')}"
+def link(key: str, label: str = '') -> str: return f"[{label or knobs()[key]['label']}]({href(key)})"
+
+
 def _word(meta: dict, value) -> str:
     v = '' if value is None else str(value)
     if meta.get('type') == 'switch': return 'on' if v.strip().lower() in ('1', 'true', 'on') else 'off'

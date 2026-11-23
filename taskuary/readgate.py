@@ -25,12 +25,25 @@ READ_TOOLS = ('Read', 'Glob', 'Grep', 'LS', 'NotebookRead')
 _KEYS = ('file_path', 'notebook_path', 'path', 'pattern', 'dir', 'directory')
 # ...a `${NAME}` is one word, never a block's braces: cut there, `cat ${HOME}/.ssh/x` named only `/.ssh/x`, which exists nowhere
 _SPLIT = re.compile(r'(\$\{[^}\s]*\})|\r?\n|;|&&|\|\||\||\{|\}|\(|\)')
-_VAR = re.compile(r'\$\{?(?:env:)?(\w+)\}?|%(\w+)%', re.I)
+# ...a name that starts with a letter or `_`: `$5.46` in a script's text is a price, never a folder (the HIPAA walk, 2026-11-22: a PDF written
+# to the task's own outputs held as "a path it builds from a variable" - the copper price in its words)
+_VAR = re.compile(r'\$\{?(?:env:)?([A-Za-z_]\w*)\}?|%([A-Za-z_]\w*)%', re.I)
 _WILD = re.compile(r'[*?\[]')
 
 
 def _n(p) -> str: return os.path.normcase(os.path.realpath(os.path.expanduser(str(p))))
 def _in(p: str, root: str) -> bool: return bool(root) and (p == root or p.startswith(root.rstrip('\\/') + os.sep))
+
+
+# WHAT THE AGENT WROTE IS ITS OWN WORK (the goal walk on Claude CLI, 2026-11-22: it drew a picture in a scratch folder of its own, and its read
+# of the script and SVG it had just written stood as an Approve card - "outside this task's own folders" - the picture waiting on him). The
+# folder of every file a task's agent writes is its own for the rest of the task; the never-places stay shut whatever it wrote there
+WRITE_TOOLS = ('Write', 'Edit', 'MultiEdit', 'NotebookEdit')
+WROTE: dict = {}
+def wrote(tid, paths) -> None:
+    "Note the folders task `tid`'s agent wrote files in (its file tools' own paths)."
+    if not str(tid or '').isdigit(): return
+    WROTE.setdefault(int(tid), set()).update(_n(os.path.dirname(p) if not os.path.isdir(p) else p) for p in paths or [] if p)
 
 
 def own(store, tid, cwd: str = '') -> list:
@@ -44,7 +57,35 @@ def own(store, tid, cwd: str = '') -> list:
         # is its own work - timed on a long task, 2026-11-16: a grep over its mail's files was refused as Taskuary's data, and it worked around
         ms = store.list_messages(int(tid))
         rs += [a['Path'] for m in ms for a in store.list_attachments(m['MessageId']) if a.get('Path')] + [config.home() / 'attachments' / str(int(m['MessageId'])) for m in ms]
-    return [_n(r) for r in dict.fromkeys(map(str, rs + checkouts(store))) if r]
+    rs += sorted(WROTE.get(int(tid), ())) if str(tid or '').isdigit() else []
+    return [_n(r) for r in dict.fromkeys(map(str, rs + checkouts(store) + named(store, tid))) if r]
+
+
+# A FOLDER THE OWNER NAMES IS HIS GO-AHEAD (design round 3, 2026-11-18: "fix the rounding bug - my checkout is at <path>" from New, and the
+# agent's every read there would have stood as a card asking him to let it read the folder he had just pointed it at). The paths in his own
+# words on the task - what he typed in New, his lines in its chat - found by their shape (drive-rooted, ~ or /), each the longest stretch of
+# his words that is a folder or a file here (a file: its folder). Never a place the never-list keeps: his naming it does not open it
+_PATHISH = re.compile(r'(?<![\w/\\])(?:[A-Za-z]:[\\/]|~[\\/]|/(?=\w))')
+def named(store, tid) -> list:
+    "The folders the owner named in his own words on task `tid` that exist here."
+    if store is None or not str(tid or '').isdigit(): return []
+    from . import floor, general
+    t = store.get_task(int(tid)) or {}
+    said = [str(t.get('Summary') or '')] if t.get('OriginBase') == 'owner' else []
+    said += [str(c.get('Body') or '') for c in store.list_comments(int(tid), internal=True) if c.get('ActorType') == general.USER_TYPE and not general.is_brief(c)]
+    nev, out = [_n(p) for p in floor.kept_secret()], []
+    for text in said:
+        for line in text.splitlines():
+            for m in _PATHISH.finditer(line):
+                words = line[m.start():].split(' ')
+                for k in range(len(words), 0, -1):           # ...the longest stretch first: a folder's name may hold a space
+                    p = Path(' '.join(words[:k]).rstrip('.,;:)"\'`').strip('"\'`')).expanduser()
+                    try: d = p if p.is_dir() else p.parent if p.is_file() else None
+                    except OSError: d = None
+                    if d is None: continue
+                    if not any(_in(_n(d), r) for r in nev): out.append(str(d))
+                    break
+    return list(dict.fromkeys(out))
 
 
 def checkouts(store) -> list:
@@ -74,7 +115,7 @@ def fetched(p: str, cwd: str = '', sids=()) -> bool:
     if cwd:
         base = _n(Path(claude_home()) / 'projects' / _slug(cwd))
         if _in(p, base):
-            rest = p[len(base):].lstrip('\/').split(os.sep)
+            rest = p[len(base):].lstrip('\\/').split(os.sep)
             if len(rest) >= 3 and rest[1] == 'tool-results' and rest[0]: return True
     codex = _n(Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex') / 'generated_images')
     return any(_in(p, _n(Path(codex) / str(sid))) for sid in sids if sid)
@@ -187,10 +228,28 @@ def _pathish(t: str) -> bool:
     return t.startswith('/') and (bool(re.match(r'^/[A-Za-z](?=/|$)', t)) if os.name == 'nt' else len(t) > 1)
 
 
+def _quoted(cmd: str) -> list:
+    """The [start, end) spans of `cmd` inside quotes - '...' whole, "..." with its backslash escapes - where no command ends."""
+    spans, q, at, i = [], '', 0, 0
+    while i < len(cmd):
+        c = cmd[i]
+        if q == '"' and c == '\\': i += 2; continue
+        # ...a `$(...)` in double quotes runs a command all the same: the quoting stops at it
+        if q == '"' and cmd.startswith('$(', i): spans.append((at, i)); q = ''; i += 1; continue
+        if c in '\'"' and (not q or c == q):
+            if q: spans.append((at, i)); q = ''
+            else: q, at = c, i
+        i += 1
+    if q: spans.append((at, len(cmd)))
+    return spans
+
+
 def _segments(cmd: str) -> list:
-    "The line cut where one command ends and another begins - a `${NAME}` kept whole."
-    out, cur = [''], 0
+    """The line cut where one command ends and another begins - a `${NAME}` kept whole, and never inside quotes: a `python -c "..."` script's
+    own lines and `;` are its text (the HIPAA walk, 2026-11-22: each line of a PDF's script was read as a command of its own)."""
+    out, cur, qs = [''], 0, _quoted(cmd)
     for m in _SPLIT.finditer(cmd):
+        if not m[1] and any(a < m.start() < b for a, b in qs): continue
         out[-1] += cmd[cur:m.start()] + (m[1] or ''); cur = m.end()
         if not m[1]: out.append('')
     out[-1] += cmd[cur:]
@@ -201,14 +260,22 @@ def command_paths(cmd: str, cwd: str = '', env: dict = None) -> list:
     """Every path a shell line names as an argument, through `cd`, `bash -c "..."` and `--opt=value` - None for one built from a variable
     it cannot read. The program itself, options, URLs and switches (`/s`) are not paths."""
     from .browsergate import words
+    from .shellgate import _OWN, shell_text, unwrap
+    # ...a line that is a shell started on a script (Codex's every call) is read as that script, whole: cut at the `;` inside its quotes first,
+    # `$outDir = "<its outputs folder>"; New-Item $outDir` lost its assignment and the task's own folder was held as a variable it could not
+    # read (the HIPAA walk, 2026-11-21)
+    if (inner := unwrap(cmd))[0]: return command_paths(inner[1], cwd, env)
     out, here, env = [], cwd, dict(env or {})
-    for seg in _segments(str(cmd or '')):
+    for seg in _segments(shell_text(str(cmd or ''))):        # ...a heredoc's or a here-string's body is data, never a path read
         # ...a path kept in a variable is read where the variable is (`$p='C:/x.csv'; Get-Content $p` - the real-CLI walk, 2026-11-16)
         if (m := re.match(r'^\s*\$?([A-Za-z_]\w*)\s*=\s*([^=].*)$', seg)):
             v = m[2].strip().strip('"\'')
             env[m[1].lower()] = v
             seg = f'= {v}'
-        w = words(seg)
+        # ...a PowerShell array's items are its words, never one name with a comma on it (`@("$env:USERPROFILE\Desktop", ...)` held "Read \", in
+        # Desktop"), and a segment that opens on a value is an expression - its first word a path like the rest, not a program
+        w = [x for x in (y.rstrip(',') for y in words(seg)) if x]
+        if seg.lstrip()[:1] in ('"', "'", '$', '@') and w and not re.match(r'^\$?[A-Za-z_]\w*\s*=', seg.lstrip()): w = ['', *w]
         while w and (re.match(r'^[A-Za-z_]\w*=', w[0]) or w[0].lower() in ('&', 'sudo', 'time', 'nohup', 'command', 'exec', 'call', 'then', 'do', 'if', 'else')): w = w[1:]
         if not w: continue
         tool = re.sub(r'\.(exe|cmd|ps1|bat)$', '', os.path.basename(w[0].replace('\\', '/')).lower())
@@ -217,13 +284,19 @@ def command_paths(cmd: str, cwd: str = '', env: dict = None) -> list:
             if i is not None: out += command_paths(' '.join(w[i + 1:]), here, env)
             continue
         cd, named = tool in ('cd', 'chdir', 'set-location', 'sl', 'pushd'), len(out)
+        code = re.sub(r'[\d.]+$', '', tool) in ('python', 'py', 'node', 'ruby', 'perl', 'deno') and any(x in ('-c', '-e') for x in w[1:3])
+        # ...an inline script's text is read word by word for the paths in it: its words are mostly data, so one is a path only where one is
+        # there (below) - `open('~/.ssh/id_rsa')` in it is read as ever
+        if code: w = [w[0], *(t for x in w[1:] for t in re.split(r"[\s'\"(),;=+]+", x) if t and t not in ('-c', '-e'))]
         for x in w[1:]:
             x = re.sub(r'^\d?[<>]+&?', '', x)
             if x.startswith('-'): x = x.split('=', 1)[1] if '=' in x else ''
             if (v := _VAR.fullmatch(x)) and (v[1] or v[2]).lower() in env: x = env[(v[1] or v[2]).lower()]
             # ...after a `cd` away, a plain name that is there is read there (`cd ~ && cat .ssh/x`)
             near = here != cwd and here and x and not x.startswith('-') and os.path.exists(os.path.join(here, x))
-            if not x or '://' in x or re.match(r'^/\w$', x) or re.match(r'^(/dev/|\d$)', x) or not (near or _pathish(x)): continue
+            # ...and Taskuary's own address as a session is handed it ($TASKUARY_URL/api/...) is a web address, never a file: a read-only curl
+            # of its own API was held as "a path it builds from a variable", a card each time the agent looked (the roads audit, 2026-11-19)
+            if not x or '://' in x or _OWN.match(x) or re.match(r'^/\w$', x) or re.match(r'^(/dev/|\d$)', x) or not (near or _pathish(x)): continue
             e = _expand(x, here, env)
             if e is None: out.append(None); continue
             e = re.sub(r'^/([A-Za-z])(?=/|$)', r'\1:', e) if os.name == 'nt' else e
@@ -232,6 +305,9 @@ def command_paths(cmd: str, cwd: str = '', env: dict = None) -> list:
             # whole: judge reads the folder it lists, and whether it can reach a sign-in place
             parts = Path(_cut(e)).parts
             if len(parts) > 1 and not os.path.exists(os.path.join(parts[0], parts[1])): continue
+            # ...and in an inline script's text (`python -c "..."`) a word is a path only where one is there: its words are mostly data (the HIPAA
+            # walk, 2026-11-22: "~\$5.46", a price a PDF's script drew, held as a read in his home folder)
+            if code and not _WILD.search(e) and not os.path.lexists(e): continue
             if cd: here = _cut(e); break
             out.append(e)
         else:

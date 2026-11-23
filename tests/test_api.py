@@ -204,7 +204,7 @@ class ReportScheduleAndBrainTests(unittest.TestCase):
         self.assertEqual(schedule_words({'daily_at': '08:00', 'on_startup': True, 'once_per_day': True}),
                          'daily at 08:00 + on app start (at most once a day)')
         self.assertEqual(schedule_words({'cron': '0 8 * * 1', 'on_startup': True, 'once_per_week': True}),
-                         'cron 0 8 * * 1 + on app start (at most once a week)')
+                         'Mondays at 08:00 + on app start (at most once a week)')
         self.assertEqual(schedule_words({'on_startup': True}), 'on app start')
         self.assertEqual(schedule_words({}), 'no schedule - run it by hand')
 
@@ -355,7 +355,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         tid = first.json()['task_id']
         self.assertIsNotNone(tid)
-        self.assertEqual((server.store.get_message(mid)['TaskId'], server.store.get_task(tid)['Kind']), (tid, 'task'))
+        self.assertEqual((server.store.get_message(mid)['TaskId'], server.store.get_task(tid)['Kind']), (tid, 'general'))      # the one arrival rule: his own list's kind is the general agent's
         self.assertEqual(second.status_code, 409)
 
     def test_task_crud_and_board(self):
@@ -373,7 +373,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(t['Summary'], ask)
         typed = server.store.get_task(c.post('/api/tasks', json={'Title': ask, 'Summary': 'as typed'}).json()['taskId'])
         self.assertEqual(typed['Summary'], 'as typed')
-        self.assertEqual(server.store.get_task(c.post('/api/tasks', json={'Title': 'do the thing'}).json()['taskId'])['Title'], 'do the thing')
+        self.assertEqual(server.store.get_task(c.post('/api/tasks', json={'Title': 'do the thing'}).json()['taskId'])['Title'], 'Do the thing')
+
+    def test_his_words_as_a_title_take_the_agents_name_from_every_door(self):
+        """IS THE TITLE STILL HIS WORDS has one answer (general.title_is_his), marked where the title is made (general.title_of): the Assistant's
+        set-up capitalised a lower-case ask, the check recomputed the plain cut, and the task never took its agent's name; New's did."""
+        from taskuary import concierge, general
+        s = server.store
+        ask = 'find three caterers in Boston for about forty people in March'
+        made = [c.post('/api/tasks', json={'Title': ask, 'Summary': ask, 'Kind': 'general'}).json()['taskId'],
+                concierge.setup_task(s, ask, 'owner', kind='general', agent_job=True)['taskId']]
+        self.assertEqual([general.take_name(s, t, 'Boston caterers for March') for t in made], [True, True])
+        self.assertEqual([general.take_name(s, t, 'A second name') for t in made], [False, False])       # a name it has stands
+        named = c.post('/api/tasks', json={'Title': 'Caterers', 'Summary': ask}).json()['taskId']
+        self.assertFalse(general.take_name(s, named, 'Boston caterers for March'))                        # ...and one he gave it
 
     def test_the_list_row_carries_its_checklist(self):
         """The sidebar draws each row's progress, and list_tasks' SELECT t.* already ships the
@@ -1062,9 +1075,11 @@ class ApiTests(unittest.TestCase):
                                                  'body': 'can you explain the rota?', 'from_email': 'a@b.example',
                                                  'channel': 'email'}).json()
         c.post(f"/api/messages/{push2['message_id']}/reply")
-        row2 = next(r for r in c.get('/api/reviews', params={'status': 'pending'}).json()['data']
-                    if r['MessageId'] == push2['message_id'])
-        self.assertTrue(row2['CanSend'])                       # email always has a road
+        row2 = lambda: next(r for r in c.get('/api/reviews', params={'status': 'pending'}).json()['data'] if r['MessageId'] == push2['message_id'])
+        self.assertFalse(row2()['CanSend'])                    # no mailbox: its card says Connect email, never Send
+        from taskuary.testing import mailbox
+        mailbox(server.store)
+        self.assertTrue(row2()['CanSend'])                     # a mailbox that sends: Send
 
     def test_a_reply_door_on_a_machines_notice_puts_nothing_on_the_table(self):
         """The owner, 2026-11-10: "reply by itself makes no sense on github". The row offers no Reply on a notice a machine sent
@@ -1100,6 +1115,7 @@ class ApiTests(unittest.TestCase):
                                         'Subject': 'Import', 'BodyText': 'did the import finish?', 'FromName': 'Gail Moreno',
                                         'Status': 'routed'})
         server.store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'DraftText': 'yes'})
+        server.store._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))   # ...a sender he trusts: a held task shows no card until Trust
         with mock.patch.object(server, '_can_send', return_value=False):
             rv = c.get(f'/api/tasks/{tid}').json()['reviews'][0]
         self.assertEqual((rv['FromName'], rv['Channel'], rv['SourceName']), ('Gail Moreno', 'teams', 'Ops chat'))

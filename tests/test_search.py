@@ -34,6 +34,13 @@ class SearchTests(unittest.TestCase):
         self.assertEqual([x['mid'] for x in h], [self.fw])
         self.assertIn('still needed', h[0]['snippet'])
 
+    def test_an_fyi_row_is_found_by_the_title_the_rail_shows(self):
+        """The walk, 2026-11-18: "Nothing matches 'Unverified Payworth invoice'" while that row sat in the FYI rail behind the dialog - the rail
+        names a message by triage's title, and search read only its subject, sender and body."""
+        mid = mail(self.s, 'Invoice PW-2291', 'Please pay by Friday.', 'c-pay', who='Payworth Billing')
+        self.s._exec('UPDATE message SET TriageTitle=? WHERE MessageId=?', ('Unverified invoice PW-2291 payment demand from Payworth', mid))
+        self.assertEqual([x['mid'] for x in self.hits('Unverified Payworth invoice') if x['type'] == 'email'], [mid])
+
     def test_every_kind_wears_its_pill_and_a_thread_is_one_row(self):
         by = {}
         for x in self.hits('certificate'): by.setdefault(x['type'], []).append(x)
@@ -115,6 +122,14 @@ class SearchTests(unittest.TestCase):
         h = next(x for x in self.hits('Colton') if x['type'] == 'task')
         self.assertEqual((h['tid'], h['why']), (t, 'a mail on it is from Ray Colton'))
         self.assertEqual(next(x for x in self.hits('cutover') if x['type'] == 'task')['why'], '')     # the title shows it
+
+    def test_a_task_hit_says_whom_it_came_from_never_its_kind_and_source(self):
+        """Walk 8, 2026-11-20: a closed task's hit read "general · assistant · closed" - Taskuary's own codes for its kind and where it began."""
+        own = self.s.create_task({'Title': 'Fix ledger rounding', 'Kind': 'general', 'Source': 'assistant', 'Status': 'done'}, 't')
+        t = self.s.create_task({'Title': 'AP cutover date', 'Kind': 'reply', 'Source': 'email', 'Status': 'open'}, 't')
+        mail(self.s, 'AP cutover - Thursday?', 'Are we still on?', 'c9', who='Ray Colton', tid=t, status='routed')
+        sub = {x['tid']: x['sub'] for x in self.hits('ledger cutover') + self.hits('ledger') + self.hits('cutover') if x['type'] == 'task'}
+        self.assertEqual((sub[own], sub[t]), ('your ask', 'from Ray Colton'))
 
     # ...and says WHAT matched, as the owner reads it (verify, 2026-10-20): "assigned to person:ray@...", and "a link on its mail"
     def test_the_why_names_the_holder_and_the_link_it_matched(self):

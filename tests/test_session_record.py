@@ -87,10 +87,13 @@ def test_copilot_events_read_and_an_unknown_cli_keeps_its_screen(home):
     jsonl(home / '.copilot' / 'session-state' / 'k1' / 'events.jsonl', [
         {'type': 'user.message', 'data': {'content': 'List the stale branches.'}},
         {'type': 'assistant.message', 'data': {'content': '', 'reasoningText': 'git for-each-ref sorts by date.'}},
-        {'type': 'tool.execution_start', 'data': {'toolName': 'powershell', 'arguments': {'command': 'git for-each-ref'}}},
+        {'type': 'tool.execution_start', 'data': {'toolCallId': 't1', 'toolName': 'powershell', 'arguments': {'command': 'git for-each-ref'}}},
+        # ...a tool's failure is its call's, failed, as Claude's is - never a note of its own with the tool's words whole (design round 5, 2026-11-19)
+        {'type': 'tool.execution_complete', 'data': {'toolCallId': 't1', 'success': False, 'error': {'message': 'not a git repository'}}},
         {'type': 'assistant.message', 'data': {'content': 'Three branches are older than 90 days.'}}])
     steps, _ = sessionrecord.cli_steps('copilot', 'k1')
     assert [s['k'] for s in steps] == ['you', 'thought', 'tool', 'said']
+    assert (steps[2]['status'], steps[2]['output']) == ('failed', 'not a git repository')
     assert sessionrecord.cli_steps('cursor-agent', 'whatever') == ([], '')
     assert sessionrecord.screen_steps('  $ make test\n12 passed  ') == [{'k': 'screen', 'text': '$ make test\n12 passed'}]
 
@@ -423,30 +426,6 @@ def test_a_view_the_agent_showed_is_still_drawn_once_its_turn_is_filed(home):
     assert show['output'] == answer and 'output' not in read
 
 
-def test_a_coding_chat_polled_again_reads_each_cli_log_once_per_version(home, monkeypatch):
-    """The owner's live app, 2026-11-16: a coding task's chat took 15-43 s a poll - every poll parsed each session's whole CLI log again
-    (~1 s per 100 MB) while the page polled every few seconds. The conversation is built from a log read once per (file, mtime, size): polled
-    again it reads nothing, and only a log that grew is read again."""
-    import os
-    from taskuary import conversation
-    monkeypatch.setattr(sessionrecord, '_STEPS', {}, raising=False)
-    s = MemoryStore(); tid = s.create_task({'Title': 'Fix the March import', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
-    for i in range(3):
-        claude_log(home, f'big{i}')
-        s._exec("INSERT INTO transcript (TaskId, Sid, Brain, ExtId, CreatedAt) VALUES (?,?,?,?,datetime('now'))", (tid, f's{i}', 'claude', f'big{i}'))
-    reads, real = [], sessionrecord.READERS['claude']
-    monkeypatch.setitem(sessionrecord.READERS, 'claude', (real[0], lambda f: reads.append(f.name) or real[1](f), real[2]))
-    first = conversation.items(s, tid)
-    assert sorted(reads) == ['big0.jsonl', 'big1.jsonl', 'big2.jsonl']
-    for _ in range(5): assert conversation.items(s, tid)['rev'] == first['rev']
-    assert len(reads) == 3, f'a poll read a log again: {reads}'
-    f = home / '.claude' / 'projects' / 'C--work-ledger' / 'big1.jsonl'
-    f.write_text(f.read_text(encoding='utf-8') + '\n' + json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'One more check.'}]}}), encoding='utf-8')
-    os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))
-    conversation.items(s, tid)
-    assert reads[3:] == ['big1.jsonl'], 'only the log that grew is read again'
-
-
 def test_a_log_that_grows_while_its_agent_works_is_read_once_byte_for_byte(home, monkeypatch):
     """The owner's live app, 2026-11-16: a WORKING coding agent's Claude Code log grows every few seconds, so the per-version cache missed on
     every poll and each poll parsed the whole multi-hundred-MB log again - 25-40 s a call. Polled while it grows by small appends - a line cut
@@ -478,9 +457,9 @@ def test_a_log_that_grows_while_its_agent_works_is_read_once_byte_for_byte(home,
 
 
 def test_five_reads_of_one_task_at_once_are_one_build(home, monkeypatch):
-    "The page's polls, the task's read and the rail's at once each built the list again; they wait for one build and share it."
+    "The old build (frozen for migration, conversation_legacy): reads of one task at once wait for one build and share it."
     import threading, time
-    from taskuary import conversation
+    from taskuary import conversation_legacy as conversation
     s = MemoryStore(); tid = s.create_task({'Title': 'Fix the March import', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
     builds, real = [], conversation._items
     monkeypatch.setattr(conversation, '_items', lambda st, t: (builds.append(t), time.sleep(0.5), real(st, t))[2])
@@ -544,3 +523,50 @@ def test_the_turn_at_work_says_when_its_agent_is_still_opening_and_what_it_is_wr
     assert 'opening' not in turn() and turn()['doing'] == 'Option one is Salem.'
     ses.trace.append({'type': 'tool_call', 'name': 'WebSearch', 'detail': {'tool_call_id': 'c1', 'args': {'query': 'Salem hotels'}}})
     assert 'doing' not in turn(), 'a step after the words leads'
+
+
+def test_a_failed_calls_note_is_named_by_its_call():
+    """The UI judge, 2026-11-18: a Taskuary tool's refusal filed as its own "⚠" note on the general road read whole, the agent's next step and
+    all - the page leaves that line out of a Taskuary tool's words only (stepWhy.forOwner), so the note says which call it came from."""
+    steps = sessionrecord.trace_steps([
+        {'type': 'tool_call', 'name': 'mcp__taskuary__share', 'detail': {'tool_call_id': 'c1', 'args': {'report': 9}}},
+        {'type': 'tool_result', 'name': 'c1', 'detail': {'tool_call_id': 'c1', 'result': 'there is no report 9\nNext: ...', 'is_error': True}},
+        {'type': 'error', 'name': 'assistant', 'detail': {'result': 'the turn failed', 'is_error': True}}])
+    assert [(s['k'], s.get('name')) for s in steps] == [('tool', 'mcp__taskuary__share'), ('error', 'mcp__taskuary__share'), ('error', None)], steps
+
+
+def test_a_failed_calls_note_is_cut_in_what_happened_never_across_its_next_step():
+    """The UI judge, 2026-11-18: the note was cut at 400 characters, inside the refusal's " ⏎ Next: ..." line for a 391-399-character one (a
+    stranger's long name and address), and the owner's note ended "...on the task. Nex…" - the page no longer saw a step to leave out."""
+    from taskuary import agenttools
+    who = 'Paula Alexandra Vance-Whitcombe <paula.alexandra.vance-whitcombe@vendor.example>'
+    for n in range(391, 400):
+        what = (f"a stranger's task does not read the owner's mail: this task carries a message from someone the owner has not vouched for ({who}). "
+                "If the owner knows the sender, they can press Trust by that name on the task.")
+        what = what + 'x' * (n - len(what))
+        said = agenttools.refusal(what, 'work from what your brief already shows of this task')
+        for kept in (said, said.replace('\n', agenttools.LINE_MARK)):           # ...as the CLI's road keeps a result: its breaks the app's mark
+            steps = sessionrecord.trace_steps([
+                {'type': 'tool_call', 'name': 'mcp__taskuary__search_messages', 'detail': {'tool_call_id': 'c1', 'args': {}}},
+                {'type': 'tool_result', 'name': 'c1', 'detail': {'tool_call_id': 'c1', 'result': kept, 'is_error': True}}])
+            note = steps[1]['text']
+            assert note.endswith(f'{agenttools.NEXT_STEP}work from what your brief already shows of this task'), (n, note[-80:])
+            assert note.startswith(what), n
+
+
+def test_a_call_that_failed_reads_failed_with_its_words_never_completed():
+    """The real-Claude walk, 2026-11-19: a Write refused with "File has not been read yet" read completed - its diff drawn as a file written,
+    then again for the retry that wrote it - and its error stood under it as a raw "⚠ <tool_use_error>..." note tied to no row."""
+    err = '```\n<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>\n```'
+    steps = sessionrecord.trace_steps([
+        {'type': 'tool_call', 'name': 'Write', 'detail': {'tool_call_id': 'a1', 'args': {'file_path': 'C:/work/totals.py', 'content': 'x = 1\n'}}},
+        {'type': 'tool_result', 'name': 'a1', 'detail': {'result': err, 'is_error': True}},
+        {'type': 'tool_call', 'name': 'Read', 'detail': {'tool_call_id': 'a2', 'args': {'file_path': 'C:/work/totals.py'}}},
+        {'type': 'tool_result', 'name': 'a2', 'detail': {'result': 'x = 0'}},
+        {'type': 'tool_call', 'name': 'Write', 'detail': {'tool_call_id': 'a3', 'args': {'file_path': 'C:/work/totals.py', 'content': 'x = 1\n'}}},
+        {'type': 'tool_result', 'name': 'a3', 'detail': {'result': 'ok'}}])
+    tools = [(s['name'], s['status']) for s in steps if s['k'] == 'tool']
+    assert tools == [('Write', 'failed'), ('Read', 'completed'), ('Write', 'completed')], tools
+    assert 'File has not been read yet' in steps[0]['output']
+    # ...and its note is named by that call: the page folds it into the row, never a note of its own (agentSteps.stepsOf)
+    assert [s.get('name') for s in steps if s['k'] == 'error'] == ['Write']

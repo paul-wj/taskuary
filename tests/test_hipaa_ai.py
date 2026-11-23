@@ -59,6 +59,17 @@ class ModelsByJobTests(unittest.TestCase):
         self.assertEqual(tiers(['x-pro', 'x-flash']), ('x-flash', 'x-pro'))
         self.assertEqual(tiers([]), ('', ''))
 
+    def test_gemini_4_neon_is_the_step_up_for_hard_jobs_and_hydrogen_stays_the_everyday_agent(self):
+        """The owner, 2026-11-19: "add neon for hard jobs, keep hydrogen for quick and easy" - Neon, listed beside Hydrogen, fills the strong box
+        that hard work steps up to; Hydrogen stays the agent and Flash the quick work."""
+        from taskuary import firstrun
+        s = MemoryStore(); cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']
+        s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1, 'ConfigJson': json.dumps({'base_url': 'https://ai.northwind.example/v1'})}, 'owner')
+        with mock.patch('taskuary.llm.list_models', return_value=self.GATEWAY + ['gemini-4-neon']),              mock.patch('taskuary.firstrun.answers', side_effect=lambda c, conf, m: 'claude' not in m):
+            firstrun.fill_tiers(s, cid)
+        conf = json.loads(s.get_connector(cid)['ConfigJson'])
+        self.assertEqual((conf['model'], conf['light_model'], conf.get('strong_model')), ('gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-4-neon'))
+
     def test_where_claude_does_not_answer_the_agents_get_the_newest_generation_and_flash_keeps_the_quick_work(self):
         """The owner, 2026-11-15: where Claude does not answer, agents on a HIPAA AI card run the newest Gemini generation - not 2.5 Pro, "way
         overpriced for its intelligence" - and Gemini Flash stays for triage and the Assistant, never another vendor's flash. The gateway lists
@@ -318,6 +329,15 @@ class GatewayAddressTests(unittest.TestCase):
         self.assertEqual((out['ok'], out['why']), (False, llm.GATEWAY_SILENT))
         self.assertTrue(self.saved().endswith('/v1'), 'the address stays on the card for the next try')
 
+    def test_a_failing_test_on_the_connections_card_names_no_button_it_lacks(self):
+        # the card's Test said "...then press Connect." - a button only Setup's AI step has; the card under Connections has Test
+        self.s.save_connector({'ConnectorId': self.cid, 'Secret': self.CODE,
+                               'ConfigJson': json.dumps({'base_url': f'http://127.0.0.1:{self.allow(_closed_port())}'})}, 'owner')
+        with self.assertRaises(RuntimeError) as e: llm.test_ai(self.s, self.cid)
+        self.assertIn("Couldn't reach", str(e.exception))
+        for line in (llm.GATEWAY_MISSING, llm.GATEWAY_SILENT, llm.GATEWAY_CODE, str(e.exception)):
+            self.assertNotIn('press Connect', line)
+
     def test_a_page_that_is_no_gateway_is_the_wrong_address(self):
         with _Gateway(self.allow) as g: self.assertEqual(llm.gateway_problem({'base_url': f'{g.url}/elsewhere'}, self.CODE), llm.GATEWAY_NOT_GATEWAY)
 
@@ -331,7 +351,7 @@ class GatewayAddressTests(unittest.TestCase):
     def test_the_saved_address_is_what_test_and_the_model_list_use(self):
         with _Gateway(self.allow) as g:
             self.s.save_connector({'ConnectorId': self.cid, 'Secret': self.CODE, 'ConfigJson': json.dumps({'base_url': g.url})}, 'owner')
-            self.assertIn('model responded: ok', llm.test_ai(self.s, self.cid))
+            self.assertEqual(llm.test_ai(self.s, self.cid), 'The AI answered - it is ready to use.')
             self.assertEqual(llm.list_models('hipaa_ai', {'base_url': g.url}, self.CODE), ['hipaa-ai'])
 
     def test_the_connections_card_saves_it_normalised_and_says_when_it_is_built_in(self):
@@ -523,3 +543,13 @@ def test_a_session_saved_on_hipaa_ai_follows_the_setting_once_it_is_put_back():
     assert general._unset_gateway(s, pick) is False                 # set: a saved session on it is kept
     s.set_setting('assistant_ai', '', 'owner')
     assert general._unset_gateway(s, pick) is True and general.default_pick(s, s.get_task(tid)) != pick
+
+
+def test_a_turned_down_key_is_said_in_plain_words_never_the_raw_http_answer():
+    "Walk 5, 2026-11-22: a connection's Test printed \"openrouter error 401 at https://... {\\\"error\\\": ...}\" - its status went unread."
+    from types import SimpleNamespace
+    from taskuary import llm, say
+    e = llm.refused('openrouter', SimpleNamespace(status_code=401, text='{"error":{"message":"User not found."}}', headers={}),
+                    'https://openrouter.example/api/v1/chat/completions', 'm')
+    said = say.plain_failure(e)
+    assert said.startswith('The service turned the key or password down') and 'http' not in said and '{' not in said

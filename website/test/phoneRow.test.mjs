@@ -2,7 +2,10 @@
 // never clip (the walk's end "Open TQ-..." chips had their starts cut off by a centred line that did not wrap).
 import test from "node:test";
 import assert from "node:assert/strict";
+
+
 import { phoneRow, rowOf } from "../src/actionRow.js";
+
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 const list = [v("reply", "decide"), v("approve", "decide"), v("continue", "agent"), v("save-end", "agent"), v("done", "more"), v("remind", "more"), v("next", "next")];
@@ -17,4 +20,3 @@ test("a phone's row is the one lit move with everything else behind one ▾ - an
   assert.equal(new Set([...quiet.shown, ...quiet.rest].map((x) => x.id)).size, 6, "every button is still on the row, once");
   assert.deepEqual(phoneRow(rowOf({ ref: "", list: [v("next", "next")] })), { type: "move", label: "", shown: [], rest: [] });
 });
-

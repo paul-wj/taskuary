@@ -183,26 +183,7 @@ def _slack(tok, method, post=False, **params):
 ACTOR_DISCOVER = 'connector-test'
 
 
-# WHAT A FAILED TEST SAYS. The card used to print the exception as it came - a socket's
-# "[Errno 11001] getaddrinfo failed", a server's "401 Client Error: Unauthorized for url: ..." -
-# which tells the owner something broke and not what to do next. The common failures get a
-# sentence with the next step in it; anything else keeps its own words, which are usually ours.
-# LastError keeps the raw text: problems.lapsed() reads it to spot an expired sign-in.
-_DNS = re.compile(r'getaddrinfo failed|Name or service not known|nodename nor servname|Temporary failure in name resolution|NameResolutionError|No address associated', re.I)
-_TIMEOUT = re.compile(r'timed? ?out|ReadTimeout|ConnectTimeout', re.I)
-_REFUSED = re.compile(r'Connection refused|actively refused|ECONNREFUSED|WinError 10061', re.I)
-# ...a connection that dropped part-way through a read, as the socket, imaplib and requests each word it
-_DROPPED = re.compile(r'Connection aborted|Connection reset|RemoteDisconnected|socket error|EOF occurred|Broken pipe|IncompleteRead', re.I)
-_AUTH_WORDS = re.compile(r'\b(invalid_auth|not_authed|token_revoked|token_expired|account_inactive|bad credentials|invalid[_ ]api[_ ]key|incorrect api key)\b', re.I)
-def _status(e):
-    r = getattr(e, 'response', None)
-    code = getattr(r, 'status_code', None) or getattr(e, 'code', None) or getattr(e, 'status_code', None)
-    if isinstance(code, int): return code
-    # requests/httpx spell it "401 Client Error: Unauthorized for url" when only the text survives a re-raise
-    m = re.search(r'\b(401|403|429|5\d\d)\b[^\n]{0,20}(?:Client Error|Server Error|Unauthori[sz]ed|Forbidden|Too Many Requests)', str(e), re.I)
-    if m: return int(m.group(1))
-    # ...and an API that answers 200 with its own word for it: Slack's "invalid_auth" was printed to the owner as it came
-    return 401 if _AUTH_WORDS.search(str(e)) else None
+from .say import plain_failure      # ONE ROAD FOR A FAILURE'S WORDS (say.py): a card's Test, the bell, the evening report
 
 def plain_error_text(raw, signin: bool = False) -> str:
     """A stored LastError (kept raw for problems.lapsed) in the words a fresh Test failure gets - '' for none."""
@@ -214,41 +195,6 @@ def card_error(c: dict) -> str:
     try: signin = c.get('Type') in ('outlook', 'teams') and is_user(_cfg(c))
     except ValueError: signin = False
     return plain_error_text(c.get('LastError'), signin)
-
-def plain_failure(e: Exception, signin: bool = False) -> str:
-    raw = str(e)
-    from . import googlecal, msauth
-    if msauth.LAPSED in raw or googlecal.lapsed(raw): return raw[:500]      # already says what to do: sign in again
-    code = _status(e)
-    # ...the service's own trouble (a Microsoft outage, 2026-11-12): the raw line put its URL, the mailbox in it, on the card and the
-    # bell - and there is nothing on the card to change
-    if isinstance(code, int) and 500 <= code < 600:
-        return (f"The service is having trouble on its side (it answered {code}). Nothing here needs changing - "
-                "it is tried again on every poll, and what came in meanwhile is read once it is back.")
-    if code == 429: return ("The service asked Taskuary to slow down (too many requests at once). Nothing is lost - it is tried again on "
-                            "every poll, and the rest is read then.")
-    # ...a sign-in card has no key to paste: its sign-in still renews (a lapsed one says LAPSED above), so the service refused the read
-    if code == 401 and signin: return ("Microsoft refused the read though the sign-in still works - usually trouble on its side, and it "
-                                       "is tried again on every poll. If it lasts, sign in again on the card.")
-    if code == 401: return ("The service turned the key or password down. Check it is the current one - "
-                            "paste it again if it was changed or has expired - then Save and Test again.")
-    if code == 403: return ("The service knows this account but would not let it in. The key may not have permission "
-                            "for this, or an administrator has to allow it.")
-    if _DNS.search(raw): return ("The server's address could not be found. Check the server name for typos, "
-                                 "and that this computer is online.")
-    if isinstance(e, TimeoutError) or _TIMEOUT.search(raw):
-        return ("The server did not answer in time. It may be down, or this network may block it - try again in a minute.")
-    # setup has one box for the server and none for a port: the name is what can be checked, and IT knows the rest (2026-10-17)
-    if _REFUSED.search(raw): return ("The server turned the connection away. Check the server name, or ask your IT team "
-                                     "for the right server and port.")
-    # ...a read cut off part-way, or a server never reached (failures._UNREACHED, the road the run cards read): the socket's words
-    # and requests' repr - the folder, the host, the mailbox in its URL - reached the card and the bell with no word of what happens next
-    from .failures import _UNREACHED
-    if _DROPPED.search(raw): return ("The connection to the server dropped part-way through the read. Nothing already in is lost, "
-                                     "and it is tried again on every poll.")
-    if _UNREACHED.search(raw): return ("The server could not be reached - check this computer is online. It is tried again on every poll.")
-    # ...and any other answer as requests words it, without the address it was asked at - the mailbox is in that URL
-    return re.sub(r' for url: \S+', '', raw)[:500] or type(e).__name__
 
 class DraftStore:
     """The store as a card's Test sees it while the values on screen are not saved yet (2026-10-30, the owner: "a connection's Test can
@@ -1135,6 +1081,25 @@ def answered_line(store, rv) -> str:
     return f"You answered {_answered_who(store, rv) or 'them'} yourself - no new response needed."
 
 
+# ...A NEW EMAIL HAS NO THREAD UNTIL IT GOES (the Codex walk, 2026-11-22): the agent's draft to Gail, "Harbor signage budget", had no conversation,
+# and his own mail to Gail with that subject, sent from his mailbox, started one of its own - it joined no task, the draft stood "ready to send",
+# and Gail's reply on his thread was filed on an older task. The same letter is a fact of the two: the same subject (a Re:/Fwd: aside) to
+# someone it reached
+_PREFIX = re.compile(r'^\s*((re|fwd?|aw|wg)\s*:\s*)+', re.I)
+def _subject(x) -> str: return ' '.join(_PREFIX.sub('', str(x or '')).split()).lower()
+def same_letter(store, rv: dict, sent: dict) -> bool:
+    "Is pending email draft `rv` the letter his own sent mail `sent` is - its subject, to someone the draft is to?"
+    try: d = json.loads(rv.get('Deliver') or '{}') or {}
+    except (TypeError, ValueError): return False
+    from .context import _recipients
+    to, went = {str(a).lower() for a in (d.get('to') or []) + (d.get('cc') or [])}, {a.lower() for a in _recipients(sent)}
+    return d.get('channel') == 'email' and bool(_subject(d.get('subject'))) and _subject(d.get('subject')) == _subject(sent.get('Subject')) and bool(to & went)
+def drafted_letter(store, sent: dict):
+    "The task whose pending email draft his own sent mail `sent` is (same_letter) - the newest such draft's, else None."
+    rv = next((r for r in reversed(store.list_reviews('pending')) if r.get('Kind') != 'action' and not r.get('ConversationId') and same_letter(store, r, sent)), None)
+    return rv.get('TaskId') if rv else None
+
+
 def answered_drafts(store, tid, sent: dict) -> list:
     """Task `tid`'s pending replies on the conversation the owner's own line `sent` is on, drafted before it: what that line may have answered.
     ...and, where his line keeps whom it went to, only a reply to someone it reached: a forward to Gail keeps Erin's conversation and is no
@@ -1146,7 +1111,8 @@ def answered_drafts(store, tid, sent: dict) -> list:
     went = {a.lower() for a in _recipients(sent)}
     reached = lambda rv: not went or not (to := addressees(store, rv)) or bool(to & went)
     return [rv for rv in store.list_reviews('pending') if rv.get('TaskId') == tid and rv.get('Kind') != 'action'
-            and rv.get('ConversationId') == conv and (not rv.get('SentAt') or rv['SentAt'] <= at) and reached(rv)]
+            and (rv.get('ConversationId') == conv or (not rv.get('ConversationId') and same_letter(store, rv, sent)))
+            and (not rv.get('SentAt') or rv['SentAt'] <= at) and reached(rv)]
 
 
 # THE OWNER'S LINE ON A CHAT IS THE AGENT'S TO RE-PLAN (the owner, 2026-11-09: "if we respond show on left side and then agent reevaluates if
@@ -1257,7 +1223,8 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
     # TWO OPEN TASKS IN ONE ROOM: the first snapshot was arbitrary, and a group's answer to a new voice note was filed on the
     # older ask beside it. The owner answers what was last said to them - or what their line quotes, when it quotes one.
     tid = ((_answered_task(store, conv, msg.get('sent_at'), msg.get('quoted'), set(on)) if len(set(on)) > 1 else None)
-           or (on[0] if on else None) or store.task_for_conversation(conv, msg.get('subject')))
+           or (on[0] if on else None) or store.task_for_conversation(conv, msg.get('subject'))
+           or drafted_letter(store, {'Subject': msg.get('subject'), 'RecipientsJson': json.dumps({'to': list(msg.get('to') or []), 'cc': list(msg.get('cc') or [])})}))
     if not tid and not keep_unmatched: return 0
     mid = store.add_message({'TaskId': tid, 'ExternalId': msg['external_id'], 'ConversationId': conv,
                              'Channel': msg['channel'], 'SourceName': msg.get('source_name'),
@@ -1878,14 +1845,14 @@ def close_upstream_ended(store, tid: int, said: str, actor: str = 'router'):
     "was merged on GitHub" a few seconds after showing it (2026-10-12). A task that never had a
     session has nothing to wrap ('nothing to wrap up') - that refusal is expected, and must not
     leave the dead task sitting in the work list."""
-    from . import wrapup, proposals, selfclose, terminal as term
+    from . import wrapup, proposals, concierge, terminal as term
     # said once: a task kept open below for its unsent reply meets this ending again on a later poll
     if not any(c.get('Body') == said for c in store.list_comments(tid)): store.add_comment(tid, 'router', 'agent', said)
     # a close-out waiting on the owner (close the issue, merge) is answered by the upstream ending itself
     rv = proposals.closeout_pending(store, tid)
     if rv: store.decide_review(rv['ReviewId'], 'no_reply', None, actor, 'the item ended upstream')
     # ...but NOT UNDER WORK STILL LIVE ON IT (the owner, 2026-11-01: "If anything still working never close the task automatically"): an
-    # agent at its prompt, a quick call, a routine - the task stays open, and a later poll meets this ending again once nothing is
+    # agent at its prompt, a routine - the task stays open, and a later poll meets this ending again once nothing is
     from . import workerstate as ws
     if ws.live_work(store, tid): return False
     # ...and a merged or closed item is FINISHED, a thank-you drafted beside it included: it closes, and closing retires
@@ -1897,17 +1864,17 @@ def close_upstream_ended(store, tid: int, said: str, actor: str = 'router'):
         for r in store.list_reviews('pending'):
             if r.get('TaskId') == tid and r.get('Kind') not in ('action', 'slot'):
                 store.decide_review(r['ReviewId'], 'no_reply', None, actor, 'the item ended upstream')
-        selfclose.unclaim(store, tid, actor)
-        store.update_task(tid, {'Status': 'done'}, actor)
+        concierge.close_task(store, tid, actor, save=False)
         return
+    # ...and a wrap that cannot run closes through the one close all the same, so nothing it left waits on a closed task
     try:
         wrapup.wrap(store, tid, close=True, actor=actor, no_reply=True)   # a merged PR owes nobody a reply (A21)
     except ValueError as e:
         logger.info(f'TQ-{tid:04d}: nothing to wrap up ({e}) - closing it plainly')
-        store.update_task(tid, {'Status': 'done'}, actor)
+        concierge.close_task(store, tid, actor, save=False)
     except Exception as e:
         logger.warning(f'TQ-{tid:04d}: the ending failed ({e}) - closing it plainly')
-        store.update_task(tid, {'Status': 'done'}, actor)
+        concierge.close_task(store, tid, actor, save=False)
 
 
 ENDED_SAID = 'so there is nothing left to do here.'
@@ -2388,7 +2355,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                             except Exception as e:
                                 # ...a miss Graph may yet answer (a throttle, its own trouble, a token that lapsed mid-poll, a dropped
                                 # line) holds this mail for the next poll: let in without its files, it never asked for them again
-                                if _status(e) not in (400, 403, 404): raise
+                                if _http_status(e) not in (400, 403, 404): raise
                                 logger.warning(f"attachments for {m['id']} failed: {e}")
                         # an invite is read in full once, as it arrives: the meeting to answer and whether it still needs answering
                         inv = is_invite(m)
@@ -2452,7 +2419,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                         logger.warning(f"outlook {s['Address']} {folder}: {e}")
                         # ...a folder the card chose that is not there any more (deleted in Outlook: 404 on every poll) has nothing left
                         # to wait for - held as unfinished, it froze the cycle's cutoff, and mail into the Inbox after it was never read
-                        if folder not in ('inbox', 'sentitems') and _status(e) == 404: errors.append(GONE_FOLDER); continue
+                        if folder not in ('inbox', 'sentitems') and _http_status(e) == 404: errors.append(GONE_FOLDER); continue
                         broken.append(f'{folder}: {e}')
                 if broken:
                     errors += broken; continue     # the watermark waits for the folders that did not finish
@@ -2628,7 +2595,7 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
     if len(jobs) == 1:
         c, file_only = jobs[0]
         _say(c['Type'], 0, store)
-        with _first_read(store, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, store)):
+        with _card_read(store, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, store)):
             n = _poll_one(store, c, file_only, backfill_hours, llm)
         _say(c['Type'], tally.n, store)           # the whole count, never one the once-a-second say left behind
         return _file_after(store, n)
@@ -2642,7 +2609,7 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
             _say(c['Type'], tally.n, writer)
             # inherit the poll thread's deferred(): our threading.local is off, and without
             # this wrap we would triage in parallel - the thing drain exists to prevent
-            with ingest_mod.deferred() if ingest_mod._parent_deferring() else contextlib.nullcontext(),                  _first_read(writer, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, writer)):
+            with ingest_mod.deferred() if ingest_mod._parent_deferring() else contextlib.nullcontext(),                  _card_read(writer, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, writer)):
                 return _poll_one(writer, c, file_only, backfill_hours, llm)
         with ThreadPoolExecutor(max_workers=min(8, len(jobs)), thread_name_prefix='poll') as pool:
             futs = [pool.submit(run, c, fo) for c, fo in jobs]
@@ -2665,9 +2632,11 @@ class _Tally:
     @contextlib.contextmanager
     def on(self, say):
         from .ingest import LANDING
-        def count():
+        def count(msg=None):
             mine = LANDING_HERE.get()
-            if mine is not None: mine[0] += 1          # ...and the one card's own, for its first-read line (_first_read)
+            if mine is not None:                       # ...and the one card's own, for its line (_card_read): how many, in which chats
+                mine['n'] += 1
+                if (conv := (msg or {}).get('conversation_id') or (msg or {}).get('from_email')) and len(mine['convs']) < CONVS_KEPT: mine['convs'].add(str(conv))
             with self.lock:
                 self.n += 1
                 n, due = self.n, time.monotonic() - self.at >= 1
@@ -2679,22 +2648,40 @@ class _Tally:
 
 
 LANDING_HERE = contextvars.ContextVar('landing_here', default=None)
+CONVS_KEPT = 500          # the chats one read is told apart by - enough for any sync a person reads a line about
 
 
 @contextlib.contextmanager
-def _first_read(store, c, backfill_hours):
-    """A card read for the first time keeps what that read did on its own config - how far back it went and how many it brought
-    in - so its card says that instead of only "Connected" (the owner, 2026-11-10). Kept only once the read moved the watermark:
-    a first read that failed half-way is still a first read, and says nothing yet."""
-    first = reads_back(store, c)
-    got = [0]
+def _card_read(store, c, backfill_hours):
+    """What a read of card `c` brought in, kept on its own config: `last_read` {n, chats, since, hours, at, convs} for every read
+    that brought something (the owner, 2026-11-20: Sync now "doesn't show what it syncs, how far back, how many messages") - read
+    back as its card's line by read_line - and `first_read` {hours, n, at} once its first read moved the watermark (2026-11-10:
+    "it says connected but it's not going back"). A first read that failed half-way is still a first read, and says nothing yet."""
+    first, since = reads_back(store, c), c.get('LastSyncAt') or ''
+    got, start = {'n': 0, 'convs': set()}, datetime.now().isoformat(sep=' ', timespec='seconds')
     tok = LANDING_HERE.set(got)
     try: yield
     finally: LANDING_HERE.reset(tok)
-    if first and not reads_back(store, c):
-        try: store.merge_connector_config(c['ConnectorId'], {'first_read': {
-            'hours': max(first_read_hours(store, c), backfill_hours), 'n': got[0], 'at': datetime.now().isoformat(sep=' ', timespec='seconds')}})
-        except Exception as e: logger.warning(f"could not keep {c['Type']}'s first read on its card: {e}")
+    hours, done = max(first_read_hours(store, c), backfill_hours) if first else backfill_hours, first and not reads_back(store, c)
+    patch = {**({'first_read': {'hours': hours, 'n': got['n'], 'at': start}} if done else {}),
+             **({'last_read': {'n': got['n'], 'chats': len(got['convs']), 'since': '' if first else since, 'hours': hours, 'at': start,
+                               'convs': sorted(got['convs'])}} if got['n'] else {})}
+    if patch:
+        try: store.merge_connector_config(c['ConnectorId'], patch)
+        except Exception as e: logger.warning(f"could not keep {c['Type']}'s read on its card: {e}")
+
+
+def read_line(store, c) -> dict | None:
+    """The card's last read, said from its own counts: {n, chats, since, hours, at, tasks} - `tasks` the tasks made since that read
+    began from the chats it brought in, counted now, so the line grows as triage files them."""
+    try: r = json.loads(c.get('ConfigJson') or '{}').get('last_read')
+    except ValueError: r = None
+    if not r: return None
+    convs = r.get('convs') or []
+    tasks = store._rows(f"SELECT COUNT(DISTINCT t.TaskId) AS n FROM task t JOIN message m ON m.TaskId = t.TaskId WHERE t.CreatedAt >= ? "
+                        f"AND (m.ConversationId IN ({','.join('?' * len(convs))}) OR m.FromEmail IN ({','.join('?' * len(convs))}))",
+                        (r.get('at') or '', *convs, *convs))[0]['n'] if convs else 0
+    return {k: r.get(k) for k in ('n', 'chats', 'since', 'hours', 'at')} | {'tasks': tasks}
 
 
 def _file_after(store, n: int) -> int:
@@ -2704,3 +2691,9 @@ def _file_after(store, n: int) -> int:
         filing.file_handled(store)
     except Exception as e: logger.warning(f'filing handled mail failed: {e}')
     return n
+
+
+def _http_status(e):
+    "An error's HTTP status, as say reads it (say._status) - the one reading."
+    from .say import _status
+    return _status(e)

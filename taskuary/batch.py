@@ -117,7 +117,7 @@ def create(store, channel: str, source: str, rows: list, actor: str = 'router') 
 def _let_in(store, tid, rows, first, source):
     for n, r in enumerate(rows, first):
         conv = r.get('ConversationId') or f"m{r['MessageId']}"
-        store.place_message(r['MessageId'], tid, 'routed')
+        store.arrive(r['MessageId'], tid, 'routed', decided=True)   # the batch is these rows' verdict: none is triaged one by one
         store.add_route(r['MessageId'], tid, 'batch', r.get('RankValue'),
                         f"item {n} of {task_ref(tid)}'s batch" + (f" - {r['RankWhy']}" if r.get('RankWhy') else ''), [], 'rank')
         store.add_batch_item(tid, conv, r['MessageId'], n, _title(r, source), r.get('SourceLink'))
@@ -159,7 +159,7 @@ def join(store, tid, rows, source, actor='router'):
         from . import waitroom
         path = brief_file(store, tid)
         waitroom.add(store, tid, f'NEW ITEMS JOINED THIS BATCH: {said}. Their text and diffs are now in {path}. Review them after '
-                     f'the ones before them, and report each the same way: {REPORT} <n> --result "..." --propose merge|close|changes.', actor)
+                     f'the ones before them, and report each the same way: {REPORT} <n> --result "..." --propose merge|close|changes.', 'router')
 
 
 def admit(store, rows: list) -> list:
@@ -208,12 +208,13 @@ def combine(store, tid, actor: str = 'owner') -> dict:
         for i in store.batch_items(o):
             place += 1; moved.append(f"({place}) {i.get('Title') or ''}")
             store.move_batch_item(i['ItemId'], tid, place)
-            if i.get('MessageId'): store.place_message(i['MessageId'], tid, 'routed')
-        from . import terminal as term
-        s = term.session_for(o)
-        if getattr(s, 'alive', False): term.close(s.sid)
+            if i.get('MessageId'): store.arrive(i['MessageId'], tid, 'routed', decided=True)
+        # folded away through the one close (concierge.close_task): its agent stopped, anything it held put down with it
+        from . import concierge
         store.add_comment(o, 'router', 'agent', f'Its items moved into {task_ref(tid)}, so one agent goes through them all.')
-        store.update_task(o, {'Status': 'dropped'}, actor)
+        concierge.close_task(store, o, actor, save=False, status='dropped')
+        from .ingest import FOLDED
+        store.audit('task', o, FOLDED, actor, detail={'into': tid})        # folded away: its thread's next line is judged new (ingest.folded)
     its = store.batch_items(tid)
     noun = _noun([store.get_message(i['MessageId']) or {} for i in its if i.get('MessageId')])
     src = (t.get('Title') or '').split(' on ', 1)[-1]
@@ -222,7 +223,7 @@ def combine(store, tid, actor: str = 'owner') -> dict:
     if live(tid):
         from . import waitroom
         waitroom.add(store, tid, f'ITEMS MOVED INTO THIS BATCH: {"; ".join(moved)}. They are in {brief_file(store, tid)}. Work every '
-                                 f'item still open, security first, and report each with {REPORT} <n>.', actor)
+                                 f'item still open, security first, and report each with {REPORT} <n>.', 'router')
     else: start(store, tid)
     return {'ok': True, 'moved': len(moved), 'closed': others}
 
@@ -478,7 +479,9 @@ def _close(store, tid, actor, waited=False):
     if waited or getattr(term.session_for(tid), 'alive', False):
         try: wrapup.wrap(store, tid, close=True, actor=actor, no_reply=True); wrapped = True
         except Exception as e: logger.warning(f'{task_ref(tid)}: the batch ending failed ({e}) - closing it plainly')
-    if not wrapped and (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'): store.update_task(tid, {'Status': 'done'}, actor)
+    if not wrapped:
+        from . import concierge
+        concierge.close_task(store, tid, actor, save=False)
     store.tag_task(tid, TAG, False, actor)          # after the close: an app gone mid-wrap tries again at its next start
     _next(store)
 
@@ -575,7 +578,8 @@ def arrived(store, tid, conv, who: str, actor: str = 'router'):
     if not it: return False
     store.update_batch_item(tid, conv, {'State': 'waiting', 'Result': f"{who} wrote on it since"
                                         + (f" - before that: {it['Result']}" if it.get('Result') else '')})
-    if (store.get_task(tid) or {}).get('Status') in ('done', 'dropped'): store.update_task(tid, {'Status': 'open'}, actor)
+    from . import general
+    general.reopen(store, tid, actor, 'reopen', {'why': f'{who} wrote on an item'})
     return True
 
 
@@ -591,7 +595,8 @@ def act(store, tid, place: int, action: str, actor: str = 'owner') -> dict:
     it = next((i for i in store.batch_items(tid) if int(i['Place']) == int(place)), None)
     if not it: return {'ok': False, 'why': f'there is no item {place} in this batch'}
     if action == 'reopen':
-        if (store.get_task(tid) or {}).get('Status') in ('done', 'dropped'): store.update_task(tid, {'Status': 'open'}, actor)
+        from . import general
+        general.reopen(store, tid, actor, 'reopen', {'why': 'an item put back for the agent'})
         store.update_batch_item(tid, it['ConversationId'], {'State': 'waiting'}); return {'ok': True, 'state': 'waiting'}
     if action == 'settle':
         set_item(store, tid, it['ConversationId'], actor, State='done'); return {'ok': True, 'state': 'done'}
@@ -631,7 +636,7 @@ def fix(store, tid, it, actor='owner') -> dict:
     from . import waitroom
     waitroom.add(store, tid, f"FIX ITEM {it['Place']} ({it.get('Title') or ''}): make the changes your review asked for - "
                              f"{it.get('Result') or 'see your finding'}. Work in a worktree of its branch, run its tests, then commit and "
-                             'push to THAT pull request\'s branch - for this item only, the owner asked. Report it again when done.', actor)
+                             'push to THAT pull request\'s branch - for this item only, the owner asked. Report it again when done.', 'router')
     store.update_batch_item(tid, it['ConversationId'], {'State': 'working'})
     return {'ok': True, 'state': 'working'}
 

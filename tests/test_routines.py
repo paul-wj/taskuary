@@ -103,4 +103,100 @@ class RunTests(unittest.TestCase):
         self.assertEqual(sorted(bool(o.get('busy')) for o in outs), [False, True])
 
 
+
+class ChangeTests(unittest.TestCase):
+    """THE AGENT CAN CHANGE ITS OWN ROUTINE (the design round, 2026-11-18): asked to make tomorrow's run do more, it had no tool and said
+    "I can't". A run asks with change_routine; it is one card the owner presses - a run's repair card - saved by the editor's own save."""
+    def setUp(self):
+        from taskuary import origin
+        self.s = store(); self.sid = routine(self.s); self.tid = run_task(self.s, self.sid)
+        p = mock.patch.object(origin, 'of_task', return_value=('owner', '')); p.start(); self.addCleanup(p.stop)
+
+    def test_a_run_asks_once_and_the_press_saves_its_new_instructions(self):
+        from taskuary import proposals
+        rv = proposals.queue(self.s, self.tid, {'action': 'change_routine', 'prompt': 'Review the open pull requests and list the stale ones.',
+                                                'why': 'you asked for the stale ones every week'})
+        self.assertTrue(rv, 'queued as one card')
+        row = self.s.get_review(rv['reviewId'])
+        self.assertIn('change the routine "Weekly review"', row['Reason'])
+        self.assertEqual(json.loads(self.s.get_source(self.sid)['ConfigJson'])['prompt'], 'Review the open pull requests.', 'nothing before the press')
+        with mock.patch('taskuary.docsync.sync_connections') as synced:
+            proposals.execute(self.s, row, 'owner')
+        cfg = json.loads(self.s.get_source(self.sid)['ConfigJson'])
+        self.assertEqual(cfg['prompt'], 'Review the open pull requests and list the stale ones.')
+        self.assertEqual(cfg['flow'][0]['prompt'], cfg['prompt'])
+        synced.assert_called()                    # ...by the editor's own save (workflows.save), its tail and all
+
+    def test_a_task_that_is_no_run_of_a_routine_is_told_so(self):
+        from taskuary import proposals
+        own = self.s.create_task({'Title': 'Something else', 'Kind': 'general', 'Status': 'open'}, 'o')
+        why = []
+        self.assertIsNone(proposals.queue(self.s, own, {'action': 'change_routine', 'prompt': 'x', 'why': 'y'}, refused=why))
+        self.assertIn('did not come from a routine', why[0])
+
+    def test_any_routine_he_names_changes_its_instructions_and_clock_on_one_card(self):
+        # the owner's live task, 2026-11-20: asked to rewrite his routine's instructions, the agent wrote them into a .txt and said "save them
+        # from your signed-in app" - a routine is changed by its card from any of his tasks, its instructions and its clock alike
+        from taskuary import proposals
+        own = self.s.create_task({'Title': 'Make the weekly review better', 'Kind': 'general', 'Status': 'open'}, 'o')
+        rv = proposals.queue(self.s, own, {'action': 'change_routine', 'routine': 'weekly review', 'prompt': 'List the stale pull requests first.',
+                                           'daily_at': '07:30', 'why': 'you asked for it'})
+        self.assertTrue(rv, 'queued as one card')
+        p = json.loads(self.s.get_review(rv['reviewId'])['DraftText'])
+        self.assertIn('Runs:', p['changes']); self.assertIn('07:30', p['changes'])
+        self.assertIn('List the stale pull requests first.', json.dumps(p['flow']))
+        with mock.patch('taskuary.docsync.sync_connections'): proposals.execute(self.s, self.s.get_review(rv['reviewId']), 'owner')
+        cfg = json.loads(self.s.get_source(self.sid)['ConfigJson'])
+        self.assertEqual((cfg['prompt'], cfg['daily_at']), ('List the stale pull requests first.', '07:30'))
+        why = []
+        self.assertIsNone(proposals.queue(self.s, own, {'action': 'change_routine', 'routine': 'nothing called this', 'prompt': 'x', 'why': 'y'}, refused=why))
+        self.assertIn('no routine is called that', why[0])
+
+    def test_a_report_and_a_dashboard_change_by_the_same_one_card(self):
+        # the owner, 2026-11-20: a report's question, schedule or name is changed by its card too, saved by its editor's own save
+        from taskuary import proposals
+        rep = self.s.save_source({'Channel': 'report', 'Address': 'Cash on hand', 'Owner': 'o', 'Active': 1, 'ConfigJson': json.dumps(
+            {'type': 'quickbooks', 'title': 'Cash on hand', 'ai_prompt': 'Sum the bank balances.', 'daily_at': '08:00'})}, 'o')
+        own = self.s.create_task({'Title': 'Report changes', 'Kind': 'general', 'Status': 'open'}, 'o')
+        rv = proposals.queue(self.s, own, {'action': 'change_routine', 'routine': 'Cash on hand', 'prompt': 'Sum the bank balances by account.',
+                                           'daily_at': '07:00', 'why': 'you asked'})
+        self.assertTrue(rv)
+        row = self.s.get_review(rv['reviewId']); p = json.loads(row['DraftText'])
+        self.assertEqual(p['action'], 'change_setup'); self.assertIn('change the report "Cash on hand"', row['Reason'])
+        self.assertIn('Question: Sum the bank balances. -> Sum the bank balances by account.', p['changes']); self.assertIn('Runs:', p['changes'])
+        with mock.patch('taskuary.docsync.sync_connections'): proposals.execute(self.s, row, 'owner')
+        cfg = json.loads(self.s.get_source(rep)['ConfigJson'])
+        self.assertEqual((cfg['ai_prompt'], cfg['daily_at'], cfg['type']), ('Sum the bank balances by account.', '07:00', 'quickbooks'))
+
+    def test_a_new_routine_or_report_is_built_from_its_instructions_and_cites_its_source(self):
+        # the owner, 2026-11-20: a setup for a general job is built from the best-regarded skill or template found online, named on its card
+        from taskuary import proposals
+        own = self.s.create_task({'Title': 'Set up social posting', 'Kind': 'general', 'Status': 'open'}, 'o')
+        for kind in ('routine', 'report'):
+            rv = proposals.queue(self.s, own, {'action': 'save_routine', 'title': f'Social {kind}', 'kind': kind, 'daily_at': '09:00',
+                                               'prompt': 'Write one useful, non-promotional post per network, each with its own picture.',
+                                               'based_on': 'https://github.com/example/social-content-skill', 'why': 'you asked'})
+            self.assertTrue(rv); row = self.s.get_review(rv['reviewId'])
+            self.assertIn(f'create the {kind} "Social {kind}"', row['Reason']); self.assertIn('built from https://github.com/example/social-content-skill', row['Reason'])
+            with mock.patch('taskuary.docsync.sync_connections'): out = proposals.execute(self.s, row, 'owner')
+            cfg = json.loads(self.s.get_source(out['source'])['ConfigJson'])
+            self.assertEqual((cfg['prompt'][:20], cfg['daily_at'], cfg['based_on'], bool(workflows.is_workflow(cfg))),
+                             ('Write one useful, no', '09:00', 'https://github.com/example/social-content-skill', kind == 'routine'))
+
+    def test_a_routine_whose_words_ask_for_drafts_by_hand_has_its_goal_and_done_when_changed_by_its_card(self):
+        # the owner's live routine, 2026-11-20: its goal said "drafts ... for manual posting" and its done-when "three labeled drafts", so each
+        # run left a text file - its own words are changed by the same card
+        from taskuary import proposals
+        rv = proposals.queue(self.s, self.tid, {'action': 'change_routine', 'goal': 'One post card per network, each with its own picture.',
+                                                'done_when': 'Each network has its post card waiting for his press.', 'why': 'posts, not files'})
+        self.assertTrue(rv); p = json.loads(self.s.get_review(rv['reviewId'])['DraftText'])
+        self.assertIn('Goal: (none) -> One post card per network', p['changes']); self.assertIn('Done when:', p['changes'])
+        with mock.patch('taskuary.docsync.sync_connections'): proposals.execute(self.s, self.s.get_review(rv['reviewId']), 'owner')
+        cfg = json.loads(self.s.get_source(self.sid)['ConfigJson'])
+        self.assertEqual(cfg['done_when'], 'Each network has its post card waiting for his press.')
+
+    def test_the_editor_saves_by_the_same_road(self):
+        with self.assertRaises(ValueError): workflows.save(self.s, {'SourceId': self.sid, 'ConfigPatch': {'flow': [{'id': 's1', 'kind': 'nope'}]}}, 'o')
+
+
 if __name__ == '__main__': unittest.main()

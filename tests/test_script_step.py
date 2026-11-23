@@ -153,7 +153,8 @@ ASK = {'action': 'save_routine', 'title': 'Late fees', 'script': LATE_FEE, 'prom
        'daily_at': '07:00', 'why': 'the same rule every month', 'reads': {'type': 'local_file', 'path': 'C:/exports/ar-*.csv'}}
 
 
-@pytest.mark.parametrize('bad,says', [({'script': ''}, 'save_routine needs script'), ({'script': 'print("{{inputs.month}}")'}, 'run exactly as saved'),
+# ...a routine with no script is its instructions (workflows.script_routine, the owner 2026-11-20): refused only when it has neither
+@pytest.mark.parametrize('bad,says', [({'script': '', 'prompt': ''}, 'needs `title` and `script`'), ({'script': 'print("{{inputs.month}}")'}, 'run exactly as saved'),
                                       ({'reads': {'type': 'python_script', 'script': 'print(1)'}}, 'never a write'),
                                       ({'reads': {'type': 'smb_write', 'path': 'x'}}, 'never a write'), ({'daily_at': '7am'}, 'not a time')])
 def test_a_routine_that_would_not_hold_is_refused_at_the_door(bad, says):
@@ -168,7 +169,7 @@ def test_the_owners_press_saves_the_routine_and_nothing_exists_before_it():
     s = MemoryStore(); tid = task(s)
     q = proposals.queue(s, tid, dict(ASK))
     rv = s.get_review(q['reviewId'])
-    assert (rv['Kind'], rv['Status']) == ('action', 'pending') and 'save a script as the routine "Late fees", to run daily 07:00' in rv['Reason']
+    assert (rv['Kind'], rv['Status']) == ('action', 'pending') and 'save a script as the routine "Late fees", to run daily at 07:00' in rv['Reason']
     assert json.loads(rv['DraftText'])['script'] == LATE_FEE, 'the card holds the script whole'
     assert not routines(s), 'nothing is saved, and nothing has run, before the press'
     with mock.patch.object(reports, 'run_python_script', side_effect=AssertionError('the press saves - it runs nothing')):

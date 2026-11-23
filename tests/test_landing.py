@@ -4,7 +4,7 @@ temp folder, no network."""
 import os, subprocess, tempfile, time, unittest
 from unittest import mock
 
-from taskuary import guard, landing, shellgate
+from taskuary import agenttools, guard, landing, shellgate
 from taskuary.store import MemoryStore
 from taskuary.testing import Factory
 
@@ -71,8 +71,12 @@ class LandingTests(unittest.TestCase):
         landing.saw(self.s, self.tid, 'Bash', {'command': 'git commit -q -m "edit ledger.py"'})
         s = landing.state(self.s, self.tid)
         self.assertFalse(s['ask'] or s['own']); self.assertEqual(s['answers'], []); self.assertEqual(s['changed'], 1)
-        self.assertTrue(s['shared']); self.assertIn('shared with other agents', s['line'])
+        # ...and with no remote to push its commit to, the card says so rather than standing silent (design round 5)
+        self.assertTrue(s['shared'] and s['noRemote']); self.assertIn('no remote to push to', s['line'])
         with self.assertRaises(ValueError): landing.land(self.s, self.tid, 'discard')
+        git(self.cwd, 'remote', 'add', 'origin', tempfile.mkdtemp())
+        s = landing.state(self.s, self.tid)
+        self.assertFalse(s['noRemote']); self.assertIn('Push it?', s['line'], 'an origin never fetched still takes the push')
 
     def test_on_a_shared_base_each_task_counts_only_its_own_commits(self):
         # the owner's live coding task, 2026-11-08: "518 files changed" on master - every other agent's and release's commit since it began
@@ -185,6 +189,14 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(self.sha('master'), before)
         with self.assertRaises(ValueError): landing.propose(self.s, self.tid, 'force-push')
 
+    def test_a_landing_asked_before_any_checkout_is_picked_says_how_to_pick_one(self):
+        "A coding agent that called propose_land on a task that never started in a checkout read 'nothing to land' and no next step."
+        bare = Factory(self.s).task(title='Fix the portal login', kind='coding')
+        with self.assertRaisesRegex(ValueError, 'use_repo') as e: landing.propose(self.s, bare, 'pr', 'the fix is ready')
+        # ...the tool names on the agent's own line, never the line the owner's Why line shows (agenttools.refusal)
+        what, step = str(e.exception).split('\n')
+        self.assertNotIn('use_repo', what); self.assertTrue(step.startswith(agenttools.NEXT_STEP))
+
     def test_a_pr_pushes_and_opens_through_the_github_card(self):
         self.branch()
         remote = tempfile.mkdtemp(); git(remote, 'init', '-q', '--bare')
@@ -241,6 +253,18 @@ class LandingTests(unittest.TestCase):
         from taskuary import general
         self.dev(); landing.land(self.s, self.tid, 'push')
         self.assertIn("pressed Push on the agent's work - it went through", general.presses(self.s, self.tid)[-1][2])
+
+    def test_a_card_read_again_asks_git_nothing_it_already_said_of_its_commits(self):
+        """The owner's live app, 2026-11-19: /landing took 23 s - every poll asked git again for each own commit's files and whether each is on
+        the base, ~0.1 s a process on Windows. What git says of commits named by sha never changes; it is asked once."""
+        self.on_master_with_origin(); landing.state(self.s, self.tid)
+        from taskuary import spawn
+        with mock.patch.object(spawn, 'run', wraps=spawn.run) as run: s = landing.state(self.s, self.tid)
+        asked = [c.args[0][3:] for c in run.call_args_list]
+        self.assertFalse([a for a in asked if a[0] in ('show', 'merge-base') and len(a) > 2 and all(len(x) == 40 for x in a[-2:] if not x.startswith('-'))], asked)
+        self.assertEqual((s['push']['tip'], s['push']['ahead']), (self.sha('master'), 1))
+        commit(self.cwd, 'rounding.py', 'x\n'); landing.saw(self.s, self.tid, 'Bash', {'command': 'git commit -q -m "edit rounding.py"'})
+        self.assertEqual(landing.state(self.s, self.tid)['push']['ahead'], 2)        # ...and a new commit is asked of at once
 
     def test_two_commits_in_one_second_push_up_to_the_newer(self):
         self.on_master_with_origin()
@@ -336,9 +360,12 @@ class LandingTests(unittest.TestCase):
         self.assertIn(proposals.LAND, proposals.set_aside_drafts(self.s, self.tid, ep(landing.record(self.s, self.tid)['proposal']['at']) + 0.5))
         s = landing.state(self.s, self.tid)
         self.assertTrue(s['passed']); self.assertFalse(s['ask'], 'nothing pressable')
+        # ...yet it keeps its answers: the page draws the same card, its buttons greyed (the owner, 2026-11-18) - and a press is still refused
+        self.assertEqual([a['how'] for a in s['answers']], ['push'])
         with self.assertRaises(ValueError) as e: landing.land(self.s, self.tid, 'push')
         self.assertTrue(str(e.exception).startswith('Not sent - '), e.exception); self.assertFalse(self.pushed())
-        self.assertIn(proposals.LAND_LINE, proposals.passed_note(self.s, [proposals.LAND]))
+        from taskuary import cardqueue
+        self.assertIn('Greyed, will not go (the chat moved on past it): the push question you raised', cardqueue.screen(self.s, self.tid))
         # ...its own `git push` over a passed card is still held - raised again, never run
         self.assertTrue(landing.push_asked(self.s, self.tid, 'git push origin master', self.cwd)[0]); self.assertFalse(self.pushed())
         self.assertTrue(landing.state(self.s, self.tid)['ask'])
@@ -365,11 +392,11 @@ class LandingTests(unittest.TestCase):
         for k, v in (('user.name', 'Ray Colton'), ('user.email', 'ray@northwind.example')): git(other, 'config', k, v)
         commit(other, 'notes.md', 'from a teammate\n'); git(other, 'push', '-q', 'origin', 'master')
         told = []
-        with mock.patch.object(general, 'tell', lambda st, t, said, actor='owner': (told.append(said), 'told')[1]):
+        with mock.patch.object(general, 'to_agent', lambda st, t, said, actor='owner': (told.append(said), 'told')[1]):
             with self.assertRaises(landing.Refused): landing.land(self.s, self.tid, 'push')
         self.assertFalse(self.pushed())
         [line] = [what for _, _, what, *_ in general.presses(self.s, self.tid) if 'Push' in what]
-        self.assertIn('REFUSED', line); self.assertIn('nothing went out', line)
+        self.assertIn('it did not go', line); self.assertIn('failed to push', line, "git's own why, in say.owner's words")
         [said] = told
         self.assertIn('was refused', said); self.assertIn('rebase', said)
         self.assertTrue(landing.state(self.s, self.tid)['ask'], 'the question stays: Push is still one press once the agent has rebased')
@@ -465,3 +492,117 @@ class LandingDoorTests(unittest.TestCase):
             c = TestClient(server.app); tid = Factory(server.store).task(title='x', kind='coding')
             self.assertIsNone(c.get(f'/api/tasks/{tid}/landing').json()['data'])
             self.assertEqual(c.post(f'/api/tasks/{tid}/landing', json={'how': 'rebase'}).status_code, 409)
+
+
+class NamedCheckoutTests(unittest.TestCase):
+    """A GENERAL AGENT'S FIX IN A CHECKOUT THE OWNER NAMED IS ONE PUSH CARD (design round 5, 2026-11-19: "fix the rounding bug - my checkout is
+    at <path>" from New, on both CLIs; the fix committed there, then a raw shell card in the agent's own folder on one, "only you can grant
+    that folder access in Settings -> Agents" on the other). Developer mode off, a general task: his naming the folder is the go-ahead."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.cwd = os.path.join(self.tmp.name, 'ledger'); os.mkdir(self.cwd)
+        self.scratch = os.path.join(self.tmp.name, 'scratch'); os.mkdir(self.scratch)
+        git(self.cwd, 'init', '-q', '-b', 'master'); commit(self.cwd, 'totals.py', 'def total(a): return sum(a)\n', 'start')
+        self.remote = os.path.join(self.tmp.name, 'origin.git'); git(self.tmp.name, 'init', '-q', '--bare', 'origin.git')
+        git(self.cwd, 'remote', 'add', 'origin', self.remote); git(self.cwd, 'push', '-q', 'origin', 'master')
+        self.s = MemoryStore()
+        self.tid = self.s.create_task({'Title': 'Fix the ledger rounding', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner',
+                                       'Summary': f'Fix the rounding bug in the ledger totals. My checkout is at {self.cwd}'}, 'owner')
+        self.s.add_transcript(self.tid, 'run1', 'Fixed the rounding.', 'claude', self.scratch)
+        from taskuary import agents
+        self.dev = mock.patch.object(agents, 'developer_mode', agents.developer_mode.real); self.dev.start()
+
+    def tearDown(self):
+        self.dev.stop()
+        try: self.tmp.cleanup()
+        except OSError: pass
+
+    def fix(self):
+        "The agent's commit, made after the task began (git stamps to the second)."
+        later = str(int(time.time()) + 5)
+        commit(self.cwd, 'totals.py', 'def total(a): return round(sum(a), 2)\n', 'Round totals to cents',
+               env={'GIT_COMMITTER_DATE': f'{later} +0000', 'GIT_AUTHOR_DATE': f'{later} +0000'})
+
+    def test_his_named_checkout_pushes_through_one_card_with_developer_mode_off(self):
+        self.fix()
+        self.assertIsNone(landing.state(self.s, self.tid), 'nothing adopted before a push is asked')
+        held, said = landing.push_asked(self.s, self.tid, f'Set-Location "{self.cwd}"; git push', self.scratch, about='Push the rounding fix')
+        self.assertTrue(held); self.assertIn('Push button', said)
+        s = landing.state(self.s, self.tid)
+        self.assertTrue(s['ask']); self.assertEqual((s['push']['ahead'], s['name'], [a['how'] for a in s['answers']]), (1, 'ledger', ['push']))
+        self.assertIn('of ledger', s['line'])
+        self.assertTrue(landing.shown(self.s, self.tid))
+        with mock.patch('taskuary.waitroom.add'): out = landing.land(self.s, self.tid, 'push')
+        self.assertTrue(out['ok']); self.assertEqual(git(self.remote, 'rev-parse', 'master'), git(self.cwd, 'rev-parse', 'master'))
+
+    def test_his_push_runs_through_the_one_executor_a_held_step_does(self):
+        # the roads audit, 2026-11-19 (#8): an approved held step ran as the agent's own tool would (shellgate.replay: its shell, its git) while
+        # the Push card ran Taskuary's own `git -C` - two executors for one push, and on his machine only one of the gits could push.
+        self.fix()
+        landing.push_asked(self.s, self.tid, f'Set-Location "{self.cwd}"; git push', self.scratch, about='Push the rounding fix')
+        seen, real = [], shellgate.run_
+        def spy(p, cwd='', timeout=300): seen.append((p, cwd)); return real(p, cwd, timeout)
+        with mock.patch.object(shellgate, 'run_', spy), mock.patch('taskuary.waitroom.add'): out = landing.land(self.s, self.tid, 'push')
+        self.assertTrue(out['ok'], out); self.assertEqual(len(seen), 1)
+        (p, cwd), = seen
+        self.assertTrue(os.path.samefile(cwd, self.cwd)); self.assertTrue(p['command'].startswith('git push origin '))
+        self.assertEqual(shellgate.replay(p)[1:], ['-c', p['command']], "the agent's Bash tool's own road")
+        self.assertEqual(git(self.remote, 'rev-parse', 'master'), git(self.cwd, 'rev-parse', 'master'))
+
+    def test_propose_push_with_no_folder_takes_the_one_he_named(self):
+        self.fix()
+        out = landing.from_proposal(self.s, self.tid, {'action': 'push', 'why': 'the rounding fix'})
+        self.assertTrue(out['ok']); self.assertEqual(landing.state(self.s, self.tid)['proposal']['how'], 'push')
+        self.assertIn('sees the Push card now', out['says'])
+
+    def test_the_agent_is_told_its_push_card_waits_behind_another_not_that_it_is_up(self):
+        # design round 6, D1: told "the owner sees it" whatever the page drew, the agent said three times a card was waiting that was not there
+        self.fix(); Factory(self.s).review(self.tid, kind='slot', draft='Hi Gail, the fix is in.', reason='an email to gail@northwind.example')
+        out = landing.from_proposal(self.s, self.tid, {'action': 'push', 'why': 'the rounding fix'})
+        self.assertIn('NOT on his screen yet', out['says']); self.assertNotIn('sees the', out['says'])
+
+    def test_a_push_no_card_can_draw_is_refused_with_why_not_told_as_up(self):
+        from taskuary import agents
+        t = Factory(self.s).task(title='Look at the ledger', kind='coding'); landing.mark_start(self.s, t, self.cwd); self.fix()
+        with mock.patch.object(agents, 'developer_mode', return_value=False), self.assertRaisesRegex(ValueError, 'no Push card can be drawn'):
+            landing.propose(self.s, t, 'push')
+
+    def test_a_checkout_with_no_remote_says_so_on_the_card_and_to_the_agent(self):
+        git(self.cwd, 'remote', 'remove', 'origin'); self.fix()
+        with self.assertRaises(ValueError) as e: landing.from_proposal(self.s, self.tid, {'action': 'push', 'cwd': self.cwd, 'why': 'the fix'})
+        self.assertIn('no remote to push to', str(e.exception)); self.assertIn('git remote add origin', str(e.exception))
+        s = landing.state(self.s, self.tid)
+        self.assertTrue(s['noRemote'] and not s['ask']); self.assertEqual(s['commits'], 1, 'only the commit made since the task began')
+        self.assertIn('no remote to push to', s['line'])
+
+    def test_the_page_draws_the_card_his_named_checkout_raised_and_no_other(self):
+        # design round 6, D1: the agent proposed the push, was told "the owner sees it", and the page - gating the card on its own coding
+        # switch, off with Developer mode - drew nothing; "Press Push" three times on both CLIs. The page reads one fact: landing.shown
+        os.environ.setdefault('TASKUARY_HOME', tempfile.mkdtemp())
+        from fastapi.testclient import TestClient
+        from taskuary import agents, server
+        st, c = server.store, TestClient(server.app)
+        tid = st.create_task({'Title': 'Fix the ledger rounding', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner',
+                              'Summary': f'Fix the rounding bug in the ledger totals. My checkout is at {self.cwd}'}, 'owner')
+        st.add_transcript(tid, 'run1', 'Fixed the rounding.', 'claude', self.scratch); self.fix()
+        with mock.patch.object(agents, 'developer_mode', return_value=False):
+            self.assertTrue(landing.from_proposal(st, tid, {'action': 'push', 'cwd': self.cwd, 'why': 'the rounding fix'})['ok'])
+            self.assertTrue(c.get(f'/api/tasks/{tid}').json()['checkout'], 'the card the agent was told is up is drawn')
+            self.assertTrue(c.get(f'/api/tasks/{tid}/landing').json()['data']['ask'])
+            # ...and a session that merely works in a git folder he never named draws no card, as its landing read returns none
+            t2 = Factory(st).task(title='Look at the ledger', kind='coding'); st.add_transcript(t2, 'run2', 'Read it.', 'claude', self.cwd)
+            landing.mark_start(st, t2, self.cwd)
+            self.assertIsNone(c.get(f'/api/tasks/{t2}/landing').json()['data'])
+            self.assertFalse(c.get(f'/api/tasks/{t2}').json()['checkout'])
+
+    def test_a_folder_he_never_named_adopts_nothing(self):
+        other = tempfile.mkdtemp(); git(other, 'init', '-q', '-b', 'master'); commit(other, 'x.py', 'x\n')
+        self.assertIsNone(landing.push_asked(self.s, self.tid, 'git push', other))
+        self.assertFalse(landing.record(self.s, self.tid))
+        t2 = self.s.create_task({'Title': 'Ask about the ledger', 'Kind': 'general', 'Status': 'open', 'Summary': f'From Ray: my checkout is at {self.cwd}'}, 'router')
+        with self.assertRaisesRegex(ValueError, 'no checkout'): landing.from_proposal(self.s, t2, {'action': 'push', 'cwd': self.cwd})
+        self.assertFalse(landing.shown(self.s, t2), "a stranger's words name no checkout")
+
+    def test_use_repo_takes_his_named_checkout_without_a_settings_visit(self):
+        from taskuary import repochoice
+        self.s.set_setting(repochoice.FOLDERS_KEY, self.scratch, 'owner')
+        self.assertTrue(repochoice.allowed(self.s, self.cwd, self.tid)); self.assertFalse(repochoice.allowed(self.s, self.cwd))

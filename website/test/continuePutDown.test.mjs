@@ -4,8 +4,11 @@
 // where it is, under Tasks, its icon ringed: a task does not change section when its agent starts.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { answersTo, asPressed, levelOf, putDownLanded, rowKeys, sameKey, stillLeaving } from "../src/funnelPile.js";
 
+const read = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 const rows = [
   { key: "processing:a", tid: 19, lane: "saved", order_band: 2, surfaced: true, put_down: true, kind: "agent" },
   { key: "processing:b", tid: 4, lane: "yours", order_band: 2 },
@@ -25,12 +28,14 @@ test("asPressed draws a continued task working, in Tasks, and drops one being pu
   assert.equal(asPressed(rows, { read: [] }), rows);
 });
 
+
 // REMIND ME HID THE ROW UNTIL A RELOAD (UX walk, 2026-10-22): the put-down was held until the row left the pile, but a reminded
 // task stays in it, For later - so the rail went on dropping it. The hold ends when the row is gone OR put away.
 test("a put-down lands when its row leaves the pile or comes back For later, and not before", () => {
   assert.equal(putDownLanded(rows, 4), false, "still an ordinary row: the server has not answered yet");
   assert.equal(putDownLanded(rows, 99), true, "closed: gone from the pile");
   assert.equal(putDownLanded([{ ...rows[1], deferred: true, back_at: "2026-10-23 09:00:00" }], 4), true, "reminded: For later");
+  assert.match(read("AssistantView.jsx"), /stillLeaving\(l, pile\)/);
 });
 
 // MARK DONE ON A WATCHED ROW (the owner, 2026-11-04): the row was under Watching when pressed, so the pile it was pressed on read as landed and
@@ -65,4 +70,7 @@ test("every row put down stays off the rail until its own close has landed, a se
   assert.deepEqual(stillLeaving(two, { items: rows.slice(1), generated_at: 900 }).map((x) => x.tid), [4], "the one the pile let go is let go");
   assert.deepEqual(stillLeaving(two, { items: rows, generated_at: 2000 }).map((x) => x.tid), [19],
     "read after its close answered and still there: reopened by the server - shown, never hidden on the page's word");
+  const view = read("AssistantView.jsx");
+  assert.doesNotMatch(view, /setLeavingTid/, "no single slot left");
+  assert.match(view, /!putDownRef\.current\.some\(\(x\) => x\.tid && x\.tid === i\.tid\)/, "nor drawn ahead as the row below");
 });

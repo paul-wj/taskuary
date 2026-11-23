@@ -29,6 +29,12 @@ test("a file the answer names and also showed is one card, open - the shown copy
   assert.deepEqual(shownOnce([], undefined).rest, []);
 });
 
+test("a picture shown twice in one turn is drawn once, the last showing (the walk, 2026-11-18)", () => {
+  const shown = [{ id: 9, name: "Northwind ledger portal.png", kind: "shown" }, { id: 11, name: "Northwind ledger portal.png", kind: "shown" },
+    { id: 12, name: "notes.md", kind: "shown" }];
+  assert.deepEqual(shownOnce([], shown).rest.map((p) => p.id), [11, 12]);
+});
+
 const HOME = "C:/Users/alex/.taskuary/scratch/outputs";
 
 test("Codex's citation marker becomes a chip and leaves the words", () => {
@@ -206,4 +212,27 @@ test("a line that is only one of the task's files goes, and a path in backticks 
   const two = refs("The PDF is at `" + at(4, "comparison.pdf") + "`, open it.", 4, [{ path: "comparison.pdf" }]);
   assert.equal(two.text, "The PDF is at `comparison.pdf`, open it.");
   assert.equal(refs("- `comparison.pdf`", 4, [{ path: "comparison.pdf" }]).text, "- `comparison.pdf`", "a list of files stays a list");
+});
+
+// A PICTURE AT ITS OWN SHAPE (the design round, 2026-11-18; the owner: "images should be able to render however the agent wants it or make sense
+// to show"): every picture in a turn was squeezed into one fixed height - "make it bigger" drew a square half the chat's width. Its pixels reserve
+// its real room before it loads, as wide as it is and never wider than the chat; one with none known keeps the fixed room, so nothing jumps
+test("a turn's picture draws at its own shape, its room reserved before it loads", async () => {
+  const { pictureFit } = await import("../src/taskOutputs.js");
+  assert.deepEqual(pictureFit({ dims: [1024, 1024] }), { width: "min(100%, 1024px)", height: "auto", aspectRatio: "1024 / 1024", maxHeight: "80vh" });
+  assert.equal(pictureFit({ dims: [300, 900] }).aspectRatio, "300 / 900");
+  assert.equal(pictureFit({ name: "old.png" }), null);
+  const files = (await import("node:fs")).readFileSync(new URL("../src/TurnFiles.jsx", import.meta.url), "utf8");
+  assert.match(files, /width=\{f\.dims\?\.\[0\]\} height=\{f\.dims\?\.\[1\]\}/);
+  assert.match(files, /\.\.\.\(pictureFit\(f\) \|\| \{ maxHeight: 320 \}\)/);
+});
+
+// A FILE ANOTHER TURN MADE IS NOT DRAWN AGAIN (the walk, 2026-11-18): the agent's posts file stood whole under three answers that only spoke of it
+test("a file a turn only names, made by another turn, stays under the turn that made it", () => {
+  const posts = { id: "output:posts.txt", path: "posts.txt", name: "posts.txt", kind: "output", url: "/api/task-outputs/8/posts.txt", after: "comment-3" };
+  const words = `The three drafts are in ${HOME}/TQ-0008/posts.txt.`;
+  assert.deepEqual(turnFiles({ listed: [posts], id: "comment-3", words, tid: 8 }).map((f) => f.path), ["posts.txt"]);
+  assert.deepEqual(turnFiles({ listed: [posts], id: "comment-9", words, tid: 8 }), []);
+  // ...and one the listing does not place is still drawn where an answer names it
+  assert.deepEqual(turnFiles({ listed: [{ ...posts, after: null }], id: "comment-9", words, tid: 8 }).map((f) => f.path), ["posts.txt"]);
 });

@@ -110,10 +110,8 @@ class CoreTests(unittest.TestCase):
              mock.patch('taskuary.general.provider_options', return_value=[]):
             out = ingest_message(s, self.msg(external_id='ac4'), llm=TASK_LLM)
         self.assertFalse(any(getattr(c[0][0], '__name__', '') == '_auto_code' for c in spawn.call_args_list))
-        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'task')                 # 2026-09-23: unnamed is the owner's list
-        # nothing starts on a guess, and the route line says it is the owner's to do
-        spawn.assert_not_called()
-        self.assertIn('yours to do', s._rows('SELECT * FROM route ORDER BY RouteId DESC')[0]['Reason'])
+        # ...and it is the general agent's (DESIGN-FINAL 4a, one arrival rule: what is placed in Tasks starts its agent as it arrives)
+        self.assertEqual(s.get_task(out['task_id'])['Kind'], 'general')
 
     def test_a_first_time_email_sender_never_starts_the_coding_agent_by_itself(self):
         """The one road from a stranger's text to an agent on this machine with nobody in between
@@ -487,14 +485,14 @@ class CoreTests(unittest.TestCase):
         s.save_connector({'ConnectorId': oa['ConnectorId'], 'Active': 1, 'Secret': 'sk-x'}, 'o')
         self.assertTrue(callable(llm.build_llm(s)))                 # auto: the cloud key
         s.upsert_agent('claude', 'coding', 'cli', '{"cmd": "claude", "cwd": "C:/repo", "timeout": 9000}')
-        s.set_setting('triage_ai', 'cli:claude', 'o')
+        s.set_setting('triage_ai', 'cli:claude', 'owner')
         with mock.patch('taskuary.agents.run_cli', return_value=('{"intent": "task", "why": "x"}', None, None)) as rc:
             self.assertEqual(llm.build_llm(s)('sys', 'usr'), '{"intent": "task", "why": "x"}')
         prof = rc.call_args[0][0]
         self.assertNotIn('repo', prof['cwd'])                       # triage is not about any checkout: a scratch cwd,
         self.assertNotIn('--dangerously-skip-permissions', prof['args'])   # and no hands (audit 2026-09-02)
         self.assertEqual(prof['timeout'], 300)                      # and never waits a coding-run timeout
-        s.set_setting('triage_ai', 'cli:ghost', 'o')
+        s.set_setting('triage_ai', 'cli:ghost', 'owner')
         self.assertIsNone(llm.build_llm(s))                         # missing agent files instead of guessing
 
     def test_background_ai_falls_back_in_order_when_the_primary_hits_its_session_limit(self):
@@ -503,8 +501,8 @@ class CoreTests(unittest.TestCase):
         s = MemoryStore()
         s.upsert_agent('claude', 'coding', 'cli', '{"cmd":"claude"}')
         s.upsert_agent('codex', 'coding', 'cli', '{"cmd":"codex"}')
-        s.set_setting('triage_ai', 'cli:claude', 'o')
-        s.set_setting('triage_backup_ai', 'cli:codex', 'o')
+        s.set_setting('triage_ai', 'cli:claude', 'owner')
+        s.set_setting('triage_backup_ai', 'cli:codex', 'owner')
         called = []
         def made(store, name, *args, **kwargs):
             def answer(system, user, **call_kwargs):

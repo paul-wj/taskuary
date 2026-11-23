@@ -141,13 +141,16 @@ def token_arg(token: str, home: str = None) -> str:
     return f' -H "@{header_file(token, home)}"' if token else ''
 
 
+CLOSED_OK = ' || exit 0'         # the event hook's last words: a Taskuary that is closed is no failed hook (command)
 def command(base: str, token: str, cli: str, home: str = None) -> str:
     """Claude's hook: POST the event. curl.exe by name on Windows (bare `curl` is a PowerShell alias for
     Invoke-WebRequest there). -m 3: a hook must never hold the agent. stdin -> body. -o to the null
     device (not a shell redirect: PowerShell has no /dev/null) - a hook's stdout is read by Claude as a
     decision, and our reply is not one. `home` is Taskuary's (tests); the token rides in a file (header_file)."""
     curl, null = ('curl.exe', 'NUL') if os.name == 'nt' else ('curl', '/dev/null')
-    return f'{curl} -s -m 3 -o {null} -X POST "{base}/api/hooks/{cli}" -H "Content-Type: application/json"{token_arg(token, home)} --data-binary @-'
+    # ...and A TASKUARY THAT IS CLOSED IS NO FAILURE (2026-11-21: with the app shut, every tool call of his own Claude read "PostToolUse:Bash
+    # hook failed" - curl's refused connection is exit 7). The event is only news for a running app; `|| exit 0` reads the same in bash and cmd
+    return f'{curl} -s -m 3 -o {null} -X POST "{base}/api/hooks/{cli}" -H "Content-Type: application/json"{token_arg(token, home)} --data-binary @-{CLOSED_OK}'
 
 
 def ask_command(base: str, token: str = '', home: str = None) -> str:
@@ -406,12 +409,13 @@ def _events(t, p: dict) -> None:
             if his and not getattr(t, 'acp', False):
                 try:                                         # ...past every card raised before it (proposals.move_on, 2026-11-10)
                     from . import proposals
-                    # ...said to it as Taskuary's next line: the prompt that passed them is already in (general.tell, the one road)
+                    # ...said to it as Taskuary's next line: the prompt that passed them is already in (general.to_agent, the one road)
                     # ...and every card he wrote past, set aside as his line goes in (proposals.set_aside_drafts - the terminal's line is heard here)
                     now_ = time.time()
-                    if (note := proposals.passed_note(st, proposals.move_on(st, tid) + proposals.set_aside_drafts(st, tid, now_, actions=now_))):
+                    from .cardqueue import screen
+                    if (proposals.move_on(st, tid) + proposals.set_aside_drafts(st, tid, now_, actions=now_)) and (note := screen(st, tid)):
                         from . import general
-                        general.tell(st, tid, note)
+                        general.to_agent(st, tid, note)
                 except Exception as e: logger.debug(f'task {tid}: a held step stayed pending - {e}')
             if not is_wake(p.get('prompt')):                # ...and the owner's words are their next move after a stop (outcomes.py)
                 try:
@@ -489,8 +493,10 @@ def _events(t, p: dict) -> None:
             # THE WALL. A rate limit, a token ceiling, an overloaded API: the turn ends, the CLI sits at its
             # prompt, and on the screen that is indistinguishable from a question. Not terminal - Claude
             # can auto-resume and the owner can retry - so it is a request that stands until the run speaks.
-            kind = str(p.get('error_type') or 'unknown').replace('_', ' ')
-            text = f"{kind}: {str(p.get('error_message') or '').strip()}".rstrip(': ')
+            kind = str(p.get('error_type') or '').replace('_', ' ')
+            message = str(p.get('error_message') or '').strip()
+            text = ': '.join(x for x in (kind if kind.lower() != 'unknown' else '', message) if x)
+            if not text: return
             ws.record(st, tid, sid, 'stalled', request_id=ws.request_id_for(text), text=text, source='hook')
         elif ev == 'Elicitation':
             text = f"{p.get('server_name') or 'an MCP server'} asks: {str(p.get('prompt') or '').strip()}"
@@ -591,9 +597,8 @@ def ended_short(why: str) -> str: return f"it ended its turn still waiting on {w
 
 
 def held_for(store, tid: int, sid: str) -> bool:
-    "A step of this session waiting on the task for the owner's Approve or Dismiss - or handed to them on its page (browsergate.hand_over)."
-    from . import agentdesktop, browsergate, workerstate as ws
-    if browsergate.handing(store, tid, sid): return True
+    "A step of this session waiting on the task for the owner's Approve or Dismiss."
+    from . import agentdesktop, workerstate as ws
     # ...and a desktop press the owner was told is ready in the app (agentdesktop.ready)
     if any(str(r.get('RequestId') or '').startswith(agentdesktop.READY) for r in ws.open_requests(ws.events(store, tid, sid))): return True
     for r in store._rows("SELECT DraftText FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,)):
@@ -608,6 +613,7 @@ def held_for(store, tid: int, sid: str) -> bool:
 # judge's call (ENDED_SYSTEM says so), never a word list
 def finished(summ) -> bool: return isinstance(summ, dict) and summ.get('nothing_left') is True
 def left_for_send(summ) -> bool: return isinstance(summ, dict) and bool(summ.get('drafted'))
+def on_him(summ) -> bool: return isinstance(summ, dict) and any(str(x or '').strip() for x in summ.get('on_you') or [])
 def letter_waits(store, tid: int) -> bool:
     "A reply or one of the task's emails waits for the owner's Send (store.waiting_on_owner). A held step is its own session's: held_for."
     return (store.waiting_on_owner(int(tid)) or {}).get('Kind') not in (None, 'action')
@@ -639,7 +645,9 @@ def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = F
     # ...NOR WHILE A LETTER STILL WAITS FOR HIS SEND, whichever turn left it (letter_waits): recorded on the real CLI, 2026-11-13 - he sent
     # the first of two emails, the agent said the second "hasn't been sent yet", the model read that as unfinished and it was woken to
     # answer "Only you can send the email. Nothing else is needed from me"
-    if jobs is None and (left_for_send(summ) or checks_back(store, tid, sid) or letter_waits(store, tid)): return
+    # ...NOR ONE WHOSE SUMMARY LEFT A STEP ON HIM (its on_you): he moves next, by the turn's own record - on the Codex road each such read was a
+    # whole `codex` session of its own, started beside the turn (the walk, 2026-11-21)
+    if jobs is None and (left_for_send(summ) or on_him(summ) or checks_back(store, tid, sid) or letter_waits(store, tid)): return
     key = (str(sid), hashlib.sha1(said.encode('utf-8', 'replace')).hexdigest())
     def go():
         from . import workerstate as ws
@@ -866,11 +874,16 @@ def reason(payload: dict, wait: float = None) -> dict:
     return reasonnet.pre_tool(st, t.task_id, run_sid(payload, t.task_id), tool[len(reasonnet.TOOL):], payload.get('tool_input') or {}, wait)
 
 
-def browser(payload: dict, brain=None, sid: str = '', task: str = '') -> dict:
-    """Before one of OUR sessions runs a shell command (browsergate.check): a browser act that can't be undone is refused and held
-    for the owner. Not our pane, not a shell tool, nothing of agent-browser in it: {} at once - the command is Claude's."""
-    from . import agentdesktop, browsergate, readgate, shellgate
+def browser(payload: dict, sid: str = '', task: str = '') -> dict:
+    """Before one of OUR sessions runs a shell command (command_gate): a step that leaves the machine, or reads outside its folders,
+    is refused and held for the owner. Not our pane, not a shell tool, nothing to gate: {} at once - the command is Claude's. (A press
+    in the browser or on the desktop is held where it runs, gatecmd.)"""
+    from . import browsergate, readgate, shellgate
     tool, inp = str(payload.get('tool_name') or ''), payload.get('tool_input') or {}
+    if tool in readgate.WRITE_TOOLS:              # ...what it writes is its own work: reading it back is never asked (readgate.wrote)
+        t = _pane(payload, 'claude') or _general(payload, sid, task)
+        if t: readgate.wrote(t.task_id, readgate.tool_paths(inp, cwd=str(payload.get('cwd') or getattr(t, 'cwd', '') or '')))
+        return {}
     if tool in readgate.READ_TOOLS:
         t = _pane(payload, 'claude') or _general(payload, sid, task)
         st, cwd = getattr(t, 'store', None) if t else None, str(payload.get('cwd') or getattr(t, 'cwd', '') or '')
@@ -880,9 +893,8 @@ def browser(payload: dict, brain=None, sid: str = '', task: str = '') -> dict:
         return shellgate.check(st, t.task_id, t.sid, '', tool, cwd, shellgate.asks(st, t), reads=held) if held else {}
     if tool not in ('Bash', 'PowerShell'): return {}
     cmd = str(inp.get('command') or '')
-    # the cheap tests first: this hook sees every shell command - ...and A STEP THAT LEAVES THE MACHINE (a push, a merge, a public post, a
-    # publish, a mail) waits for the owner too (shellgate.py, the Advisor's risky-step hold, the owner 2026-10-28), and so does a desktop
-    # act that can't be undone (agentdesktop.py, 2026-10-31)
+    # the cheap tests first: this hook sees every shell command - A STEP THAT LEAVES THE MACHINE (a push, a merge, a public post, a
+    # publish, a mail) waits for the owner (shellgate.py, the Advisor's risky-step hold, the owner 2026-10-28)
     # ...and a delete outside the agent's own folder, read against the folder it runs in (shellgate.deletes, 2026-11-03)
     if not needs_gate(cmd, str(payload.get('cwd') or '')) and not readgate.command_paths(cmd, str(payload.get('cwd') or '')): return {}
     t = _pane(payload, 'claude') or _general(payload, sid, task)
@@ -890,36 +902,24 @@ def browser(payload: dict, brain=None, sid: str = '', task: str = '') -> dict:
     if not t or not st: return {}
     # ...asked in the CLI's own prompt where the owner can answer it there, held for the task's Approve where nobody can (shellgate.asks)
     return command_gate(st, t.task_id, t.sid, cmd, tool, str(payload.get('cwd') or getattr(t, 'cwd', '') or ''), shellgate.asks(st, t),
-                        about=str((payload.get('tool_input') or {}).get('description') or ''), brain=brain)
+                        about=str((payload.get('tool_input') or {}).get('description') or ''))
 
 
 def needs_gate(cmd: str, cwd: str = '') -> bool:
-    "The cheap test first: does this shell line touch the browser, the desktop, or leave the machine / delete outside its folder?"
-    from . import agentdesktop, browsergate, shellgate
-    return browsergate.names(cmd) or browsergate.names(cmd, agentdesktop.EXE) or bool(shellgate.acts(cmd, cwd))
+    "The cheap test first: does this shell line leave the machine or delete outside its folder? (A press in the browser or on the desktop is gatecmd's.)"
+    from . import shellgate
+    return bool(shellgate.acts(cmd, cwd))
 
 
-def command_gate(st, tid: int, sid: str, cmd: str, tool: str = 'Bash', cwd: str = '', ask: bool = False, about: str = '', brain=None) -> dict:
+def command_gate(st, tid: int, sid: str, cmd: str, tool: str = 'Bash', cwd: str = '', ask: bool = False, about: str = '') -> dict:
     """THE ONE DECISION for a shell command an agent of ours is about to run - a CLI's (its PreToolUse hook, browser above) and an API
     agent's (apiagent.run_command) alike: {} runs it; anything else holds it, with the reason in permissionDecisionReason (or `ask`, the
-    CLI's own prompt). A step that leaves the machine or deletes outside its folder (shellgate), a desktop act or a browser act that can't
-    be undone (agentdesktop, browsergate) waits for the owner; everything else runs, as on a CLI."""
-    from . import agentdesktop, browsergate, readgate, shellgate
-    browse, out, desk = browsergate.names(cmd), shellgate.acts(cmd, cwd), browsergate.names(cmd, agentdesktop.EXE)
+    CLI's own prompt). A step that leaves the machine or deletes outside its folder (shellgate), or a read outside its folders (readgate),
+    waits for the owner. A press in the browser or on the desktop is held where it runs, on every AI alike (gatecmd)."""
+    from . import browsergate, readgate, shellgate
+    out = shellgate.acts(cmd, cwd)
     reads, never = readgate.of_command(st, tid, cmd, cwd)
     if never: return browsergate._deny(never)
-    if not browse and not out and not desk and not reads: return {}
-    # ...and the browser comes up HERE, at the agent's first navigate - never before it has an address (browserview.on_demand)
-    # ...and a page an earlier command left loading for good is stopped, or this command hangs behind it (browserview.unstick)
-    if browse:
-        from . import browserview
-        try: browserview.began(sid); browserview.on_demand(sid, cmd)
-        except Exception as e: logger.warning(f'the browser for {sid} did not start on its first page - {e}')
-    # EVERY GATE A LINE TOUCHES JUDGES ITS PART, any one held holds the whole line: a line that clicked Pay and pushed went to the shell gate
-    # alone, and its "push" card, a trusted repo or the terminal's own prompt ran the payment with it, unseen. The desktop and the browser are
-    # judged first - their acts are held on their own cards - and only a line whose page and desktop acts all pass reaches the shell's
-    if desk and (held := agentdesktop.check(st, tid, sid, cmd, brain)): return held
-    if browse and (held := browsergate.check(st, tid, sid, cmd, brain, cwd)): return held
     return shellgate.check(st, tid, sid, cmd, tool, cwd, ask, about=about, reads=reads) if out or reads else {}
 
 

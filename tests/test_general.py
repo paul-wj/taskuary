@@ -634,7 +634,7 @@ class GeneralWaitroomTests(unittest.TestCase):
         with mock.patch.dict(terminal.SESSIONS, {}, clear=True), \
              mock.patch.object(general, 'start_session', return_value=fake) as start, \
              mock.patch.object(terminal, 'start_on_task') as coding:
-            out = waitroom.add(store, tid, 'Compare the competitors')
+            out = waitroom.add(store, tid, 'Compare the competitors', 'owner')
             time.sleep(.05)
         self.assertEqual((out['state'], out['delivered']), ('restarted', 1))
         start.assert_called_once(); coding.assert_not_called(); fake.send_prompt.assert_called_once()
@@ -725,15 +725,6 @@ class OneGoalTests(unittest.TestCase):
             s.cx.execute('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps(bad), tid)); s.cx.commit()
             general.reading_block(s, tid); general._prompt(s, tid)
 
-    def test_the_shipped_assistant_doc_carries_research_know_how(self):
-        doc = (Path(general.__file__).parent / 'templates' / 'assistant.md').read_text(encoding='utf-8')
-        flat = ' '.join(doc.split())
-        for want in ("off {{owner}}'s hands", 'truly cannot find', 're-plan', 'never send'): self.assertIn(want, flat, want)
-        self.assertIn('## When the task needs research or analysis', doc)
-        for want in ('what you could not find', 'when the source is from', 'whose figures', 'how you computed', 'who owes what by when',
-                     'never book', "{{owner}}'s voice", 'a claim needs a source'):
-            self.assertIn(want, flat, want)
-
 
 if __name__ == '__main__': unittest.main()
 
@@ -783,6 +774,57 @@ def test_a_chat_turn_tells_its_task_s_tabs_as_it_moves():
         session._remember_trace('tool_call', 'Read', {'args': {'path': 'vendors.csv'}})
         assert told == [(live.RUN, tid)], told
         session.busy = True; session.busy = True; session.busy = False
-        assert told == [(live.RUN, tid)] * 3, 'a start and an end are told once each; the same state again is no news'
+        flip = [(live.RUN, tid), (live.TASK, tid)]
+        assert told == [(live.RUN, tid)] + flip * 2, 'a start and an end are told once each; the same state again is no news'
+    try: session.close()
+    except Exception: pass
+
+
+def test_a_turn_that_ends_is_news_to_every_tab_even_the_one_whose_press_started_it():
+    """THE RAIL ROW STOOD "WORKING" ~1.5 S PAST A FINISHED TURN (speed round, 2026-11-18): the turn ran in the context of the press that started
+    it (live.TAB, the page's tab), so the end's task-changed named that tab as its writer, and the tab's rail waited out its own writes'
+    window before reading. The end is the turn's news, not the press's answer: it names no tab. The start, said during the press, keeps it."""
+    from taskuary import live
+    store = MemoryStore()
+    tid = general_task(store); connect_openai(store)
+    told = []
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True), \
+         mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'The vendor sheet is settled.'):
+        session = general.start_session(store, tid)
+        real = live.emit
+        def spy(kind, **p):
+            if p.get('task_id') == tid and kind == live.TASK: told.append((session.busy, live.TAB.get()))
+            return real(kind, **p)
+        token = live.TAB.set('tab-erin-7')                  # ...the press came from this tab
+        try:
+            with mock.patch.object(live, 'emit', spy): session.send_prompt('Settle the vendor sheet')
+        finally: live.TAB.reset(token)
+    assert told and told[-1] == (False, None), f'the turn\'s end named the tab whose press started it: {told}'
+    assert (True, 'tab-erin-7') in told, told
+    try: session.close()
+    except Exception: pass
+
+
+def test_a_turn_that_ends_tells_its_task_changed_after_it_is_no_longer_busy():
+    """THE RAIL READ "WORKING" OVER A FINISHED TURN (speed round, 2026-11-18): a turn's end filed its answer (task-changed) while the
+    session was still busy, and the flip to idle that came after pushed only run-tail - the chat's own tick - so the rail row and the
+    header, read on task-changed, kept the stale "working" until a slow safety look. The flip itself says task-changed (handraise.moved)."""
+    from taskuary import live
+    store = MemoryStore()
+    tid = general_task(store); connect_openai(store)
+    told = []
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True), \
+         mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'The vendor sheet is settled.'):
+        session = general.start_session(store, tid)
+        real = live.emit
+        def spy(kind, **p):
+            if p.get('task_id') == tid: told.append((kind, session.busy))
+            return real(kind, **p)
+        with mock.patch.object(live, 'emit', spy):
+            session.send_prompt('Settle the vendor sheet')
+        assert not session.busy
+        ran = max(i for i, (_, busy) in enumerate(told) if busy)            # the last word said while the turn still ran
+        assert (live.TASK, True) in told[:ran + 1], told                     # ...its answer was filed while it ran
+        assert (live.TASK, False) in told[ran + 1:], f'nothing said task-changed once the turn was over: {told}'
     try: session.close()
     except Exception: pass

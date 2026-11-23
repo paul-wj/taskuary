@@ -76,34 +76,6 @@ test("the layout: two columns whenever no agent is live - a Result and a failure
   assert.match(src, /\{resultRest && !sessionView && !chatPane && <ResultSummary /);
 });
 
-// ...and the tab reads as a press (the owner, 2026-10-22: the line looked like plain grey text; 2026-10-26: "make it with arrow and more
-// visible to pull out where it came from") - the whole edge, an arrow in a disc that turns while the drawer is out, a pointer, a tint on
-// hover, a ring on focus. A native button, so Enter and Space press it. The three sections' closed tabs (2026-10-27) are the same kind of press
-test("the tabs look pressable: an arrow, a pointer, a hover tint, a focus ring - the live drawer's and the sections' alike", () => {
-  const src = taskSource(), tab = src.slice(src.indexOf("const DRAWER_TAB"), src.indexOf("\n\n", src.indexOf("const DRAWER_TAB")));
-  assert.match(tab, /cursor: "pointer"/);
-  assert.match(tab, /"&:hover": \{ bgcolor: lit \? "#46586a" : "var\(--tq-inset, #f3efe9\)" \}/);
-  assert.match(tab, /"&:focus-visible": \{ outline: `2px solid \$\{lit \? INK : ACCENT\}`/);
-  // ...lit, it is filled in the accent and peeks out once - never for a reader who asked for no motion
-  assert.match(tab, /bgcolor: lit \? ACCENT :/);
-  assert.match(tab, /"@media \(prefers-reduced-motion: reduce\)": \{ animation: "none" \}/);
-  const left = src.slice(src.indexOf('data-tq-from-line=""'), src.indexOf("</Box></Box>}", src.indexOf('data-tq-from-line=""')));
-  assert.match(left, /data-tq-from-chevron="">\{fromSide \? "‹" : "›"\}/);
-  assert.match(left, /Came from/);
-  // a section's closed tab: a native button, its words horizontal, a pointer, a hover tint, a focus ring; and the switch moves smoothly
-  const sec = src.slice(src.indexOf("const SECTION_TAB"), src.indexOf("// ...the TAB each drawer folds to"));
-  assert.match(sec, /appearance: "none", font: "inherit", cursor: "pointer"/);
-  assert.doesNotMatch(sec, /writingMode/, "horizontal words");
-  assert.match(sec, /"&:hover": \{ bgcolor: "var\(--tq-panel, #f8f6f2\)" \}/);
-  assert.match(sec, /"&:focus-visible": \{ outline: `2px solid \$\{ACCENT\}`/);
-  assert.match(src, /<Box component="button" type="button" data-tq-section-tab=\{sec\.key\}/);
-  // ...its lines whole or not drawn, as many as the room holds and none skipped: never a fixed count, never squeezed to a sliver
-  assert.match(sec, /"& \[data-tq-tab-line\]\[data-tq-unfit\]": \{ display: "none" \}/);
-  assert.match(sec, /WebkitLineClamp: 3, WebkitBoxOrient: "vertical",\s+overflow: "hidden", flexShrink: 0/);
-  assert.match(src, /const cut = ls\.findIndex\(.*\);\n\s+if \(cut >= 0\) ls\.slice\(cut\)/);
-  assert.doesNotMatch(src, /newestFirst\(sources\.flatMap\(\(g\) => g\.msgs\)\)\.slice/, "every message goes to the tab");
-  assert.match(src, /transition: `flex-grow \$\{SLOT_MS\}ms ease, flex-basis \$\{SLOT_MS\}ms ease`, "@media \(prefers-reduced-motion: reduce\)": \{ transition: "none" \}/);
-});
 
 // ONE MAIN VIEW (the owner, 2026-10-26): where the task is up to is the page, the other half its drawer; a phone keeps its stacked page
 test("the main view follows where the task is up to: the work with Came from on the left, or the task with the work on the right", () => {
@@ -255,6 +227,8 @@ test("the two sections come in the flow's order, and each closed tab says where 
   assert.equal(cameChip({ ...teams, Subject: "Help desk" }), "Teams · Help desk");
   assert.equal(cameChip({ Channel: "whatsapp", SourceName: "Finance team", FromName: "Ray Colton" }), "WhatsApp · Finance team");
   assert.equal(cameChip({ Channel: "email", SourceName: "alex@northwind.example", FromName: "Gail Moreno" }), "Email · Gail Moreno");
+  // ...and a task he made himself is his ask - never "Own · you" (design round 4, 2026-11-19)
+  assert.equal(cameChip({ Channel: "own", SourceName: "you", FromName: "You" }), "Your ask");
   assert.match(fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8"), /label: cameChip\(sourceMessage\) \|\| \(sources\.length/);
   assert.match(fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8"), /channel: cameIn \? cameFrom\(cameIn\) \|\| channelName\(cameIn\.Channel\)/);
   assert.equal(agentWord({}), "not started");
@@ -342,10 +316,10 @@ test("no task kind or state lays a Close out section: Came from and the chat, a 
   assert.doesNotMatch(src, /<CodingChat |liveTerminal\(term\) \? </, "no coding/general branch picks the chat");
   assert.equal((src.match(/<GeneralWorkspace /g) || []).length, 1);
   assert.match(src, /next=\{chatCards\}/);
-  // ...the to-do's box at the foot of Came from, the chat's cards over it, and no Agent slot beside it
+  // ...NO BOX IN CAME FROM (the owner, 2026-11-22): its Send to agent opens the Agent section, where the box is - no Agent slot beside it till then
   const from = src.slice(src.indexOf('slot("from",'), src.indexOf("THE WORK COLUMN"));
-  assert.match(from, /\{solo && <Box data-tq-solo-box="" sx=\{\{ mt: "auto", position: "sticky", bottom: 0/);
-  assert.match(from, /<NoAgentChat task=\{t\} reviews=\{detail\?\.reviews \|\| \[\]\} cards=\{chatCards\} closed=\{closedSaid\}/);
+  assert.match(from, /data-tq-send-to-agent=""/);
+  assert.doesNotMatch(from, /<NoAgentChat /);
   assert.match(src, /\{!solo && slot\("agent", <Box data-tq-work=/);
   // ...the task's own moves ride the chat's strip
   assert.match(src, /function useTaskMoves\(sec\) \{/);

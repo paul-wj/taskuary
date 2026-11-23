@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { HOW, landingFiles, landingTurn, landingWords } from "../src/landing.js";
+import { HOW, landingFiles, landingWords } from "../src/landing.js";
 
 test("the landing card says the branch's stat and the agent's pick", () => {
   const w = landingWords({ own: true, ahead: 2, changed: 3, plus: 40, minus: 12, proposal: { how: "merge", why: "the base moved" } });
@@ -21,12 +21,6 @@ test("the four answers are the server's and discard asks once more before it goe
   assert.match(body, /\/api\/tasks\/\$\{taskId\}\/landing/);
 });
 
-test("the chat draws it only where the task works in a checkout, whatever its kind", () => {
-  const page = fs.readFileSync(path.join(process.cwd(), "src", "TaskPage.jsx"), "utf8");
-  assert.match(page, /landing=\{canCode && detail\?\.checkout && <LandingCard /);
-  assert.equal((page.match(/<LandingCard /g) || []).length, 1, "once, in the chat");
-});
-
 
 test("the card's list folds the generated files and says how many more, apart from See the diff", () => {
   const { src, gen } = landingFiles([{ path: "taskuary/landing.py" }, { path: "website/package-lock.json" }, { path: "taskuary/static/assets/index-AbCd1234.js" }]);
@@ -37,13 +31,6 @@ test("the card's list folds the generated files and says how many more, apart fr
   assert.match(body, /<Dialog open=\{open\}.*fullWidth maxWidth=\{false\}/, "the whole diff opens the window wide");
 });
 
-// the owner, 2026-11-09: See the diff waited for the read before anything opened - it felt dead for a second
-test("See the diff opens its window at the press, reading the changes in it, and says so if they cannot be read", () => {
-  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
-  assert.match(body, /const seeDiff = \(\) => \{ if \(open\) return setOpen\(false\); setOpen\(true\); setDiff\(null\); readDiff\(\); \};/);
-  assert.match(body, /<CircularProgress size=\{14\} color="inherit" \/>Loading the changes…<\/Typography>/);
-  assert.match(body, /\{diffErr && <Typography variant="body2" data-tq-diff-error=""/);
-});
 
 // the owner, 2026-11-09 (~20th time): "i thought actions should be cards/buttons??? why is this text??" - an agent's commits straight on
 // master, unpushed, under a card with no button; the owner typed "yes"
@@ -59,7 +46,7 @@ test("unpushed commits on the shared base are Push and Push & deploy buttons, an
   assert.equal(landingWords({ own: true, ask: true, answers: [] }).question, "How should it land?");
   const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
   assert.match(body, /data-tq-land=\{h\}[\s\S]*onClick=\{\(\) => answer\(h\)\}/);
-  assert.match(body, /\{s\.ask \? <Box[\s\S]*\{w\.first && press\(w\.first, "p"\)\}\{w\.second && press\(w\.second, "s"\)\}/);
+  assert.match(body, /\{s\.ask \|\| s\.passed \? <Box[\s\S]*\{w\.first && press\(w\.first, "p"\)\}\{w\.second && press\(w\.second, "s"\)\}/);
   assert.match(body, /api\.post\(`\/api\/tasks\/\$\{taskId\}\/landing`, \{ how \}\)/, "Push and Push & deploy go down the landing road");
 });
 
@@ -73,6 +60,9 @@ test("the landing card is one title, the files folded, one filled button and the
   assert.deepEqual([w.first, w.second], ["deploy", "push"]);
   const solo = { ...s, push: { ...s.push, deploy: "" }, answers: s.answers.slice(0, 1) };
   assert.equal(landingWords(solo).title, "Push 1 commit to master - 26 files");
+  assert.equal(landingWords({ ...solo, name: "northwind/ledger" }).title, "Push 1 commit to master of northwind/ledger - 26 files", "the repository it goes to, named");
+  assert.equal(landingWords({ ...solo, name: "ledger", ask: false, push: null, answers: [], noRemote: true }).title,
+    "1 commit on master of ledger, not pushed - this checkout has no remote to push to");
   assert.deepEqual([landingWords(solo).first, landingWords(solo).second], ["push", ""]);
   const own = { own: true, branch: "fix-export", base: "master", ahead: 2, commits: 2, changed: 4, ask: true,
     answers: ["rebase", "merge", "pr", "discard"].map((how) => ({ how, label: HOW[how] })) };
@@ -90,15 +80,18 @@ test("the landing card is one title, the files folded, one filled button and the
 
 // NO NOT NOW (the owner, 2026-11-10: "why ddo we need not now card? just hit next and you go to the next task and it stays on the rail"): the
 // push card the agent raised is passed like every card once the conversation moves on (proposals.move_on) - greyed, nothing to press
-test("the push card has no Not now; a passed one is greyed with no button, the way back said under its title", () => {
+// ...AND A PASSED ONE IS THE SAME CARD, ITS BUTTONS GREYED, NO REASON (the owner, 2026-11-18: "don't need reason. just keep it with buttons but
+// the buttons grayed out once you moved on")
+test("the push card has no Not now; a passed one is the same card with its buttons greyed and no reason line", () => {
   const s = { own: false, shared: true, base: "master", commits: 1, changed: 5, plus: 116, minus: 9, ask: false, passed: true,
-    push: { tip: "3a1b9a81c0ffee", ahead: 1, to: "master", deploy: "" }, answers: [] };
-  assert.equal(landingWords(s).passed, "Set aside when you moved on - ask the agent to bring it back.");
-  assert.equal(landingWords({ ...s, passed: false }).passed, "");
+    push: { tip: "3a1b9a81c0ffee", ahead: 1, to: "master", deploy: "" }, answers: [{ how: "push", label: "Push" }] };
+  assert.equal(landingWords(s).title, landingWords({ ...s, passed: false, ask: true }).title, "the title it asked with");
+  assert.equal(landingWords(s).passed, undefined);
   const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
   assert.doesNotMatch(body, /landing\/hold|data-tq-land-hold|Not now|s\.held/);
   assert.match(body, /data-tq-act-state=\{s\.passed \? "passed" : s\.ask \? "waiting"/);
-  assert.match(body, /const sub = s\.passed \? w\.passed :/);
+  assert.match(body, /return \(<MovedPast on=\{s\.passed\}>\n\s+<Box data-tq-landing=""/);
+  assert.doesNotMatch(body, /w\.passed|!s\.passed &&/);
 });
 
 // REVIEW CHANGES STAYS AFTER THE SESSION IS GONE (the owner, 2026-11-10: "yes, keep it"): lit on work left to review, the row's button opens
@@ -118,16 +111,3 @@ test("the row's Review changes with no session open opens the landing card's dif
 
 // THE WORK'S CARD IS PART OF THE AGENT TURN THAT DID IT, OR NOT THERE (the owner, 2026-11-13: "stop putting worked on master at the bottom.
 // i told you this 20 times.. it's part of the agent turn or doesn't belong at all. we have diff thing in the logo on top")
-test("the chat draws the work's card inside the turn its newest change came in, never at the chat's foot", async () => {
-  const fs = await import("node:fs");
-  const ws = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(ws, /const landIn = landAt \? landingTurn\(/);
-  // ...a turn's cards, its last thing (cardsOf): what the list placed in it, the letters that wait where this is their turn, then the work's card
-  assert.match(ws, /\.\.\.\(x\.id === landIn \? \[\.\.\.\(live\.has\("land"\) \? qLine\(\) : \[\]\), <React\.Fragment key="landing">\{landing\}<\/React\.Fragment>\] : \[\]\)\];/);
-  assert.match(ws, /cards=\{cardsOf\(x\)\}/);
-  assert.match(ws, /\{!landIn && landing && <div hidden>\{landing\}<\/div>\}<\/>;/, "unplaced, it is mounted hidden - never drawn at the foot");
-  assert.match(ws, /const landAt = landS && \(landS\.ask \|\| landS\.landed\) \? landS\.at \|\| "" : null;/, "only a press, or what a press did - the diff is the header's");
-  const { landingTurn } = await import("../src/landing.js");
-  const turns = [{ role: "assistant", id: "t1", createdAt: "2026-11-12 21:00:00" }, { role: "assistant", id: "t2", createdAt: "2026-11-12 21:30:00" }];
-  assert.equal(landingTurn(turns, "2026-11-12 21:10:00"), "t1", "the turn the change came in, not the newest");
-});

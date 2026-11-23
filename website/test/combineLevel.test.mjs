@@ -2,8 +2,11 @@
 // whose level triage is handed with every message from that connection type. A mailbox card and the email channel share one level.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MARKS, SAYS, clampLevel, combines, defaultLevel, kindOf } from "../src/combineLevel.js";
+import fs from "node:fs";
+import path from "node:path";
+import { ENDS, MARKS, SAYS, clampLevel, combines, defaultLevel, kindOf } from "../src/combineLevel.js";
 
+const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "ConnectorsView.jsx"), "utf8");
 
 test("defaults: WhatsApp and email 4, everything else 3, a mailbox card is email", () => {
   assert.deepEqual(["whatsapp", "outlook", "gmail", "imap", "teams", "slack", "telegram"].map(defaultLevel), [4, 4, 4, 4, 3, 3, 3]);
@@ -15,9 +18,9 @@ test("the message connections carry it, a code host or a database does not", () 
   assert.deepEqual(["github", "sqlite", "jira", ""].map(combines), [false, false, false, false]);
 });
 
-test("the stops cover all five levels and each has an explanation", () => {
+test("the stops are numbered and the ends are labelled Separate and Combine, and every level says what it does", () => {
+  assert.deepEqual(ENDS, ["Separate", "Combine"]); assert.deepEqual(MARKS.map((m) => m.label), ["1", "2", "3", "4", "5"]);
   assert.deepEqual(MARKS.map((m) => m.value), [1, 2, 3, 4, 5]);
   for (const m of MARKS) assert.ok(SAYS[m.value]);
   assert.deepEqual([0, 1, 5, 6, "x"].map(clampLevel), [null, 1, 5, null, null]);
 });
-

@@ -64,13 +64,31 @@ def test_the_cli_and_floor_know_answers():
     assert "'--answers'" in inspect.getsource(cli) and "'answers': args.answers" in inspect.getsource(cli)
 
 
-def test_a_second_save_pointed_at_another_mail_replaces_the_recipients():
+def test_a_second_save_pointed_at_another_persons_mail_is_their_own_card_and_the_first_keeps_its_person():
     s, tid, ids = thread(asks=[0], aside=[1, 2])
     rid = wrapup.agent_reply(s, tid, 'Hi Ray - repaired.', 'coding')['review_id']
     assert 'gail@northwind.example' in json.dumps(s.review_envelope(rid)['cc'])
-    wrapup.agent_reply(s, tid, 'Hi Gail - noted.', 'coding', answers=ids[1])
-    env = s.review_envelope(rid)
-    assert s.get_review(rid)['AnswersMid'] == ids[1] and 'gail@northwind.example' in json.dumps(env['to']) and 'ray@northwind.example' in json.dumps(env['to'])
+    other = wrapup.agent_reply(s, tid, 'Hi Gail - noted.', 'coding', answers=ids[1])['review_id']
+    assert other != rid and s.get_review(other)['AnswersMid'] == ids[1] and 'gail@northwind.example' in json.dumps(s.review_envelope(other)['to'])
+    assert s.get_review(rid)['Status'] == 'pending' and 'ray@northwind.example' in json.dumps(s.review_envelope(rid)['to'])
+
+
+def test_a_second_persons_chat_never_rebinds_the_first_persons_email_card():
+    """The HIPAA walk, 2026-11-21: Gail's board-pack email had its card; Paula's chat came onto the same task, and the agent saved the
+    letter to Gail again (`answers` = her mail). `answers` was checked and set aside: the newest message - Paula's chat - became the card's
+    channel with Gail's address on it, its files "can't be sent on chat", and Gail's email card was greyed. Each card keeps its person."""
+    s, tid, ids = thread(asks=[0])
+    gail = s.add_message({'TaskId': tid, 'ExternalId': 'g1', 'ConversationId': 'conv-2', 'Channel': 'email', 'SourceName': 'alex@northwind.example',
+                          'Subject': 'Q3 board pack', 'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example', 'SentAt': '2026-11-04 09:10:00',
+                          'BodyText': 'Can you put the Q3 board pack together?', 'Status': 'routed', 'RecipientsJson': json.dumps({'to': ['alex@northwind.example']})})
+    rid = wrapup.agent_reply(s, tid, 'Hi Gail - the board pack is attached.', 'agent', answers=gail)['review_id']
+    s.add_message({'TaskId': tid, 'ExternalId': 'p1', 'ConversationId': 'chat-7', 'Channel': 'teams', 'SourceName': 'teams', 'FromName': 'Paula Vance',
+                   'FromEmail': 'paula@northwind.example', 'SentAt': '2026-11-04 09:20:00', 'BodyText': 'What would printing 12 copies cost?', 'Status': 'routed'})
+    again = wrapup.agent_reply(s, tid, 'Hi Gail - the board pack is attached, with the print costs.', 'agent', answers=gail)['review_id']
+    r = s.get_review(again)
+    assert s.get_message(r['MessageId'])['Channel'] == 'email' and r['AnswersMid'] == gail
+    assert 'gail@northwind.example' in json.dumps(s.review_envelope(again)['to'])
+    assert again == rid or s.get_review(rid)['Status'] != 'pending', 'one card to Gail, never two'
 
 
 def test_a_plain_re_save_keeps_the_answers_mid_already_pinned():
@@ -271,3 +289,20 @@ def test_an_aside_mail_opens_no_new_draft():
         out = ingest.ingest_message(s, {'external_id': 'x18', 'channel': 'email', 'from_email': GAIL[0], 'from_name': GAIL[1], 'conversation_id': 'conv-9',
                                         'subject': 'RE: Export', 'body': 'Thanks!', 'sent_at': '2026-11-04 10:18:00'}, llm=judged)
     assert out.get('task_id') == tid and s.pending_review(tid) is None and not spawned.called
+
+
+def test_a_reply_card_names_whom_it_answers_after_someone_else_writes_on_the_thread():
+    """The card audit C2 (the owner, 2026-11-22: "yes"): a reply drafted to Erin, then Gail wrote in the same chat - the card, its rail row and
+    the agent's "sent to" named Gail, while the send answered Erin."""
+    from taskuary import continuity, funnel
+    s = MemoryStore(); tid = s.create_task({'Title': 'Export numbers', 'Kind': 'reply', 'Status': 'open', 'Source': 'teams'}, 'router')
+    m = lambda i, a, n, b: s.add_message({'TaskId': tid, 'ExternalId': f't{i}', 'ConversationId': 'room-1', 'Channel': 'teams', 'SourceName': 'alex@northwind.example',
+                                          'Subject': 'Export', 'FromName': n, 'FromEmail': a, 'SentAt': f'2026-11-22 09:0{i}:00', 'BodyText': b, 'Status': 'routed'})
+    erin = m(1, 'erin@northwind.example', 'Erin Blake', 'Can you send the export numbers?')
+    rid = s.add_review({'TaskId': tid, 'MessageId': erin, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Here they are, Erin.'})
+    gail = m(2, 'gail@northwind.example', 'Gail Moreno', 'Morning all!')
+    s.set_review_answers(rid, erin); s.update_review_message(rid, gail)
+    assert next(r for r in s.list_reviews('pending') if r['ReviewId'] == rid)['FromName'] == 'Erin Blake'
+    assert continuity.sent_to(s, s.get_review(rid)) == 'Erin Blake'
+    row = next((x for x in funnel.build(s)['items'] if x.get('rid') == rid), None) if hasattr(funnel, 'build') else None
+    assert row is None or row.get('who') != 'Gail Moreno', row

@@ -246,6 +246,20 @@ def teach(store, kind: str, src: str, facts: str, scope: str = 'global', key: st
         logger.warning(f'the verdict taught no line: {e}'); return ''
 
 
+def say(store, kind: str, src: str, text: str, section: str = 'care') -> str:
+    """A verdict's line written AS GIVEN - no model reads it first: where the verdict itself says the whole of what it teaches (a report's
+    finding the owner put down for good, server.report_not_for_me). Kept as a verdict's line is (teach): said once, never over his Wrong,
+    found by `src` for an Undo (untaught). -> the raw line, '' when it was already there."""
+    from . import memoryedit
+    said = text_of(str(text or '').strip())
+    doc = store.get_doc(memoryedit.DOC) or ''
+    new, raw, _more = _put(doc, said, 'global', None, section if section in lc.SECTIONS else 'care', True)
+    if not raw or any(alike(r, raw) for r in doc.splitlines()) or wronged(store, raw): return ''
+    memoryedit._save(store, doc, new)
+    store.add_learned_event(_key(raw), raw, 'live', 0, src or '', 'said', f'{VERDICT}:{kind}')
+    return raw
+
+
 def alike(a: str, b: str) -> bool:
     """The same line in other case or spacing: the same words about the same thing (a bullet's text, its `about` apart)."""
     from .memoryedit import _same
@@ -269,14 +283,14 @@ def teach_soon(store, *a, background=None, **kw):
     threading.Thread(target=teach, args=(store, *a), kwargs=kw, daemon=True).start()
 
 
-def untaught(store, src: str) -> int:
+def untaught(store, src: str, kind: str = '') -> int:
     """The Undo of a verdict: the line it wrote comes out, a line it replaced goes back where it was, and what the line fed is withdrawn
-    (learn.withdraw). Returns the lines taken out."""
+    (learn.withdraw). `kind`: only the lesson of that verdict (made_task...), else every one on `src`. Returns the lines taken out."""
     if not src: return 0
     from . import memoryedit
     from .learn import withdraw, _under
     rows = store._rows("SELECT * FROM learned_history WHERE Ev=? AND Action IN ('said','replaced') AND Actor LIKE ? ORDER BY Id",
-                       (src, f'{VERDICT}:%'))
+                       (src, f'{VERDICT}:{kind or "%"}'))
     doc = old = store.get_doc(memoryedit.DOC) or ''
     n = 0
     for r in rows:

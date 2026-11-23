@@ -227,11 +227,11 @@ def _other_side(store, cid):
     the Advisor's own thread, an auto-reply or a calendar response - the mail system wrote those (2026-10-06). Nor a
     machine's mail: the owner answering a portal's notification with a question raised "No answer from Vendor Portal in
     3 days - follow up?" - a noreply address never answers, and nobody is there to chase (the rail Advisor's eval)."""
-    from .categories import sender_class
+    from .categories import automated
     inbound = store.last_inbound_in(cid) if cid else None
     if not inbound: return None
     if inbound.get('Channel') in ('report', CHANNEL) or _ooo_row(inbound) or _cal_mail(inbound): return None
-    if sender_class(inbound) in ('automated', 'bulk'): return None
+    if automated(inbound): return None
     return inbound
 
 
@@ -435,9 +435,9 @@ def _agent_row(store, tid) -> bool:
     """Is an agent's own row on the rail the line for this task - a live session (working or waiting on the owner), or a run
     that finished, failed or stopped? Its row already says so: "agent stopped", "finished" (the owner, 2026-10-20)."""
     from . import workerstate
+    if workerstate.on_task(tid): return True          # is an agent on it now: the one answer (workerstate.on_task)
     try:
-        w = workerstate.status(store, int(tid))
-        if w.get('live') or w.get('state') in AGENT_ENDED: return True
+        if workerstate.status(store, int(tid)).get('state') in AGENT_ENDED: return True
     except Exception: pass
     runs = store.list_runs(int(tid)) or []
     return bool(runs) and str(runs[-1].get('Status') or '') in AGENT_ENDED
@@ -1674,7 +1674,7 @@ def attach_sources(store, i: dict, tid: int) -> list:
     for mid in store.idea_sources(i):
         m = store.get_message(mid)
         if not m or m.get('Channel') == CHANNEL or m.get('TaskId'): continue
-        store.attach_message(mid, tid); moved.append(mid)
+        if store.arrive(mid, tid, 'routed'): moved.append(mid)
     return moved
 
 

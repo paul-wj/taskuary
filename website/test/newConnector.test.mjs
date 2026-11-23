@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { connectorNamed } from "../src/connectorCatalog.js";
 
 // "i want to connect taskuary to linkedin" in New's agent job had no way to Connections (a tester, 2026-10-20): the card it names is
@@ -26,4 +27,3 @@ test("a plain word the card's title writes in lower case names no card, its whol
   assert.equal(connectorNamed("set up a strategy screen")?.type, "screen");
   assert.equal(connectorNamed("connect teams")?.type, "teams");
 });
-
