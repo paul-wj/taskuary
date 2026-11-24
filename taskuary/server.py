@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from . import kinds as task_kinds
@@ -4004,6 +4005,27 @@ def get_message(mid: int):
     # ...and triage's reading of it, for an item no task holds - an FYI, a report: "What this says", "What matters to you" (ItemSections)
     return (_readable(m) or {}) | {'reading': store.message_thread(mid)}
 
+
+@app.get('/api/messages/{mid}/jira-detail')
+def jira_message_detail(mid: int):
+    """Read the current description and attachment index without downloading attachment bytes."""
+    from . import jiraapi
+    if not (m := store.get_message(mid)): raise HTTPException(404, 'message not found')
+    try:
+        issue = jiraapi.message_issue(store, m)
+        if not issue: return {'supported': False}
+        # A comment remains a comment, not another copy of the issue's description.
+        base_id = f'jira:{issue[1]}'
+        ext = m.get('ExternalId') or ''
+        original = ext == base_id or ext.startswith(f'{base_id}@')
+        detail = jiraapi.issue_detail(*issue, description=original)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)) from e
+    return {'supported': True, 'description': original, 'html': detail['html'], 'text': detail['text'],
+            'files': [{**{k: a[k] for k in ('id', 'name', 'size', 'is_image')},
+                       'content_type': a['mime'] if a['is_image'] else 'application/octet-stream',
+                       'url': f"/api/attachments/jira/{mid}/{a['id']}"} for a in detail['files']]}
+
 def _att_row(a: dict, mail: bool = True) -> dict:
     """One attachment as the panel needs it: enough to decide whether to draw it or list it. `mail`: it rode in on an email, where
     a small inline picture is a signature's logo (Attachments.jsx chrome) - a chat's photo is marked inline too, and IS the message
@@ -4125,6 +4147,39 @@ def task_document(tid: int, did: str, offset: int = 0, limit: int = 0, fresh: bo
     if not d: raise HTTPException(404, f'no document {did} on {task_ref(tid)} - GET /api/tasks/{tid}/documents lists them')
     got = linkdocs.read(store, d, auto=False, full=True, fresh=fresh, offset=offset, limit=max(0, min(int(limit or 0), linkdocs.FULL_ROWS)))
     return {'id': d['id'], 'kind': d['label'], 'url': d['url'], 'name': linkdocs.name_of(d, got), **got}
+
+@app.api_route('/api/attachments/jira/{mid}/{aid}', methods=['GET', 'HEAD'])
+def jira_attachment(mid: int, aid: str, request: Request, download: bool = False):
+    """Stream only an attachment currently listed on this message's own Data Center issue."""
+    from . import jiraapi
+    if not (m := store.get_message(mid)): raise HTTPException(404, 'message not found')
+    try:
+        issue = jiraapi.message_issue(store, m)
+        if not issue: raise HTTPException(404, 'Jira attachment not found')
+        a = next((f for f in jiraapi.issue_detail(*issue)['files'] if f['id'] == aid), None)
+        if not a: raise HTTPException(404, 'Jira attachment not found')
+        r = jiraapi.open_attachment(issue[0], a)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)) from e
+    inline = a['is_image'] and not download
+    headers = {'Content-Disposition': _disposition('inline' if inline else 'attachment', a['name']),
+               'Content-Length': str(a['size']), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store'}
+    media = a['mime'] if inline else 'application/octet-stream'
+    if request.method == 'HEAD':
+        r.close()
+        return Response(headers=headers, media_type=media)
+
+    def chunks():
+        with r:
+            left = a['size']
+            for chunk in r.iter_content(64 * 1024):
+                left -= len(chunk)
+                if left < 0: raise RuntimeError('Jira attachment exceeded its declared size')
+                yield chunk
+            if left: raise RuntimeError('Jira attachment ended before its declared size')
+
+    return StreamingResponse(chunks(), headers=headers, media_type=media, background=BackgroundTask(r.close))
+
 
 # GET and HEAD: the page asks HEAD before it saves (Attachments.saveFile), so a file that is gone is a line on the page, never the
 # window navigated to a JSON 404 - the desktop window has no Back to come home with

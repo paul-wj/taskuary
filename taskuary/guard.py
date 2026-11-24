@@ -66,6 +66,7 @@ DENIED = (
     (r'POST', r'^/api/messages/\d+/reply$', 'opening a reply is the first half of sending one'),
     (r'POST', r'^/api/tasks/\d+/clarify$', 'opening a clarification is the first half of sending one'),
     (r'POST|PUT|PATCH|DELETE', r'^/api/(connectors|sources)', 'credentials and where mail goes'),
+    (r'GET|HEAD', r'^/api/(messages/\d+/jira-detail|attachments/jira/)', "live Jira details and attachments are shown to the owner"),
     # a vendor's push (pushin.py) proves itself by its signature; a session that posted one would be writing its own next prompt
     (r'POST', r'^/api/inbound/', "a vendor's push is the vendor's - an agent never puts a message in the inbox"),
     (r'GET', r'^/api/send-targets$', 'the address book of everywhere this install can send'),

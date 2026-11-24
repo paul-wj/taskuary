@@ -71,6 +71,7 @@ import { WorkstreamLabel } from "./Workstream.jsx";   // the idea's workstream, 
 import { channelName } from "./taskSources.js";
 import { repliesOf } from "./connectorCatalog.js";
 import { jiraStatusText, jiraStatusTip, jiraStatusTone, jiraStatusSub } from "./jiraStatus.js";
+import { JiraDetail } from "./JiraDetail.jsx";
 
 const errText = (e) => e?.response?.data?.detail || e?.message || { source: "That did not work" };
 const shownErr = (err) => err?.source ? translateDescriptor(err) : err;
@@ -521,10 +522,12 @@ export function FullText({ mid, revision, report = null }) {
   const bare = !none && !morning && !text.trim() ? { remote: remotePicture(raw) } : null;
   return (
     <div className={rows ? "tq-card-full fit" : report && !morning ? "tq-card-full report" : "tq-card-full"}>
+      <JiraDetail message={doc}>
       {morning ? <DigestText text={text} sourceId={/^report:(\d+)/.exec(doc.ConversationId || "")?.[1] ?? null} /> : rows ? <RowsTable rows={rows} /> : looksMd(text) ? <Md text={text} /> : text.trim() ? <LinkedText text={text} links={doc.Links} /> : bare ? null : t("(empty)")}
       {/* ...and the pictures pasted into it, drawn - the screenshot is often the whole ask */}
       {!none && !morning && <Attachments messageId={mid} canFetch={String(doc.Channel || "") === "email" && mentionsPicture(doc.BodyText)} dense bare={bare} />}
       {read !== raw && <button type="button" className="tq-card-more" onClick={() => setWhole((v) => !v)}>{whole ? t("Just what they wrote") : t("Show the whole email")}</button>}
+      </JiraDetail>
       {doc.SourceLink && <div className="tq-card-note"><a href={doc.SourceLink} target="_blank" rel="noreferrer" style={{ color: "var(--tq-link, #55697a)" }}>{t("open the original")}</a></div>}
     </div>
   );
@@ -611,9 +614,11 @@ function CombinedTaskText({ card, list = true }) {
             <div className="tq-card-note" style={{ marginBottom: 3 }}>
               {m.Direction === "out" ? t("You") : (m.FromName || m.FromEmail || t("Someone"))}{m.SentAt ? ` · ${fmtDateTime(m.SentAt)}` : ""}
             </div>
+            <JiraDetail message={m}>
             {looksMd(body) ? <Md text={body} /> : body.trim() ? <LinkedText text={body} links={m.Links} /> : m.MessageId ? null : t("(empty)")}
             {m.MessageId && <Attachments messageId={m.MessageId} canFetch={String(m.Channel || "") === "email" && mentionsPicture(m.BodyText)} dense
               bare={body.trim() ? null : { remote: remotePicture(m.BodyText) }} />}
+            </JiraDetail>
           </div>
         );
       })}

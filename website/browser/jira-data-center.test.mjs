@@ -296,6 +296,39 @@ test("Jira Data Center connects read-only through the real card: Test, autosave,
   assert.ok(searches.length >= 2, `the poll paged across at least two search pages (saw ${searches.length})`);
   assert.ok(searches.every((r) => r.api_version === 2), "every search page was v2");
   assert.deepEqual(w.writes, [], "the poll wrote nothing upstream");
+  assert.ok(!w.reads.some((r) => r.path.startsWith("/secure/attachment/")), "sync never downloads attachment bytes");
+  await page.$$eval('[role="option"]', (rows) => rows.find((row) => row.textContent.includes("NW-01 Synthetic Jira update")).click());
+  await page.waitForSelector(".tq-item-msg-h");
+  await page.$$eval(".tq-item-msg-h", (rows) => {
+    const row = rows.find((b) => b.closest(".tq-item-msg").textContent.includes("NW-01 Synthetic Jira update")) || rows[0];
+    if (row.getAttribute("aria-expanded") !== "true") row.click();
+  });
+  await page.waitForFunction(() => {
+    const panel = document.querySelector("[data-tq-jira-detail]");
+    const img = panel?.querySelector('img[alt="export.png"]');
+    return img?.complete && img.naturalWidth > 0;
+  });
+  const detail = await page.$eval("[data-tq-jira-detail]", (panel) => ({
+    bold: panel.querySelector("strong")?.textContent,
+    imageInline: !!panel.querySelector('p img[alt="export.png"]'),
+    remote: panel.querySelector('img[alt="Remote tracker"]')?.src ?? null,
+    file: panel.innerText.includes("export.log"),
+  }));
+  assert.deepEqual(detail, { bold: "export", imageInline: true, remote: null, file: true });
+  w = await wire(harness);
+  assert.ok(w.reads.some((r) => r.path === "/secure/attachment/901/export.png" && r.auth === "basic"));
+  assert.ok(!w.reads.some((r) => r.path.endsWith("export.log")), "opening details never reads a non-image attachment");
+  const log = page.waitForResponse((response) => response.request().method() === "HEAD"
+    && /\/api\/attachments\/jira\/\d+\/902$/.test(new URL(response.url()).pathname));
+  await page.$$eval("[data-tq-jira-detail] button", (buttons) =>
+    buttons.find((b) => b.parentElement.innerText.includes("export.log")).click());
+  const checked = await log;
+  assert.ok(checked.ok());
+  const file = await fetch(`${harness.fixtureApi}${new URL(checked.url()).pathname}?download=true`, {
+    headers: { "X-Taskuary-Token": harness.token },
+  });
+  assert.equal(file.headers.get("content-disposition"), 'attachment; filename="export.log"');
+  assert.equal(await file.text(), "a fictional export log\n");
 
   assert.deepEqual(errors, [], "no page errors");
   assert.deepEqual(page.fixtureEscapes, [], "nothing reached outside the fixture");

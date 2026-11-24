@@ -116,6 +116,7 @@ import PassedCard, { isPassed, isReplaced } from "./PassedCard.jsx";
 import SentCard from "./SentCard.jsx";
 import { sentStands, WENT } from "./sentLine.js";
 import { FullText } from "./assistantCards.jsx";
+import { JiraDetail } from "./JiraDetail.jsx";
 import { isCardReview } from "./actionCard.js";
 import { AgentRecord, ResultSummary } from "./AgentRecord.jsx";
 import LandingCard, { LANDING_DIFF } from "./LandingCard.jsx";
@@ -251,6 +252,7 @@ function ConversationRows({ rows, open, onOpen, onExpand, files = new Map(), fet
               for the email behind a task (2026-10-01: "don't see the full email that this task came from") */}
           {/* ...in full and NOT a scroller of its own: the column it stands in scrolls, and a 420px box inside it was a scrollbar inside a
               scrollbar (the owner, 2026-10-26, three in one column on a laptop: "you can't see anything") */}
+          <JiraDetail message={r.m}>
           <Box data-tq-letter-body="" sx={{ mt: 0.5, minWidth: 0, overflowWrap: "anywhere" }}>
             {r.m.Channel === "report" && looksMd(r.m.BodyText) ? <Md text={cleanText(r.m.BodyText)} />
               : letterText(r.m) && <Typography variant="body2" sx={{ color: DIM, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
@@ -258,6 +260,7 @@ function ConversationRows({ rows, open, onOpen, onExpand, files = new Map(), fet
           </Box>
           <Attachments messageId={r.m.MessageId} canFetch={r.m.Channel === "email" && mentionsPicture(r.m.BodyText)} dense original={r.m.SourceLink}
             bare={r.m.Channel !== "report" && !letterText(r.m) ? { remote: remotePicture(r.m.BodyText) } : null} />
+          </JiraDetail>
         </Box>
       )}
     </React.Fragment>
@@ -2172,6 +2175,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
               2026-11-13: "What came in" showed {"site": ..., "headcount": ...}) */}
           {cameReport ? <Box data-tq-came-in-report=""><FullText mid={cameIn.MessageId} report={{ name: cameIn.Subject || t?.Title || "" }} /></Box>
             : flow ? <Typography data-tq-came-in-newest="" sx={{ fontSize: 13, color: FAINT }}>{tr("The newest of {count} messages - the conversation is below", { count: timeline.length })}</Typography>
+            : cameInFull && cameIn.Channel === "jira" ? <FullText mid={cameIn.MessageId} />
             : <Typography data-tq-came-in-words="" title={cameInFull ? undefined : tr("Read it all")} onClick={() => setCameInFull((v) => !v)}
             sx={{ fontSize: 15, lineHeight: 1.5, color: INK, overflowWrap: "anywhere", whiteSpace: "pre-wrap", cursor: "pointer",
               ...(cameInFull ? {} : { display: "-webkit-box", WebkitLineClamp: 6, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>
@@ -2181,7 +2185,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
           {!flow && !cameReport && <Link component="button" type="button" underline="hover" data-tq-came-in-more="" aria-expanded={cameInFull}
             onClick={() => setCameInFull((v) => !v)} sx={{ display: "block", fontSize: 12.5, color: "var(--tq-link, #55697a)", mt: 0.4, textAlign: "left" }}>
             {cameInFull ? "Show less" : `Show the whole ${cameIn.Channel === "email" ? "email" : "message"}`}</Link>}
-          {!flow && cameInFull && typeof cameIn.MessageId === "number" && <Attachments messageId={cameIn.MessageId} dense original={cameIn.SourceLink} />}
+          {!flow && cameInFull && cameIn.Channel !== "jira" && typeof cameIn.MessageId === "number" && <Attachments messageId={cameIn.MessageId} dense original={cameIn.SourceLink} />}
         </> : !sources.length && fromWorkflow ? fromConvs() : <Typography sx={{ fontSize: 13, color: DIM }}>{detail.ref} · {made}</Typography>}
         {fromFacts()}
       </Box>

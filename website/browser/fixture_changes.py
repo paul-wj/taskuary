@@ -168,6 +168,11 @@ def install_processing_changes(app, store):
     _JIRA_WIRE = {'reads': [], 'writes': [], 'denied': [], 'auth': {'token_present': False}}
     _JIRA_MODE = {'name': 'dc-success'}          # 'closeout' (Cloud v3 NW-12) | 'dc-success' | 'dc-denied'
     _JIRA_DC = {'config': None, 'secret': None}
+    import base64
+    _JIRA_PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==')
+    _JIRA_LOG = b'a fictional export log\n'
+    _JIRA_FILES = [{'id': '901', 'filename': 'export.png', 'mimeType': 'image/png', 'size': len(_JIRA_PNG)},
+                   {'id': '902', 'filename': 'export.log', 'mimeType': 'text/plain', 'size': len(_JIRA_LOG)}]
 
     def _jira_issue(n):
         # a Data Center shape: the owner is named by key (no accountId), comments carry the author's key/name, not an accountId
@@ -195,10 +200,11 @@ def install_processing_changes(app, store):
         for the current mode and records the wire (never the token value)."""
         # context paths (…/jira/rest/api/2/…) and query strings are both possible; split the API path from any query
         m = re.search(r'/rest/api/(\d+)(/.*)?', url)
-        if not m:
+        asset = re.search(r'(/secure/attachment/(901/export\.png|902/export\.log))$', url)
+        if not m and not asset:
             raise RuntimeError(f'the fixture only answers the fictional Jira site, not {url!r}')
-        version = int(m.group(1))
-        path = (m.group(2) or '').split('?', 1)[0]
+        version = int(m.group(1)) if m else 2
+        path = (m.group(2) or '').split('?', 1)[0] if m else asset[1]
         params = dict(kw.get('params') or {})
         qs = (path or '').split('?', 1)[1] if '?' in (path or '') else (url.split('?', 1)[1] if '?' in url else '')
         for part in qs.split('&'):
@@ -219,6 +225,12 @@ def install_processing_changes(app, store):
             def text(self): return self._payload if isinstance(self._payload, str) else _json.dumps(self._payload)
             @property
             def reason(self): return {401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed'}.get(self.status_code, 'OK')
+            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *_): self.close()
+            def iter_content(self, _): yield self._payload
+            @property
+            def headers(self): return {'Content-Length': str(len(self._payload))} if isinstance(self._payload, bytes) else {}
 
         if basic:
             expected_user = (_JIRA_DC['config'] or {}).get('email')
@@ -257,6 +269,15 @@ def install_processing_changes(app, store):
             return answer(200, {'name': 'alex.vance', 'displayName': 'Alex Vance',
                                 'emailAddress': (_JIRA_DC['config'] or {}).get('email') or 'alex@northwind.example',
                                 'key': 'alex.vance', 'active': True})
+        if asset:
+            return answer(200, _JIRA_PNG if asset[2].startswith('901/') else _JIRA_LOG)
+        if path == '/issue/NW-01':
+            return answer(200, {'fields': {'description': 'Open the export.\n!export.png|width=64!', 'attachment': _JIRA_FILES},
+                                'renderedFields': {'description': '<p>Open the <strong>export</strong>.</p>'
+                                    '<p><img src="/secure/attachment/901/export.png" width="64" alt="Export error"></p>'
+                                    '<p>The image above shows the error.</p>'
+                                    '<img src="https://other.example/tracker.png" alt="Remote tracker">'
+                                    '<script>document.body.textContent = "JIRA SCRIPT RAN";</script>'}})
         if path.endswith('/search'):
             if _JIRA_MODE['name'] == 'dc-denied':
                 return answer(403, {'errorMessages': ['You do not have permission to see the issues in this project']})
