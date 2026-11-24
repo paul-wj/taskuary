@@ -17,6 +17,12 @@ export const fileError = async (e, fallback) => {
   return (d && typeof d === "object" && d.detail) || fallback;
 };
 
+function downloadLink(href, name = "") {
+  const el = document.createElement("a");
+  el.href = href; el.download = name; el.rel = "noopener"; el.style.display = "none";
+  document.body.appendChild(el); el.click(); el.remove();
+}
+
 // SAVE A FILE, never navigate to it. A Download that was a plain link took the window to the file's address: a file moved or deleted
 // left the owner on a raw JSON 404 - and the desktop window has no Back. The server is asked first (HEAD); a file that is there is
 // saved by a link with `download`, so the page stays where it is; one that is not throws the server's own reason for the page to say.
@@ -31,6 +37,17 @@ export const saveFile = async (a, w = typeof window === "undefined" ? null : win
     if (!r?.name) throw new Error(r?.error || "This file could not be saved - try again.");
     return savedLine(r);
   }
+  if (a.fetchDownload) {
+    // A live remote file can fail after HEAD succeeds. Verify the one GET that supplies the
+    // bytes before handing them to the browser; it cannot report errors from a download link.
+    let data;
+    try { ({ data } = await api.get(a.url, { params: { download: true }, responseType: "blob" })); }
+    catch (e) { throw new Error(await fileError(e, "This file could not be saved - try again.")); }
+    const url = URL.createObjectURL(data);
+    try { downloadLink(url, a.name); }
+    finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    return "Download sent to your browser.";
+  }
   if (!href.startsWith("data:") && typeof api.head === "function") {
     // no-cache: the browser answered a HEAD from the copy a preview had fetched, so a file deleted since was still "there"
     try { await api.head(a.url, { headers: { "Cache-Control": "no-cache" } }); }
@@ -42,16 +59,18 @@ export const saveFile = async (a, w = typeof window === "undefined" ? null : win
       throw new Error(why || (e?.response?.status === 404 ? "This file was moved or deleted." : "This file could not be saved - try again."));
     }
   }
-  const el = document.createElement("a");
-  // `download` empty: the server's Content-Disposition names it (a published page gets its .html there)
-  el.href = href; el.download = ""; el.rel = "noopener"; el.style.display = "none";
-  document.body.appendChild(el); el.click(); el.remove();
+  // `download` empty: the server's Content-Disposition names the file.
+  downloadLink(href);
   return "";
 };
 
-// [error, save, saved]: a Download's press, the line it leaves when the file is not there, and where the desktop put it (both cleared
-// by the next press)
+// The line the press left, and whether it is still waiting for the file.
 export const useSave = () => {
-  const [err, setErr] = useState(""), [saved, setSaved] = useState("");
-  return [err, (a) => { setErr(""); setSaved(""); saveFile(a).then(setSaved, (e) => setErr(e.message)); }, saved];
+  const [err, setErr] = useState(""), [saved, setSaved] = useState(""), [saving, setSaving] = useState(false);
+  return [err, async (a) => {
+    setErr(""); setSaved(""); setSaving(true);
+    try { setSaved(await saveFile(a)); }
+    catch (e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }, saved, saving];
 };

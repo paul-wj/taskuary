@@ -270,6 +270,8 @@ def install_processing_changes(app, store):
                                 'emailAddress': (_JIRA_DC['config'] or {}).get('email') or 'alex@northwind.example',
                                 'key': 'alex.vance', 'active': True})
         if asset:
+            if asset[2].startswith('902/') and not any(r['path'] == path for r in _JIRA_WIRE['denied']):
+                return answer(503, {'errorMessages': ['The attachment store is temporarily unavailable']})
             return answer(200, _JIRA_PNG if asset[2].startswith('901/') else _JIRA_LOG)
         if path == '/issue/NW-01':
             return answer(200, {'fields': {'description': 'Open the export.\n!export.png|width=64!', 'attachment': _JIRA_FILES},

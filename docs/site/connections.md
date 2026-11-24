@@ -325,8 +325,9 @@ own identity. Existing references are regrouped automatically without deleting m
 
 Open an imported Data Center issue's message to read its current Jira description. Images
 attached to the issue appear directly, including screenshots embedded in the description.
-Files are listed with a **Download** action; opening the issue does not save attachments to
-disk. If Jira can't be reached, Taskuary keeps the saved message and the link to the original.
+Files are listed with a **Download** action; opening an issue does not save attachments to
+disk. If a download fails, its error appears in the attachment list or preview dialog, where
+you can retry. If Jira can't be reached, Taskuary keeps the saved message and the link to the original.
 
 **Jira status versus resolution.** Jira's [Open work items filter](https://support.atlassian.com/jira-cloud-administration/docs/what-is-a-resolution-in-jira/)
 uses `resolution IS EMPTY`, not a status name. Every workflow status also belongs to one of

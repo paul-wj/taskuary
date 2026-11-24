@@ -94,7 +94,7 @@ export function JiraDetail({ message, children }) {
   useLocale();
   const mid = message.Channel === "jira" ? message.MessageId : null;
   const [result, setResult] = useState(null), [big, setBig] = useState(null);
-  const [saveError, save, saved] = useSave();
+  const [saveError, save, saved, saving] = useSave();
   useEffect(() => {
     if (!mid) return;
     const controller = new AbortController();
@@ -116,10 +116,10 @@ export function JiraDetail({ message, children }) {
     {data.description && data.files.length > 0 && <Box sx={{ mt: 1, borderTop: "1px solid var(--tq-border)" }}>
       <b>{t("Attached · {count}", { count: data.files.length })}</b>
       {data.files.map((f) => <Box key={f.id} sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
-        <span>{f.name} · {kb(f.size)}</span><Button size="small" onClick={() => save(f)}>{t("Download")}</Button>
+        <span>{f.name} · {kb(f.size)}</span><Button size="small" data-tq-download={f.name} disabled={saving} onClick={() => save({ ...f, fetchDownload: true })}>{t("Download")}</Button>
       </Box>)}
     </Box>}
-    {(saveError || saved) && <div role="status" className="tq-card-note">{saveError || saved}</div>}
-    <FileDialog file={big && { ...big, preview: "image" }} onClose={() => setBig(null)} />
+    {(saving || saveError || saved) && <div role="status" className="tq-card-note">{t(saving ? "Downloading…" : saveError || saved)}</div>}
+    <FileDialog file={big && { ...big, preview: "image", fetchDownload: true }} onClose={() => setBig(null)} />
   </Box>;
 }

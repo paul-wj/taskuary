@@ -740,6 +740,8 @@
   "Open": "打开",
   "Save a copy": "保存副本",
   "Download": "下载",
+  "Downloading…": "正在下载…",
+  "Download sent to your browser.": "已交给浏览器下载。",
   "{count} earlier version": "{count} 个早期版本",
   "{count} earlier versions": "{count} 个早期版本",
   "{count} working file it used": "使用过的 {count} 个工作文件",

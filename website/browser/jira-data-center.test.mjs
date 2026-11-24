@@ -14,6 +14,10 @@
 // Invented site, account and issues: reserved example domains only.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { startHarness } from "./harness.mjs";
 
 const SITE = "https://jira.northwind.example";
@@ -318,17 +322,37 @@ test("Jira Data Center connects read-only through the real card: Test, autosave,
   w = await wire(harness);
   assert.ok(w.reads.some((r) => r.path === "/secure/attachment/901/export.png" && r.auth === "basic"));
   assert.ok(!w.reads.some((r) => r.path.endsWith("export.log")), "opening details never reads a non-image attachment");
-  const log = page.waitForResponse((response) => response.request().method() === "HEAD"
-    && /\/api\/attachments\/jira\/\d+\/902$/.test(new URL(response.url()).pathname));
-  await page.$$eval("[data-tq-jira-detail] button", (buttons) =>
-    buttons.find((b) => b.parentElement.innerText.includes("export.log")).click());
-  const checked = await log;
-  assert.ok(checked.ok());
-  const file = await fetch(`${harness.fixtureApi}${new URL(checked.url()).pathname}?download=true`, {
-    headers: { "X-Taskuary-Token": harness.token },
-  });
-  assert.equal(file.headers.get("content-disposition"), 'attachment; filename="export.log"');
-  assert.equal(await file.text(), "a fictional export log\n");
+  const downloads = await mkdtemp(join(tmpdir(), "taskuary-jira-downloads-"));
+  t.after(() => rm(downloads, { recursive: true, force: true }));
+  await page.browserContext().setDownloadBehavior({ policy: "allow", downloadPath: downloads });
+  const savedFile = async (name) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      try { return await readFile(join(downloads, name)); }
+      catch (e) { if (e.code !== "ENOENT") throw e; }
+      await delay(50);
+    }
+    assert.fail(`${name} was never saved by Chrome`);
+  };
+  const downloadLog = '[data-tq-jira-detail] [data-tq-download="export.log"]';
+  const failedDownload = page.waitForResponse((response) =>
+    response.request().method() === "GET" && /\/api\/attachments\/jira\/\d+\/902\?download=true$/.test(response.url()),
+  { timeout: 8000 });
+  await page.$eval(downloadLog, (b) => b.click());
+  assert.equal((await failedDownload).status(), 502);
+  await page.waitForFunction(() => document.querySelector('[data-tq-jira-detail] [role="status"].tq-card-note')
+    ?.textContent.includes("The service it called didn't answer"), { timeout: 8000 });
+  assert.deepEqual(await readdir(downloads), [], "a failed response must not create a file");
+  await page.$eval(downloadLog, (b) => b.click());
+  assert.equal((await savedFile("export.log")).toString(), "a fictional export log\n");
+  w = await wire(harness);
+  assert.equal(w.denied.filter((r) => r.path.endsWith("export.log")).length, 1);
+  assert.equal(w.reads.filter((r) => r.path.endsWith("export.log")).length, 1, "the retry fetches the attachment once");
+
+  await page.$eval('[data-tq-jira-detail] button[aria-label="Enlarge export.png"]', (b) => b.click());
+  await page.waitForSelector('[data-tq-file-dialog="export.png"] [data-tq-download]', { visible: true });
+  await page.click('[data-tq-file-dialog="export.png"] [data-tq-download]');
+  assert.equal((await savedFile("export.png")).subarray(1, 4).toString(), "PNG");
 
   assert.deepEqual(errors, [], "no page errors");
   assert.deepEqual(page.fixtureEscapes, [], "nothing reached outside the fixture");

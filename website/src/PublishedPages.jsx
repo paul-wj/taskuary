@@ -178,16 +178,18 @@ export function Preview({ page }) {
 // to hit download then look at it and then come back"): its name in the agent's words opens it over the chat - the card's own Preview, and
 // Download beside it for when it is wanted after all. Esc or the cross closes it, back where the owner was reading
 export function FileDialog({ file, onClose }) {
-  const [, save] = useSave();
+  useLocale();
+  const [error, save, saved, saving] = useSave();
   useOverlay(!!file, onClose, { typeThrough: true });
   if (!file) return null;
   return (
     <Dialog open onClose={onClose} maxWidth="lg" fullWidth data-tq-file-dialog={file.path || file.name}>
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, py: 1, fontSize: 15 }}>
         <b style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</b>
-        {!file.missing && <Button size="small" onClick={() => save(file)} data-tq-download="">Download</Button>}
+        {!file.missing && <Button size="small" disabled={saving} onClick={() => save(file)} data-tq-download="">{t("Download")}</Button>}
         <IconButton size="small" aria-label="Close" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
       </DialogTitle>
+      {(saving || error || saved) && <div role="status" className="tq-published-note">{t(saving ? "Downloading…" : error || saved)}</div>}
       <DialogContent dividers sx={{ p: 0, minHeight: 240 }}>
         {file.missing ? <div className="tq-published-note">It is not in this task's files any more.</div> : <Preview page={file} />}
       </DialogContent>

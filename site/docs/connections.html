@@ -522,8 +522,9 @@ a new revision or comment makes it unread again. Explicitly assigned local tasks
 own identity. Existing references are regrouped automatically without deleting messages.</p>
 <p>Open an imported Data Center issue&#39;s message to read its current Jira description. Images
 attached to the issue appear directly, including screenshots embedded in the description.
-Files are listed with a <strong>Download</strong> action; opening the issue does not save attachments to
-disk. If Jira can&#39;t be reached, Taskuary keeps the saved message and the link to the original.</p>
+Files are listed with a <strong>Download</strong> action; opening an issue does not save attachments to
+disk. If a download fails, its error appears in the attachment list or preview dialog, where
+you can retry. If Jira can&#39;t be reached, Taskuary keeps the saved message and the link to the original.</p>
 <p><strong>Jira status versus resolution.</strong> Jira&#39;s <a href="https://support.atlassian.com/jira-cloud-administration/docs/what-is-a-resolution-in-jira/">Open work items filter</a>
 uses <code>resolution IS EMPTY</code>, not a status name. Every workflow status also belongs to one of
 three <a href="https://support.atlassian.com/jira-cloud-administration/docs/what-is-a-workflow-status/">status categories</a>:
