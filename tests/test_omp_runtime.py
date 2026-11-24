@@ -186,11 +186,12 @@ def test_omp_acp_close_reports_failed_descendant_cleanup():
         with pytest.raises(RuntimeError, match='descendant is inaccessible'): client.close()
 
 
+@pytest.mark.parametrize('permission_denied', [False, True])
 @pytest.mark.parametrize('reason,answer,raises', [
     ('error', 'The provider could not complete the request.', True),
     ('stop', 'Rate limit is a concept worth studying.', False),
 ])
-def test_omp_acp_uses_native_turn_outcome_not_answer_wording(tmp_path, reason, answer, raises):
+def test_omp_acp_uses_native_turn_outcome_not_answer_wording(tmp_path, reason, answer, raises, permission_denied):
     session_id = '01a1a090-8fe1-7309-9960-414997341bff'
     agent_dir = tmp_path / 'agent'
     folder = agent_dir / 'sessions' / '-workspace'
@@ -199,7 +200,7 @@ def test_omp_acp_uses_native_turn_outcome_not_answer_wording(tmp_path, reason, a
     transcript.write_text(json.dumps({'type': 'session', 'id': session_id}) + '\n', encoding='utf-8')
     client = mock.MagicMock()
     client.connect.return_value = {'loadSession': True}
-    client.session_id, client.permission_denied = session_id, False
+    client.session_id, client.permission_denied = session_id, permission_denied
     def prompt(_):
         row = {'type': 'message', 'id': 'new-turn', 'message': {'role': 'assistant', 'stopReason': reason,
                'errorMessage': 'upstream failed' if reason == 'error' else None,
@@ -445,14 +446,14 @@ def test_omp_acp_client_rejects_real_permission_request():
         client.close()
 
 
-def test_omp_acp_denied_permission_is_not_reported_as_success(verified_acp_file):
+def test_omp_acp_incomplete_turn_after_denial_explains_how_to_continue(verified_acp_file):
     fake = mock.MagicMock()
     fake.connect.return_value = {'loadSession': True}
-    fake.prompt.return_value = ('end_turn', 'All done')
-    fake.permission_denied = True
+    fake.prompt.return_value = ('end_turn', '')
+    fake.session_id, fake.permission_denied = 'session-1', True
     with mock.patch.object(agents, '_resolve_cmd', return_value=['omp']), mock.patch.object(agents, '_git', return_value=''), \
          mock.patch.object(acp, 'ACPClient', return_value=fake):
-        with pytest.raises(RuntimeError, match='permission'):
+        with pytest.raises(RuntimeError, match='interactive coding terminal'):
             agents.run_acp({'cmd': 'omp', 'acp': ['acp']}, 'make a change', lambda *a: None)
 
 

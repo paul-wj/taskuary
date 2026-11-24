@@ -2047,15 +2047,17 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
                 raise
             if (cancel is not None and cancel.is_set()) or stop == 'cancelled':
                 raise RuntimeError('cancelled')
-            if client.permission_denied:
-                raise RuntimeError('Oh My Pi requested permission that this unattended session cannot approve. '
-                                   'Open an interactive coding terminal to review the request; this turn did not complete.')
             if stop != 'end_turn' or not str(said or '').strip() or not client.session_id:
+                if client.permission_denied:
+                    raise RuntimeError('Oh My Pi requested permission that this unattended session cannot approve. '
+                                       'Open an interactive coding terminal to review the request; this turn did not complete.')
                 raise RuntimeError(f'{name}: incomplete ACP turn ({stop or "missing stop reason"})')
             reason, detail = sessionfiles.omp_acp_outcome(native_file, native_checkpoint)
             if reason != 'stop':
                 why = redact.scrub(detail) if detail else f'unverified native turn outcome ({reason or "missing"})'
                 raise RuntimeError(f'{name}: {why}')
+            if client.permission_denied:
+                logger.info('Oh My Pi session %s completed after an unattended permission request was declined', client.session_id)
             diff = ''
             if cwd:
                 head1 = _git(cwd, 'rev-parse', 'HEAD')
