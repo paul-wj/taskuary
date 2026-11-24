@@ -11,7 +11,8 @@ SYSTEM = '''Find reusable methods in completed, verified work. The supplied task
 Decide by meaning, not repeated words. A coding investigation, debugging/migration/testing method or business procedure can become a Skill.
 A Skill is not a worker role, a task diary or a copy of private messages. Usually no new Skill is justified.
 Compare the existing published Skills: prefer updating a matching method over duplicating it.
-Return JSON only: {"candidates":[{"action":"create|update","slug":"taskuary-kebab-name","title":"short name",
+Compare earlier suggestions by applicability and essential steps, even across languages or titles. For the same method and action, return its existing suggestion ID in same_as even if its evidence changes. A shared task is not proof of the same method. Return at most one candidate per method; use null for a genuinely different method and give it a distinct slug.
+Return JSON only: {"candidates":[{"action":"create|update","slug":"taskuary-kebab-name","same_as":null,"title":"short name",
 "description":"when to use it","rationale":"why the actual work supports this method","varies":"inputs that change",
 "target_digest":null,"evidence":[{"task_id":1,"reason":"specific evidence"}]}]}.
 For update, copy the exact registered slug and target_digest. Cite only supplied task IDs. Use no personal data, credentials or invented steps.
@@ -21,9 +22,10 @@ WANT = {'name': 'skill_suggestions', 'schema': {'type': 'object', 'additionalPro
         'properties': {'action': {'type': 'string', 'enum': ['create', 'update']},
             **{k: {'type': 'string'} for k in ('slug', 'title', 'description', 'rationale', 'varies')},
             'target_digest': {'type': ['string', 'null']},
+            'same_as': {'type': ['integer', 'null']},
             'evidence': {'type': 'array', 'minItems': 1, 'items': {'type': 'object', 'additionalProperties': False,
                 'properties': {'task_id': {'type': 'integer'}, 'reason': {'type': 'string'}}, 'required': ['task_id', 'reason']}}},
-        'required': ['action', 'slug', 'title', 'description', 'rationale', 'varies', 'target_digest', 'evidence']}}},
+        'required': ['action', 'slug', 'same_as', 'title', 'description', 'rationale', 'varies', 'target_digest', 'evidence']}}},
     'required': ['candidates']}}
 
 
@@ -112,6 +114,7 @@ def _candidates(snapshot, decoded):
     if not isinstance(candidates, list) or len(candidates) > 20: raise ValueError('AI did not return a bounded candidate list')
     supplied = {e['task_id']: e for e in snapshot['evidence']}
     published = {p['slug']: p for p in snapshot['catalogue']}
+    earlier = {c['id']: c for c in snapshot.get('suggestions', [])}
     validated = []
     for candidate in candidates:
         if not isinstance(candidate, dict) or candidate.get('action') not in ('create', 'update'): raise ValueError('invalid Skill suggestion')
@@ -123,6 +126,13 @@ def _candidates(snapshot, decoded):
         if action == 'update' and (not target or candidate.get('target_digest') != target['digest']):
             raise ValueError('AI update target is not a current library-owned Skill')
         if action == 'create' and target: raise ValueError('AI suggested a duplicate of an existing Skill')
+        same_as = candidate.get('same_as')
+        if same_as is not None:
+            prior = earlier.get(same_as) if type(same_as) is int else None
+            if not prior or prior['action'] != action or (action == 'update' and prior['slug'] != name):
+                raise ValueError('AI matched an incompatible Skill suggestion')
+            if action == 'create' and prior['slug'] in published:
+                raise ValueError('AI matched a suggestion for an already published Skill')
         cited = candidate.get('evidence')
         if not isinstance(cited, list) or not cited: raise ValueError('Skill suggestion has no supporting task evidence')
         reasons = {}
@@ -135,14 +145,55 @@ def _candidates(snapshot, decoded):
         title, description, rationale = [redact.scrub(str(candidate.get(k) or '')).strip() for k in ('title', 'description', 'rationale')]
         if not title or not description or not rationale: raise ValueError('AI suggestion is missing its purpose or rationale')
         ids = sorted(reasons)
-        identity = _hash([action, name if action == 'update' else '', ids])
-        fingerprint = _hash([identity, target['digest'] if action == 'update' else None, [(tid, supplied[tid]['fingerprint']) for tid in ids]])
-        validated.append({'action': action, 'slug': name, 'title': title[:180], 'description': description[:1500],
+        versions = {str(tid): supplied[tid]['fingerprint'] for tid in ids}
+        validated.append({'action': action, 'slug': name, 'same_as': same_as, 'title': title[:180], 'description': description[:1500],
             'rationale': rationale[:2500], 'varies': redact.scrub(str(candidate.get('varies') or ''))[:1500],
             'target_digest': target['digest'] if action == 'update' else None,
             'evidence': [{'task_id': tid, 'ref': supplied[tid]['ref'], 'title': supplied[tid]['title'], 'reason': reasons[tid]} for tid in ids],
-            'identity': identity, 'fingerprint': fingerprint, 'state': 'suggested', 'generation_id': None})
+            'evidence_versions': versions, 'state': 'suggested', 'generation_id': None})
     return validated
+
+def _legacy_evidence_unchanged(prior, candidate):
+    ids = sorted(e['task_id'] for e in prior.get('evidence', []))
+    versions = candidate['evidence_versions']
+    if not ids or any(str(tid) not in versions for tid in ids): return False
+    identity = _hash([prior['action'], prior['slug'] if prior['action'] == 'update' else '', ids])
+    return prior.get('fingerprint') == _hash([identity, prior.get('target_digest'), [(tid, versions[str(tid)]) for tid in ids]])
+
+
+def _save_candidate(store, candidate, earlier):
+    same_as = candidate.pop('same_as')
+    records = state.rows(store, 'candidate')
+    index = {r['id']: r for r in records}
+    prior = index.get(same_as)
+    if prior is None or (prior['state'] != 'suggested' and prior.get('target_digest') != candidate['target_digest']):
+        slug = prior['slug'] if prior else candidate['slug']
+        prior = next((r for r in records if r['action'] == candidate['action'] and r['slug'] == slug), prior)
+    if prior and prior['state'] == 'merged': prior = index[prior['merged_into']]
+    if prior is None:
+        state.create(store, 'candidate', candidate)
+        return
+    if earlier.get(prior['id']) == 'suggested' and prior['state'] != 'suggested': return
+    same_revision = prior.get('target_digest') == candidate['target_digest']
+    if same_revision and prior['state'] == 'accepted': return
+    if not same_revision and prior['state'] != 'suggested':
+        state.create(store, 'candidate', candidate)
+        return
+    versions = candidate['evidence_versions']
+    before = prior.get('evidence_versions') or {}
+    if prior['state'] == 'dismissed' and same_revision:
+        if all(before.get(k) == v for k, v in versions.items()) or (not before and _legacy_evidence_unchanged(prior, candidate)):
+            return
+    if same_revision:
+        candidate['evidence'] = state.combine_evidence(prior, candidate)
+        candidate['evidence_versions'] = {**before, **versions}
+    candidate['slug'] = prior['slug']
+    try:
+        state.update(store, 'candidate', prior['id'], candidate,
+                     expected={'state': prior['state'], 'evidence': prior['evidence']})
+    except ValueError:
+        # A concurrent owner decision wins over an in-flight analysis.
+        return
 
 
 def _perform(store, claim, llm, manual):
@@ -159,11 +210,14 @@ def _perform(store, claim, llm, manual):
             llm = build_llm(store, job='memory')
         if llm is None: return _finish(store, claim, 'no_provider', 'Connect an AI to analyze completed work', **metrics)
         from .llm import ask_json
+        snapshot['suggestions'] = [{k: c.get(k) for k in ('id', 'slug', 'action', 'state', 'target_digest', 'title', 'description', 'rationale', 'varies')}
+                                   for c in state.rows(store, 'candidate') if c['state'] != 'merged']
         answer = ask_json(llm, SYSTEM, json.dumps(snapshot, ensure_ascii=False), want=WANT, max_tokens=3000)
         if answer.data is None: raise ValueError(answer.error)
         candidates = _candidates(snapshot, answer.data)
+        earlier = {c['id']: c['state'] for c in snapshot['suggestions']}
         for candidate in candidates:
-            state.create(store, 'candidate', candidate, key=candidate['identity'] + ':' + candidate['fingerprint'])
+            _save_candidate(store, candidate, earlier)
         count = sum(c.get('state') == 'suggested' for c in state.rows(store, 'candidate'))
         store.audit('skill_analysis', claim['id'], 'analyzed', 'ai', detail={'evidence_count': len(snapshot['evidence']), 'suggestion_count': count})
         return _finish(store, claim, 'ready' if count else 'empty', fingerprint=snapshot['fingerprint'],

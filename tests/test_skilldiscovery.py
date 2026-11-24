@@ -1,5 +1,6 @@
 """AI judges repetition; code enforces evidence, ownership and durable suppression."""
 import json
+from contextlib import closing
 from unittest import mock
 import pytest
 from taskuary import skillstate as state
@@ -13,9 +14,10 @@ def finished(store, title='Reconcile monthly data'):
     return tid
 
 
-def answer(ids, action='create', slug='taskuary-reconcile', target_digest=None, title='Reconcile reports'):
-    return json.dumps({'candidates': [{'action': action, 'slug': slug, 'title': title,
-        'description': 'Compare two reports and validate differences', 'rationale': 'The verified procedure repeats',
+def answer(ids, action='create', slug='taskuary-reconcile', target_digest=None, title='Reconcile reports',
+           same_as=None, description='Compare two reports and validate differences'):
+    return json.dumps({'candidates': [{'action': action, 'slug': slug, 'title': title, 'same_as': same_as,
+        'description': description, 'rationale': 'The verified procedure repeats',
         'varies': 'file locations', 'target_digest': target_digest,
         'evidence': [{'task_id': tid, 'reason': 'completed and verified this method'} for tid in ids]}]})
 
@@ -40,12 +42,50 @@ def test_dismissed_evidence_stays_suppressed_despite_model_rewording_but_correct
         assert d.analyze(s, llm=lambda *a, **k: answer([tid]))['state'] == 'ready'
         candidate = state.rows(s, 'candidate')[0]
         state.update(s, 'candidate', candidate['id'], {'state': 'dismissed'})
-        d.analyze(s, llm=lambda *a, **k: answer([tid], slug='taskuary-comparison', title='A differently phrased title'))
+        d.analyze(s, llm=lambda *a, **k: answer([tid], slug='taskuary-comparison', title='A differently phrased title', same_as=candidate['id']))
         assert [c for c in state.rows(s, 'candidate') if c['state'] == 'suggested'] == []
         s.add_comment(tid, 'owner', 'human', 'Also check duplicate identifiers before comparing amounts.')
         d.analyze(s, llm=lambda *a, **k: answer([tid]))
         assert any(c['state'] == 'suggested' for c in state.rows(s, 'candidate'))
     finally: s.close()
+
+
+def test_same_method_new_words_and_evidence_update_pending_suggestion():
+    from taskuary import skilldiscovery as d
+    with closing(MemoryStore()) as s:
+        first = finished(s)
+        d.analyze(s, llm=lambda *a, **k: answer([first]))
+        prior = state.rows(s, 'candidate')[0]
+        second = finished(s)
+
+        def rephrase(_system, payload, **_kw):
+            suggestions = json.loads(payload)['suggestions']
+            match, = [c for c in suggestions if c['description'] == 'Compare two reports and validate differences']
+            return answer([second], slug='compare-monthly-balances', title='对账', same_as=match['id'])
+
+        assert d.analyze(s, llm=rephrase)['state'] == 'ready'
+        merged, = state.rows(s, 'candidate')
+        assert merged['id'] == prior['id']
+        assert [e['task_id'] for e in merged['evidence']] == [first, second]
+
+
+def test_distinct_methods_can_cite_the_same_work():
+    from taskuary import skilldiscovery as d
+    with closing(MemoryStore()) as s:
+        tid = finished(s)
+        first, second = (json.loads(a)['candidates'][0] for a in (
+            answer([tid]), answer([tid], slug='validate-report-encoding', title='Check export encoding',
+                                  description='Validate exported CSV encoding before opening it in Excel')))
+        assert d.analyze(s, llm=lambda *a, **k: json.dumps({'candidates': [first, second]}))['state'] == 'ready'
+        assert {c['slug'] for c in state.rows(s, 'candidate')} == {'taskuary-reconcile', 'taskuary-validate-report-encoding'}
+
+
+def test_model_cannot_merge_into_an_unknown_suggestion():
+    from taskuary import skilldiscovery as d
+    with closing(MemoryStore()) as s:
+        tid = finished(s)
+        assert d.analyze(s, llm=lambda *a, **k: answer([tid], same_as=99999))['state'] == 'failed'
+        assert not state.rows(s, 'candidate')
 
 
 def test_empty_no_provider_and_provider_failure_are_not_fake_suggestions():

@@ -65,6 +65,12 @@ def update(store, kind, id, changes, expected=None):
         return current
 
 
+def combine_evidence(*records):
+    """Keep all cited tasks, taking the latest explanation for a repeated citation."""
+    by_task = {entry['task_id']: entry for record in records for entry in record.get('evidence', ())}
+    return [by_task[tid] for tid in sorted(by_task)]
+
+
 def notify(store, task_id=None):
     # Reuse the existing coalesced/stamped protocol; no second websocket event vocabulary.
     if task_id is None: store._poke('feed-changed')
