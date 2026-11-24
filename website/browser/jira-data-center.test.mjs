@@ -198,7 +198,7 @@ test("Jira Data Center renders the read-only selector in both locales and saves 
     // save opened the Test step, so the Enable step is opened again to reach its Sync box)
     assert.ok(await openStep(page, "enable"), "the Enable step can be opened after the save");
     await page.waitForFunction(() => {
-      const b = document.querySelector("[data-tq-sync-now]");
+      const b = document.querySelector("[data-tq-sync-now] button");
       return b && !b.disabled;
     }, { timeout: 20000, polling: 200 });
 
@@ -271,10 +271,13 @@ test("Jira Data Center connects read-only through the real card: Test, autosave,
   // the REAL Sync now button (the Enable step) - it reads what is saved, and the real poll pages across the whole assigned set
   assert.ok(await openStep(page, "enable"), "the Enable step can be opened");
   await page.waitForFunction(() => {
-    const b = document.querySelector("[data-tq-sync-now]");
+    const b = document.querySelector("[data-tq-sync-now] button");
     return b && !b.disabled;
   }, { timeout: 20000, polling: 200 });
-  assert.ok(await pressButton(page, '[data-tq-sync-now]'), "Sync now is pressable once the card's autosave has landed");
+  const started = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/ingest/poll" && response.request().method() === "POST");
+  assert.ok(await pressButton(page, "[data-tq-sync-now] button"), "Sync now is pressable once the card's autosave has landed");
+  assert.ok((await started).ok(), "Sync now accepted the poll before leaving the card");
   // Setup hides the rail. Return to Timeline and expand FYI; the demo deliberately files unfamiliar issues.
   await page.goto(harness.ui, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(async () => {
