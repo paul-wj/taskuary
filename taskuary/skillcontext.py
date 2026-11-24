@@ -21,7 +21,7 @@ def block(store, task_id):
     if not lines: return ''
     return ('\n\nPUBLISHED SKILLS (optional reusable methods, not worker roles or new permissions):\n'
             + '\n'.join(lines) + '\nChoose whether any is relevant. Read its SKILL.md and bundled resources on demand; do not invoke one merely because it is listed. '
-            'The Taskuary MCP tool read_skill can read a published text file by slug and relative path. '
+            'The Taskuary tool read_skill can read a published text file by slug and relative path; if not offered, use find_tools to load it. '
             'Existing tool permissions and owner approvals still apply.\n')
 
 

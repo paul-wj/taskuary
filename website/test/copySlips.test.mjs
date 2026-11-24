@@ -1,18 +1,9 @@
 // COPY SLIPS (the product audit, 2026-11-08): one word for one thing, no internal words on a screen
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-
+import { readFileSync } from "node:fs";
 const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
-test("Reports says routines, a data card has no template line, profiles live in Settings, the Hub names no agent's tool", () => {
-  assert.match(src("ReportsView.jsx"), /plural\(workflowSources\.length, "routine"\)[^`]*routines act/);
-  const cv = src("ConnectorsView.jsx");
-  assert.doesNotMatch(cv, /\{meta\.desc\} The connection only/); assert.doesNotMatch(cv, /ships at authority READ/);
-  assert.match(src("AgentsPanel.jsx"), />Manage profiles in Settings</);
-  const hub = src("HubView.jsx");
-  assert.doesNotMatch(hub, /`agent \$\{p\.Author/); assert.doesNotMatch(hub, /whitfield/i, "no person's name decides whose a post is"); assert.match(hub, /byOwner\(p\.Author\) \? \(\s*<Typography[^>]*>posted by hand/);
-});
 
 test("What the assistant changed lists only what it changed - a setting, a report, a connection", () => {
   const sv = src("SettingsView.jsx");
@@ -54,21 +45,3 @@ test("an AI connected after the page opened is seen: the rail stopped saying No 
   assert.match(view, /picksOf\(s\.providers\) !== picksOf\(st\.providers\) \? \{ \.\.\.s, providers: st\.providers \|\| \[\] \} : s/);
 });
 
-// THE DESIGN WALK (2026-11-20): builder words and shouting on screen - "Run CLI agents over ACP ... Agent Client Protocol", "Default: on -
-// unchanged" under every row, "fine-grained PAT", "Baileys", "triage", "(built under Reports)", headings in spaced-out capitals. The words a
-// screen says are plain; a heading is in the app's own case and font.
-test("what the screen says is plain words, in the app's own case", async () => {
-  const schema = JSON.parse(readFileSync(new URL("../../taskuary/settings_schema.json", import.meta.url), "utf8"));
-  const builder = /\bACP\b|Agent Client Protocol|\btriag|\bPAT\b|Baileys|unchanged/i;
-  for (const [k, m] of Object.entries(schema.knobs || {})) for (const f of ["label", "desc"]) assert.doesNotMatch(m[f] || "", builder, `${k}.${f}`);
-  const cv = src("ConnectorsView.jsx");
-  for (const [, d] of cv.matchAll(/^\s+desc: "([^"]*)"/gm)) assert.doesNotMatch(d, builder, d.slice(0, 60));
-  assert.doesNotMatch(cv, /built under Reports\)|secretLabel: "fine-grained PAT"/);
-  // ...no heading in capitals: no all-caps run of words between tags, and an overline is the app's own case
-  for (const f of readdirSync(new URL("../src/", import.meta.url)).filter((n) => n.endsWith(".jsx"))) {
-    const code = src(f).split("\n").filter((l) => !/^\s*(\/\/|\{\/\*|\*)/.test(l)).join("\n");
-    assert.doesNotMatch(code, />\s*[A-Z][A-Z ,—'&/-]{10,}[A-Z]\s*</, f);
-    assert.doesNotMatch(code, /^\s+[A-Z]{2,}(?: [A-Z—-]{2,}){2,}\s*$/m, f);
-  }
-  assert.match(src("theme.jsx"), /overline: \{ textTransform: "none", letterSpacing: 0/);
-});

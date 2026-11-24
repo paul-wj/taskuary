@@ -10,7 +10,7 @@ const src = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), "utf
 
 test("the Reports page has a Playbooks shelf beside Reports and Workflows, one open in its editor", () => {
   const r = src("ReportsView.jsx");
-  assert.match(r, /\{ key: "playbooks", label: "Playbooks", n: pbs\.books\.length \}/);
+  assert.match(r, /\{ key: "playbooks", label: t\("Playbooks"\), n: pbs\.books\.length \}/);
   assert.match(r, /<PlaybookRow b=\{b\}/);
   assert.match(r, /<PlaybookDetail key=\{pbSlug\} slug=\{pbSlug\} onGone=\{back\} \/>/);
   assert.equal(pbOpen("pb:weekly-close"), "weekly-close");

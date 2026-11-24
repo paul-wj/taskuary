@@ -544,22 +544,25 @@ def test_claude_s_adapter_runs_on_no_task_s_environment_and_the_next_task_opens_
     monkeypatch.setenv('FAKE_ACP_LOG', str(log))
     launch = {'cmd': FAKE, 'env': {}, 'mode': '', 'meta': {'claudeCode': {'options': {'promptSuggestions': False}}}, 'adapter': 'claude-agent-acp@0'}
     base = {**os.environ}
+    key = agents._spare_key(launch['cmd'], base, 60)
     open_for = lambda tid: agents._acp_open('claude', launch, str(tmp_path), {**base, 'TQ_TASK': str(tid)}, None, 60, lambda *a: None, base=base)
     try:
-        t = time.time(); a = open_for(1)
+        a = open_for(1)
         for _ in range(100):                                                   # ...the next one starting behind it
-            if agents._ACP_SPARE: break
+            if key in agents._ACP_SPARE: break
             time.sleep(0.05)
-        ahead = next(iter(agents._ACP_SPARE.values())).p.pid
+        ahead = agents._ACP_SPARE[key]
         b = open_for(2)
         rows = [json.loads(l) for l in log.read_text().splitlines()]
         assert [r['env'] for r in rows] == [{'TQ_TASK': '1'}, {'TQ_TASK': '2'}]      # ...each task's own part rides with its session
         assert all(r['proc'] == {} for r in rows)                                       # ...never in the adapter's own process
-        assert b.p.pid == ahead != a.p.pid and rows[1]['pid'] == ahead                   # ...task 2 on the one started ahead
+        assert b is ahead and b is not a
+        # A Windows venv's python.exe redirects to a child; the adapter logs the child's PID, not Popen's.
+        assert rows[0]['pid'] != rows[1]['pid']
         for _ in range(100):
-            if agents._ACP_SPARE: break
+            if key in agents._ACP_SPARE: break
             time.sleep(0.05)
-        assert agents._ACP_SPARE                                                         # ...and a third already up for the next
+        assert key in agents._ACP_SPARE                                        # ...and a third already up for the next
     finally:
         for c in (locals().get('a'), locals().get('b')):
             if c: c.close()

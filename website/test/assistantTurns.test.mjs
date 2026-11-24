@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { actReceipt, mergeDurableTurns } from "../src/assistantTurns.js";
+import { setLocale, translateDescriptor } from "../src/i18n.js";
 
 test("durable chat turns reconcile with their optimistic bubbles instead of drawing twice", () => {
   const local = [
@@ -197,19 +198,27 @@ test("two lines with the same words but different items are two turns", () => {
 
 // AN ACT WITH NO WORDS STILL ENDS ON WORDS in the chat pop-up (the owner, 2026-10-27: it "disappeared when done"): what it did and where,
 // one sentence for every act, the server's own line when it gave one
-test("an act-only turn gets one receipt read off the act", () => {
+test("an act-only turn gets one receipt read off the act", (test) => {
+  test.after(() => setLocale("en"));
   const light = { verb: "defer", label: "Remind me", key: "msg:4", tid: 4, ref: "TQ-0004", line: "" };
-  assert.deepEqual(actReceipt({ say: "", light }, "msg:4"), { text: "Remind me is ready on the row for this task - yours to press.", status: "warn" });
+  const ready = actReceipt({ say: "", light }, "msg:4");
+  assert.equal(ready.status, "warn");
+  assert.equal(ready.text, "Remind me is ready on the row for this task - yours to press.");
+  assert.equal(translateDescriptor(ready.text_i18n), ready.text);
   assert.match(actReceipt({ say: "", light }, "msg:9").text, /for TQ-0004/);
   // ...and a said day is in the words (F4)
   assert.equal(actReceipt({ light: { ...light, day: { until: "2026-11-02 09:00", day: "Mon 2 Nov" } } }, "msg:4").text,
     "Remind me (Mon 2 Nov) is ready on the row for this task - yours to press.");
-  assert.deepEqual(actReceipt({ pressed: { label: "Mark done", key: "msg:4", ref: "TQ-0004", note: "paid Friday" } }, "msg:9"),
-    { text: "Mark done - TQ-0004: paid Friday.", status: "done" });
+  const pressed = actReceipt({ pressed: { label: "Mark done", key: "msg:4", ref: "TQ-0004", note: "paid Friday" } }, "msg:9");
+  assert.equal(pressed.status, "done");
+  assert.equal(translateDescriptor(pressed.text_i18n), "Mark done - TQ-0004: paid Friday.");
   assert.equal(actReceipt({ light: { ...light, line: "Remind me is lit for Monday." } }).text, "Remind me is lit for Monday.");
   assert.match(actReceipt({ light: { ...light, label: "" } }, "msg:4").text, /^Opened this task/);
   assert.equal(actReceipt({}).status, "warn");
   assert.ok(actReceipt({}).text, "even nothing back is said");
+  setLocale("zh-CN");
+  assert.equal(translateDescriptor(ready.text_i18n), "此任务的操作行已准备好提醒我，请由你点击。");
+  assert.match(translateDescriptor(pressed.text_i18n), /TQ-0004.*paid Friday/);
 });
 
 // AN ITEM OPENED AGAIN KEEPS ITS VIEW (agent-presses, 2026-11-01): a #task= link's pull landed after the task had come up on its own line,

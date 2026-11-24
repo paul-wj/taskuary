@@ -20,6 +20,7 @@
   "propose_reply",
   "read_attachment",
   "read_message",
+  "read_skill",
   "remember",
   "remind",
   "reply_not_needed",

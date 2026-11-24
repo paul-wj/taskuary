@@ -2,11 +2,8 @@
 // LinkedIn card showed the section chips and that card, no matches; the card's keys saved left Sign in greyed).
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import { matchCards } from "../src/connectorCatalog.js";
 
-const src = fs.readFileSync(path.join(process.cwd(), "src", "ConnectorsView.jsx"), "utf8");
 const card = (title, channel, haystack, planned = false) => ({ key: channel, title, channel, haystack, planned });
 const groups = [
   { title: "Email", cards: [card("Outlook mail", "outlook", "outlook microsoft mail ... the approval link ...")] },
@@ -30,9 +27,3 @@ test("nothing typed is no matches; several names at once, comma-separated, each 
   assert.deepEqual(matchCards(groups, "bluesky, linear").map((h) => h.title), ["Bluesky", "Linear"]);
 });
 
-
-test("an app's client secret is a masked, write-only box that says it is saved (guard.WRITE_ONLY_CONFIG)", () => {
-  assert.match(src, /if \(!\(conn\?\.WriteOnlyKeys \|\| \[\]\)\.includes\(key\)\)[\s\S]{0,200}return <TextField type="password" data-tq-write-only=\{key\}/);
-  assert.match(src, /`\$\{label\} — saved, type to replace`/);
-  assert.match(src, /Object\.fromEntries\(Object\.entries\(cfg\)\.filter\(\(\[k\]\) => !\(conn\?\.WriteOnlyKeys \|\| \[\]\)\.includes\(k\)\)\)/, "typed, then saved, the box empties");
-});

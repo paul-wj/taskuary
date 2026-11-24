@@ -323,7 +323,7 @@ export default function BoardView({ onOpenTask, active = true }) {
     // THE BOARD IS A VIEW THE ASSISTANT READS (pageView.js, the assistant audit 2026-11-02): unmarked, "switch to the wall" asked on it had
     // no page under it, and a VIEW open of the Board waited on a root that never drew
     <Box data-tq-browse="board" data-tq-view-label="Agent board"
-      sx={{ height: { xs: "auto", md: "100%" }, minHeight: 0, display: view === "columns" ? "flex" : "block", flexDirection: "column",
+      sx={{ flex: { md: 1 }, minHeight: 0, display: view === "columns" ? "flex" : "block", flexDirection: "column",
         overflowY: { xs: "visible", md: view === "columns" ? "visible" : "auto" } }}>
       {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err.fallback ? tr(err.fallback) : err}</Alert>}
       {/* four things on one line is a laptop's worth of room; below that they wrap rather than

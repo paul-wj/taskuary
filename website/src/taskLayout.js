@@ -140,9 +140,9 @@ export const reportLine = (body) => {
   // 2026-10-29): the line it opens rides with it
   return line.endsWith(":") && ls[i + 1] ? `${line} ${ls[i + 1]}` : line;
 };
-export const agentStatus = ({ profile = "", word = "not started", said = "", made = "", advisor = "" } = {}) => ({
+export const agentStatus = ({ profile = "", word = "not started", said = "", made = "" } = {}) => ({
   lines: [[profile, t(word)].filter(Boolean).join(" · "), said, made ? t("Made: {made}", { made }) : ""].filter(Boolean),
-  foot: [word === "finished" ? t("✓ Done") : "", advisor ? t("Advisor: {advisor} is next", { advisor }) : ""].filter(Boolean).join(" · ") });
+  foot: word === "finished" ? t("✓ Done") : "" });
 // ...Close out: who it answers and where, the draft's first words, and whether it went - "Drafted · waiting for Send", "Sent", "Nothing owed"
 // ...and what is in it: the draft's first words, or what was sent and when, the emails owed, the close and its note
 // ...and at its foot the Advisor's next move when that move is Close out's (advisorAt): "Mark done is next" stood under an Agent nobody started

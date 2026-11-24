@@ -3,6 +3,7 @@
 // already parses the tags off; this strips whatever else a line can carry (a date stamp, a [memory:key], markdown) and says, faintly,
 // when it was learned and from what. Pure, so node --test reads it.
 import { fmtDate } from "./dates.js";
+import { getLocale } from "./i18n.js";
 
 export const sentence = (t) => {
   let s = String(t || "")
@@ -26,7 +27,10 @@ export const fromWhere = (evs = []) => {
   const ws = Object.entries(n).sort((a, b) => b[1] - a[1]).map(([w]) => w);
   return ws.length > 2 ? `${ws[0]}, ${ws[1]} and more` : ws.join(" and ");
 };
-const day = (d) => { const t = new Date(String(d || "").replace(" ", "T")); return Number.isFinite(+t) ? fmtDate(t, undefined, { month: "short", day: "numeric" }) : ""; };
+const day = (d) => {
+  const date = new Date(String(d || "").replace(" ", "T"));
+  return Number.isFinite(+date) ? fmtDate(date, getLocale(), { month: "short", day: "numeric" }) : "";
+};
 // "learned Oct 3 from your verdicts" - the first evidence's date, else when it was last seen; "you wrote this" for the owner's own line
 export const provenance = (l) => {
   if (!l) return "";

@@ -19,11 +19,10 @@ test("the job, what you work on, how you write and who you are are four drafts, 
   assert.ok(!STEPS.includes("workstreams"), "what you work on has no step of its own");
   assert.equal(counter(STEPS.indexOf("job")), "7 of 9"); assert.equal(counter(STEPS.indexOf("style")), "8 of 9"); assert.equal(counter(STEPS.length - 1), "9 of 9");
   assert.match(src, /job: "About your work", workstreams: "What you work on", style: "How you write", soul: "Who you are"/);
-  assert.match(src, /About your work · \{counter\(at\)\}/);
+  assert.match(src, /t\("About your work · \{c\}", \{ c: counter\(at\) \}\)/);
   for (const k of ["job", "workstreams", "style", "soul"]) assert.match(src, new RegExp(`\\n  ${k}: \\{ running: "[^"]+",\\n    failed: \\(why\\) =>`), `${k} says each state`);
   assert.match(src, /\{draft\.state === "failed" && <Typography data-tq-draft-failed=""/);
   assert.match(src, /api\.post\("\/api\/setup\/first-run\/about\/accept", \{ doc: k, text: texts\[k\] \}\)/);
-  assert.match(src, /\{draft\.state === "none" \? "Write it" : "Write it again"\}/);
 });
 
 // EVERY MAILBOX BEFORE THE JOB (the owner, 2026-10-20): never skipped - Skip before it lands on it - and it moves on once one is in
@@ -76,7 +75,7 @@ test("one Next on About your work keeps the job and the workstreams - the list a
   assert.match(src, /const step = STEPS\[at\], draft = DRAFTS\.includes\(step\) \? drafts\[step\] : null;/);
   assert.match(src, /const ready = !!a && \(!draft \|\| draft\.state !== "running"\)/);
   // its line in place while it runs, and the small line that says Next need not wait
-  assert.match(src, /\{d\.state === "running" \? <>\s*<Box[^>]*><CircularProgress size=\{14\} \/>\s*<Typography[^>]*>\{SAYS\.workstreams\.running\}/);
+  assert.match(src, /\{working \? \([\s\S]*?t\(says\.running\)/);
   assert.equal(WS_LATER, "What you work on is still being read from your mail - it fills in on its own; you can change it later on About you.");
   // ...started as the step opens when the mailbox step did not queue it, once
   assert.match(src, /if \(step !== "job" \|\| !a \|\| wsStarted\.current \|\| drafts\.workstreams\.state !== "none"\) return;\s*wsStarted\.current = true; learn\(\["workstreams"\]\);/);

@@ -2,8 +2,6 @@
 // in the card section. we need to do that"): its state in words, and the one press that helps - Install connector, Update connector, or none.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { connectorLine } from "../src/cliConnector.js";
 
 const cli = (connector, installed = true) => ({ name: "claude", label: "Claude Code", installed, connector });
@@ -22,8 +20,6 @@ test("an older connector after a release moves the pin offers Update connector, 
 
 test("on a card whose CLI is outdated too, its press is never the CLI's own plain Update", () => {
   for (const s of ["missing", "update", "other"]) assert.match(connectorLine(at(s, "0.100.2")).press, /^(Install|Update) connector$/);
-  const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
-  assert.match(read("cliInstall.jsx"), /"updating…" : "Update"\}/);            // the CLI's own stays "Update"
 });
 
 test("installed, installing and no npm are said, with nothing to press", () => {

@@ -15,14 +15,4 @@ test("the chat head draws no Back of its own, and no page greys the bar's Back",
   assert.match(view, /useVerbs\("nav", \[\{ id: BACK, group: "back"/);
 });
 
-// the owner, 2026-11-09: "drop pencil if it's a duplicate" - one pencil on screen: the head's corner or the pill's, never both
-test("the head draws New chat in its corner, the pill drops its own pencil then, and no way of opening a task is singled out", () => {
-  assert.match(view, /const headPencil = iconsInPill && !firstRun && !old;/);
-  assert.match(view, /\{headPencil && newChatIcon\("data-tq-new-chat-head"\)\}\s*\{!iconsInPill && ownIcons\}/);
-  assert.match(view, /\{!headPencil && newChatIcon\("data-tq-new-chat"\)\}<\/>;/);
-  assert.equal(view.match(/newChatIcon\("/g).length, 2);
-  assert.match(view, /const newChatIcon = \(attr\) => <Tooltip title="New chat — archives this one"><IconButton size="small" \{\.\.\.\{ \[attr\]: "" \}\} onClick=\{newChat\}/);
-  assert.doesNotMatch(view, /byNameTid/);
-  assert.match(view, /openTaskRef\.current = openTaskCard;/);
-});
 

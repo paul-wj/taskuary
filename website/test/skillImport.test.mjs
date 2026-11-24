@@ -30,7 +30,7 @@ test("you choose which ones: one skill starts chosen, a catalogue starts unchose
   assert.deepEqual(chosen([{ include: true, imported: true }, { include: true, imported: false }]).length, 1);
   // the markup: a tick per row, select all / none, Next needs at least one chosen
   assert.match(wizard, /<Checkbox checked=\{!!r\.include\}/);
-  assert.match(wizard, /Select all/); assert.match(wizard, />None</);
+  assert.match(wizard, /t\("Select all"\)/); assert.match(wizard, /t\("None"\)/);
   assert.match(wizard, /disabled=\{busy \|\| !pending\.length \|\| !allNamed\}/);
   assert.match(wizard, /rows\.map\(\(r, i\) => r\.include && \(/);     // step 3 lists only the chosen
 });
@@ -53,7 +53,7 @@ test("a clash on an operator document is named as one, not as a profile", () => 
   const rows = [row({ name: "triage" })];
   const after = reconcileImport(rows, { imported: [], clashed: [{ name: "triage", kind: "general", doc: "triage" }] });
   assert.equal(after[0].clash.doc, "triage");
-  assert.match(wizard, /Overwrite \$\{rows\[overwrite\]\.clash\.doc\.toUpperCase\(\)\}\.md\?/);   // the confirm names the document
+  assert.match(wizard, /t\("Overwrite \{doc\}\.md\?", \{ doc: rows\[overwrite\]\.clash\.doc\.toUpperCase\(\) \}\)/);   // the confirm names the document
 });
 
 test("the size warning is the seed's own cut, reported by the server - not a byte count", () => {

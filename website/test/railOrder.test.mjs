@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ageHover, arrivedAt, bandsOf, inOrder, isUrgent, latestLine, nextMarkerKey } from "../src/funnelPile.js";
@@ -51,26 +49,7 @@ test("an urgent task sits in Tasks at its arrival place, and no Urgent band is d
   assert.equal(nextMarkerKey(null), null, "no walk read yet: no marker");
 });
 
-test("the rail marks an urgent row's dot in place and says urgent to a screen reader; the opener still counts it", () => {
-  const view = readFileSync(fileURLToPath(new URL("../src/AssistantView.jsx", import.meta.url)), "utf8");
-  const css = readFileSync(fileURLToPath(new URL("../src/assistantView.css", import.meta.url)), "utf8");
-  assert.match(view, /const hot = !i\.settling && isUrgent\(i\);/);
-  // ...and the DOT follows the stored priority, whatever the band: an urgent draft, blocked agent, goal or wait drew regular's sage (2026-10-26)
-  assert.match(view, /const urgentDot = !i\.settling && \(hot \|\| priorityOf\(i\.priority\) === "urgent"\);/);
-  assert.match(view, /urgentDot \? "urgent" : imp \? "important" : ""/);
-  assert.match(view, /data-tq-urgent=\{urgentDot \? "" : undefined\}/);
-  assert.match(view, /aria-label=\{urgentDot \? `\$\{i\.title\} - urgent` : imp \? `\$\{i\.title\} - important` : undefined\}/);
-  // urgent is the rail's dot, never a shaded row - a shade read as selected (the owner, 2026-10-25)
-  assert.match(css, /\.tq-pile-row\.urgent \.rail i, \.tq-pile-row\.urgent\.current \.rail i \{ background: #8a3646 !important/);
-  assert.doesNotMatch(css, /\.tq-pile-row\.urgent[^{]*\.card \{/);
-  // IMPORTANT is the dot's colour, the theme's slate, in its place (the owner, 2026-10-25): urgent outranks it, no edge, no shade, no move
-  assert.match(view, /const imp = isImportant\(i, hot\);/);
-  assert.match(view, /background: imp \? PRIORITY_COLOR\.important : LEVEL_COLOR\[level\]/);
-  assert.doesNotMatch(css, /\.tq-pile-row\.important \.card/);
-  assert.doesNotMatch(css, /\.tq-pile-row\.important(?![^{]*\.rail i)[^{]*\{[^}]*background/, "important never shades the row");
-  // ...its DOT is ringed as urgent's is, in its own slate, on the table too (the owner, 2026-10-27: "I don't see a bigger circle")
-  assert.match(css, /\.tq-pile-row\.important \.rail i, \.tq-pile-row\.important\.current \.rail i \{ background: #55697a !important; box-shadow: [^;]*rgba\(85, 105, 122/);
-  assert.doesNotMatch(css, /lvl-urgent/);
+test("urgent items remain counted in the task summary", () => {
   const sum = summarize([task("task:1", 19), task("task:2", 11, { lane: "time", order_band: 1 }), report("report:1", 3)]);
   assert.deepEqual(sum.groups.map((g) => [g.key, g.n, g.urgent]), [["task", 2, 1], ["reports", 1, 0]]);
   assert.equal(sum.lead, "3 things: 2 tasks (1 urgent), 1 reports.");

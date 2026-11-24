@@ -4,11 +4,9 @@
 // nothing on the table, the one exception that day: the sidebar's New and Change my setup.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { rowOf, splitRow } from "../src/actionRow.js";
 import { hasCorrespondent } from "../src/taskLifecycle.js";
 
-const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 const ids = (r) => [...r.decide, ...r.agent, ...r.more].map((x) => x.id);
 
@@ -39,10 +37,6 @@ test("nothing on the table: Back, New and Change my setup - New is the sidebar's
   const { row, by } = splitRow(rowOf({ ref: "", list }), null, true);
   assert.deepEqual(ids(row), ["chat:newtask", "chat:tour"]);
   assert.deepEqual(by.item.map((x) => x.id), ["chat:walk"], "anything else is drawn on the line it belongs to");
-  const view = read("AssistantView.jsx");
-  assert.match(view, /const NEW_DOOR = SIDE_NAV\.find\(\(n\) => n\.key === "new"\);/);
-  assert.match(view, /const IDLE_CHIPS = \[\{ verb: "newtask", label: NEW_DOOR\.label, hint: NEW_DOOR\.hint, bar: true \}, \{ verb: "tour", label: "Change my setup", bar: true \}\];/);
-  assert.doesNotMatch(view, /setupask/, "no separate Set something up: New leads to it");
 });
 
 

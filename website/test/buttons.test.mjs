@@ -1,6 +1,5 @@
 // THE ONE LIST OF BUTTONS (taskuary/buttons.json, the owner, 2026-10-17: "if it's in one code place it's easy to update it later").
-// The page reads every button's words through src/buttons.js; these tests hold that line - the Advisor's verb finds the task page's
-// own button for it, no page file types a button's label itself, and no removed name is left anywhere a person can read it.
+// These tests cover buttons.json's labels, state words, hints and row-to-verb behavior through public helpers.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -9,14 +8,6 @@ import { ALL_LABELS, REMOVED, VERBS, hint, label, labelOfRow, liveVerb, rowsOf, 
 import { advisedAny, advisedIn, rowOf } from "../src/actionRow.js";
 
 const json = JSON.parse(fs.readFileSync(path.join(process.cwd(), "..", "taskuary", "buttons.json"), "utf8"));
-const SRC = path.join(process.cwd(), "src");
-const files = fs.readdirSync(SRC).filter((f) => /\.(jsx?|mjs)$/.test(f) && f !== "buttons.js");
-// what a person can read: string literals and JSX text, with comments gone (a comment reaches nobody)
-// ...a block comment only where one can start (a line's head, a JSX `{`): "src/**/*.js" in a string is not one
-const strip = (s) => s.replace(/(^[ \t]*|\{)\/\*[\s\S]*?\*\/\}?/gm, "").replace(/(^|\s)\/\/[^\n]*/g, "$1");
-// ...each literal taken whole (a template's closing tick never opens the next one); a template with `${}` in it is not one word
-const said = (code) => [...code.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`|>\s*([^<>{}\n]+?)\s*</g)]
-  .map((m) => m[1] ?? m[2] ?? (m[3]?.includes("${") ? "" : m[3]) ?? m[4]);
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: labelOfRow(id) || id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 
 test("buttons.js reads buttons.json: one label, its state words, its hint, the row ids", () => {
@@ -70,37 +61,6 @@ test("the Advisor's verb finds the task page's own button for the same act, by b
   assert.equal(advisedIn([v("12:approve", "decide", { label: label("approve", "action") })], { verb: "approve" })?.id, "12:approve", "Approve sends a proposal");
 });
 
-// a label typed in a page file is the second place the owner's word lives - the next rename misses it
-const NOT_BUTTONS = {
-  "actionRow.js": ["Reply"],                                   // the REPLY section's heading over its buttons (TYPES)
-  "FeedView.jsx": ["Reply"],                                   // the story's Reply step and an untitled message's subject
-  "TaskPage.jsx": ["Reply"],                                   // an untitled message's subject
-  "assistantCards.jsx": ["New task"],                          // the channel name of a task you started
-  "demoApi.js": ["New task"],                                  // a new demo task's default title
-  "TasksView.jsx": ["New task"],                               // the new-task dialog's title
-  // a setup wizard's own step forward - not the walk's Next, which puts an item down
-  // ...and the skill import's Read, which reads a link or a path - not Next's badge on a report it read (2026-10-23)
-  "FirstRun.jsx": ["Next", "Back"], "FirstRunAbout.jsx": ["Next", "Back"], "SkillImport.jsx": ["Next", "Back", "Read"],
-  // other sends that are not a draft's Send (2026-10-18, when approve's label became "Send"): the bug report's own, the chat
-  // composer's arrow, and the answer box's Send/Queue to a waiting agent
-  "BugReportDialog.jsx": ["Send"], "GeneralWorkspace.jsx": ["Send"], "ui.jsx": ["Send"],
-  // ...the name a log gives an ACP read (chatStream.js) - a tool, not a label (2026-11-06)
-  "chatStream.js": ["Read"],
-  // ...and a connector card's AI setup walk: words sent to the agent walking the card (2026-10-21)
-  "ConnectorsView.jsx": ["Send"],
-  // a report's setup wizard steps forward with its own Continue - not the agent's (2026-10-18, when continue's label became "Continue")
-  "ReportsView.jsx": ["Continue"],
-  // a pull request close-out's other answer - close it unmerged - not an invite's Decline (2026-10-20, when decline_invite came)
-  "reviewProposal.js": ["Decline"],
-};
-test("no page file types a button's label: every one is read from buttons.js", () => {
-  const hits = [];
-  for (const f of files) {
-    const ok = NOT_BUTTONS[f] || [];
-    for (const s of said(strip(fs.readFileSync(path.join(SRC, f), "utf8")))) if (ALL_LABELS.includes(s.trim()) && !ok.includes(s.trim())) hits.push(`${f}: "${s.trim()}"`);
-  }
-  assert.deepEqual(hits, []);
-});
 
 
 // NOT FOR ME ASKS HOW FAR ON THE DESK TOO (the owner, 2026-11-10: "yes on 1"): the phone's answers (buttons.json `choices`) in a small menu

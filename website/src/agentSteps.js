@@ -324,6 +324,7 @@ const OWN = {
     doing: `Searching your mail${asking(a.words || a.subject || a.sender)}`, q: a.words || a.subject || a.sender || "" }),
   readmessage: () => ({ kind: "mail", summary: "Read an email" }),
   readattachment: () => ({ kind: "read", summary: "Read an attachment" }),
+  readskill: () => ({ kind: "read", summary: "Read a Skill" }),
   searchtasks: (a) => ({ kind: "task", summary: `Searched your tasks${asked(a.words)}`, doing: `Searching your tasks${asking(a.words)}` }),
   person: (a) => ({ kind: "mail", summary: a.name ? `Looked up ${clip(a.name, 40)} in your mail` : "Looked up a person in your mail" }),
   searchknowledge: (a) => ({ kind: "read", summary: `Searched your documents${asked(a.text)}`, doing: `Searching your documents${asking(a.text)}` }),
@@ -337,9 +338,9 @@ const OWN = {
   signform: () => ({ kind: "edit", summary: "Filled in and signed a form" }),
   propose: () => ({ kind: "plan", summary: "Asked for your yes" }),
   // ...a view by what it shows - its own title, the file it put up, its kind - never "a view" (the walk, 2026-11-17: "Showing you a view")
-  show: (a) => { const el = a.elements?.[a.root] || {}, t = a.title || el.props?.title, fs = [a.files || []].flat().filter(Boolean);
-    return { kind: "plan", summary: t ? `Showed you ${quoted(t)}` : fs.length ? `Showed you ${baseName(fs[0])}${fs.length > 1 ? `, and ${fs.length - 1} more` : ""}`
-      : SHOWN[el.type] ? `Showed you ${SHOWN[el.type]}` : "Laid it out for you" }; },
+  show: (a) => { const el = a.elements?.[a.root] || {}, title = a.title || el.props?.title, fs = [a.files || []].flat().filter(Boolean);
+    return { kind: "plan", summary: title ? `Showed you ${quoted(title)}` : fs.length ? `Showed you ${baseName(fs[0])}${fs.length > 1 ? `, and ${fs.length - 1} more` : ""}`
+      : t(SHOWN[el.type] || "Laid it out for you") }; },
   // ...and where it works (repochoice.py): the one line the chat shows for the agent's pick - "Working in northwind/ledger - <why>"
   userepo: (a) => { const w = String(a.path_or_name || "").trim(), at = /[\\/]/.test(w) && !/^[\w.-]+\/[\w.-]+$/.test(w) ? baseName(w) : w;
     return { kind: "plan", summary: `Working in ${at || "a checkout"}${a.why ? ` - ${clip(a.why, 100)}` : ""}` }; },
@@ -411,7 +412,7 @@ export const describeCall = (name, args = {}) => {
   if (kind === "search") { const pat = a.pattern || a.query || a.regex; return { kind, summary: searched(pat), pattern: pat }; }
   if (kind === "list") { const g = a.pattern || a.glob, d = a.path || a.dir_path || a.directory; return { kind, summary: g ? globSaid(g) : d ? `Listed the files in ${baseName(d)}` : "Listed the files" }; }
   if (kind === "web") { const q = a.query || a.q || a.search_term;
-    return { kind, summary: q ? t("Searched the web for {query}", { query: quoted(q) }) : t("Searched the web"), doing: q ? t("Searching the web for {query}", { query: clip(q, 60) }) : t("Searching the web"), q }; }
+    return { kind, summary: q ? t("Searched the web for {query}", { query: quoted(q) }) : t("Searched the web"), doing: q ? t("Searching the web for {query}", { query: `"${clip(q, 60)}"` }) : t("Searching the web"), q }; }
   if (kind === "page") { const u = a.url || firstUrl(a.prompt), at = pageOf(u);
     return { kind, summary: at ? t("Read {where}", { where: at }) : t("Read a web page"), doing: at ? t("Reading {where}", { where: at }) : t("Reading a web page"), host: hostOf(u) }; }
   if (kind === "edit" || kind === "write") {

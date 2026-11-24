@@ -94,8 +94,10 @@ def channels() -> tuple:
 
 
 def capabilities(store) -> dict:
-    """{"coding", "ai", "ai_for": {job: bool}, "mail", "send": {channel: bool}} - the one answer, for the server and the page alike."""
-    return {'coding': can_code(store), 'ai': has_ai(store), 'ai_for': {j: has_ai(store, j) for j in AI_JOBS}, 'mail': has_mail(store),
+    """The one answer for what the installation can offer and whether the owner enabled Developer mode."""
+    from . import agents
+    return {'coding': can_code(store), 'developer_mode': agents.developer_mode(store), 'ai': has_ai(store),
+            'ai_for': {j: has_ai(store, j) for j in AI_JOBS}, 'mail': has_mail(store),
             'send': {ch: can_send(store, ch) for ch in channels()}}
 
 

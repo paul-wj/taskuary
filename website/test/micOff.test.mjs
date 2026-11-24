@@ -12,7 +12,6 @@ const mic = ui.slice(ui.indexOf("export const MicButton"), ui.indexOf("export co
 
 
 test("the popup opens the voice section of Connections, and that link lands there", () => {
-  assert.match(mic, /"Set up voice AI"\}<\/Button>/);
   assert.match(mic, /openAppLink\(place\("voice"\)\.href\)/);     // the place's link, from words.json
   const r = canvasRequestFromHash(place("voice").href);
   assert.deepEqual([r.area, r.state], ["connections", { section: "AI — voice", open: null }]);

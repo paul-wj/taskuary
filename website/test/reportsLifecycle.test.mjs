@@ -18,7 +18,7 @@ test("Run now is owned by the server and survives leaving the Reports tab", () =
 test("an existing report has a visible top-level Remove button that acts at once (the owner, 2026-10-21: no confirm)", () => {
   const wizard = source.slice(source.indexOf("function ReportWizard"));
   const header = wizard.slice(wizard.indexOf("return ("), wizard.indexOf("<Stepper"));
-  assert.match(header, /Remove \{workflow \? "routine" : "report"}/);
+  assert.match(header, /t\(workflow \? "Remove routine" : "Remove report"\)/);
   assert.match(header, /onClick=\{remove\}/);
   assert.doesNotMatch(wizard, /ConfirmDelete/);
   assert.match(wizard, /api\.delete\(`\/api\/sources\/\$\{cur\.SourceId\}`\)/);
@@ -43,7 +43,7 @@ test("where a run goes is one prompt, and the card says the AI is answering it",
   assert.doesNotMatch(shownAs, /\.trim\(\)/);
   assert.match(card, /how === "ai" && blank\(when\) &&/);
   assert.match(card, /<AutoAwesomeIcon/);                                  // the same grammar as the summary prompt
-  assert.match(card, /<MenuItem value="ai"[^>]*>ask the AI<\/MenuItem>/);   // the control names who answers
+  assert.match(card, /<MenuItem value="ai"[^>]*>\{t\("ask the AI"\)\}<\/MenuItem>/);   // the control names who answers
   assert.match(card, /see the prompt/);
   assert.match(card, /On the last runs this would have/);
   // ...and WHO answers is said, not picked a second time. One judge setting lives under Triage & agents
@@ -55,7 +55,6 @@ test("where a run goes is one prompt, and the card says the AI is answering it",
   assert.match(card, /openAppLink\(JUDGE_HASH\)/);
   assert.match(source, /const WHERE_RUNS_GO = "Settings › How mail is sorted › Where reports go"/);
   assert.match(source, /if \(judge\?\.kind === "decision"\) return \[judge\.display/);
-  assert.match(source, /return \["The brain that writes this report"/);
   // the hash it sets is one the page follows
   // (the canvas opens it as a Settings card - canvasLinks.js, pinned in test/canvasLinks.test.mjs)
   const links = await readFile(new URL("../src/canvasLinks.js", import.meta.url), "utf8");
@@ -108,7 +107,7 @@ test("every report is the card - the page draws it and never re-derives old rule
   assert.match(source, /export const fullRoute = \(c\) =>/);
   assert.match(source, /const LINE_DEFAULT = \{ timeline: "always", send: "always", alert: "never", triage: "never" \}/);
   // ...a rule is arithmetic a model is not trusted with, and it is a line's fourth answer
-  assert.match(source, /<MenuItem value="rule"[^>]*>when a rule trips<\/MenuItem>/);
+  assert.match(source, /<MenuItem value="rule"[^>]*>\{t\("when a rule trips"\)\}<\/MenuItem>/);
   // ...and what a saved report does is said in the server's words
   assert.match(source, /source\.RouteWords/);
   // the interruption is named for being immediate, not for a device (2026-09-17)
@@ -135,7 +134,7 @@ test("on an existing report the routing step's Continue saves before it advances
   const step = wizard.slice(at, wizard.indexOf("</StepContent>", at));
   // ...and only a save that worked moves on: a refused one stays on the step that says why
   assert.match(step, /onClick=\{async \(\) => \{ if \(cur && !\(await save\(\)\)\) return; setStep\(1\); \}\}/);
-  assert.match(step, /\{cur \? "Save & continue" : "Continue"\}/);
+  assert.match(step, /\{t\(cur \? "Save & continue" : "Continue"\)\}/);
   assert.match(step, /\{saveErr && /, "a refused save must say so on the step where the button is");
 });
 

@@ -685,7 +685,7 @@ export default function TaskHubPage() {
             </Box>
           )}
           {(everBoard || tab === "Board") && (
-            <Box sx={{ display: tab === "Board" ? "block" : "none", flex: 1, minHeight: 0 }}>
+            <Box sx={{ display: tab === "Board" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
               <BoardView key={`b${tick}`} onOpenTask={openTask} active={tab === "Board"} />
             </Box>
           )}

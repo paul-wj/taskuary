@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-
+import { translateDescriptor } from "../src/i18n.js";
 import { firstSyncProgress, startFirstSync } from "../src/setupSync.js";
 
 const reader = (ingest, state) => ({ get: async (url) => ({ data: url === "/api/setup" ? state : ingest }) });
@@ -22,15 +22,16 @@ test("a started HTTP request is not a first useful result", async () => {
   assert.equal((await firstSyncProgress(reader({ status: { state: "idle" } }, { ...state, pending: true }))).phase, "reading");
   const empty = await firstSyncProgress(reader({ status: { state: "idle" } }, state));
   assert.equal(empty.phase, "empty");
-  assert.match(empty.message, /which folders/);
+  assert.match(empty.messages.map(({ source, text }) => source || text).join(" "), /which folders/);
 });
 
 test("source and AI failures remain visible even when older items exist", async () => {
   const result = await firstSyncProgress(reader({ status: { state: "idle" }, failed: ["gmail"], triageError: "AI key rejected" },
     { steps: [{ key: "sync", done: true }] }));
   assert.equal(result.phase, "failed");
-  assert.match(result.message, /gmail/);
-  assert.match(result.message, /AI key rejected/);
+  const said = result.messages.map((message) => message.source ? translateDescriptor(message) : message.text).join(" ");
+  assert.match(said, /gmail/);
+  assert.match(said, /AI key rejected/);
 });
 
 test("a genuine first result carries the review sample to the panel", async () => {

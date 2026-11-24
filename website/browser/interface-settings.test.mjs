@@ -59,7 +59,7 @@ test("settings controls save their individual values and keep bookkeeping out of
   assert.deepEqual(writes.at(-1), { name: "trust_sent_history", value: "1" });
   assert.equal(await page.$$eval('[data-tq-knob="trust_sent_history"], [data-tq-knob="trust_non_email"]', (nodes) => nodes.length), 0);
 
-  await page.$eval("[data-tq-browse-back]", (button) => button.click());
+  await page.click("[data-tq-walk-back]");
   await page.waitForSelector('[data-tq-browse-card="Replies"]');
   await page.$eval('[data-tq-browse-card="Replies"]', (button) => button.click());
   const email = '[data-tq-knob="reply_channels"] button[aria-pressed]';
@@ -72,7 +72,7 @@ test("settings controls save their individual values and keep bookkeeping out of
   await page.waitForFunction((selector) => document.querySelector(selector)?.getAttribute("aria-pressed") === "false", {}, email);
   assert.deepEqual(writes.at(-1), { name: "reply_channels", value: "teams" });
 
-  await page.$eval("[data-tq-browse-back]", (button) => button.click());
+  await page.click("[data-tq-walk-back]");
   await page.waitForSelector('[data-tq-browse-card="How mail is sorted"]');
   await page.$eval('[data-tq-browse-card="How mail is sorted"]', (button) => button.click());
   await page.waitForSelector('[data-tq-knob="triage_ai"]');
@@ -83,7 +83,7 @@ test("settings controls save their individual values and keep bookkeeping out of
   for (const secret of ["private-cursor", "private-bookkeeping", "private-migration"]) {
     assert.ok(!visible.includes(secret));
   }
-  await page.$eval("[data-tq-browse-back]", (button) => button.click());
+  await page.click("[data-tq-walk-back]");
   const search = '[data-tq-browse="settings"] [data-tq-browse-search]';
   await page.waitForSelector(search);
   for (const key of ["assistant_current:42", "assistant_last_run", "some_future_flag"]) {

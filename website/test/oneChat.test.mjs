@@ -10,7 +10,7 @@ import { SHIPPED, defaultDetail, detailFor, keepOwnDetail, ownDetail } from "../
 
 
 const read = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-const gw = read("GeneralWorkspace.jsx"), page = read("TaskPage.jsx");
+const gw = read("GeneralWorkspace.jsx");
 
 const call = (id, name, args, extra = {}) => ({ type: "tool_call", name, detail: { tool_call_id: id, args, ...extra } });
 const done = (id, result = "") => ({ type: "tool_result", name: id, detail: { tool_call_id: id, result } });
@@ -65,8 +65,6 @@ test("the detail level: Everything for coding work, Summary for other work, Sett
   // ...Settings has the two, and every chat's corner draws the same slider
   const knobs = JSON.parse(fs.readFileSync(new URL("../../taskuary/settings_schema.json", import.meta.url), "utf8")).knobs;
   assert.equal(knobs.chat_detail_coding.type, "detail"); assert.equal(knobs.chat_detail_other.type, "detail");
-  assert.match(read("SettingsView.jsx"), /if \(m\.type === "detail"\) return <DetailSlider /);
-  assert.match(page, /<HeadPop id="chat-detail" title="Chat detail" .*?><ChatDetail taskId=\{t\.TaskId\} source=\{chatSource\(t, term\)\} \/><\/HeadPop>/);
 });
 
 

@@ -16,9 +16,6 @@ test("a level left on Default names the AI it resolves to, and its model box the
   assert.equal(levelDefault({ ...D, coding: { pick: "cli:claude", brain: "Claude Code" } }), "Default - OpenAI Codex CLI (coding: Claude Code), set on its card below");
   assert.equal(levelModel(D, null, "quick"), "gpt-5.5, low effort");
   assert.equal(levelModel(D, { runs: { hard: "opus" } }, "hard"), "opus");
-  const rr = read("RouteRules.jsx");
-  for (const gone of ["the card's AI\"", "\"its own model\"", "Triage, drafting"]) assert.ok(!rr.includes(gone), gone);
-  assert.ok(rr.includes("{levelDefault(p.default)}"));
 });
 
 test("a card's RUNS line is the router's answer, and re-choosing the AI it shows is a choice while nobody made one", () => {

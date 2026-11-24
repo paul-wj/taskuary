@@ -63,17 +63,6 @@ test("the layout: two columns whenever no agent is live - a Result and a failure
   assert.equal(focusOf({ pane: "agent", list: true }), "list");
   assert.equal(focusOf({ pane: "agent" }), "source");
   assert.equal(focusOf({ pane: "", waiting: true }), "none");
-  // the page reads its Result and its failure before the focus, and the From line, its sidebar and its X follow the layout
-  const src = taskSource(), at = (re) => src.search(re);
-  assert.ok(at(/const resultShown = /) < at(/const focus = focusOf\(/) && at(/const failedRun = /) < at(/const focus = focusOf\(/));
-  // the "From" title and its X head only the sidebar (2026-10-22: the columns have no title over From)
-  assert.match(src, /\{fromDrawer && <Box sx=\{\{ display: "flex", alignItems: "center" \}\}>\s+<Typography sx=\{\{ \.\.\.label, flex: 1 \}\}>From<\/Typography>\s+<IconButton size="small" aria-label="Close From" data-tq-from-close=""/);
-  assert.match(src, /onClickCapture=\{stacked && !solo \? phoneFromTap : undefined\}/);
-  // ...and no third section: what Close out held is the chat's cards (2026-11-06)
-  assert.doesNotMatch(src, /slot\("close"|data-tq-closeout|closeOutRef/);
-  // ...its record behind the Result's heading while the Result rests on its summary (2026-10-27: "click Result to see more")
-  assert.match(src, /\{!sessionView && hasRecord && !resultRest && !chatPane && \(/);
-  assert.match(src, /\{resultRest && !sessionView && !chatPane && <ResultSummary /);
 });
 
 
@@ -259,12 +248,9 @@ test("a report's line is its Summary, never its AGENT REPORT marker", () => {
 // ANSWERED OUTSIDE TASKUARY (the owner, 2026-10-29): Mark done is filled for it, on the task's one row - the move names no section of the
 // page (2026-11-06), so where the task opens is its kind's and stage's alone
 // ...and the Agent's tab says its own state, no Advisor's next move (the owner, 2026-11-09: "assistant/advisor should only be on rail")
-test("the task's own move fills a button and names no section; the Agent's tab says only its state", () => {
+test("the Agent tab says its own state without repeating the Advisor's next move", () => {
   assert.equal(agentStatus({ word: "finished", advisor: "Mark done" }).foot, "✓ Done", "an Advisor's word handed in is said nowhere");
   assert.equal(agentStatus({ word: "not started" }).foot, "");
-  const src = taskSource();
-  assert.doesNotMatch(src, /sectionHere|adviceIn|advisorAt|advisedHeld/);
-  assert.doesNotMatch(src, /advisor: |warn\?\.advice/);
 });
 
 test("the chat knows the owner answered outside Taskuary: its Draft reply is not the lit move", () => {

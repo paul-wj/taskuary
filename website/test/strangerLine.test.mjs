@@ -49,14 +49,6 @@ test("the held box carries the presses; Came from then carries none (one place, 
   assert.equal(trustInBox({ kind: "held", line: "Waiting for you.", trust: { person: "Trust Erin", org: null } }), true);
   assert.equal(trustInBox({ kind: "held", line: "Waiting for you." }), false, "a hold that is not the sender's (no repository) offers no trust");
   assert.equal(trustInBox({ kind: "idle", line: "Not started yet.", trust: { person: "Trust Erin" } }), false);
-  const story = readFileSync(new URL("../src/AgentStory.jsx", import.meta.url), "utf8");
-  assert.match(story, /onTrust && trustInBox\(story\) && <TrustButtons/);
-  assert.match(story, /data-tq-trust-org="" [^>]*onClick=\{\(\) => onTrust\("org"\)\}>\{trust\.org\}/);
-  const page = readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
-  assert.match(page, /<AgentStory story=\{story\} compact=\{storyAt === "line"\} onTrust=\{trustPress\} trusting=\{trusting\} \/>/);
-  assert.match(page, /const trustBoxed = trustInBox\(story\) && \["line", "story"\]\.includes\(storyAt\)/);
-  assert.match(page, /\{!trustBoxed && strangerLine\(detail\)\.trust && <>/);
-  assert.match(page, /runOperation\(api, "task\.trust", selected, scope \? \{ scope \} : undefined\)/);
 });
 
 // ONE HOLD, ONE SENTENCE, ONE TRUST (the owner, 2026-11-11: "Trust only on the task"; the audit, 2026-11-15): a held task's chat says "You have

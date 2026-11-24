@@ -22,12 +22,15 @@ test("localized outward actions stay owner-only and secrets never enter page ope
       send.onclick = () => { sends += 1; };
       local.onclick = () => { locals += 1; };
       const snapshot = view.context(modal.firstElementChild);
-      await view.run([{ op: "press", button: "send-handoff" }, { op: "press", button: "local-action" }, { op: "set", field: "secret-proof", value: "changed" }]);
-      const result = { sends, locals, secretUnchanged: modal.querySelector("input").value === "private-example", secretLeaked: JSON.stringify(snapshot).includes("private-example"), lit: send.hasAttribute("data-tq-setup-lit") };
+      const forbidden = await view.run([{ op: "press", button: "send-handoff" }, { op: "press", button: "local-action" }, { op: "set", field: "secret-proof", value: "changed" }]);
+      await view.run([{ op: "point", button: "local-action" }]);
+      const localLit = local.hasAttribute("data-tq-setup-lit");
+      await view.run([{ op: "point", button: "send-handoff" }]);
+      const result = { sends, locals, ignored: forbidden.steps.length === 0, localLit, secretUnchanged: modal.querySelector("input").value === "private-example", secretLeaked: JSON.stringify(snapshot).includes("private-example"), lit: send.hasAttribute("data-tq-setup-lit") };
       modal.remove();
       return result;
     }, language);
-    assert.deepEqual(proof, { sends: 0, locals: 1, secretUnchanged: true, secretLeaked: false, lit: true });
+    assert.deepEqual(proof, { sends: 0, locals: 0, ignored: true, localLit: true, secretUnchanged: true, secretLeaked: false, lit: true });
   }
   assert.deepEqual(page.fixtureEscapes, []);
 });

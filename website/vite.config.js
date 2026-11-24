@@ -2,6 +2,7 @@
 // FastAPI serves and what pip/PyInstaller ship - node is a build-time dependency only.
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Outside the static demo every reader of demoApi.js checks DEMO first and never touches the recording, yet the
@@ -10,6 +11,8 @@ import { fileURLToPath } from "node:url";
 const demoOff = (mode) => loadEnv(mode, fileURLToPath(new URL(".", import.meta.url)), "VITE_").VITE_DEMO === "1" ? []
   : [{ find: /^\.\/demoApi\.js$/, replacement: fileURLToPath(new URL("./src/demoOff.js", import.meta.url)) }];
 export default defineConfig(({ mode }) => ({
+  // Rollup resolves HTML through the native path; match its drive letter when run from a lowercase Windows cwd.
+  root: realpathSync.native(fileURLToPath(new URL(".", import.meta.url))),
   plugins: [react()],
   // the browser harness gives each checkout its own dep cache: worktrees share node_modules through a junction, and a config
   // whose root differs re-optimized the one shared cache under another checkout's open page (browser/harness.mjs)

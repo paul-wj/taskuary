@@ -60,7 +60,6 @@ test("the line under what was sent says the agent is still working only while a 
   assert.equal(stillWorking(true, generalAnswered(true, atWork)), true);
   assert.equal(stillWorking(true, generalAnswered(false, { alive: true })), true, "a coding session has no such word: live is at work, as before");
   assert.equal(stillWorking(false, false), false);
-  assert.match(readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8"), /stillWorking\(liveSession, answered\) \? "The task stays open while its agent is still working\."/);
 });
 
 

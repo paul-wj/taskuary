@@ -14,27 +14,13 @@ import { AttachChip, AttachRow } from "./promptImages.jsx";
 import { PANEL2, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { attachmentLink, attachmentTitle, clipName, drawable, kb } from "./attachmentView.js";
 
-const LOGO = 48 * 1024;   // a company logo in a signature runs 20-40 KB (24 KB let a 24.4 KB one draw as a picture)
-// A cid-referenced image smaller than a logo IS a signature, not the ask, so it gets a chip like
-// any other file. SVG is exempt: nobody signs their mail in one, and Taskuary's own report charts
-// are small by nature.
-// ...and only in MAIL (`mail`, server _att_row): a WhatsApp or Telegram photo is marked inline too, and IS the message - its 14 KB
-// JPEG stood as a chip to click in the open message (the owner, 2026-10-29: "its images show inline")
-export const chrome = (a) => a.mail !== false && !!a.inline && !!a.size && a.size < LOGO && a.content_type !== "image/svg+xml";
-// drawn from our own bytes only - the attachment route (images inline, SVG never as a page) or the demo's data: image, never a remote address
-const ownImage = (u) => /^\/api\//.test(String(u || "")) || /^data:image\//.test(String(u || ""));
-export const drawable = (a) => !!a.is_image && ownImage(a.url) && !chrome(a);
 // A voice note is the message, not a file about it: WhatsApp and Teams send audio where other
 // people send a sentence, so it gets a player here rather than a download chip that opens some
 // other app. content_type is the truth; the extension is the fallback for a bridge that sent none.
 const AUDIO_EXT = /\.(ogg|opus|mp3|m4a|aac|wav|webm|flac|amr)$/i;
 const playable = (a) => !!a.url && (a.is_audio || AUDIO_EXT.test(a.name || ""));
-// ...and it is CALLED a voice note: the bridge names the file after the message's id ("3EB0C4...ogg"), which says nothing. A
-// file someone named keeps its name; the stored name stays on hover and on the save.
-const HASHED = /^[0-9a-f]{12,}\.[a-z0-9]{2,5}$/i;
-export const clipName = (a) => (HASHED.test(a?.name || "") || !a?.name ? t("Voice note") : a.name);
-const kb = (n) => (!n ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const KIND = { pdf: "PDF", sheet: "XLSX", excel: "XLSX", csv: "CSV", zip: "ZIP", word: "DOCX", document: "DOCX" };
 // a LINKED document (linkdocs.py) says what it is by its kind - "Google Sheet" is SHEET, "GitHub issue" ISSUE
 const LINK_KIND = [["sheet", "SHEET"], ["spreadsheet", "SHEET"], ["slides", "SLIDES"], ["presentation", "SLIDES"], ["pdf", "PDF"],
@@ -43,14 +29,6 @@ const kindOf = (a) => a.link ? t(LINK_KIND.find(([k]) => String(a.kind || "").to
   // ...its name first: a .csv sent as application/vnd.ms-excel is a CSV, not an XLSX
   : [a.name, a.content_type].map((s) => Object.entries(KIND).find(([k]) => String(s || "").toLowerCase().includes(k))?.[1]).find(Boolean)
   || (a.name.split(".").pop() || "file").slice(0, 5).toUpperCase();
-// where a chip opens: a file's own bytes here (with the token), a linked document at its own address (never with it) - and a file
-// kept without its bytes (a cloud link Outlook attaches, one over the size limit) at the original message, where it still opens
-// (TQ-1197: "can't click the link to open" - the chip was a greyed div pointing at an original nothing linked to)
-const SAVE_MAX = 12 * 1024 * 1024;   // channels.ATT_BYTES
-const hrefOf = (a, original) => a.link ? a.external_url : a.url ? attUrl(a, true) : original || undefined;
-const unsaved = (a) => (a.size > SAVE_MAX ? t("over {size}, so not saved here", { size: kb(SAVE_MAX) }) : t("no copy came with the mail - a cloud file's link, or a forwarded mail"));
-const titleOf = (a, original) => a.link ? t("{kind} — {status}", { kind: a.kind, status: a.note ? t("not read: {note}", { note: a.note }) : a.read ? (a.rows != null ? t("read, {rows} rows", { rows: a.rows }) : t("read")) : t("opens where it lives") })
-  : a.url ? t(a.preview ? "read it here" : "save a copy", {}, "attachment") : t("{reason} — {location}", { reason: unsaved(a), location: original ? t("opens in the original message") : t("open it from the mail in your mailbox") });
 
 // a mail whose body points at a picture it does not carry ([image: ...], cid:) - worth a "look for attachments" offer
 export const mentionsPicture = (body) => /\[(image|cid|inline image)|cid:/i.test(String(body || ""));
@@ -92,7 +70,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
       {err ? err.detail || t(err.key) : t("look for attachments on this mail")}
     </Typography>
   ) : null}</>;
-  const drawn = (a) => (bare ? !!a.is_image && ownImage(a.url) : drawable(a)) && !asFiles?.(a);
+  const drawn = (a) => drawable(a, !!bare) && !asFiles?.(a);
   const imgs = items.filter(drawn);
   const clips = items.filter((a) => !drawn(a) && playable(a));
   const files = items.filter((a) => !drawn(a) && !playable(a));
@@ -146,18 +124,19 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
           </Typography>
         {/* ...the one attachment chip, in the one row: a few, then "+N more" with the whole list (promptImages AttachRow, the owner 2026-11-06) */}
         <AttachRow sx={{ mt: 0.5 }}>
-          {files.map((a) => (
-            <AttachChip key={a.id} component={hrefOf(a, original) ? "a" : "div"} href={hrefOf(a, original)} data-tq-linked-doc={a.link ? "" : undefined} data-tq-att={a.name}
+          {files.map((a) => {
+            const { href, rel } = attachmentLink(a, original, attUrl);
+            return <AttachChip key={a.id} component={href ? "a" : "div"} href={href} data-tq-linked-doc={a.link ? "" : undefined} data-tq-att={a.name}
               data-tq-unsaved={!a.link && !a.url ? "" : undefined} name={a.name}
-              target="_blank" rel={a.link || !a.url ? "noopener noreferrer" : "noopener"} title={titleOf(a, original)}
+              target="_blank" rel={rel} title={attachmentTitle(a, original)}
               aria-expanded={!a.link && a.url && a.preview ? open?.id === a.id : undefined}
               /* ...READ IN PLACE, every kind the server can preview (outputs.preview_of): the viewer an agent's file opens in, Download beside it */
               onClick={!a.link && a.url ? (e) => { e.preventDefault(); a.preview ? setOpen(open?.id === a.id ? null : a) : save(a); } : undefined}
               icon={<Typography component="span" variant="caption" sx={{ ...mono, fontSize: 9, fontWeight: 600, color: "var(--tq-link, #55697a)", flexShrink: 0 }}>{kindOf(a)}</Typography>}
               /* ...and a file it could not keep says so on the chip, not only on hover */
               note={a.link ? (a.note ? t("not read") : "") : a.url ? kb(a.size) : original ? t("in the original") : t("not saved")}
-              sx={{ opacity: hrefOf(a, original) ? 1 : 0.6, cursor: hrefOf(a, original) ? "pointer" : "default" }} />
-          ))}
+              sx={{ opacity: href ? 1 : 0.6, cursor: href ? "pointer" : "default" }} />;
+          })}
         </AttachRow>
         {saveErr && <Typography variant="caption" data-tq-file-error="" sx={{ display: "block", mt: 0.5, color: DIM }}>{saveErr}</Typography>}
         {saved && <Typography variant="caption" data-tq-file-saved="" sx={{ display: "block", mt: 0.5, color: DIM }}>{saved}</Typography>}

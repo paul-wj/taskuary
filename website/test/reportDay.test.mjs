@@ -12,7 +12,7 @@ test("the day reads Today, Yesterday, then the weekday and date - the chat threa
   assert.equal(dayLabel("2026-10-22 09:15:00", now), "Today");
   assert.equal(dayLabel("2026-10-21 17:00:00", now), "Yesterday");
   const d = new Date("2026-10-19T17:00:00");
-  assert.equal(dayLabel("2026-10-19 17:00:00", now), fmtDate(d, undefined, { weekday: "short", month: "short", day: "numeric" }));
+  assert.equal(dayLabel("2026-10-19 17:00:00", now), fmtDate(d, "en-US", { weekday: "short", month: "short", day: "numeric" }));
   for (const x of [null, undefined, "", "not a date"]) assert.equal(dayLabel(x, now), "");
 });
 

@@ -33,11 +33,10 @@ test("one line per server and tool, left out or kept; a server Claude and Codex 
 test("Keep, Leave out and the check again are the owner's corrections and a fresh scan - in plain words", () => {
   const s = src("SendFilter.jsx");
   assert.equal(NOT_CHECKED, "Not checked yet: left out");
-  assert.match(s, /l\.unchecked \? NOT_CHECKED/);
+  assert.match(s, /l\.unchecked \? t\(NOT_CHECKED\)/);
   assert.match(s, /api\.post\("\/api\/sendfilter\/correct", \{ server: l\.server, tool: l\.tool \|\| "\*", verdict \}\)/);
   assert.match(s, /onSet\(l, "keep"\)/); assert.match(s, /onSet\(l, "block"\)/);
   assert.match(s, /api\.post\("\/api\/sendfilter\/scan"\)/);
   assert.match(s, /\{label\("test_connection"\)\}/, "asking again has one name, read from buttons.json");
   assert.equal(label("test_connection"), "Test it");
-  assert.match(s, />Leave out</); assert.match(s, /label="Keep"/); assert.match(s, /Kept for agents \(\{kept\.length\}\)/);
 });

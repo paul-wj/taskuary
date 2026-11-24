@@ -81,8 +81,8 @@ test('the sync caption names the work and labels completed fetch attempts as che
 test("a refused sync says so on the sync line; a failed connection never does", async () => {
   const { readFileSync } = await import("node:fs");
   const feed = readFileSync(new URL("../src/FeedView.jsx", import.meta.url), "utf8");
-  assert.match(feed, /catch \(e\) \{ if \(e\?\.response\) \{ setSyncing\(false\); setSyncErr\(plainError\(e, /);
-  assert.match(feed, /\{syncErr \? `✗ \$\{syncErr\}` : syncUnknown \?/);
+  assert.match(feed, /catch \(e\) \{ if \(e\?\.response\) \{ setSyncing\(false\); setSyncErr\(errorPresentation\(e, /);
+  assert.match(feed, /\{syncErr \? `✗ \$\{errorText\(syncErr\)\}` : syncUnknown \?/);
   assert.doesNotMatch(feed, /syncFailed|data\.failed|could not be read - its card/);
   assert.match(feed, /terse: !\(syncing \|\| bgSync\) \}\)/);
   assert.match(feed, /bLabel\("sync_now", "unknown"\) : syncing \|\| bgSync \? syncPhaseLabel\(syncPhase\) : bLabel\("sync_now"\)/);

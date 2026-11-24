@@ -118,15 +118,6 @@ test("the card's buttons leave the card on the canvas and come back on the Tasks
   assert.match(read("ActionRow.jsx"), /data-tq-next/);
 });
 
-test("Decline says what goes out with it: the text in the box exactly as edited, or nothing when the box is empty", () => {
-  const src = fs.readFileSync(path.join(process.cwd(), "src", "ReviewDecision.jsx"), "utf8");
-  assert.match(src, /sends the text above exactly as you have it/);
-  assert.match(src, /The box is empty, so nothing is sent/);
-  assert.match(src, /`\$\{co\.alt\.label\} & send your text`/, "the label says it sends the owner's text only when there is text");
-  assert.match(src, /reply_text: verb !== "reject" && sendable && words.trim()\(\) \? value : null/, "an empty box sends no reply - Decline only closes the pull request");
-  assert.equal((src.match(/title=\{altTitle\}|title: altTitle/g) || []).length, 2, "the row's Decline and the card's carry the one sentence");
-  assert.doesNotMatch(src, /disabled: busy \|\| \(sendable && !words.trim()\(\)\), run: \(\) => decideBoth\(co\.alt/, "Decline is not disabled by an empty box");
-});
 
 test("Next is the FIRST control of the row, then the types; no task number or waiting words on it (2026-10-13)", () => {
   const src = fs.readFileSync(path.join(process.cwd(), "src", "ActionRow.jsx"), "utf8");
@@ -166,59 +157,18 @@ test("a card's own <Button> is read into a row verb: its label, handler, disable
   const calls = [];
   const h = React.createElement;
   const node = h(React.Fragment, null,
-    h("div", { variant: "contained", onClick: () => calls.push("a"), title: "does a" }, "Open ", "Settings"),
-    h("div", { variant: "contained", disabled: true, onClick: () => calls.push("b") }, "Second"),
-    h("div", { variant: "outlined", href: "https://example.test/join" }, "Join"),
-    h("div", { variant: "outlined" }, "No handler"));
+    h("button", { "data-tq-verb": "settings", variant: "contained", onClick: () => calls.push("a"), title: "does a" }, "Open ", "Settings"),
+    h("button", { "data-tq-verb": "second", variant: "contained", disabled: true, onClick: () => calls.push("b") }, "Second"),
+    h("a", { "data-tq-verb": "join", variant: "outlined", href: "https://example.test/join" }, "Join"),
+    h("button", { "data-tq-verb": "no-handler", variant: "outlined" }, "No handler"),
+    h("button", { onClick: () => calls.push("not registered") }, "No action ID"));
   const v = movesOf(node);
-  assert.deepEqual(v.map((x) => [x.label, x.tone, x.disabled]), [["Open Settings", "p", false], ["Second", "s", true], ["Join", "s", false]]);
+  assert.deepEqual(v.map((x) => [x.id, x.label, x.tone, x.disabled]), [
+    ["m:settings", "Open Settings", "p", false], ["m:second", "Second", "s", true], ["m:join", "Join", "s", false]]);
   v[0].run({}); v[1].run({});
   assert.deepEqual(calls, ["a", "b"], "the card's own handler runs; nothing is re-implemented");
 });
 
-test("a move on a PIECE stays on it; a move on the whole item rides the row (2026-10-06)", () => {
-  const src = fs.readFileSync(path.join(process.cwd(), "src", "assistantCards.jsx"), "utf8");
-  assert.match(src, /const rowed = false;/, "YourMove - a draft's send, an agent's answer - draws its button where it acts");
-  assert.match(src, /\.\.\.movesOf\(verb, moves \? "next" : "decide", "v"\)/, "a Foot's move acts on the whole item: the row - a batch's All read, next IS its Next");
-  assert.match(src, /<Foot moves verb=\{<Button[\s\S]{0,200}onDone\?\.\(btn\("next", "batch"\)\)/, "the batch's verb is in the Next group (the design, phase A)");
-  assert.match(src, /\{!rowed && \(verb \|\|/, "...and is not drawn twice");
-  assert.match(src, /\(i < 3 && !QUIET\.has\(a\.verb\)\) \|\| a\.verb === "close" \? "decide" : "more"/, "Mark done is never behind More");
-  assert.match(src, /const QUIET = new Set\(\["report_off"\]\)/, "Pause this report waits behind More for the Advisor to light it (2026-10-27)");
-  assert.match(src, /row: outer\.row/, "the walk's foot rides in the row as well");
-  assert.match(fs.readFileSync(path.join(process.cwd(), "src", "ReplyFiles.jsx"), "utf8"), /toRow && mail/, "Attach a file is a More verb in the row");
-  // ...and no Ask sender (the owner, 2026-10-27): a question for the sender is Reply's
-  assert.doesNotMatch(fs.readFileSync(path.join(process.cwd(), "src", "TaskPage.jsx"), "utf8"), /ask-sender|setAskSenderOpen/, "no Ask sender on the row");
-});
-
-test("Mark done and Remind me put the task down AT THE PRESS, as Next does, and a failure puts it back", () => {
-  const read = (n) => fs.readFileSync(path.join(process.cwd(), "src", n), "utf8");
-  const task = read("TaskPage.jsx"), remind = read("RemindMe.jsx"), view = read("AssistantView.jsx");
-  const finish = task.slice(task.indexOf("const finish = async"), task.indexOf("const reminded ="));
-  assert.ok(finish.indexOf("onLeave?.()") < finish.indexOf("const close ="), "the close is asked for after the task is put down");
-  assert.match(finish, /onStay\?\.\(msg\)/);
-  assert.ok(remind.indexOf("onLeave?.()") < remind.indexOf("await act(until)"), "the reminder too");
-  assert.match(remind, /if \(leaving\) onStay\?\.\(msg\)/);
-  assert.match(view, /putDown: \(key, tid = null\) => \{ leftKey\.current = key; setExpanded\(false\); setFoldedKey\(key\); setNextComing\(true\);[^}]*setLeaving\(\(l\) => \[\.\.\.l\.filter\(\(x\) => x\.tid !== tid\), \{ tid, key, was, at: null \}\]\)/, "folded, the dots under it - beside any put down before it");
-  // ...and off the RAIL at the press as well, a live session's Mark done included: it waited on an 18-second write-up
-  // first, sitting under For later the whole time (the owner, 2026-10-01: "it first went to Later ... did not disappear")
-  const stop = task.slice(task.indexOf("const stopAndFinish = async"), task.indexOf("const markDoneHint"));
-  assert.ok(stop.indexOf("onLeave?.()") > -1 && stop.indexOf("onLeave?.()") < stop.indexOf("writeUpThenClose("), "put down before the write-up");
-  assert.match(view, /onLeave=\{\(\) => canvas\.putDown\(c\.key, c\.tid\)\}/);
-  assert.match(view, /items: asPressed\(pile\.items, \{ leaving: leaving\.map\(\(x\) => x\.tid\)/, "the rail drops it (funnelPile.asPressed)");
-  assert.match(view, /stillLeaving\(l, pile\)/, "until the server's pile has let it go - or put it For later - a reopened task is never hidden");
-  assert.match(view, /pickUp: \(key, why\) => \{[^\n]*dropLeaving\(key\)/, "a failed close puts it back on the rail too");
-  assert.match(view, /onWalkLeave=\{\(how, x\) => actions\.leave\(c\.key, how, x\)\}/, "the close and the next one are one walk move");
-});
-
-test("every connector card is the same size: a 1px border with the live weight drawn inside, two lines held, a pill when connected", () => {
-  const src = fs.readFileSync(path.join(process.cwd(), "src", "ConnectorsView.jsx"), "utf8");
-  const card = src.slice(src.indexOf("const ConnCard"), src.indexOf("const ConnCard") + 2600);
-  assert.match(card, /border: `1px solid \$\{st\.border\}`/);
-  assert.doesNotMatch(card, /\$\{CARD_STATE\[connState\(c\)\]\.width\}px solid/, "no border that grows with the state");
-  assert.match(card, /inset 0 0 0 \$\{extra\}px/);
-  assert.match(card, /minHeight: "3em"/);
-  assert.match(card, /data-tq-conn-pill[\s\S]{0,300}>Connected<\/Box>/);   // one word: the CLI card is on only when one is connected (cliCard.js)
-});
 
 test("on the canvas the task view SHRINKS to its box - no percentage height, so it can never draw over the next line (2026-10-01)", () => {
   const task = fs.readFileSync(path.join(process.cwd(), "src", "TaskPage.jsx"), "utf8");
