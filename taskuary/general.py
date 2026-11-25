@@ -1580,13 +1580,7 @@ def new_run(store, tid: int, actor='owner') -> bool:
 
 
 def conversation_text(store, tid: int) -> str:
-    """The durable assistant conversation as plain text, for end-of-session learning.
-
-    General work has no terminal transcript: its real record is the typed conversation in task
-    comments. Keeping this adapter here lets the Hub use the same conservative closeout question
-    as coding sessions without inventing a second definition of durable company knowledge.
-    The current run's only (new_run): an earlier agent's conversation was closed out with its own session.
-    """
+    """The current Assistant run's durable conversation, without earlier runs."""
     return '\n\n'.join(
         f"{'ASSISTANT' if c.get('ActorType') == ASSISTANT_TYPE else 'OWNER'}: {c.get('Body') or ''}"
         for c in chat_rows(store, tid, run=True))
@@ -3762,7 +3756,7 @@ class GeneralSession:
             # coding line's), the session ended under it, no failed run counted
             from .ingest import held_start
             if not stopped and held_start(self.store, self.task_id, e):
-                if not is_dock(self.store.get_task(self.task_id)): self._end_soon(learn=False, report=False)
+                if not is_dock(self.store.get_task(self.task_id)): self._end_soon(report=False)
                 raise
             if timed is not None:
                 # ...and one that RAN OUT OF TIME paused: its run ends stopped, in words that say why, on the thread it was on - so Continue
@@ -3772,7 +3766,7 @@ class GeneralSession:
                     ws.record(self.store, self.task_id, self.sid, 'stopped', text=said, source=TIMED_OUT)
                 except Exception as skipped: logger.debug(f'api worker event skipped: {skipped}')
                 logger.warning(f'assistant turn on task {self.task_id} ran out of time: {e}')
-                if not is_dock(self.store.get_task(self.task_id)): self._end_soon(learn=False, report=False)
+                if not is_dock(self.store.get_task(self.task_id)): self._end_soon(report=False)
                 raise Stopped(str(e)) from e
             # ...and one that failed is filed where it happened, with what it did and why it ended (file_turn) - before its run reads failed
             if not stopped and not is_dock(self.store.get_task(self.task_id)):
@@ -3790,13 +3784,13 @@ class GeneralSession:
             # The session ends here, its conversation saved - so the task reads stopped and its row offers Continue, which picks the
             # saved conversation back up; a session left open over a dead process offered Stop and save on nothing (2026-10-21)
             if stopped: raise Stopped(said) from e
-            if _unfinished(e, PartWay): self._end_soon(learn=False)
+            if _unfinished(e, PartWay): self._end_soon()
             # A FAILED TURN IS SAID AS A FAILURE (owner-approved, 2026-10-21): left open, the session read alive and not busy - "waiting
             # on you" on the card, the rail and the Board over an agent that never ran. It ends here, its conversation kept, so every
             # surface reads its last word (workerstate.ended: failed) and the step offers Try again. A turn the owner stopped is not a
             # failure, and the dock is the app's own chat, not a run.
             elif not cancel.is_set() and not is_dock(self.store.get_task(self.task_id)):
-                self._end_soon(learn=False, report=False)
+                self._end_soon(report=False)
             raise
         finally:
             self.busy, self.last, self.spoke = False, time.time(), True
@@ -4118,34 +4112,16 @@ class GeneralSession:
             except Exception as e: logger.info(f'task {self.task_id}: the agent was not woken to finish - {e}')
         self.waking = threading.Thread(target=go, daemon=True, name=f'wake-{self.sid}'); self.waking.start()
 
-    def close(self, learn=True, report=True):
+    def close(self, report=True):
         self.closing = True          # a turn running now ends because of this, not on its own (send_prompt: stopped, not failed)
         # ...and is TOLD so: a brain with no process to kill (an API card) reads only this, and a CLI killed below must not be taken
         # for one that "could not resume" - the whole turn was said again to a fresh conversation, on a task just marked done
         c = getattr(self, '_cancel', None)
         if c is not None: c.set()
-        # Coding sessions already ask this at wrap. General sessions used to bypass that branch,
-        # so everything the assistant learned about the business disappeared with the chat even
-        # though the Hub explicitly holds more than technical facts. A session boundary is the
-        # conservative time to ask once; duplicate close calls are no-ops, and learning can never
-        # prevent the session itself from closing.
         was_alive = self.alive
         # ...and its CLI stops too: a closed task keeps no live process (clipool)
         from . import clipool; clipool.close(f'general:{self.task_id}'); clipool.close(f'dock:{self.task_id}')
-        # The application-level dock is already offered the Hub publishing road on each turn.
-        # Mining it again on New chat launched a hidden Claude process for an ordinary archive;
-        # repeated New chats could overlap those minute-long closeout calls and make the next
-        # visible answer contend with work the owner never asked to run.
         task = self.store.get_task(self.task_id)
-        if was_alive and learn and not is_dock(task):
-            from . import handbook as hub
-            transcript = conversation_text(self.store, self.task_id)
-            if transcript and hub.enabled(self.store):
-                try:
-                    brain = llm_mod.build_llm(self.store, pick=self.pick or None, model=self.chosen or None, job='memory')
-                    hub.learn_from_session(self.store, self.task_id, transcript, 'assistant', llm=brain)
-                except Exception as e:
-                    logger.debug(f'hub: assistant conversation {self.task_id} learned nothing - {e}')
         if was_alive and report and not is_dock(task): report_note(self.store, self.task_id)     # a failed turn files no result
         # ...and a reply held while it worked is settled, as a pty session's is (terminal.release_held): an earlier session's closed as
         # superseded, any other back for your yes - held for good otherwise

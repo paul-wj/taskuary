@@ -37,5 +37,5 @@ def test_closing_the_session_files_it():
     session = general.GeneralSession.__new__(general.GeneralSession)        # no provider: only what close() reads
     session.store, session.task_id, session.alive, session.sid, session.subs, session.pick, session.model = s, tid, True, 'x', [], '', ''
     session._emit = lambda *a: None
-    session.close(learn=False)
+    session.close()
     assert notes(s, tid) == ['AGENT REPORT\nAugust was $192,600, up 8% on July.']

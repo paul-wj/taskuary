@@ -822,6 +822,8 @@ CREATE TABLE IF NOT EXISTS draft_snapshot (Id INTEGER PRIMARY KEY, TaskId INTEGE
 CREATE INDEX IF NOT EXISTS idx_draft_snapshot ON draft_snapshot(TaskId, CommentId);
 """
 from .skillstate import SCHEMA as _SKILL_SCHEMA
+from .hubcompletion import SCHEMA as _HUB_COMPLETION_SCHEMA
+SCHEMA += _HUB_COMPLETION_SCHEMA.format(internal_task_base=INTERNAL_TASK_BASE)
 SCHEMA += _SKILL_SCHEMA
 
 # the knowledge base's search index (knowledge.py). A VIRTUAL table, kept out of SCHEMA: a Python
@@ -1789,12 +1791,7 @@ class SQLiteStore:
                 if isinstance(c, dict) and c.get('google_refresh_token') and vault.sealed(new := vault.seal(c['google_refresh_token'])) \
                         and new != c['google_refresh_token']:
                     self.cx.execute('UPDATE connector SET ConfigJson=? WHERE ConnectorId=?', (json.dumps({**c, 'google_refresh_token': new}), cid))
-            # The handbook ships ON - handbook.enabled has said so since it was written - but its
-            # card is seeded like every other, at Active 0, and enabled() reads the card when one
-            # exists. So the feature was off on every install that ever ran: wrapup.wrap skipped
-            # learn_from_session, `--learned` was refused, and the Hub tab could only ever hold
-            # what a person typed. Flip it once and remember that we did, so an owner who turns it
-            # off later does not find it back on after a restart.
+            # Enable the Hub once for older installs, without undoing a later owner opt-out.
             if self.cx.execute("SELECT 1 FROM setting WHERE Name='handbook_on_by_default'").fetchone() is None:
                 self.cx.execute("UPDATE connector SET Active=1 WHERE Type='handbook'")
                 self.cx.execute("INSERT OR REPLACE INTO setting (Name, Value) VALUES ('handbook_on_by_default','1')")

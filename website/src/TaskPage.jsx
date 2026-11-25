@@ -117,6 +117,7 @@ import SentCard from "./SentCard.jsx";
 import { sentStands, WENT } from "./sentLine.js";
 import { FullText } from "./assistantCards.jsx";
 import { JiraDetail } from "./JiraDetail.jsx";
+import { hashFor } from "./canvasLinks.js";
 import { isCardReview } from "./actionCard.js";
 import { AgentRecord, ResultSummary } from "./AgentRecord.jsx";
 import LandingCard, { LANDING_DIFF } from "./LandingCard.jsx";
@@ -3239,6 +3240,21 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   </Tooltip>
                 </Box>
               </Box>
+              {detail.hubLearning && <Typography role="status" data-tq-hub-learning={detail.hubLearning.status}
+                sx={{ px: 1.75, py: 0.5, fontSize: 12, color: DIM, borderBottom: `1px solid ${BORDER}` }}>
+                {detail.hubLearning.status === "pending" ? tr("Looking for reusable findings…")
+                  : detail.hubLearning.status === "empty" ? tr("No reusable findings for the Hub.")
+                  : detail.hubLearning.status === "failed" ? tr(detail.hubLearning.reason === "no_ai"
+                    ? "Hub extraction could not start: no model is available." : "Hub extraction failed. The task is still complete.")
+                  : detail.hubLearning.status === "skipped" ? tr({
+                    stranger: "Hub extraction skipped for an untrusted task.",
+                    disabled: "Hub extraction skipped: the Hub is off.",
+                    read_only: "Hub extraction skipped: the Hub is read-only.",
+                  }[detail.hubLearning.reason])
+                  : <>{tr(detail.hubLearning.status === "known" ? "Already in the Hub:" : "Added to the Hub:")}{" "}
+                    {detail.hubLearning.entries.map((id, i) => <React.Fragment key={id}>{i ? ", " : ""}
+                      <Link href={hashFor("hub", { open: id })}>#{id}</Link></React.Fragment>)}</>}
+              </Typography>}
                 {/* THE ASK LEADS, UNDER THE TITLE AND ACROSS BOTH COLUMNS (the task-view cleanup, owner-approved 2026-10-25): what is wanted is
                     read first, before where it came from or what to do about it - and a task handed to a person opens on who it waits on.
                     Where the work takes the whole width (an agent ran) the ask stays in From, over the agent's room. It is its own band under the

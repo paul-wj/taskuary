@@ -46,7 +46,7 @@ class TheList(unittest.TestCase):
         # turn still starting ran on into the next test, on the real CLI - "'claude' not found" - and broke that test's flow check).
         # 60 s, not 10: every test here is task 1, and a turn a loaded runner kept past 10 s ran on as the next test's extra turn (2026-11-20)
         for t in [t for t in threading.enumerate() if t.name in (f'line-{self.tid}', f'retry-{self.tid}') or t.name.startswith('wake-')]: t.join(60)
-        if (g := general.session_for(self.tid)): g.close(learn=False, report=False)
+        if (g := general.session_for(self.tid)): g.close(report=False)
         general.drop_session(self.tid); general.IDLED.pop(self.tid, None); general.answered(self.tid, every=True); general.STOP_ASKED.pop(self.tid, None)
 
     def mail(self, body, own=False):
@@ -1063,14 +1063,14 @@ class TheList(unittest.TestCase):
         self.assertTrue(until(lambda: getattr(general.session_for(tid), 'busy', False) and ownwork.row_for(self.s, tid)))
         self.assertEqual([(k, i, w) for k, i, w, _ in shape()][:1], [('line', 'a:', ask)])
         self.assertEqual([(k, st) for k, _, _, st in shape()][1:], [('turn', 'working')])
-        self.brain.delay = 0; go.join(15); general.session_for(tid).close(learn=False, report=False); general.drop_session(tid)
+        self.brain.delay = 0; go.join(15); general.session_for(tid).close(report=False); general.drop_session(tid)
         self.assertEqual([k for k, *_ in shape()], ['line', 'turn'])
         # ...and one his typed line opened: the line is the ask, said once
         t2 = self.s.create_task({'Title': 'Venue shortlist', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner'}, 'o')
         general.take_line(self.s, t2, 'Shortlist three venues.', line_id='l-open')
         self.assertTrue(until(lambda: not conversation.items(self.s, t2)['working']))
         self.assertEqual([(x['kind'], x.get('text') or '') for x in conversation.items(self.s, t2)['items'] if x['kind'] == 'line'], [('line', 'Shortlist three venues.')])
-        general.session_for(t2).close(learn=False, report=False); general.drop_session(t2)
+        general.session_for(t2).close(report=False); general.drop_session(t2)
 
     def test_what_is_handed_to_the_agent_is_a_line_or_an_arrival_and_his_own_outside_reply_is_marked_own(self):
         """The owner's SIDES rule, 2026-11-11: "for prompts incoming is on right but your own response on that channel can be on left.
@@ -1159,7 +1159,7 @@ class TheList(unittest.TestCase):
         self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
         ses = general.session_for(self.tid)
         ses._remember_trace('progress', 'text', 'The lakeside venue costs more.')
-        ses.close(learn=False, report=False)
+        ses.close(report=False)
         self.brain.delay = 0
         self.assertTrue(until(lambda: not ses.busy))
         self.assertFalse(sessionrecord._live_path(self.tid).exists())

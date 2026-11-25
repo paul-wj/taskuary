@@ -49,11 +49,44 @@ def install_processing_changes(app, store):
         '/api/fixture/task/big-chat',
         '/api/fixture/task/group-chat',
         '/api/fixture/task/workstreams',
+        '/api/fixture/hub/completion',
         '/api/fixture/advisor/report-idea',
         '/api/fixture/stress/seed', '/api/fixture/stress/clear',
         '/api/fixture/walk/world', '/api/fixture/walk/do', '/api/fixture/walk/keys', '/api/fixture/walk/big',
         '/api/fixture/day/away',
     })
+
+    from taskuary import llm
+    import json
+    import threading
+    hub_gate = threading.Event()
+    hub_task = None
+    original_build_llm = llm.build_llm
+    hub_evidence = 'Comparing three isolated exports showed validation reads the first row before the header.'
+
+    def fixture_build_llm(st, *args, **kw):
+        if hub_task is not None and kw.get('task_id') == hub_task and kw.get('job') == 'memory':
+            def answer(*_, **__):
+                if not hub_gate.wait(20): raise RuntimeError('Hub fixture was not released')
+                return json.dumps({'entries': [{'earned': True, 'evidence': hub_evidence,
+                    'why_earned': 'Three isolated exports established the order of validation.',
+                    'topic': 'exports', 'kind': 'gotcha', 'title': 'Export validation reads the first row before the header',
+                    'body': 'Validate the first data row before sending the file.'}]})
+            return answer
+        return original_build_llm(st, *args, **kw)
+
+    llm.build_llm = fixture_build_llm
+
+    @app.post('/api/fixture/hub/completion')
+    def hub_completion_fixture(body: dict):
+        nonlocal hub_task
+        if body.get('release'):
+            hub_gate.set()
+            return {'ok': True}
+        old = store.create_task({'Title': 'Historical export review', 'Status': 'done'}, 'owner')
+        hub_task = store.create_task({'Title': 'Investigate export validation', 'Kind': 'coding'}, 'owner')
+        store.add_comment(hub_task, 'coding', 'agent', 'AGENT REPORT\n' + hub_evidence)
+        return {'taskId': hub_task, 'oldTaskId': old}
 
     # the armed Data Center world: while armed, the REAL Test / Save / Sync routes run for the seeded Jira connector, so the
     # browser drives the actual UI buttons (the real backend reaches the fictional Jira through the intercepted requests boundary)

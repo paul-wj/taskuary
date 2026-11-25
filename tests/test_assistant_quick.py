@@ -216,7 +216,7 @@ def test_a_general_agent_killed_mid_turn_reads_stopped_offers_continue_and_conti
         live = general.session_for(tid)
         if live is None or not live.busy: break
         time.sleep(0.05)
-    if live: live.close(learn=False)
+    if live: live.close()
     general.drop_session(tid)
 
 

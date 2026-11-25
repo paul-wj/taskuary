@@ -313,6 +313,12 @@ ready for someone else, with read markers for which agents have seen each note. 
 the longer-lived version of the same idea: discoveries and decisions by topic, so knowledge
 outlives the job that produced it.
 
+With the Hub enabled, marking a task done makes Taskuary check its saved result, notes, and test evidence in the
+background. It publishes only supported, reusable findings. If the Hub already says the same
+thing, the task links to that entry instead of making a copy. The task detail shows the outcome,
+including when nothing qualified or extraction failed. This applies to newly completed tasks
+only; Taskuary does not scan previously completed work.
+
 ## Checklists and closing
 
 A task can carry a checklist. Tick the boxes as you go, then press **Mark done** — ticking the last box does not close

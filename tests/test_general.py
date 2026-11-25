@@ -10,7 +10,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from taskuary import browserview, wrapup, general, handbook, llm, responder, server, terminal, waitroom
+from taskuary import browserview, wrapup, general, handbook, hubcompletion, llm, responder, server, terminal, waitroom
 from taskuary.store import MemoryStore
 
 
@@ -157,30 +157,17 @@ class SharedSessionTests(unittest.TestCase):
         self.assertIn('substantial investigation', seen['system'])
         self.assertIn('taskuary --learned', seen['system'])
 
-    def test_ending_an_assistant_session_mines_the_conversation_for_hub_once(self):
+    def test_saving_an_assistant_session_does_not_start_a_hub_review(self):
         store = MemoryStore(); tid = general_task(store)
         store.add_comment(tid, 'owner', general.USER_TYPE, 'Who approves customer launches?')
         store.add_comment(tid, 'assistant', general.ASSISTANT_TYPE,
-                          'Operations approves every customer launch before a date is promised.')
+                          'Operations approved the launch after comparing the support plans.')
         session = general.GeneralSession(store, tid)
-        brain = mock.Mock(return_value=json.dumps({'entries': [{
-            'earned': True,
-            'why_earned': 'The conversation compared launch ownership and worked through the commitment risk.',
-            'title': 'Operations approves customer launch dates',
-            'topic': 'customer-launch', 'kind': 'people',
-            'body': 'Ask operations before promising a date.',
-        }]}))
-        with mock.patch.object(llm, 'build_llm', return_value=brain) as build:
-            session.close()
-            session.close()
-        build.assert_called_once()
-        self.assertEqual(brain.call_count, 1)
-        prompt = brain.call_args.args[1]
-        self.assertIn('OWNER: Who approves customer launches?', prompt)
-        self.assertIn('ASSISTANT: Operations approves every customer launch', prompt)
-        posts = store.lore_posts()
-        self.assertEqual([(p['Title'], p['Author'], p['TaskId']) for p in posts],
-                         [('Operations approves customer launch dates', 'assistant', tid)])
+        session.close()
+        brain = mock.Mock()
+        self.assertFalse(hubcompletion.process_one(store, brain))
+        brain.assert_not_called()
+        self.assertEqual(store.get_task(tid)['Status'], 'open')
 
     def test_archiving_the_global_chat_does_not_launch_a_hidden_closeout_agent(self):
         store = MemoryStore(); task, _ = general.dock_task(store)
@@ -208,16 +195,6 @@ class SharedSessionTests(unittest.TestCase):
         self.assertEqual(visible, 'I saved the developed idea to the Hub.')
         self.assertEqual([(p['Title'], p['Kind'], p['Author']) for p in store.lore_posts()],
                          [('Give every launch a reversible dry-run', 'new_idea', 'assistant')])
-
-    def test_ending_an_assistant_session_respects_social_being_off(self):
-        store = MemoryStore(); tid = general_task(store)
-        store.add_comment(tid, 'owner', general.USER_TYPE, 'Remember this company fact.')
-        store.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'The fact.')
-        session = general.GeneralSession(store, tid)
-        with mock.patch.object(handbook, 'enabled', return_value=False), \
-             mock.patch.object(handbook, 'learn_from_session') as learn:
-            session.close()
-        learn.assert_not_called()
 
     def test_configured_cli_login_is_a_first_class_assistant_provider(self):
         store = MemoryStore(); tid = general_task(store)

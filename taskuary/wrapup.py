@@ -1041,13 +1041,7 @@ def _wrap_once(store, tid, task, close, actor, sid, final_message, no_reply, tex
     return out
 
 
-# THE THREE QUESTIONS AT ONCE, THE ANSWERS IN ORDER (2026-10-20): a wrap asked the report, then the handbook, then the playbook
-# question one after another - 18 s of a Mark done with a 6-second brain. The handbook and playbook questions do not depend on
-# the report: each is asked AHEAD, beside it, exactly as it will be asked (the real function is run up to its question, which
-# is caught and not answered - _question). At its own place in the ending each function runs as it always did, and when it
-# asks the very question that was asked ahead it gets that answer; anything it asks differently - the state moved - is asked
-# then, as before. So what is written, and in what order, is today's. At most two are asked ahead at a time (with the report
-# beside them, three at once for a CLI brain).
+# Ask the playbook question alongside the report: its answer is applied after the task's result.
 _AHEAD = None
 _AHEAD_LOCK = threading.Lock()
 
@@ -1129,11 +1123,8 @@ def _close_again(store, tid, close, actor, agent, text, no_reply) -> dict:
 
 def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut, done: bool = False) -> dict:
     """wrap's coding ending, once per session: the report, the result, the pty closed, proposals, the reply."""
-    from . import proposals, terminal as term, handbook, playbooks
-    # the handbook's and the playbook's questions, asked now beside the report's - answered at their own places below (_AHEAD)
-    ahead = _ask_ahead(store, [
-        _question(handbook.learn_from_session, store, tid, text, agent, repo=term.repo_tag(task) or '') if handbook.enabled(store) else None,
-        _question(playbooks.draft, store, tid, text, agent)])
+    from . import proposals, terminal as term, playbooks
+    ahead = _ask_ahead(store, [_question(playbooks.draft, store, tid, text, agent)])
     _stage(tid, 'report')
     asked = unanswered(store, tid)                 # read while the session is still up: its questions lead the result
     # ...and whether the agent ended it itself: the run's Finished event is its `--done` (selfclose._finished), the only one there is
@@ -1178,14 +1169,6 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
         fin = finish(store, tid, rep, None, agent, owner_done=close and actor == 'owner', keep_open=not close, no_reply=no_reply, done=done) or {}
         if close:
             from . import selfclose; selfclose.unclaim(store, tid, actor)   # the owner ended it; the mark that kept it open has done its job
-    # ...and the one question worth asking the transcript that is NOT about this task: did the
-    # session work out anything still true next month? Usually not, and "not" is the answer it
-    # is told to give (handbook.py). A failure here never stops a task closing - and it waits until the task's status is set:
-    # run between the pty closing and finish(), its AI call left the task in_progress with no session (TQ-1112 shape).
-    _stage(tid, 'learning')           # ...the reply is filed: Close out draws it now, while the two last questions are asked
-    if handbook.enabled(store):
-        try: handbook.learn_from_session(store, tid, text, agent, repo=term.repo_tag(task) or '', llm=_answered(store, ahead))
-        except Exception as e: logger.debug(f'handbook: nothing filed for task {tid} - {e}')
     # ...and the last question, once the report and the reply are in hand: was this a KIND of job that
     # will recur, done here for the first time? The answer is a proposal on the task, never a file
     # (playbooks.py) - the second such job matches it. Last on purpose: the receipt and the sender's

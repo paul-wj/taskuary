@@ -49,7 +49,7 @@ class IdleOut(unittest.TestCase):
         self.sid = self.ses.sid
 
     def end(self):
-        if (g := general.session_for(self.tid)): g.close(learn=False, report=False)
+        if (g := general.session_for(self.tid)): g.close(report=False)
         general.drop_session(self.tid); general.IDLED.pop(self.tid, None); general.OPENING.discard(self.tid)
 
     def later(self, secs=61): return self.ses.last + secs
@@ -82,11 +82,10 @@ class IdleOut(unittest.TestCase):
         before = (chat(s, tid), len(s.list_comments(tid)), len([e for e in s.worker_events(tid) if e["Kind"] not in ws.NOTES]), s.get_task(tid)['Status'],
                   s._rows('SELECT ReviewId, Status FROM review WHERE TaskId=?', (tid,)), s.get_task(tid)['Tags'])
         self.assertEqual(general.idle_sweep(self.ses.last + 30), [])            # not yet: half the period
-        with mock.patch.object(clipool, 'close') as closed, mock.patch('taskuary.general.report_note') as report, \
-             mock.patch('taskuary.handbook.learn_from_session') as learn:
+        with mock.patch.object(clipool, 'close') as closed, mock.patch('taskuary.general.report_note') as report:
             self.assertEqual(general.idle_sweep(self.later()), [tid])
         closed.assert_called_once_with(f'general:{tid}')                           # its CLI stops
-        report.assert_not_called(); learn.assert_not_called()                      # no result, no wrap-up
+        report.assert_not_called()                      # no result, no wrap-up
         self.assertIsNone(general.session_for(tid))                                # no agent running...
         self.assertNotIn(self.sid, terminal.SESSIONS)
         self.assertTrue(general.idled(tid, s))

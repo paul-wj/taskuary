@@ -9,7 +9,7 @@ handed the shelves and the entries already there and answers `same_as`; code kee
 import json
 import unittest
 
-from taskuary import handbook
+from taskuary import concierge, hubcompletion
 from taskuary.handbook import post
 from taskuary.store import MemoryStore
 
@@ -33,7 +33,6 @@ class ExactIdentityOnly(unittest.TestCase):
         post(s, 'Deductions are per-division', topic='Payworth', author='coding')
         second = post(s, 'The import endpoint rejects blank cost centres', topic='Payworth API', author='coding')
         self.assertEqual(second['Topic'], 'payworth-api')
-        self.assertFalse(hasattr(handbook, 'snap_topic') or hasattr(handbook, 'similar') or hasattr(handbook, 'TOPIC_GENERIC'))
 
     def test_it_still_falls_back_to_the_checkout_when_nothing_was_named(self):
         s = MemoryStore()
@@ -56,17 +55,22 @@ class TheWriterSaysSameAs(unittest.TestCase):
     def test_the_closing_writer_is_shown_the_entries_and_its_same_as_is_used(self):
         s = MemoryStore()
         tid = s.create_task({'Title': 'Fix the payroll import'}, 'owner')
+        evidence = 'Tracing three batches through the importer established that line one sets the date.'
+        s.add_comment(tid, 'owner', 'human', evidence)
+        concierge.close_task(s, tid)
         first = post(s, 'Adjustment rows take the first line date', '', 'payroll', 'gotcha', 'coding')
         seen = {}
         def llm(system, user, **k):
             seen['system'], seen['user'] = system, user
             return json.dumps({'entries': [{'earned': True, 'why_earned': 'traced three batches through the importer to find it',
-                                            'topic': 'payroll', 'kind': 'gotcha', 'title': 'Adjusting entries post on line one\'s day',
-                                            'body': 'b', 'same_as': first['LoreId']}]})
-        out = handbook.learn_from_session(s, tid, 'a long transcript', 'coding', llm=llm)
+                                            'evidence': evidence, 'topic': 'payroll', 'kind': 'gotcha',
+                                            'title': 'Adjusting entries post on line one\'s day',
+                                            'body': 'The importer uses line one.', 'same_as': first['LoreId']}]})
+        hubcompletion.process_one(s, llm)
         self.assertIn(f"#{first['LoreId']} [payroll] Adjustment rows take the first line date", seen['user'])
         self.assertIn('same_as', seen['system'])
-        self.assertTrue(out[0]['merged']); self.assertEqual(s.lore_count()['posts'], 1)
+        self.assertEqual(hubcompletion.state(s, tid)['entries'], [first['LoreId']])
+        self.assertEqual(s.lore_count()['posts'], 1)
 
 
 if __name__ == '__main__':

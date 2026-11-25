@@ -60,7 +60,7 @@ def world(tmp_path, monkeypatch):
 
 def _again(s, tid, text='Try again.'):
     """Try again, as its door sends it: the failed turn's session is closing (GeneralSession._end_soon), so the line goes to a fresh one."""
-    _run.sess.close(learn=False, report=False); general.drop_session(tid)
+    _run.sess.close(report=False); general.drop_session(tid)
     _run.sess = general.GeneralSession(s, tid)
     return _run.sess.send_prompt(text, echo=False)
 
@@ -395,7 +395,7 @@ def test_the_task_header_names_the_ai_its_session_opens_on(world):
         shown = general.default_pick(s, s.get_task(tid))         # before the session saves its own pick over the old one
         sess = general.GeneralSession(s, tid)
         try: assert shown == sess.pick == 'cli:codex'
-        finally: sess.close(learn=False, report=False); general.drop_session(tid)
+        finally: sess.close(report=False); general.drop_session(tid)
 
 
 def test_is_there_an_ai_is_asked_of_the_job_that_will_run(world):

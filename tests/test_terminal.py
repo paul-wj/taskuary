@@ -236,14 +236,14 @@ class SeedEchoTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
-    def test_shutdown_closes_every_session_without_starting_general_closeout_work(self):
+    def test_shutdown_closes_every_session(self):
         coding = mock.Mock(mode='terminal')
         assistant = mock.Mock(mode='assistant')
         with mock.patch.dict(terminal.SESSIONS, {'code': coding, 'chat': assistant}, clear=True):
             self.assertEqual(terminal.shutdown_sessions(), 2)
             self.assertEqual(terminal.SESSIONS, {})
         coding.close.assert_called_once_with()
-        assistant.close.assert_called_once_with(learn=False)
+        assistant.close.assert_called_once_with()
 
     def test_shutdown_synchronously_releases_the_tasks_its_sessions_owned(self):
         tid = server.store.create_task({'Title': 'survives app close', 'Kind': 'coding',
@@ -639,11 +639,7 @@ class TerminalTests(unittest.TestCase):
         t.write = typed.append
         report = '{"determination": "325 was Y/Y", "actions": "flipped it to N/N", "summary": "no mailbox now"}'
         try:
-            # the handbook is OFF for this one. It is on by default now and asks the transcript
-            # its own question during wrap (wrapup.wrap -> handbook.learn_from_session), which
-            # would eat one of the two brains below and leave the reply undrafted. What wrap does
-            # with the handbook is tests/test_handbook.py's subject, not this test's.
-            with mock.patch('taskuary.handbook.enabled', return_value=False),                  mock.patch('taskuary.llm.build_llm', side_effect=[lambda s, u, **kw: report,
+            with mock.patch('taskuary.llm.build_llm', side_effect=[lambda s, u, **kw: report,
                                                                    lambda s, u, **kw: 'Done - 325 no longer gets a mailbox.']):
                 out = c.post(f'/api/terminals/{t.sid}/wrap', json={'task_id': tid}).json()
             self.assertEqual(out['wrap'], 'done')

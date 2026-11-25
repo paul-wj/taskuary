@@ -58,7 +58,7 @@ def worked(s, resumable=True):
 def ended(tid):
     """Close the task's conversation and forget it: a closed session left in terminal.SESSIONS is still the task's session to
     terminal.session_for, and the next file's task 1 (test_no_ai_no_start) read it as one started with no AI."""
-    if (g := general.session_for(tid)): g.close(learn=False, report=False)
+    if (g := general.session_for(tid)): g.close(report=False)
     general.drop_session(tid)
 
 

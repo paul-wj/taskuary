@@ -1,22 +1,12 @@
-"""The handbook: on by default, written on close, and gated where it counts.
-
-It shipped switched OFF and nobody noticed. `handbook.enabled()` reads the connector card when
-one exists, and every card is seeded Active 0 - so on every install that ever ran, wrapup.wrap
-skipped learn_from_session, `--learned` was refused and the Social tab could only hold what a
-person typed. The docstring said "Default ON" the whole time.
-
-The other half is who may write. An entry is not a note: handbook.block reads it into every later
-agent's seed prompt, so it is a claim handed to every future session as company fact. scopes.py
-calls that a WRITE, and until the card existed there was nothing for the ladder to hang on.
-"""
+"""Hub authority and extraction from newly completed tasks."""
 import json
 import unittest
 from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import config, handbook, scopes, server
-from taskuary.store import MemoryStore
+from taskuary import config, concierge, handbook, hubcompletion, scopes, server
+from taskuary.store import MemoryStore, SQLiteStore
 
 c = TestClient(server.app)
 AGENT = {'X-Taskuary-Token': config.load()['server']['agent_token']}
@@ -43,53 +33,88 @@ class OnByDefault(unittest.TestCase):
         self.assertTrue(scopes.allows(s.get_connector_by_type('handbook'), 'handbook_write'))
 
 
-class WrittenOnClose(unittest.TestCase):
-    """A session ending asks its record one question that is not about the task."""
+class WrittenOnCompletion(unittest.TestCase):
+    evidence = 'Isolating the native driver in three export tests reproduced the failure.'
 
-    def _llm(self, payload):
-        return lambda system, user, **kw: json.dumps(payload)
+    def task(self, store):
+        tid = store.create_task({'Title': 'Investigate the export', 'Kind': 'coding'}, 'owner')
+        store.add_comment(tid, 'coding', 'agent', 'AGENT REPORT\n' + self.evidence)
+        return tid
 
-    def test_a_lasting_fact_is_filed(self):
+    def answer(self, **overrides):
+        return json.dumps({'entries': [{
+            'earned': True, 'why_earned': 'Repeated test isolation established a hidden prerequisite.',
+            'evidence': self.evidence, 'topic': 'export', 'kind': 'gotcha', 'title': '导出测试需要本机驱动',
+            'body': 'Install the native driver before running export tests.', **overrides,
+        }]})
+
+    def test_completed_work_without_a_live_session_is_queued_and_published_once(self):
         s = MemoryStore()
-        tid = s.create_task({'Title': 'fix the export', 'Kind': 'coding'}, 'o')
-        out = handbook.learn_from_session(
-            s, tid, 'ran the tests; they need pyodbc installed first', 'coding',
-            llm=self._llm({'entries': [{'earned': True,
-                                        'why_earned': 'Repeated test isolation showed the native driver was the hidden prerequisite.',
-                                        'title': 'The tests need pyodbc installed first',
-                                        'topic': 'taskuary', 'kind': 'gotcha', 'body': 'pip install pyodbc'}]}))
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]['Title'], 'The tests need pyodbc installed first')
-        self.assertEqual(out[0]['Kind'], 'gotcha')
+        tid = self.task(s)
+        brain = mock.Mock(return_value=self.answer())
+        self.assertFalse(hubcompletion.process_one(s, brain))
+        concierge.close_task(s, tid)
+        self.assertEqual(s.get_task(tid)['Status'], 'done')
+        self.assertEqual(hubcompletion.state(s, tid)['status'], 'pending')
+        brain.assert_not_called()
+        self.assertTrue(hubcompletion.process_one(s, brain))
+        post, = s.lore_posts()
+        self.assertEqual((post['TaskId'], post['Title']), (tid, '导出测试需要本机驱动'))
+        self.assertEqual(hubcompletion.state(s, tid)['entries'], [post['LoreId']])
+        s.update_task(tid, {'Status': 'open'}, 'owner')
+        concierge.close_task(s, tid)
+        self.assertFalse(hubcompletion.process_one(s, brain))
+        self.assertEqual(brain.call_count, 1)
 
-    def test_nothing_is_the_usual_answer_and_is_accepted(self):
-        s = MemoryStore()
-        tid = s.create_task({'Title': 'x', 'Kind': 'coding'}, 'o')
-        self.assertEqual(handbook.learn_from_session(s, tid, 'did the thing', 'coding',
-                                                     llm=self._llm({'entries': []})), [])
+    def test_same_finding_links_to_existing_chinese_entry_without_reposting(self):
+        s = MemoryStore(); tid = self.task(s)
+        first = handbook.post(s, '导出测试需要本机驱动', topic='export')
+        concierge.close_task(s, tid)
+        hubcompletion.process_one(s, mock.Mock(return_value=self.answer()))
+        self.assertEqual(hubcompletion.state(s, tid), {'status': 'known', 'entries': [first['LoreId']], 'reason': None})
+        self.assertEqual(s.lore_count()['posts'], 1)
 
-    def test_a_routine_fact_without_hard_earned_evidence_is_rejected(self):
-        s = MemoryStore()
-        tid = s.create_task({'Title': 'x', 'Kind': 'coding'}, 'o')
-        out = handbook.learn_from_session(
-            s, tid, 'answered a quick question', 'coding',
-            llm=self._llm({'entries': [{'title': 'A quick fact', 'topic': 'general',
-                                        'kind': 'howto', 'body': 'Routine output.'}]}))
-        self.assertEqual(out, [])
+    def test_unsupported_claim_and_failed_model_are_distinguishable(self):
+        s = MemoryStore(); unsupported, broken = self.task(s), self.task(s)
+        for tid in (unsupported, broken): concierge.close_task(s, tid)
+        hubcompletion.process_one(s, mock.Mock(return_value=self.answer(evidence='This quote is not in the evidence.')))
+        hubcompletion.process_one(s, mock.Mock(return_value='not valid JSON'))
+        self.assertEqual(hubcompletion.state(s, unsupported)['status'], 'empty')
+        self.assertEqual(hubcompletion.state(s, broken)['status'], 'failed')
+        self.assertEqual(s.get_task(broken)['Status'], 'done')
+        self.assertFalse(s.lore_posts())
 
-    def test_a_broken_brain_never_stops_a_task_closing(self):
-        """A handbook entry is a bonus. A session that finished must still close."""
-        s = MemoryStore()
-        tid = s.create_task({'Title': 'x', 'Kind': 'coding'}, 'o')
-        def boom(system, user, **kw): raise RuntimeError('no brain')
-        self.assertEqual(handbook.learn_from_session(s, tid, 'transcript', 'coding', llm=boom), [])
+    def test_historical_and_dropped_tasks_are_not_learned_and_pending_survives_restart(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'test.db')
+            s = SQLiteStore(path)
+            historical = s.create_task({'Title': 'Historical', 'Status': 'done'}, 'owner')
+            dropped, pending = self.task(s), self.task(s)
+            concierge.close_task(s, dropped, status='dropped')
+            concierge.close_task(s, pending)
+            s.close()
+            s = SQLiteStore(path)
+            try:
+                brain = mock.Mock(return_value=self.answer())
+                hubcompletion.process_one(s, brain)
+                self.assertIsNone(hubcompletion.state(s, historical))
+                self.assertIsNone(hubcompletion.state(s, dropped))
+                self.assertEqual(hubcompletion.state(s, pending)['status'], 'published')
+                self.assertFalse(hubcompletion.process_one(s, brain))
+            finally: s.close()
 
-    def test_an_empty_transcript_asks_nothing(self):
-        s = MemoryStore()
-        tid = s.create_task({'Title': 'x', 'Kind': 'coding'}, 'o')
-        called = []
-        handbook.learn_from_session(s, tid, '   ', 'coding', llm=lambda *a, **k: called.append(1))
-        self.assertEqual(called, [])
+    def test_reopening_during_extraction_cannot_publish_the_old_completion(self):
+        s = MemoryStore(); tid = self.task(s)
+        concierge.close_task(s, tid)
+        def reopen(*a, **k):
+            s.update_task(tid, {'Status': 'open'}, 'owner')
+            concierge.close_task(s, tid)
+            return self.answer()
+        hubcompletion.process_one(s, reopen)
+        self.assertFalse(s.lore_posts())
+        self.assertEqual(hubcompletion.state(s, tid)['status'], 'pending')
 
 
 class WhoMayWrite(unittest.TestCase):

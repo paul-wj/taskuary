@@ -24,7 +24,7 @@ _LOCK = threading.Lock()
 _HERE = threading.local()               # set on a job's own thread: its own close must not wait for itself
 _STATE: dict = {}                       # task id -> {job, stage, running, error, close}: the last job's stage, kept once it ends
 # the stages, in the order the job reaches them (wrapup.wrap names each); a job that ends is `done` or `failed`
-STAGES = ('reading', 'report', 'reply', 'learning', 'closing')
+STAGES = ('reading', 'report', 'reply', 'closing')
 
 
 def in_job() -> bool: return bool(getattr(_HERE, 'on', False))

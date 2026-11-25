@@ -25,6 +25,10 @@ fallback uses `Popen.kill()` or `PtyProcess.terminate(force=True)` according to 
 never an argument-free PTY `kill()`. If saving the result or stopping the tree fails, the task
 stays open with the reason recorded; a failed write-up is not successful completion.
 
+With the Hub enabled, the transition to `done` queues one background review of the saved work. Stopping a session
+or dropping a task does not queue one. The task remains done whether the review publishes a
+finding, finds a duplicate, finds nothing, or fails. Tasks already done at upgrade are not scanned.
+
 ## Decision tree
 
 ```mermaid

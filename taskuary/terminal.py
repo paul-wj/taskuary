@@ -3298,11 +3298,7 @@ def shutdown_sessions():
                 release_task(session.store, session.task_id, 'shutdown',
                              'Taskuary closed the agent session. The task is open again - nobody is working it.')
             SESSIONS.pop(sid, None)
-            # Shutdown is cleanup, not a new AI job. General task close normally mines useful
-            # learning, but launching a headless model while the process is exiting can only
-            # become an orphan itself.
-            if getattr(session, 'mode', '') == 'assistant': session.close(learn=False)
-            else: session.close()
+            session.close()
             # ...and its browser, here: the pump that closes it when the pty ends may not get to run before the
             # process does, and a headless Chrome left behind outlives the app it belonged to
             from . import browserview as _bv

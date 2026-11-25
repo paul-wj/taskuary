@@ -226,7 +226,7 @@ def test_a_session_closed_under_its_turn_stops_it_and_starts_no_fresh_conversati
     store = MemoryStore(); connect(store); tid = task(store)
     session = general.GeneralSession(store, tid, pick='cli:claude')
     session.cli_sid = 'live'; session._remember_session()
-    def killed(system, user, **kw): session.close(learn=False, report=False); raise RuntimeError('the agent process ended')
+    def killed(system, user, **kw): session.close(report=False); raise RuntimeError('the agent process ended')
     again = mock.Mock(return_value='Both drafts are still waiting for your Send.')
     stop = threading.Event()
     with mock.patch.object(llm, 'build_llm', side_effect=[killed, again]), pytest.raises(general.Stopped):

@@ -32,6 +32,7 @@ from . import terminal as hub_term
 from .wrapup import PAUSE_MARKER, REPORTS, pause_note, reply_target, wrap as end_task
 from . import aisetup, assistant, demo, deps, learn, learnedgraph, memorylines, operations, outbound, playbooks, rank, responder, signatures, waitroom
 from . import live as live_bus
+from . import hubcompletion
 from . import processing_all
 
 # whatever the owner's Install button added lives beside their data, not in the build - and it has
@@ -221,8 +222,9 @@ async def _lifespan(_app):
             initialize(store, live_state=[])
         except Exception as e: logger.warning(f'demo seed failed: {e}')
         try:
-            async with processing_all.membership_lifecycle(store):
-                yield
+            with hubcompletion.watch(store):
+                async with processing_all.membership_lifecycle(store):
+                    yield
         finally: instance.release()
         return
     # No interactive or headless worker survives into this process. Repair any persisted
@@ -321,8 +323,9 @@ async def _lifespan(_app):
     from . import awake
     awake.start(store)             # the computer stays awake while an agent or a workflow runs, and only then (awake.py)
     try:
-        async with processing_all.membership_lifecycle(store):
-            yield
+        with hubcompletion.watch(store):
+            async with processing_all.membership_lifecycle(store):
+                yield
     finally:
         t = _WALK_THREAD[0]
         if t is not None and t.is_alive(): t.join(WALK_WAIT)   # never close the store under it
@@ -2466,6 +2469,7 @@ def _task_detail(task_id: int, rev: str = '', opened: bool = False):
             'ended': _ended_line(task_id, d.get('comments')),
             # ...and Stop and save's write-up, running or just ended: Close out draws its stage until the draft replaces it (writeup.state)
             'writeup': _writeup_state(task_id),
+            'hubLearning': hubcompletion.state(store, task_id) if d['task'].get('Status') == 'done' else None,
             # ...and a BATCH's items, in ranked order, each with what the agent found and where it stands (batch.py)
             # (Warn: what ranking judged its text tries to make an agent do - a warning on the row, rank._order)
             'batch': [{k: i.get(k) for k in ('Place', 'Title', 'Link', 'State', 'Result', 'Overlap', 'EndedWhy', 'Propose', 'Fix', 'FixLink', 'Warn')}

@@ -1,10 +1,10 @@
 """What a stranger's session writes must not reach a later session's first prompt (wave B, B2). The Hub is handed to every
 later agent as company fact, so an entry from a stranger's task is refused on every road into it - the API, the CLI, the
-on-close learner and the assistant's envelope. A wall note from a stranger's task is kept, and shown on that task only."""
-import json, tempfile, pytest
+completion review and the assistant's envelope. A wall note from a stranger's task is kept, and shown on that task only."""
+import tempfile, pytest
 from unittest import mock
 from fastapi.testclient import TestClient
-from taskuary import blackboard as bb, handbook, server, guard, terminal, general
+from taskuary import blackboard as bb, concierge, handbook, hubcompletion, server, guard, terminal, general
 from taskuary.store import MemoryStore
 
 CWD = 'C:/code/repo'
@@ -29,12 +29,15 @@ def test_an_entry_from_a_stranger_s_task_is_refused_and_the_owner_s_is_filed():
     with pytest.raises(ValueError): handbook.post(s, 'The parser drops tabs', task_id=st)   # nor an "agree" on what is there
     assert s.lore_get(1)['Score'] == 0 and not s.lore_votes(1)
 
-def test_the_on_close_learner_skips_a_stranger_s_task_without_asking_a_model():
-    s = MemoryStore(); st, ow = _tasks(s)
-    brain = mock.Mock(return_value=json.dumps({'entries': [{'earned': True, 'why_earned': 'traced through three failing runs',
-                                                            'title': 'Builds need the cache cleared', 'topic': 'ci'}]}))
-    assert handbook.learn_from_session(s, st, 'a long transcript', 'coding', llm=brain) == [] and not brain.called
-    assert [e['Title'] for e in handbook.learn_from_session(s, ow, 'a long transcript', 'coding', llm=brain)] == ['Builds need the cache cleared']
+def test_completion_review_skips_a_stranger_s_task_without_asking_a_model():
+    s = MemoryStore(); st, _ = _tasks(s)
+    s.add_comment(st, 'agent', 'agent', 'Three isolated runs showed the build uses a stale cache.')
+    concierge.close_task(s, st)
+    brain = mock.Mock()
+    hubcompletion.process_one(s, brain)
+    brain.assert_not_called()
+    assert hubcompletion.state(s, st)['reason'] == 'stranger'
+    assert not s.lore_posts()
 
 def test_the_assistant_s_envelope_on_a_stranger_s_task_is_removed_and_not_filed():
     s = MemoryStore(); st, ow = _tasks(s)

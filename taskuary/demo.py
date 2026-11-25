@@ -381,6 +381,7 @@ def brain(seed: int = 0, store=None):
     def llm(system, user, max_tokens=None, images=None, **kw):
         text = str(user or '')
         if str(system or '').startswith(TILE_SAYS): return _tile(text)
+        if str(system or '').startswith('You are reading evidence saved on a task'): return '{"entries":[]}'
         if str(system or '').startswith('You ARE '): return _draft(text)       # responder.SYSTEM: the owner's own reply
         # ...a report asked for (issue.draft): the tool's own words say where its button is - the canned lines are about the list
         if 'You looked up issue.draft and it says:' in text:

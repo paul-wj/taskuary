@@ -44,6 +44,49 @@ test("owner-completed agent work stays on the Board after refresh in both locale
   assert.deepEqual(page.fixtureEscapes, []);
 });
 
+test("a completed task publishes verified Hub knowledge without scanning history", { timeout: 120000 }, async (t) => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  const request = async (path, body) => {
+    const r = await fetch(`${h.fixtureApi}${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "X-Taskuary-Token": h.token, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    assert.ok(r.ok, `${path}: ${r.status}`);
+    return r.json();
+  };
+  const fixture = "/api/fixture/hub/completion";
+  const { taskId, oldTaskId } = await request(fixture, {});
+  const page = await h.newPage(), errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const url = `${h.ui}/#task=${taskId}`;
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  const task = `[data-tq-task-page="${taskId}"]`;
+  await page.waitForSelector(`${task} [data-tq-task-head]`, { visible: true });
+  await request("/api/fixture/task/closed-elsewhere", { task_id: taskId });
+  const pending = `${task} [data-tq-hub-learning="pending"]`;
+  await page.waitForSelector(pending, { visible: true });
+  assert.equal((await request(`/api/tasks/${taskId}`)).task.Status, "done", "model delay does not delay completion");
+  assert.equal((await request(`/api/tasks/${oldTaskId}`)).hubLearning, null, "historical tasks never enter the queue");
+  await request(fixture, { release: true });
+  const published = `${task} [data-tq-hub-learning="published"]`;
+  await page.waitForSelector(`${published} a`, { visible: true });
+  const { entries: [entry] } = (await request(`/api/tasks/${taskId}`)).hubLearning;
+  assert.equal(await page.$eval(`${published} a`, (a) => a.textContent), `#${entry}`);
+  const post = await request(`/api/hub/${entry}`);
+  assert.equal(post.TaskId, taskId);
+  assert.equal(post.Title, "Export validation reads the first row before the header");
+  await page.evaluate(() => localStorage.setItem("taskuary.language", "zh-CN"));
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(published, { visible: true });
+  assert.match(await page.$eval(published, (line) => line.textContent), /已收录到知识中心/);
+  await page.click(`${published} a`);
+  await page.waitForFunction((id) => location.hash.includes(`post=${id}`), {}, entry);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(page.fixtureEscapes, []);
+});
+
 test("Board navigation does not wait for agent model discovery in either locale", { timeout: 240000 }, async (t) => {
   const h = await startHarness();
   t.after(() => h.close());

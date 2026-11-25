@@ -39,7 +39,7 @@ class OwnerLineIsKept(unittest.TestCase):
         self.addCleanup(self.end)
 
     def end(self):
-        if (g := general.session_for(self.tid)): g.close(learn=False, report=False)
+        if (g := general.session_for(self.tid)): g.close(report=False)
         general.drop_session(self.tid); general.IDLED.pop(self.tid, None); general.answered(self.tid, every=True)
 
     def said(self): return [(c['ActorType'], c['Body']) for c in general.chat_rows(self.s, self.tid)]

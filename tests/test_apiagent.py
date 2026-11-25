@@ -1291,7 +1291,7 @@ class CodingOnACardTests(unittest.TestCase):
             self.assertIn(k, seen[0])                                                   # the turn had its brain while it ran...
             for d in (apiagent.BRAINS, apiagent.STOPS, apiagent.SAY): self.assertNotIn(k, d)       # ...and none of it once it ended
             self.assertIn(k, apiagent.OFFERED)                                          # what it may call stays while the session lives
-            session.close(learn=False, report=False)
+            session.close(report=False)
         for d in (apiagent.OFFERED, apiagent.TOOLBOX, apiagent.STRANGERS): self.assertNotIn(k, d)
 
     def test_a_note_another_agent_sent_it_is_heard_on_its_next_turn(self):
