@@ -1694,7 +1694,10 @@ def _run_kind(op: dict, background: BackgroundTasks):
         # ...and whether a reply drafted for a yes went unsent with it - the receipt says so, never a bare "closed" (F24)
         rv = store.pending_review(tid, live_only=False) or {}
         unsent = str(rv.get('Kind') or '') in ('draft', 'draft_reply', 'reply', 'slot')
-        return {'status': 'done', 'already': not concierge.close_task(store, tid, ACTOR), **({'unsent': True} if unsent else {})}
+        already = not concierge.close_task(store, tid, ACTOR)
+        status = (store.get_task(tid) or {}).get('Status')
+        return {'status': 'waiting' if status == 'waiting' else 'done', 'already': already,
+                **({'unsent': True} if unsent else {})}
     if kind == 'task.reopen':
         if not store.get_task(tid): raise HTTPException(404, 'task not found')
         # ONE REOPEN (T13): back in progress, and an old Remind me date cleared - it reopened straight into Upcoming

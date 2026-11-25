@@ -4321,6 +4321,9 @@ def close_task(store, tid: int, actor: str = 'owner', save: bool = True, status:
     # close killed the pty with nothing kept. A save that fails keeps the task open and says why (KeptOpen). `save=False`: a filing (Not ours,
     # a message filed away) archives the task, and an agent's write-up never holds that up
     if save and not closed and not writeup.in_job(): save_live(store, tid, actor); rv = store.pending_review(tid, live_only=False)
+    if status == 'done' and str(t.get('SourceRef') or '').startswith('assistant:skillgen:'):
+        from . import skillauthoring
+        if skillauthoring.hold_for_review(store, t): return True
     # A READY REPLY PUT DOWN UNSENT is said on the task, once - Mark done threw it away without a word, and the task kept saying a
     # reply was owed (walk 2026-10-29). No confirm: closing is the owner's decision; the draft stays on its review
     dropped = False
@@ -5746,6 +5749,7 @@ def _outcome_line(kind: str, p: dict, o: dict | None) -> str:
                 'when it stops at the sign-in, sign in yourself in the browser beside the chat.') if o.get('workflow_id') else ''
         said = '; '.join(bits)
         return f' {said[0].upper()}{said[1:]}.{flow}'
+    if kind == 'task.complete' and o.get('status') == 'waiting': return ' The Skill package is waiting for your review.'
     if kind == 'task.complete' and o.get('already'): return ' It was closed already.'
     return ''
 
@@ -5862,6 +5866,7 @@ def _past(store, op: dict, ref: str) -> str:
         name = lambda a: (m or {}).get('FromName') if (m or {}).get('FromName') and str(a).strip().lower() == str((m or {}).get('FromEmail') or '').lower() else a
         return f"Sent to {', '.join(name(a) for a in o['sent']['to'])}{on}."
     if kind == 'task.complete' and ref.startswith('TQ-'):
+        if o.get('status') == 'waiting': return f'{ref} is waiting for Skill review.'
         note = str((op.get('params') or {}).get('note') or '').strip()
         tail = f" with a note: “{_title_cut(note, 120)}”" if note and not o.get('already') else ''
         return f"{ref} {'was closed already' if o.get('already') else 'closed'}{tail}" + (' - the reply was not sent.' if o.get('unsent') else '.')

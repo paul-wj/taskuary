@@ -98,6 +98,28 @@ def test_a_close_pressed_during_the_write_up_waits_for_it_and_the_task_ends_clos
     assert any(str(x.get('Body') or '').startswith(wrapup.REPORT) for x in s.list_comments(tid)), 'the report was kept'
     wrapup.forget(tid)
 
+
+def test_agent_can_submit_saved_skill_when_terminal_shutdown_fails(world, tmp_path, monkeypatch):
+    from taskuary import config, skillauthoring, skillpackages, skillstate
+    make, _ = world
+    s, tid = make()
+    monkeypatch.setattr(config, 'home', lambda: tmp_path)
+    gen = skillstate.create(s, 'generation', {'slug': 'taskuary-compare', 'task_id': tid, 'state': 'generating'})
+    s.update_task(tid, {'SourceRef': skillauthoring.SOURCE + str(gen['id'])}, 'owner')
+    root = skillpackages.draft_dir(gen['id'])
+    root.mkdir(parents=True)
+    (root / 'SKILL.md').write_text('---\nname: taskuary-compare\ndescription: Compare reports\n---\n\nCheck duplicate rows and compare values.\n', encoding='utf-8')
+    with mock.patch.object(terminal, 'close', side_effect=PermissionError('process tree access denied')):
+        with pytest.raises(PermissionError, match='process tree access denied'):
+            wrapup.wrap(s, tid, close=False, no_reply=True, done=True)
+    ready = skillstate.get(s, 'generation', gen['id'])
+    assert ready['state'] == 'needs_review'
+    assert [r['ReviewId'] for r in s.list_reviews('pending')] == [ready['review_id']]
+    assert s.get_task(tid)['Status'] != 'done'
+    assert skillstate.rows(s, 'package') == []
+    wrapup.forget(tid)
+
+
 def test_one_mark_done_leaves_active_lists_while_the_write_up_is_pending(world):
     from taskuary import funnel
     make, _ = world

@@ -1147,7 +1147,13 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
     # a close ticks every box (store.update_task, done-ticks-every-box) and a wrap that leaves the task open leaves them.
     # ...and the task card shows the LAST MESSAGE over the summary when there is one, so the question leads that too
     store.add_comment(tid, agent, 'agent', f'{REPORT}\n{report}' + (f'\n\nLAST MESSAGE\n{with_left_open(final_message, left)}' if final_message else ''))
-    if found: term.close(found)              # done means done - the pty and its shells go too, once the result is safe
+    if found:
+        try: term.close(found)
+        except Exception:
+            # An explicit Agent completion can submit its saved package even if the
+            # terminal cannot stop. Still report the shutdown failure to the caller.
+            if done: _collect_skill(store, tid, task)
+            raise
     store.add_comment(tid, actor, 'human', 'Closed the session - wrapped up from what was on screen.')
     # anything the agent PROPOSED becomes a pending review here, at the one moment its whole
     # transcript is in hand - and refusals are recorded rather than dropped (proposals.py)

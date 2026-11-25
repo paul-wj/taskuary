@@ -163,7 +163,8 @@ def _close(store, tid, actor):
         # the press's own road (taskOps.runOperation): propose, then the execute route - its table check and its receipt included
         op = operations.propose(store, 'task.complete', tid, {}, actor)
         out = server.execute_operation(op['id'], server.OperationConfirm(version=op['version']), BackgroundTasks())
-        if (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'):
+        waiting = isinstance(out, dict) and out.get('status') == 'done' and (out.get('outcome') or {}).get('status') == 'waiting'
+        if not waiting and (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'):
             raise RuntimeError(out.get('error') if isinstance(out, dict) and out.get('error') else 'task was not closed')
 
 

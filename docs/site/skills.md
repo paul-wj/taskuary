@@ -35,6 +35,9 @@ Authoring needs a connected local Agent CLI with its normal file-writing capabil
 The Agent receives a Taskuary-owned working directory and sanitized evidence outside the package. Its instructions require appropriate synthetic-input checks, complete resource references and no copying of private messages or credentials. Existing task completion collects its output; a stopped process alone is not treated as a finished Skill. You can inspect the real task record and use the normal task controls while it works.
 
 A completed authoring task stays waiting while its package needs your publication decision, so the review remains visible in the ordinary queue. Publishing or discarding closes that completed authoring task only when no other work or decisions remain; returning it for changes resumes the same task. This does not reopen or change the completed source tasks used as evidence.
+If an Agent explicitly signals completion after saving its report, a terminal shutdown failure does
+not prevent Taskuary from validating and offering the saved package for review. The shutdown error
+remains visible. **Mark done** on an authoring task does not approve or dismiss its package review.
 
 ## A complete Skill package
 

@@ -187,7 +187,7 @@ def test_return_does_not_resurrect_a_dismissed_agent_task(tmp_path, monkeypatch)
 
 
 def test_finished_generation_waits_in_the_normal_review_queue_until_owner_decides(tmp_path, monkeypatch):
-    from taskuary import skillauthoring as a, skillpackages as p, config, verdicts
+    from taskuary import skillauthoring as a, skillpackages as p, concierge, config, verdicts
     monkeypatch.setattr(config, 'home', lambda: tmp_path)
     monkeypatch.setattr(p, 'native_roots', lambda: {})
     s = MemoryStore()
@@ -196,14 +196,37 @@ def test_finished_generation_waits_in_the_normal_review_queue_until_owner_decide
         with mock.patch.object(a, '_ready', return_value='cli:fixture'), mock.patch.object(a, '_dispatch'):
             record = a.accept(s, c['id'])
         (p.draft_dir(record['generation_id']) / 'SKILL.md').write_text('---\nname: taskuary-compare\ndescription: Compare reports\n---\n\nCheck duplicate rows and compare values.\n', encoding='utf-8')
-        s.update_task(record['task_id'], {'Status': 'done'}, 'owner')
-        ready = a.collect(s, record['task_id'])
+        assert concierge.close_task(s, record['task_id'])
+        ready = state.get(s, 'generation', record['generation_id'])
+        assert ready['state'] == 'needs_review'
+        concierge.close_task(s, record['task_id'])
         assert s.get_task(record['task_id'])['Status'] == 'waiting'
         assert any(r['ReviewId'] == ready['review_id'] for r in s.list_reviews('pending'))
         result = verdicts.decide(s, s.get_review(ready['review_id']), 'approve', actor='owner')
         assert result['status'] == 'approved'
         assert s.get_task(record['task_id'])['Status'] == 'done'
         assert state.get(s, 'generation', record['generation_id'])['state'] == 'published'
+    finally: s.close()
+
+
+def test_restart_recovers_a_completed_authoring_task_that_missed_collection(tmp_path, monkeypatch):
+    from taskuary import skillauthoring as a, skillpackages as p, config
+    monkeypatch.setattr(config, 'home', lambda: tmp_path)
+    s = MemoryStore()
+    try:
+        c = candidate(s)
+        with mock.patch.object(a, '_ready', return_value='cli:fixture'), mock.patch.object(a, '_dispatch'):
+            record = a.accept(s, c['id'])
+        tid, gid = record['task_id'], record['generation_id']
+        (p.draft_dir(gid) / 'SKILL.md').write_text('---\nname: taskuary-compare\ndescription: Compare reports\n---\n\nCheck duplicate rows and compare values.\n', encoding='utf-8')
+        s.update_task(tid, {'Status': 'done'}, 'owner')
+        a.reconcile(s)
+        a.reconcile(s)
+        ready = state.get(s, 'generation', gid)
+        assert ready['state'] == 'needs_review'
+        assert s.get_task(tid)['Status'] == 'waiting'
+        assert [r['ReviewId'] for r in s.list_reviews('pending')] == [ready['review_id']]
+        assert state.rows(s, 'package') == []
     finally: s.close()
 
 

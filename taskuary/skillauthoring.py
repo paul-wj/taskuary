@@ -193,6 +193,25 @@ def _hold_finished(store, generation):
     return generation
 
 
+def hold_for_review(store, task):
+    """Mark done on a Skill authoring task submits its draft, not its publication decision."""
+    ref = str(task.get('SourceRef') or '')
+    if not ref.startswith(SOURCE) or not ref[len(SOURCE):].isdigit(): return False
+    tid = task['TaskId']
+    generation = state.get(store, 'generation', int(ref[len(SOURCE):]))
+    if not generation or generation.get('task_id') != tid: return False
+    if generation['state'] in ('generating', 'returned', 'interrupted'):
+        generation = collect(store, tid)
+    if not generation or generation['state'] != 'needs_review': return False
+    review = store.get_review(generation.get('review_id')) if generation.get('review_id') else None
+    if not review or review['Status'] != 'pending': return False
+    if not generation.get('held_done'):
+        state.update(store, 'generation', generation['id'], {'held_done': True})
+    if (store.get_task(tid) or {}).get('Status') != 'waiting':
+        store.update_task(tid, {'Status': 'waiting'}, 'skill-library')
+    return True
+
+
 def _release_finished(store, generation, actor):
     if not generation.get('held_done'): return generation
     task = store.get_task(generation.get('task_id')) or {}
@@ -293,6 +312,10 @@ def reconcile(store):
     for generation in state.rows(store, 'generation'):
         if generation.get('state') not in ('generating', 'returned'): continue
         session = terminal.session_for(generation.get('task_id'))
+        task = store.get_task(generation.get('task_id')) if generation.get('task_id') else None
+        if task and task.get('Status') == 'done' and task.get('SourceRef') == SOURCE + str(generation['id']):
+            collect(store, task['TaskId'])
+            continue
         if not session or not getattr(session, 'alive', False):
             state.update(store, 'generation', generation['id'], {'state': 'interrupted',
                 'error': {'code': 'interrupted', 'message': 'The Agent session was interrupted. Its files and task record are retained.'}})
