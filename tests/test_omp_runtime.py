@@ -415,12 +415,6 @@ def test_omp_session_record_shows_narration_as_answer(tmp_path):
     assert [(s['k'], s['text']) for s in steps] == [('thought', 'private'), ('said', 'Public narration')]
 
 
-def test_omp_acp_permission_refuses_even_when_allow_is_offered():
-    client = acp.ACPClient.__new__(acp.ACPClient)
-    client.permission_policy = 'deny'
-    assert client._permit({'options': [{'kind': 'allow_once', 'optionId': 'yes'}]}) == {'outcome': 'cancelled'}
-
-
 def test_omp_acp_resume_never_silently_opens_a_new_session():
     fake = mock.MagicMock()
     fake.connect.return_value = {'loadSession': False}
@@ -444,6 +438,29 @@ def test_omp_acp_client_rejects_real_permission_request():
         assert client.permission_denied
     finally:
         client.close()
+
+
+@pytest.mark.parametrize('command,decision', [('git status --short', 'granted'), ('npm run build', 'granted'),
+                                             ('git push origin HEAD', 'denied')])
+def test_omp_acp_applies_shell_permission_rules(command, decision, tmp_path, monkeypatch, verified_acp_file):
+    import sys
+    from pathlib import Path
+    script = str(Path(__file__).with_name('fake_acp_server.py'))
+    monkeypatch.setattr(agents, '_resolve_cmd', lambda _: [sys.executable, script])
+    spawn = acp.spawn.popen
+    def launch(argv, **kwargs):
+        # The reviewed fixture accepts no OMP-specific launcher arguments.
+        return spawn(argv[:2] if argv[:2] == [sys.executable, script] else argv, **kwargs)
+    monkeypatch.setattr(acp.spawn, 'popen', launch)
+    def stop_fixture(process):
+        process.stdin.close()
+        process.wait(timeout=5)
+    monkeypatch.setattr(acp.spawn, 'stop_tree', stop_fixture)
+    monkeypatch.setenv('FAKE_ACP_ASK', command)
+    answer, _, _ = agents.run_acp({'cmd': 'omp', 'acp': ['acp'], 'cwd': str(tmp_path), 'timeout': 10},
+                                  'synthetic request', lambda *a: None)
+    assert answer.startswith(f'{decision} - ')
+
 
 
 def test_omp_acp_incomplete_turn_after_denial_explains_how_to_continue(verified_acp_file):

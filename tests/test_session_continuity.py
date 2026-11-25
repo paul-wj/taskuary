@@ -92,7 +92,7 @@ def test_missing_native_session_falls_back_to_saved_history_and_says_so():
     assert store.saved_session(tid)['NativeId'] == 'replacement'
 
 
-def test_resumed_omp_permission_failure_never_replays_side_effect(tmp_path):
+def test_resumed_omp_unverified_turn_never_replays_side_effect(tmp_path):
     from taskuary import acp, sessionfiles
     store = MemoryStore(); connect(store, 'omp'); tid = task(store)
     session = general.GeneralSession(store, tid, pick='cli:omp')
@@ -101,7 +101,7 @@ def test_resumed_omp_permission_failure_never_replays_side_effect(tmp_path):
     native = tmp_path / 'native.jsonl'; native.write_text('{"type":"session","id":"original"}\n', encoding='utf-8')
     client = mock.MagicMock()
     client.connect.return_value = {'loadSession': True}
-    client.permission_denied = True
+    client.session_id, client.permission_denied = 'original', False
     def prompt(_):
         with side_effect.open('a', encoding='utf-8') as f: f.write('once\n')
         return 'end_turn', 'The operation is done.'
@@ -113,7 +113,7 @@ def test_resumed_omp_permission_failure_never_replays_side_effect(tmp_path):
          mock.patch.object(agents, '_git', return_value=''), \
          mock.patch.object(sessionfiles, 'omp_acp_file', return_value=str(native)), \
          mock.patch.object(acp, 'ACPClient', return_value=client):
-        with pytest.raises(RuntimeError, match='permission'):
+        with pytest.raises(RuntimeError, match='unverified native turn outcome'):
             session.send_prompt('Continue', as_owner=False)
     assert side_effect.read_text(encoding='utf-8').splitlines() == ['once']
     assert store.saved_session(tid)['NativeId'] == 'original'
@@ -126,7 +126,7 @@ def test_first_omp_turn_failure_keeps_its_native_session_id(tmp_path):
     native = tmp_path / 'native.jsonl'; native.write_text('{"type":"session","id":"new-thread"}\n', encoding='utf-8')
     client = mock.MagicMock()
     client.connect.return_value = {'loadSession': True}
-    client.session_id, client.permission_denied = 'new-thread', True
+    client.session_id, client.permission_denied = 'new-thread', False
     client.prompt.return_value = ('end_turn', 'Not completed')
     def brain(*args, **kwargs):
         return agents.run_acp({'cmd': 'omp', 'acp': ['acp']}, 'act', lambda *a: None)[0]
@@ -135,7 +135,7 @@ def test_first_omp_turn_failure_keeps_its_native_session_id(tmp_path):
          mock.patch.object(agents, '_git', return_value=''), \
          mock.patch.object(sessionfiles, 'omp_acp_file', return_value=str(native)), \
          mock.patch.object(acp, 'ACPClient', return_value=client):
-        with pytest.raises(RuntimeError, match='permission'):
+        with pytest.raises(RuntimeError, match='unverified native turn outcome'):
             session.send_prompt('Start', as_owner=False)
     assert store.saved_session(tid)['NativeId'] == 'new-thread'
 

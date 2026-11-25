@@ -413,13 +413,12 @@ class RateLimited(RuntimeError):
     def __init__(self, msg: str, info: dict = None): super().__init__(msg); self.until = limit_resets(info)
 
 
-class OmpTurnError(RuntimeError):
+class OmpTurnError(PartWay):
     """A possibly side-effecting OMP turn failed; retain its native continuation ID."""
     def __init__(self, error, session_id=''):
-        from .clipool import MID_TURN
         text = str(error)
-        super().__init__(text if MID_TURN in text else f'{text} ({MID_TURN})')
-        self.session_id = session_id if isinstance(session_id, str) else ''
+        super().__init__(text if MID_TURN in text else f'{text} ({MID_TURN})',
+                         session_id if isinstance(session_id, str) else '')
 
 
 def rate_limit_msg(name: str, info: dict) -> str:
@@ -1881,8 +1880,8 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     """
     profile = with_cmd(profile, store); name = profile['cmd']
     if _cli_name(name) == 'omp':
-        # Oh My Pi is a one-turn host that verifies its native session, refuses every permission ask,
-        # and must not leave its process tree behind - a different road from the clipool ACP below.
+        # Oh My Pi verifies its native session and must not leave its process tree behind,
+        # so it uses a one-turn host rather than the clipool ACP below.
         return _run_acp_omp(profile, prompt, trace, resume=resume, cancel=cancel, extra_env=extra_env, store=store)
     launch, cwd, keep = acp_launch(profile), _long(profile.get('cwd')), profile.get('keep_alive')
     env, base = {**spawn_env(profile, extra_env), **launch['env']}, {**spawn_env(profile), **launch['env']}
@@ -1988,7 +1987,7 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
 def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
     """Run one foreground-only OMP turn and verify its continuation and outcome in the native journal."""
     import tempfile
-    from . import sessionfiles
+    from . import acpgate, sessionfiles
     name = profile['cmd']
     cmd = _resolve_cmd(name) + list(profile.get('acp') or [])
     if any(a == '--session-dir' or str(a).startswith('--session-dir=') for a in cmd[1:]):
@@ -2009,12 +2008,27 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({'async': {'enabled': False}}, f)
         cmd += ['--config', overlay]
-        steps = acp_tracer(trace, name)
+        held = {}
+        steps = acp_tracer(trace, name, held)
         try:
             client = acp_mod.ACPClient(cmd[0], cmd[1:], cwd=cwd, env=env, timeout=profile.get('timeout'), on_update=steps,
                                        permission_policy='deny', process_tree=True)
         except PermissionError as e:
             raise FileNotFoundError(denied_msg(name, cmd[0], e)) from e
+        ctx_store, task_id = _RUN.get()
+        gate = acpgate.answerer({'store': store if store is not None else ctx_store, 'task_id': task_id,
+                                 'cli': 'omp', 'cwd': cwd, 'sid': None}, trace, held)
+        def permit(params):
+            tc = params.get('toolCall') or {}
+            raw = tc.get('rawInput')
+            # OMP marks bash as execute and sends the exact command. Native file operations stay denied.
+            if tc.get('kind') != 'execute' or not isinstance(raw, dict): return None
+            command = raw.get('command')
+            if not isinstance(command, str) or not command.strip(): return None
+            steps.asked(tc)
+            options = [o for o in params.get('options') or [] if o.get('kind') != 'allow_always']
+            return gate({**params, 'options': options})
+        client.permit = permit
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(client.p)
         finished = threading.Event()
         cancel_thread = None
@@ -2049,7 +2063,7 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
                 raise RuntimeError('cancelled')
             if stop != 'end_turn' or not str(said or '').strip() or not client.session_id:
                 if client.permission_denied:
-                    raise RuntimeError('Oh My Pi requested permission that this unattended session cannot approve. '
+                    raise RuntimeError('Oh My Pi requested permission for a tool this session cannot approve. '
                                        'Open an interactive coding terminal to review the request; this turn did not complete.')
                 raise RuntimeError(f'{name}: incomplete ACP turn ({stop or "missing stop reason"})')
             reason, detail = sessionfiles.omp_acp_outcome(native_file, native_checkpoint)
@@ -2057,7 +2071,7 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
                 why = redact.scrub(detail) if detail else f'unverified native turn outcome ({reason or "missing"})'
                 raise RuntimeError(f'{name}: {why}')
             if client.permission_denied:
-                logger.info('Oh My Pi session %s completed after an unattended permission request was declined', client.session_id)
+                logger.info('Oh My Pi session %s completed after an unsupported permission request was declined', client.session_id)
             diff = ''
             if cwd:
                 head1 = _git(cwd, 'rev-parse', 'HEAD')

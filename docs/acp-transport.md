@@ -180,10 +180,12 @@ call ends as reads **held for the owner**, not "failed": the tracer shows Taskua
 allow, not the adapter's "the user refused". What the rules hold goes to the owner's buttons (step 3, `permissions.ask`) with
 Developer mode on; with it off, the Approve card.
 
-Oh My Pi's unattended general-agent sessions are an exception to the rules above: Taskuary declines
-every permission request. A declined tool call does not fail the whole turn if ACP returns a final
-answer and Oh My Pi's native session journal confirms a normal stop. Incomplete or failed turns
-still do not count as success.
+Oh My Pi's general-agent sessions send shell requests with a structured command through the same
+rules. Only a one-time grant is offered back to Oh My Pi. Requests without a structured shell
+command, including native file edits, moves and deletes, are still declined. A declined tool call
+does not fail the whole turn if ACP returns a final answer and Oh My Pi's native session journal
+confirms a normal stop. Incomplete or failed turns are not counted as success and are not
+replayed automatically.
 
 ## What the owner sees
 

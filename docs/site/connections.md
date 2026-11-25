@@ -673,9 +673,11 @@ Local bindings display their readable directory paths in task headings, classifi
 repository pickers and hand-off cards; the encoded internal identifiers are not display names.
 
 The presets supply each CLI's noninteractive arguments. Some operations may still need an approval;
-for Oh My Pi general-agent ACP sessions, Taskuary declines permission requests rather than approving
-them automatically. The card's **Test** action runs a small prompt through the CLI before it
-receives real work, which can reveal a sign-in problem.
+Oh My Pi general-agent sessions allow ordinary shell commands directly and use Taskuary's usual
+approval rules for actions such as pushing or sending. Other Oh My Pi permission requests are still
+declined in these sessions.
+The card's **Test** action runs a small prompt through the CLI before it receives real work,
+which can reveal a sign-in problem.
 
 Oh My Pi is for task execution, not triage, reports or stranger-origin work. Install it from its
 [official quickstart](https://omp.sh/docs/quickstart), or use the install button, then open its setup

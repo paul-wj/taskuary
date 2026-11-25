@@ -937,9 +937,11 @@ ready. Existing GitHub repository choices remain available alongside local folde
 Local bindings display their readable directory paths in task headings, classification results,
 repository pickers and hand-off cards; the encoded internal identifiers are not display names.</p>
 <p>The presets supply each CLI&#39;s noninteractive arguments. Some operations may still need an approval;
-for Oh My Pi general-agent ACP sessions, Taskuary declines permission requests rather than approving
-them automatically. The card&#39;s <strong>Test</strong> action runs a small prompt through the CLI before it
-receives real work, which can reveal a sign-in problem.</p>
+Oh My Pi general-agent sessions allow ordinary shell commands directly and use Taskuary&#39;s usual
+approval rules for actions such as pushing or sending. Other Oh My Pi permission requests are still
+declined in these sessions.
+The card&#39;s <strong>Test</strong> action runs a small prompt through the CLI before it receives real work,
+which can reveal a sign-in problem.</p>
 <p>Oh My Pi is for task execution, not triage, reports or stranger-origin work. Install it from its
 <a href="https://omp.sh/docs/quickstart">official quickstart</a>, or use the install button, then open its setup
 terminal to configure a provider. In OMP, <code>/login</code> connects a provider and <code>/model</code> selects a

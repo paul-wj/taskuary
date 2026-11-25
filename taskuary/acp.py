@@ -64,8 +64,7 @@ class ACPClient:
     def __init__(self, cmd, args=None, cwd=None, env=None, timeout=1200, on_update=None, permit=None,
                  permission_policy='allow', process_tree=False):
         self.timeout, self.on_update, self.session_id, self.permit = timeout, on_update, None, permit
-        # ...the transport's explicit permission policy (Oh My Pi's foreground overlay refuses every ask) and the
-        # process-tree flag (a run whose tree must not survive it)
+        # A permit callback can answer a request or defer it to this connection's default policy.
         self.permission_policy = permission_policy
         self.permission_denied = False
         self._close_error = None
@@ -129,19 +128,17 @@ class ACPClient:
                         'error': {'code': -32601, 'message': f'{method} is not supported by this client'}})
 
     def _permit(self, params):
-        """The answer to one permission request. The transport's explicit policy (Oh My Pi's
-        foreground overlay is 'deny': refuse every ask and flag it) outranks everything. Else
-        `permit` (acpgate.answerer: Taskuary's own rules) decides when it is set; a bare client
-        allows once, which is what a headless argv run does with its bypass flag. A rule that
-        raises refuses - an error is no yes."""
+        """Answer one request. A rule that raises refuses; None defers to the connection's policy."""
+        if self.permit:
+            try: out = self.permit(params)
+            except Exception as e:
+                logger.warning(f'acp: the permission rule raised, so the call is refused - {e}')
+                return pick(params.get('options'), False)
+            if out is not None: return out
         if self.permission_policy == 'deny':
             self.permission_denied = True
             return {'outcome': 'cancelled'}
-        if not self.permit: return pick(params.get('options'), True)
-        try: return self.permit(params)
-        except Exception as e:
-            logger.warning(f'acp: the permission rule raised, so the call is refused - {e}')
-            return pick(params.get('options'), False)
+        return pick(params.get('options'), True)
 
     def _last_words(self) -> str:
         """Why the adapter went, for the log: its exit code and the tail of what it wrote to stderr - read to its end first. The reader thread
