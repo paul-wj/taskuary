@@ -1,7 +1,7 @@
 """The write-up runs behind the press (writeup.py, 2026-10-20): Mark done on a live agent, Close agent and Stop and save return at
 once, and the server's own job harvests the session, writes it up and - for a close - closes the task. It leaves exactly what the
 two requests the page used to make left; a close pressed meanwhile waits for it and never ends the session unharvested; a
-restart mid-job finishes from the saved harvest; a write-up that fails still closes and says so on the task."""
+restart mid-job finishes from the saved harvest; a failed write-up leaves the task open and says why."""
 import json, re, threading, time
 from unittest import mock
 
@@ -30,7 +30,7 @@ def rows(s):
     for (name,) in s.cx.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
         if name in ('setting', 'operation'): continue          # the job's own record (emptied) and the proposal ids
         cur = s.cx.execute(f'SELECT * FROM "{name}"'); cols = [d[0] for d in cur.description]
-        keep = [i for i, c in enumerate(cols) if not (c.endswith('At') or c.endswith('Time') or c in ('Detail', 'OperationId', 'Version'))]
+        keep = [i for i, c in enumerate(cols) if not (c.endswith('At') or c.endswith('Time') or c in ('Detail', 'OperationId', 'Version', 'Generation'))]
         out[name] = sorted(re.sub(r'[0-9a-f]{64}', 'H', re.sub(r'\d{8}-\d{6}-\d{6}|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d', 'TS', json.dumps([r[i] for i in keep], default=str)))
                            for r in cur.fetchall())
     return out
@@ -96,6 +96,53 @@ def test_a_close_pressed_during_the_write_up_waits_for_it_and_the_task_ends_clos
     assert order.index('harvest') < order.index('close'), 'the session was harvested before anything closed it'
     assert (s.get_task(tid) or {}).get('Status') == 'done'
     assert any(str(x.get('Body') or '').startswith(wrapup.REPORT) for x in s.list_comments(tid)), 'the report was kept'
+    wrapup.forget(tid)
+
+def test_one_mark_done_leaves_active_lists_while_the_write_up_is_pending(world):
+    from taskuary import funnel
+    make, _ = world
+    s, tid = make(); c = TestClient(server.app)
+    tasks = lambda: {r['TaskId'] for r in c.get('/api/tasks?active=1').json()['data']}
+    rail = lambda: {r.get('tid') for r in funnel.pile(s)['items']}
+    assert tid in tasks() and tid in rail()
+    release = threading.Event()
+    def held(system, user, **kw):
+        assert release.wait(10)
+        return brain(system, user, **kw)
+    with mock.patch('taskuary.llm.build_llm', return_value=held):
+        try:
+            response = c.post(f'/api/tasks/{tid}/wrap', json={'close': False, 'background': True, 'then_close': True, 'no_reply': True})
+            assert response.status_code == 200 and response.json()['close']
+            assert s.get_task(tid)['Status'] != 'done'
+            assert tid not in tasks() and tid not in rail()
+        finally:
+            release.set()
+            assert writeup.wait_for(tid, 30)
+    assert s.get_task(tid)['Status'] == 'done'
+    assert tid in {r['TaskId'] for r in c.get('/api/tasks?status=done').json()['data']}
+    wrapup.forget(tid)
+
+
+def test_mark_done_during_a_save_is_not_acknowledged_as_a_close(world):
+    make, _ = world
+    s, tid = make(); c = TestClient(server.app)
+    release = threading.Event()
+    def held(system, user, **kw):
+        assert release.wait(10)
+        return brain(system, user, **kw)
+    with mock.patch('taskuary.llm.build_llm', return_value=held):
+        try:
+            path = f'/api/tasks/{tid}/wrap'
+            body = {'close': False, 'background': True, 'no_reply': True}
+            assert c.post(path, json=body).status_code == 200
+            assert c.post(path, json={**body, 'then_close': True}).status_code == 409
+        finally:
+            release.set()
+            assert writeup.wait_for(tid, 30)
+    assert s.get_task(tid)['Status'] != 'done'
+    op = c.post('/api/operations', json={'kind': 'task.complete', 'target': tid, 'params': {}}).json()
+    assert c.post(f"/api/operations/{op['id']}/execute", json={'version': op['version']}).json()['status'] == 'done'
+    assert s.get_task(tid)['Status'] == 'done'
     wrapup.forget(tid)
 
 
@@ -198,7 +245,7 @@ def test_stop_and_save_says_each_stage_it_reaches_and_the_detail_carries_it(worl
     s, tid = make(); c = TestClient(server.app); seen = stages_of(monkeypatch)
     r = c.post(f'/api/tasks/{tid}/wrap', json={'close': False, 'background': True}).json()
     assert r['job'] and writeup.wait_for(tid, 30)
-    assert seen == [('report', True), ('reply', True), ('learning', True), ('done', False)]
+    assert seen == [('report', True), ('reply', True), ('done', False)]
     assert c.get(f'/api/tasks/{tid}').json()['writeup'] == {'job': r['job'], 'stage': 'done', 'running': False, 'error': '', 'close': False}
     wrapup.forget(tid)
 

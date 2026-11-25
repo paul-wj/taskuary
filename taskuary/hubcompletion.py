@@ -49,6 +49,7 @@ def _blocked(store, tid):
 
 
 def _evidence(store, tid):
+    from .session_artifacts import confined
     from .proof import tests_from
     from .general import ASSISTANT_TYPE, USER_TYPE
     # Prefer authored results and notes to raw transcripts, instructions or inbound messages.
@@ -58,9 +59,20 @@ def _evidence(store, tid):
                         "AND COALESCE(Result,'')<>'' ORDER BY RunId DESC LIMIT 1", (tid,)) or {}
     transcript = (store.last_transcript(tid) or {}).get('Text') or ''
     checks = tests_from(transcript) if transcript else {}
+    # The compact report may omit the conclusion and why it held up. Use the agent's
+    # saved write-up, not arbitrary task attachments or the raw terminal scrollback.
+    artifact = next((a for a in store.list_task_artifacts(tid)
+                     if a['Kind'] in ('coding_session', 'agent_result')), None)
+    saved = ''
+    if artifact and (path := confined(artifact.get('Path'))) and path.parent.name == str(tid):
+        try:
+            with path.open(encoding='utf-8') as f: saved = f.read(12000)
+        except (OSError, UnicodeError):
+            pass
     sections = []
     if notes: sections.append('Saved reports and notes:\n' + '\n\n'.join(notes[-12:])[-8500:])
     if result.get('Result'): sections.append('Saved run result:\n' + result['Result'])
+    if saved.strip(): sections.append('Saved agent write-up:\n' + saved)
     if checks.get('ran'): sections.append('Recorded test evidence:\n' + json.dumps(checks, ensure_ascii=False)[:2000])
     return scrub('\n\n'.join(sections))
 

@@ -44,6 +44,33 @@ test("owner-completed agent work stays on the Board after refresh in both locale
   assert.deepEqual(page.fixtureEscapes, []);
 });
 
+test("one Mark done click closes a running coding task", { timeout: 120000 }, async (t) => {
+  const h = await startHarness();
+  t.after(() => h.close());
+  await setDeveloperMode(h, true);
+  const headers = { "X-Taskuary-Token": h.token, "Content-Type": "application/json" };
+  const seed = await fetch(`${h.fixtureApi}/api/fixture/task/matrix`, {
+    method: "POST", headers, body: JSON.stringify({ state: "coding_working" }),
+  });
+  assert.equal(seed.status, 200);
+  const { taskId } = await seed.json();
+  const page = await h.newPage(), errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(`${h.ui}/#task=${taskId}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(`[data-tq-task-page="${taskId}"] [data-tq-task-head]`, { visible: true });
+  const done = await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).find(
+    (el) => /^mark done$/i.test(el.textContent.trim()) && !el.disabled && el.getClientRects().length));
+  await done.asElement().click();
+  await page.waitForFunction(async (id) => {
+    const r = await fetch(`/api/tasks/${id}`, { headers: { "X-Taskuary-Token": localStorage.getItem("taskuary_token") } });
+    return r.ok && (await r.json()).task.Status === "done";
+  }, { polling: 300, timeout: 30000 }, taskId);
+  await page.goto(`${h.ui}/#board`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(`[data-tq-board-column="agentdone"] [data-tq-board-task="${taskId}"]`, { visible: true });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(page.fixtureEscapes, []);
+});
+
 test("a completed task publishes verified Hub knowledge without scanning history", { timeout: 120000 }, async (t) => {
   const h = await startHarness();
   t.after(() => h.close());

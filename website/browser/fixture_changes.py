@@ -85,7 +85,9 @@ def install_processing_changes(app, store):
             return {'ok': True}
         old = store.create_task({'Title': 'Historical export review', 'Status': 'done'}, 'owner')
         hub_task = store.create_task({'Title': 'Investigate export validation', 'Kind': 'coding'}, 'owner')
-        store.add_comment(hub_task, 'coding', 'agent', 'AGENT REPORT\n' + hub_evidence)
+        from taskuary import session_artifacts
+        store.add_comment(hub_task, 'coding', 'agent', 'AGENT REPORT\nCompared the exports.')
+        session_artifacts.coding(store, hub_task, 'Compared the exports.', '', final_message=hub_evidence)
         return {'taskId': hub_task, 'oldTaskId': old}
 
     # the armed Data Center world: while armed, the REAL Test / Save / Sync routes run for the seeded Jira connector, so the

@@ -1,5 +1,5 @@
 """THE WRITE-UP RUNS BEHIND THE PRESS (the owner, 2026-10-20). Mark done on a task with a live agent, Close agent on the Wall and
-Stop and save all end a session the same way - its transcript becomes the report, the handbook and the playbook are asked, and
+Stop and save all end a session the same way - its transcript becomes the report, and
 for a close the task closes - and that took as long as the AI did, 18 s with the page held under "Writing up this session".
 
 Now the press starts ONE job the server owns and returns at once. The job harvests the session first - the transcript and the
@@ -20,7 +20,7 @@ PREFIX = 'writeup_job:'                 # setting name per task: the job's recor
 FAILED = 'The write-up of this session did not finish'
 KEPT = 'so the task is still open - press Mark done again to close it'
 _JOBS: dict = {}                        # task id -> threading.Event, set when that task's job is done
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _HERE = threading.local()               # set on a job's own thread: its own close must not wait for itself
 _STATE: dict = {}                       # task id -> {job, stage, running, error, close}: the last job's stage, kept once it ends
 # the stages, in the order the job reaches them (wrapup.wrap names each); a job that ends is `done` or `failed`
@@ -64,9 +64,10 @@ def running(tid) -> bool:
 
 
 def closing(tid) -> bool:
-    "A write-up is running that closes the task when it ends (Mark done on a live agent): the task is as good as closed."
-    with _LOCK: st = _STATE.get(int(tid)) or {}
-    return running(tid) and bool(st.get('close')) and not st.get('error')
+    """Whether an accepted write-up still intends to close this task."""
+    with _LOCK:
+        st = _STATE.get(int(tid)) or {}
+        return bool(st.get('running') and st.get('close'))
 
 
 def wait_for(tid, timeout: float = 600) -> bool:
@@ -93,15 +94,21 @@ def _save(store, tid, record: dict, harvest: dict | None = None):
 
 def start(store, tid: int, *, close: bool, actor: str = 'owner', no_reply: bool = False, sid: str = None) -> dict:
     """Start the write-up of this task's session; return at once. A second press while one runs joins it."""
-    from . import wrapup
     tid = int(tid)
     if not store.get_task(tid): raise ValueError('this session is not on a task')
     with _LOCK:
         if tid in _JOBS and not _JOBS[tid].is_set():
-            return {'wrap': 'started', 'taskId': tid, 'already': True, 'job': (_STATE.get(tid) or {}).get('job')}
+            st = _STATE[tid]
+            return {'wrap': 'started', 'taskId': tid, 'already': True, 'job': st['job'], 'close': st['close']}
         done = _JOBS[tid] = threading.Event()
-    job = _begin(tid, 'reading', close)
-    record = _save(store, tid, {'close': bool(close), 'actor': actor, 'no_reply': bool(no_reply), 'sid': sid})
+        job = _begin(tid, 'reading', close)
+    try:
+        record = _save(store, tid, {'close': bool(close), 'actor': actor, 'no_reply': bool(no_reply), 'sid': sid})
+    except Exception as e:
+        _set(tid, job, running=False, stage='failed', error=str(e))
+        done.set()
+        raise
+    if close: store._poke('task-changed', task_id=tid)
     harvested = threading.Event()
     def run():
         try: _run(store, tid, record, harvest_done=harvested, job=job)
@@ -109,11 +116,11 @@ def start(store, tid: int, *, close: bool, actor: str = 'owner', no_reply: bool 
             harvested.set(); done.set()
     threading.Thread(target=run, name=f'writeup-{tid}', daemon=True).start()
     harvested.wait(30)                  # the press returns once the session is harvested and saved - seconds before any AI answers
-    return {'wrap': 'started', 'taskId': tid, 'job': job}
+    return {'wrap': 'started', 'taskId': tid, 'job': job, 'close': close}
 
 
 def _run(store, tid, record, harvested: dict = None, harvest_done=None, job: str = None):
-    from . import wrapup, live
+    from . import wrapup
     close, actor = record.get('close'), record.get('actor') or 'owner'
     failed = ''
     _HERE.on, _HERE.tid, _HERE.job = True, int(tid), job
@@ -133,26 +140,31 @@ def _run(store, tid, record, harvested: dict = None, harvest_done=None, job: str
     finally:
         if harvest_done: harvest_done.set()
     try:
-        if close and not failed: stage(tid, 'closing'); _close(store, tid, actor, failed)
-        elif failed: store.add_comment(tid, actor, 'human', f'{FAILED}: {failed}' + (f' - {KEPT}.' if close else ''))
+        if close and not failed:
+            stage(tid, 'closing')
+            try: _close(store, tid, actor)
+            except Exception as e:
+                failed = str(e) or type(e).__name__
+                logger.warning(f'Close after write-up of task {tid} failed: {failed}')
+        if failed: store.add_comment(tid, actor, 'human', f'{FAILED}: {failed}' + (f' - {KEPT}.' if close else ''))
     finally:
         store.set_setting(PREFIX + str(int(tid)), '', actor)
         if job: _set(tid, job, running=False, stage='failed' if failed else 'done', error=failed)
         _HERE.tid = _HERE.job = None
-        try: live.emit(live.TASK, taskId=tid)        # the page that left the task, or stayed on it, reads it again
-        except Exception: pass
+        store._poke('task-changed', task_id=tid)
 
 
-def _close(store, tid, actor, failed):
-    """The close every surface takes (the task.complete operation), and the failure said on the closed task."""
+def _close(store, tid, actor):
+    """Close through the same operation as a direct Mark done press."""
     from . import operations, server
     from fastapi import BackgroundTasks
     task = store.get_task(tid) or {}
     if task.get('Status') not in ('done', 'dropped'):
         # the press's own road (taskOps.runOperation): propose, then the execute route - its table check and its receipt included
         op = operations.propose(store, 'task.complete', tid, {}, actor)
-        server.execute_operation(op['id'], server.OperationConfirm(version=op['version']), BackgroundTasks())
-    if failed: store.add_comment(tid, actor, 'human', f'{FAILED}: {failed}')
+        out = server.execute_operation(op['id'], server.OperationConfirm(version=op['version']), BackgroundTasks())
+        if (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'):
+            raise RuntimeError(out.get('error') if isinstance(out, dict) and out.get('error') else 'task was not closed')
 
 
 def resume(store) -> int:
@@ -168,8 +180,9 @@ def resume(store) -> int:
             try:
                 with open(record['harvest'], encoding='utf-8') as f: harvest = json.load(f)
             except OSError: harvest = None
-        with _LOCK: done = _JOBS[tid] = threading.Event()
-        job = _begin(tid, 'report' if harvest else 'closing', record.get('close'))
+        with _LOCK:
+            done = _JOBS[tid] = threading.Event()
+            job = _begin(tid, 'report' if harvest else 'closing', record.get('close'))
         def run(tid=tid, record=record, harvest=harvest, done=done, job=job):
             try:
                 if harvest: _run(store, tid, record, harvested=harvest, job=job)

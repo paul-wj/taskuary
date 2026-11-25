@@ -1240,13 +1240,15 @@ def tasks(status: str = None, active: bool = False, q: str = None):
     # stay on the done tab, same in board columns"): an agent's result from yesterday was cut from Done as old, and once
     # read it left the rail and every list with it
     rail = _rail_tids() | store.worked_today_task_ids()
+    from . import writeup
     return {'data': [{**t, 'ref': task_ref(t['TaskId']), 'Playbook': _playbook_brief(t, books), 'OnWorkToday': t['TaskId'] in rail,
                       'Session': sessions.get(t['TaskId']),
                       'Queued': _queued_info(qs.get(t['TaskId'])), 'Waiting': wc.get(t['TaskId'], 0),
                       'HadAgent': t['TaskId'] in agented,
                       # what the task IS right now - the one state the list's chip and the Board's column both draw (T1-T9)
                       'State': taskstate.state(store, t, sessions.get(t['TaskId']), qs.get(t['TaskId']))}
-                     for t in store.list_tasks(status, active_only=active, q=q, also=rail)]}
+                     for t in store.list_tasks(status, active_only=active, q=q, also=rail)
+                     if t['Status'] in ('done', 'dropped') or not writeup.closing(t['TaskId'])]}
 
 
 @app.get('/api/search')
@@ -11974,7 +11976,10 @@ def _wrap_task(tid: int, close: bool, sid: str = None, no_reply: bool = False, b
         if background:
             from . import writeup
             if close: raise ValueError('a write-up in the background keeps the task open; then_close closes it after')
-            return writeup.start(store, tid, close=then_close, actor=ACTOR, no_reply=no_reply, sid=sid)
+            out = writeup.start(store, tid, close=then_close, actor=ACTOR, no_reply=no_reply, sid=sid)
+            if then_close and not out['close']:
+                raise HTTPException(409, 'A save is already running; complete the task after that save')
+            return out
         return end_task(store, tid, close, ACTOR, sid, no_reply=no_reply)
     except ValueError as e: raise HTTPException(422, str(e))
 

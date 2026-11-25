@@ -241,9 +241,9 @@ LEARN_SYSTEM = (
     'substantial investigation, testing, comparison, or repeated reasoning, or (b) a genuinely '
     'developed new company idea whose rationale and implications were thought through. A useful '
     'but routine fact, a quick answer, a raw brainstorm, and ordinary task output do not qualify.\n'
-    'A qualifying entry must also be STILL TRUE NEXT MONTH about the company, not just technical data: '
-    'what the business is driving toward, how an operation works, its products or customers, who '
-    'owns a responsibility or decision, and the systems and traps behind the work.\n'
+    'A qualifying entry must be likely to stay true next month and help with a future task. '
+    'That includes repository-specific behavior, non-obvious test or integration prerequisites, '
+    'and durable product, process, ownership, or design decisions. It need not apply company-wide.\n'
     'It does NOT hold what this session DID. "Fixed the batch date on the payroll import" is the '
     "task's record and is already written down elsewhere. \"Adjustment rows take the first line's "
     'date, not the batch date - which is why they post to the wrong month" is the handbook\'s: the '
