@@ -26,7 +26,7 @@ import { buttonOf, cardOf, doneOf, frontierOf, landOn, navMoves, nextOf, openAt,
 import { openBugReport } from "./bugReportOpen.js";
 import { AI_SHELF, AI_WHY, SETUP_AI } from "./aiShelf.js";
 import { label as btnLabel, VERBS } from "./buttons.js";
-import { t } from "./i18n.js";
+import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { openAppLink } from "./appLinks.js";
 
@@ -341,9 +341,9 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     endSignin(); moveOn();                           // another AI picked: the ChatGPT sign-in waiting in a tab is not the move any more
     if (!ai.installed && ai.install && !ai.done) { install(ai); return; }
     setBusy(ai.name); setOpen(null); setBrowse(false);
-    setSaid({ key: "Checking that {name} works - it sorts one test email, up to two minutes…", values: { name: ai.title } });
+    setSaid({ source: "Checking that {name} works - it sorts one test email, up to two minutes…", values: { name: ai.title } });
     try { await api.post("/api/setup/first-run/ai", { name: ai.name }, { timeout: CHECK_MS }); }
-    catch (e) { setBusy(""); setSaid(""); setErr({ key: "{error} Pick it again to retry.", values: { error: errText(e) } }); return; }
+    catch (e) { setBusy(""); setSaid(""); setErr({ source: "{error} Pick it again to retry.", values: { error: errText(e) } }); return; }
     await reload(); setBusy(""); setSaid("");         // what happened is the server's line now; cleared only once it is drawn (no flicker back)
   };
   // CHATGPT IS A BROWSER SIGN-IN, not a CLI in a terminal (the owner, 2026-10-15: "for chatgpt regular why are you opening a
@@ -368,10 +368,10 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     const me = { cid: c.ConnectorId }; signRef.current = me;
     const gone = () => signRef.current !== me;
     // ...and read again: the server keeps the failure as setup's fix, so its card is the one that stands with it
-    const failed = (why) => { if (!gone()) { endSignin({ key: "The ChatGPT sign-in didn't finish: {why}. Pick ChatGPT to try again, or pick another AI.", values: { why } }); reload(); } };
+    const failed = (why) => { if (!gone()) { endSignin({ source: "The ChatGPT sign-in didn't finish: {why}. Pick ChatGPT to try again, or pick another AI.", values: { why } }); reload(); } };
     let flow;
     try { flow = (await api.post(`/api/connectors/${c.ConnectorId}/chatgpt/signin`)).data; }
-    catch (e) { if (!gone()) { signRef.current = null; setSignFail({ cid: c.ConnectorId, focus: true }); setErr({ key: "{error} Pick ChatGPT to try again, or pick another AI.", values: { error: errText(e) } }); } return; }
+    catch (e) { if (!gone()) { signRef.current = null; setSignFail({ cid: c.ConnectorId, focus: true }); setErr({ source: "{error} Pick ChatGPT to try again, or pick another AI.", values: { error: errText(e) } }); } return; }
     if (gone()) return;
     me.flow = flow.flow;
     setSigning({ cid: c.ConnectorId, flow: flow.flow, url: flow.url });
@@ -397,22 +397,22 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     failed("it took longer than ten minutes");
   };
   const planCheck = async (cid) => {
-    setErr(""); setBusy(`c${cid}`); setSaid({ key: "Checking ChatGPT works - it sorts one test email, up to two minutes…" });
+    setErr(""); setBusy(`c${cid}`); setSaid({ source: "Checking ChatGPT works - it sorts one test email, up to two minutes…", values: {} });
     try { await api.post("/api/setup/first-run/connector", { cid }, { timeout: CHECK_MS }); }
-    catch (e) { setErr({ key: "{error} Pick ChatGPT to try again.", values: { error: errText(e) } }); }
+    catch (e) { setErr({ source: "{error} Pick ChatGPT to try again.", values: { error: errText(e) } }); }
     await reload(); setBusy(""); setSaid("");
   };
   const cancelSignin = () => { endSignin(); setErr(""); };
   const install = async (ai, verb = "Installing") => {
     // ...picked from every card (Pick a different AI): it stands alone while it installs, and with its failure after
-    setErr(""); setBusy(ai.name); setOpen(null); setBrowse(false); setSaid({ key: verb === "Updating" ? "Updating {name}… this takes about a minute." : "Installing {name}… this takes about a minute.", values: { name: ai.title } });
+    setErr(""); setBusy(ai.name); setOpen(null); setBrowse(false); setSaid({ source: verb === "Updating" ? "Updating {name}… this takes about a minute." : "Installing {name}… this takes about a minute.", values: { name: ai.title } });
     try {
       await api.post("/api/cli/install", { name: ai.install });
       const until = Date.now() + INSTALL_MS;
       for (;;) {
         await new Promise((r) => setTimeout(r, 2500));
         const { data } = await api.get("/api/cli/install/state");
-        if (data.phase === "installing" && data.detail) setSaid({ key: "{detail} (this can take a few minutes)", values: { detail: data.detail } });
+        if (data.phase === "installing" && data.detail) setSaid({ source: "{detail} (this can take a few minutes)", values: { detail: data.detail } });
         if (data.phase === "done") break;
         if (data.phase === "failed") throw new Error(data.detail || "the installer stopped");
         if (Date.now() > until) throw new Error("the install is taking too long");
@@ -420,7 +420,7 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
       setBusy(""); await pick({ ...ai, installed: true, done: true });   // installed: test it right away - one click, the whole step
     // A FAILED INSTALL STANDS ALONE WITH ITS ERROR, as a ChatGPT sign-in that did not finish does (the setup sweep, 2026-10-28): the
     // whole shelf came back with the failure only in the line, and no card said which one it was
-    } catch (e) { setBusy(""); setSaid(""); setInstFail({ name: ai.name, focus: true }); setErr({ key: "{name} didn't install: {error} Pick it again to retry, or pick another AI.", values: { name: ai.title, error: errText(e) } }); }
+    } catch (e) { setBusy(""); setSaid(""); setInstFail({ name: ai.name, focus: true }); setErr({ source: "{name} didn't install: {error} Pick it again to retry, or pick another AI.", values: { name: ai.title, error: errText(e) } }); }
   };
 
   // while setup loads the page says so, or what went wrong - and the failure is tried again, by itself or by Try again
@@ -531,7 +531,7 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   const cli = signin && { name: fix.name, setup: fix.setup, installed: true };
   const cliDetail = busy ? (
     <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-      <Typography sx={{ color: DIM, fontSize: 13.5 }}>{said || t("Checking it works by sorting one test email - up to two minutes.")}</Typography></Box>
+      <Typography sx={{ color: DIM, fontSize: 13.5 }}>{translateDescriptor(said) || t("Checking it works by sorting one test email - up to two minutes.")}</Typography></Box>
   ) : signing ? (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1, alignItems: "flex-start" }}>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
@@ -595,7 +595,7 @@ ${fix.detail || ""}`, screen: "Setup",
   const found = st.ais.filter((a) => a.installed);
   // ...and THE LINE NAMES IT by the words the screen draws: the card's title, the button's own label, the row verb's
   // ...a pick in flight or a sign-in under way says so under its card (cliDetail), never a second time here
-  let line = busy || signing ? "" : err || {
+  let line = busy || signing ? "" : translateDescriptor(err) || {
     // ...a sign-in running says its own line: the last card's failure stood over it and read as if ChatGPT had failed (the UI audit, 2026-10-21)
     ai: (!browse && fix?.why) || (aiErr ? t("{error} Pick another AI - it is checked on a test email first.", { error: aiErr }) : st.step === "ai" ? t("{choice}. Taskuary checks it works, then uses it to sort what comes in.", { choice: !litCard
       ? (found.length === 1 ? t("{name} is on this computer - pick it if that is the one you use, or pick any other", { name: found[0].title }) : t("Pick the one you use"))

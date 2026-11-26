@@ -9,6 +9,7 @@ What each release changed, newest first. Ask the Assistant "what changed in the 
 - Jira revisions and comments are grouped by site and issue. Resolved references leave the current rail without deleting history; open references stay visible after the owner's comments.
 - The Agent Board filters finished work by **Today / All** without hiding open work and scrolls desktop columns independently.
 - Agent activity, task dates, and action receipts use the selected interface language. Attachment links still open at their original destination without carrying the Taskuary token.
+- First-run AI setup shows localized progress and retry messages instead of crashing when checking or installing a coding CLI.
 
 ## 0.4.1.9 - 2026-11-22
 
