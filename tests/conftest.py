@@ -12,11 +12,24 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import urlsplit
 
+# The console ``pytest`` entrypoint does not prepend cwd like ``python -m pytest``.
+# An editable install may point at the owner's other checkout: always test THIS
+# worktree, and fail rather than mix already-imported application modules.
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
+_loaded_package = sys.modules.get('taskuary')
+if _loaded_package is not None:
+    if Path(getattr(_loaded_package, '__file__', '')).resolve().parent != _CHECKOUT_ROOT / 'taskuary':
+        raise RuntimeError('Taskuary was imported from another checkout before test isolation')
+sys.path.insert(0, str(_CHECKOUT_ROOT))
+
 # P0-ISOLATION: always allocate the suite's homes ourselves.  An arbitrary inherited
 # TASKUARY_TEST_HOME is not evidence that a path is disposable; accepting one here reopened the
 # same class of door that the original TASKUARY_HOME guard closed.  HOME/USERPROFILE matter too:
 # terminal.pretrust writes ~/.claude.json and provider SDKs use per-user config outside Taskuary.
-_TEST_ROOT = Path(tempfile.mkdtemp(prefix='taskuary_pytest_')).resolve()
+# The suite's root is spawn's own temp folder: removed at exit, and the roots of earlier runs that are gone - killed, or held by a file
+# at their exit - swept on a thread (spawn.own_temp). Only spawn is imported this early: it reads nothing of a home.
+from taskuary import spawn as _spawn
+_TEST_ROOT = Path(_spawn.own_temp('taskuary_pytest_')).resolve()
 _TASKUARY_HOME = _TEST_ROOT / 'taskuary'
 _USER_HOME = _TEST_ROOT / 'user'
 _TEMP_HOME = _TEST_ROOT / 'tmp'
@@ -46,16 +59,6 @@ tempfile.tempdir = str(_TEMP_HOME)
 os.environ.pop('TASKUARY_ALLOW_TEST_HOME', None)
 os.environ.pop('TASKUARY_DEMO', None)
 os.environ.pop('TASKUARY_API', None)
-
-# The console ``pytest`` entrypoint does not prepend cwd like ``python -m pytest``.
-# An editable install may point at the owner's other checkout: always test THIS
-# worktree, and fail rather than mix already-imported application modules.
-_CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
-_loaded_package = sys.modules.get('taskuary')
-if _loaded_package is not None:
-    if Path(getattr(_loaded_package, '__file__', '')).resolve().parent != _CHECKOUT_ROOT / 'taskuary':
-        raise RuntimeError('Taskuary was imported from another checkout before test isolation')
-sys.path.insert(0, str(_CHECKOUT_ROOT))
 
 # Cache the read-only platform probe before the subprocess guard is installed.  On Windows,
 # ``platform`` otherwise invokes ``ver`` lazily while numpy/botocore are imported by tests.
@@ -362,7 +365,7 @@ def isolated_runtime_boundaries():
             return (hashlib.sha256(script.encode()).hexdigest() in allowed
                     and all(x in {'exec', '--json', '--skip-git-repo-check'} for x in trailing))
         allowed_files = {Path(__file__).resolve().parent / name
-                         for name in ('fake_mcp_server.py', 'fake_tui.py', 'fake_acp_server.py')}
+                         for name in ('fake_mcp_server.py', 'fake_tui.py', 'fake_acp_server.py', 'fake_spawn_parent.py')}
         # ...and the fake stream-json CLI takes the flags a real one is launched with (tests/test_clipool.py)
         if args and Path(args[0]).resolve() == Path(__file__).resolve().parent / 'fake_stream_cli.py': return True
         # ...and the replay of a recorded backend stream, by fixture name only (tests/test_agent_steps_backends.py)
@@ -424,8 +427,16 @@ def isolated_runtime_boundaries():
         except ValueError: return None
         return inner if inner[:1] == ['git'] else None
 
+    def spawn_own(argv) -> bool:
+        "spawn's own POSIX helpers: the watchdog that ends tied children when we die, a process's start time (spawn._stamp), the tree under one (spawn.end)."
+        from taskuary import spawn
+        command = [str(x) for x in (argv if isinstance(argv, (list, tuple)) else [argv])]
+        ps = command[:4] == ['ps', '-o', 'pid=,stat=,lstart=', '-p'] and len(command) == 5 and all(x.isdigit() for x in command[4].split(','))
+        return command == ['/bin/sh', '-c', spawn.WATCH_SH] or ps or command == ['ps', '-A', '-o', 'pid=,ppid=']   # ...and spawn.end's tree read
+
     def allowed_process(argv, kwargs) -> bool:
-        return reviewed_python(argv) or git_allowed(argv, kwargs) or bool((g := shell_git(argv)) and git_allowed(g, kwargs))
+        return (reviewed_python(argv) or git_allowed(argv, kwargs) or bool((g := shell_git(argv)) and git_allowed(g, kwargs))
+                or spawn_own(argv))
 
     def guarded_popen(argv, *args, **kwargs):
         if allowed_process(argv, kwargs): return real_popen(argv, *args, **kwargs)
@@ -467,6 +478,7 @@ def isolated_runtime_boundaries():
                  mock.patch.object(server, 'doorway_forever', stopped('assistant doorway')), \
                  mock.patch.object(server, '_warm_reads', stopped("the page's first reads made ahead")),                  mock.patch.object(server, 'slim_records', stopped('agent records slimmed')),                  mock.patch.object(server, 'prime_adapters', stopped("the agents' adapters primed")), \
                  mock.patch.object(server, 'share_start', stopped('share port')), \
+                 mock.patch.object(server.skills, 'seed', stopped('starter skills filed')), \
                  mock.patch.object(server, 'resume_asking', stopped('asking agents resumed')),                  mock.patch.object(server, 'close_orphan_browsers', stopped('orphan browsers closed')), \
                  mock.patch.object(blackboard, 'schedule_due', stopped('dispatch retry scheduler')), \
                  mock.patch.object(waitroom, 'watch', stopped('waitroom watcher')), \
@@ -509,12 +521,12 @@ def isolated_runtime_boundaries():
     # By this point every test server and PTY should have shut down.  Clean only the exact suite
     # directory allocated above; Windows can retain a short-lived SQLite/ConPTY handle, so cleanup
     # is best effort and never widens to a parent supplied by the environment.
-    try: shutil.rmtree(_TEST_ROOT)
-    except OSError: pass
+    _spawn.drop_temp(_TEST_ROOT)
 
 
 def pytest_configure(config):
     config.addinivalue_line('markers', 'acp: the test drives the ACP road itself, so it keeps clis.ADAPTERS (no_real_acp_adapters)')
+    config.addinivalue_line('markers', 'mail_auth: the test reads the mail verdicts it stored as they are (mail_arrives_verified)')
     config.addinivalue_line('markers', 'real_chrome: the test drives browserview.real_chrome itself, its spawn stood in for (no_real_chrome)')
 
 
@@ -527,10 +539,37 @@ def no_stop_left_over():
 
 
 @pytest.fixture(autouse=True)
+def no_verdict_left_over():
+    "The browser gate keeps a verdict per page and control for a while (browsergate.SEEN): one test's page is the next one's too."
+    from taskuary import browsergate
+    browsergate.SEEN.clear(); yield
+
+
+@pytest.fixture(autouse=True)
+def no_turn_marks_left_over():
+    """A turn's end_turn and ask_owner marks wait by task number for its answer to be filed (selfclose._MARKS): a test that asked and filed
+    nothing left its question standing on the next test's task 1, and that task's cards were held behind it."""
+    from taskuary import selfclose
+    selfclose._MARKS.clear(); yield
+
+
+@pytest.fixture(autouse=True)
 def no_adapter_priming(monkeypatch):
     "A server a test starts never launches the real ACP adapters to warm them (agents.prime_adapters)."
     from taskuary import agents
     monkeypatch.setattr(agents, 'prime_adapters', lambda *a, **k: [])
+
+
+@pytest.fixture(autouse=True)
+def mail_arrives_verified(request, monkeypatch):
+    """A From on his own domain is his only on the receiving server's proof (senders._known, the red team's F3, 2026-11-24) - and his own
+    mailbox's server stamps it on every colleague's mail (Exchange's own word, a DMARC pass). The test world's mail arrives so: a mail a test
+    writes with no verdict reads as verified. The tests OF that proof (marker `mail_auth`, and the modules below) read what is stored."""
+    if request.node.get_closest_marker('mail_auth') or request.module.__name__.rsplit('.', 1)[-1] in MAIL_AUTH_MODULES: return
+    from taskuary import senders
+    real = senders.auth
+    monkeypatch.setattr(senders, 'auth', lambda m: 'pass' if (v := real(m)) == 'none' else v)
+MAIL_AUTH_MODULES = ('test_mailauth', 'test_origin_launch', 'test_origin_content')
 
 
 @pytest.fixture(autouse=True)
@@ -856,13 +895,14 @@ def the_basic_flow(request):
     from taskuary import conversation
     real, prev, bad = conversation.items, weakref.WeakKeyDictionary(), []
     def items(store, tid, *a, **k):
+        key = int(tid)
+        upto = (store._one('SELECT MAX(CommentId) AS c FROM comment WHERE TaskId=?', (key,)) or {}).get('c') or 0     # ...what this read can hold
         got = real(store, tid, *a, **k)
         prev.setdefault(store, {})
-        key = int(tid)
         bad.extend(f'task {tid}: {b}' for b in conversation.flow_breaks(got, prev[store].get(key)) if f'task {tid}: {b}' not in bad)
         # ...AND NOTHING THE STORE MADE IS MISSING FROM IT (chatlog.missing: the permanent compare, naming the road that made it)
         from taskuary import chatlog
-        bad.extend(f'task {tid}: {b}' for b in chatlog.missing(store, key, got) if f'task {tid}: {b}' not in bad)
+        bad.extend(f'task {tid}: {b}' for b in chatlog.missing(store, key, got, upto) if f'task {tid}: {b}' not in bad)
         if os.environ.get('FLOW_DUMP'): print('LIST', tid, [(x['id'], x.get('state', ''), [(c['id'], c['status']) for c in x.get('cards') or []]) for x in got['items']], got.get('working'))
         prev[store][key] = got
         return got
@@ -879,7 +919,11 @@ def the_basic_flow(request):
 
 
 # WHAT THE BASIC FLOW FOUND AND IS NOT FIXED YET (2026-11-12): (test name prefix, the break's words) - each an open finding, named in the report
-FLOW_OPEN = []
+FLOW_OPEN = [
+    # ...a press on another thread raises the next card between the read and the compare that follows it: the compare reads the store a beat
+    # after the chat, so a card raised in that beat reads as missing. The test is about two threads both finishing; the flow is checked at rest
+    ('test_a_card_press_and_a_chat_read_on_two_threads', 'is drawn nowhere'),
+]
 
 
 @pytest.fixture(autouse=True)

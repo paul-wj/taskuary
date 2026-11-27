@@ -5,6 +5,8 @@ import contextlib
 import json
 from unittest import mock
 
+import pytest
+
 from taskuary import concierge, funnel, llm as L, signin, terminal
 from taskuary.store import MemoryStore
 
@@ -87,3 +89,103 @@ def test_a_routine_asked_for_then_described_starts_its_agent_and_says_where_its_
     out = turn(s, 'and one more like it', {'kind': 'task.setup', 'params': {'text': 'log into the billing portal and review my denials'}}, ROUTINE, seen)
     assert 'is in Saved sign-ins, so the browser fills it' in out['say']
 
+
+# ── "pull up my calendar for this upcoming monday" (a tester's install on this card, 2026-11-26: "Working… 30s", and no answer) ───────────
+MONDAY = {'events': [{'start': '2026-11-30 10:00', 'end': '2026-11-30 10:30', 'subject': 'Budget review', 'all_day': False, 'where': 'Room 2', 'who': ['Erin Blake']},
+                     {'start': '2026-11-30 14:00', 'end': '2026-11-30 15:00', 'subject': 'Dentist', 'all_day': False, 'where': '', 'who': []}],
+          'errors': [], 'sources': ['outlook: alex@northwind.example', 'google: alex@example.com'], 'start': '2026-11-30T00:00', 'end': '2026-12-01T00:00', 'tz': 'UTC'}
+ASK = 'pull up my calendar for this upcoming monday'
+READ = 'CALL: ' + json.dumps({'kind': 'calendar.read', 'params': {'from': '2026-11-30', 'days': 1}})
+
+def reads(agenda): return [c.kwargs for c in agenda.call_args_list if c.kwargs.get('start')]        # the turn's own: the rail's refresh reads from now
+
+def calendars():
+    s = store(); s.set_setting('calendar_enabled', '1', 't')
+    return s
+
+
+def test_the_agenda_across_his_calendars_is_read_and_answered_on_this_card():
+    "Showing him his day is bringing it up: the read runs at once on an API card too, over every calendar the cards reach, and its answer is the turn's."
+    s, asked = calendars(), []
+    f = L.make_llm('hipaa_ai', {'base_url': 'https://gateway.example/v1'}, 'code')
+    with brain([answer(READ), answer('Monday: Budget review at 10:00 with Erin Blake, then the dentist at 2:00.')], asked), \
+         mock.patch('taskuary.calendar.agenda', return_value=MONDAY) as agenda:
+        out = concierge.say(s, ASK, llm=f)
+    assert out['say'] == 'Monday: Budget review at 10:00 with Erin Blake, then the dentist at 2:00.' and not out.get('error')
+    assert [(k['days'], str(k['start'])[:10]) for k in reads(agenda)] == [(1, '2026-11-30')]
+
+
+def test_with_no_calendar_connected_the_read_says_so_and_so_does_the_answer():
+    s, heard = calendars(), []
+    def f(system, user, **kw):
+        heard.append(user); return READ if len(heard) == 1 else 'No calendar is connected yet, so there is nothing to show for Monday.'
+    out = concierge.say(s, ASK, llm=f)
+    assert 'No calendar is connected' in heard[1] and out['say'].startswith('No calendar is connected')
+
+
+def test_a_card_that_never_answers_is_waited_on_for_the_turns_time_and_no_longer():
+    """THE HANG: the read is two model calls, each given minutes by its card - and the pass that failed was followed by the read and the
+    question once more. With nothing said, the page counted "Working…" for as long as that took. The turn has one clock: past it the owner
+    reads why in one line, Try again under it, and nothing is read again for a question nobody is asked."""
+    import threading, time
+    s, heard, never = calendars(), [], threading.Event()
+    def f(system, user, **kw):
+        heard.append(user)
+        if len(heard) == 1: return READ
+        never.wait(30); return 'far too late'
+    t0 = time.monotonic()
+    try:
+        with mock.patch.object(concierge, 'TURN_WAIT', 0.4), mock.patch('taskuary.calendar.agenda', return_value=MONDAY) as agenda:
+            out = concierge.say(s, ASK, llm=f)
+    finally: never.set()
+    assert time.monotonic() - t0 < 5, 'the turn ended inside its time'
+    assert out.get('error') and 'stopped waiting' in out['say'] and 'far too late' not in out['say'], out['say']
+    assert out['chips'][0] == {'label': concierge.buttons.label('try_again'), 'ask': ASK}
+    assert len(reads(agenda)) == 1 and len(heard) == 2, 'no second read, no third ask'
+    assert [m['text'] for m in concierge.history(s, concierge.general.dock_task(s)[0]['TaskId'])[-2:]] == [ASK, out['say']], 'his line and the one line of why are the chat'
+
+
+def test_his_stop_ends_a_turn_whose_card_is_still_out():
+    "Stop reached no call under way on an API card: the turn went on waiting behind a page that had stopped. Now it ends at his press."
+    import threading, time
+    s, never, cancel = calendars(), threading.Event(), threading.Event()
+    def f(system, user, **kw): cancel.set(); never.wait(30); return 'late'
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(concierge.Stopped): concierge.say(s, ASK, llm=f, cancel=cancel)
+    finally: never.set()
+    assert time.monotonic() - t0 < 5
+
+
+# ── the pass that only chooses a look-up asks the card's quick model; the answer keeps the model chosen for the Assistant ──────────────────
+def tiered(light='quick-model'):
+    "His HIPAA AI card with a quick model on it, and a model of its own chosen for the Assistant."
+    from taskuary import aidefaults
+    s = calendars(); c = s.get_connector_by_type('hipaa_ai')
+    s.save_connector({'ConnectorId': c['ConnectorId'], 'Active': 1, 'Secret': 'code',
+                      'ConfigJson': json.dumps({'base_url': 'https://gateway.example/v1', 'model': 'card-model', **({'light_model': light} if light else {})})}, 't')
+    p = f"connector:{c['ConnectorId']}"
+    s.set_setting(concierge.AI_KEY, p, 't'); aidefaults.keep_model(s, concierge.MODEL_KEY, 'usual-model', 't', pick=p)
+    return s
+
+def models(s, line, replies):
+    "The model each pass of the turn asked, in order, and what the turn said."
+    asked = []
+    def post(url, headers, body, *a, **k):
+        asked.append(str(body.get('model')).split('@')[0]); return answer(replies[min(len(asked), len(replies)) - 1])
+    with mock.patch.object(L, 'post_retrying', post), mock.patch('taskuary.calendar.agenda', return_value=MONDAY), \
+         mock.patch('taskuary.capabilities.has_ai', return_value=True):
+        out = concierge.say(s, line)
+    return asked, out['say']
+
+def test_the_look_up_pass_asks_the_quick_model_and_the_answer_the_usual_one():
+    asked, said = models(tiered(), ASK, [READ, 'Monday: Budget review at 10:00, then the dentist at 2:00.'])
+    assert asked == ['quick-model', 'usual-model'] and said.startswith('Monday: Budget review')
+
+def test_what_the_quick_model_says_that_is_no_look_up_is_never_his_answer():
+    asked, said = models(tiered(), 'thanks, that is all', ['A quick word.', 'You are welcome.'])
+    assert asked == ['quick-model', 'usual-model'] and said == 'You are welcome.'
+
+def test_a_card_with_no_quick_model_asks_its_one_model_once_per_pass():
+    asked, said = models(tiered(light=''), ASK, [READ, 'Monday is two meetings.'])
+    assert asked == ['usual-model', 'usual-model'] and said == 'Monday is two meetings.'

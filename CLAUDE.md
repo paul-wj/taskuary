@@ -86,6 +86,15 @@ rules below.
   and an AI step reads what it printed.
 - Guidance to an agent is general - one or two sentences where it is told its job - never a rule
   per scenario. If the prompt grows, something else in it should go.
+- **The code never tells an agent how to do its job** (the owner, 2026-11-23, said many times). An
+  agent gets CONTEXT (the owner, SOUL/JOB, memory, the task's material and history, what his screen
+  shows - as facts), TOOLS (each tool's description says what it does, never how to behave), and
+  ONE SENTENCE: do what is asked; a step that needs the owner's yes or something only they can give
+  is an action card; otherwise do not bother them. The agent decides how a turn ends. Only security
+  is hard-coded: what an agent may touch, and which acts wait for his press.
+- **A fix never adds a sentence to what an agent is told, and never adds a special case.** It
+  changes state, a tool, a card or an action - and it should delete more than it adds. A fix that
+  needs words to the agent to work is the wrong fix.
 
 ### 3. One road, less code, robust code
 
@@ -145,3 +154,68 @@ meaning and model calls that plain data could answer listed with file and line.
 - What changes what the owner sees or presses beyond these rules is asked first, in plain words.
 - Small commits straight to `master`; targeted tests locally, the full suites in CI; red CI is
   fixed forward at once, rerunning only what failed.
+- tests/contract/ is locked: no agent edits it or its LOCK without the owner's written OK.
+
+### The basic interactions (locked)
+
+How a card is raised, pressed and handed off never changes without the owner's written OK. Each
+rule below is pinned by a plain test in `tests/contract/` (the real tools and routes, no browser,
+no model); `tests/contract/LOCK` holds the hash of those files, of this section and of what every
+agent is told about its cards (`taskuary/templates/agents.md`), and `tests/test_contract_lock.py` fails
+when any of them differs. A contract test that fails is a broken
+product: fix the code, never the test.
+
+1. **Raise.** The agent supplies the content; Taskuary builds one valid card and picks the road
+   from the connection's state: connected, its press goes through the connection; not connected,
+   the post goes up through the browser at his press, with Connect beside it. A bad card (over the
+   network's limit as the network counts it, a picture that is not there) is never shown: the agent
+   is answered with the exact fix. A field the card does not draw is ignored.
+2. **Press.** Approve or Send executes exactly what was shown, once. A second press does nothing.
+   A card changed after it was shown does not run. A press after the agent stopped still executes.
+   A failed execution stays on its card, with the way past it, and its agent is woken once with what
+   failed and why. His no is told to the agent as his own.
+3. **Wake.** His press executes without waking the agent, at work or at rest, unless the card
+   carries its `then` - the agent's own next act after the press - or the execution fails. A press
+   Taskuary confirmed went is its own check: a `then` that only does what the press did (the to-do
+   the card does, which the press ticks) wakes nobody. A press with no `then` that went wakes nobody,
+   and answers the question the agent asked about that card; a bulk card's run is the same, once.
+   His Dismiss never wakes the agent: his no is told to it, as his, at its next turn. A `then` starts
+   only when every card of that task that still waits is settled.
+4. **Question.** The agent's question stands until he answers; no card is raised under it, in
+   that turn or after, until he answers; his answer reaches the agent once.
+5. **Hand-off on a page.** A step handed to him shows that step; his "I'm done" wakes the agent
+   once. The agent may open and read a connected service's site, and hand him its sign-in where
+   reading needs it; posting or sending there goes only through its card. Where a service is not
+   connected its card comes first, and its sign-in is his step only after his press. No
+   sign-in is put to him beside a card that waits: one thing is asked at a time, and what the
+   browser shows belongs to the card on his screen.
+6. **The turn's end.** Exactly one of needs-him / done / working. The chat shows words, cards and
+   files handed over on purpose; working files are kept in the task's files, not drawn; a card's
+   picture is drawn on its card only.
+7. **Restart.** A restart between a card and its press keeps all of the above.
+8. **Bulk, one component.** The agent chooses by how it calls, never a count: one call with
+   `items` (one act to many people, versions of one thing) is one card that does every item with
+   one press, exactly as shown; separate calls are separate cards, one after another. Files handed
+   over in one call are one artifact holding all of them. A review card and a file artifact are
+   drawn by the same component (`website/src/Artifact.jsx`).
+9. **Every write waits for his press.** An agent's call that writes, changes, creates, deletes or
+   sends on any connector is a card, at any Authority; nothing runs before his press. What is a
+   write is the executor's line in `scopes.ACTIONS` - one not listed is a write; a read (a query, a
+   search, a report pulling data) runs with no card. Only Taskuary's own store is written unpressed.
+   A routine's write step waits too, unless he pressed "Always approve this step" on it: that
+   routine's step, exactly as saved, then runs unpressed; any other target, executor or an agent's
+   own call during the run is a card as usual. Taken back under Settings → Agent permissions.
+10. **Cards stay** (the owner, 2026-11-26: "Things on chat don't go away. No text after an approval
+   card until the approval card is denied or approved, then the agent moves on. Cards never just
+   disappear."). Nothing drawn in the chat ever disappears, hides or moves by itself. A card raised
+   in a turn is drawn once, when that turn ends, under all its words, and nothing of the agent's is
+   drawn after a card that waits; only his own line may come after it. A press never changes which
+   tab of a card is shown, and a pressed card shows its result where it stands. Nothing he greyed is
+   raised again by Taskuary: only the agent brings it back. Unrelated acts are separate cards; tabs
+   are only for one call's set; a bulk act is one list card with its progress.
+11. **His edit is what goes** (the owner, 2026-11-26: "never even overwrite an edit of a text for any card from
+   user ... They would send email with generated email instead of their edits."). On every card with words he
+   can change, his press sends exactly what he typed, it is kept as what went, and the card shows it - before
+   the press, after it, and when it fails. Nothing writes over what he typed: no redraw, refresh, re-raise,
+   agent update or retry. Only something new (a new message on the thread) may bring the agent's rewrite, as
+   a new card beside his.

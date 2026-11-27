@@ -13,65 +13,27 @@ import pytest
 from taskuary import spawn
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='Windows taskkill behavior')
-def test_taskkill_failure_is_reported_even_if_root_fallback_stops_it():
+@pytest.mark.skipif(os.name != 'nt', reason='Windows native process-tree termination')
+def test_native_tree_failure_is_reported():
+    with mock.patch.object(spawn, '_end_tree', side_effect=PermissionError('cannot stop a descendant')):
+        with pytest.raises(PermissionError, match='cannot stop a descendant'):
+            spawn.end(1234)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows native process-tree termination')
+def test_end_does_not_report_success_while_a_child_still_runs():
     class Process:
         pid = 1234
-        alive = True
-        def poll(self): return None if self.alive else 0
-        def kill(self): self.alive = False
-    process = Process()
-    with mock.patch.object(spawn, 'run', return_value=subprocess.CompletedProcess([], 1, b'', b'failed')):
+        def poll(self): return None
+        def wait(self, timeout): raise subprocess.TimeoutExpired('fixture', timeout)
+
+    with mock.patch.object(spawn, '_end_tree'):
         with pytest.raises(RuntimeError, match='process tree'):
-            spawn.stop_tree(process)
-    assert not process.alive
-
-
-@pytest.mark.skipif(os.name != 'nt', reason='Windows taskkill behavior')
-def test_exited_process_and_pty_do_not_invoke_taskkill():
-    class Process:
-        pid = 1234
-        def poll(self): return 0
-    class Pty:
-        pid = 1235
-        def isalive(self): return False
-    with mock.patch.object(spawn, 'run', side_effect=AssertionError('already exited')):
-        spawn.stop_tree(Process())
-        spawn.stop_tree(Pty())
-
-
-@pytest.mark.skipif(os.name != 'nt', reason='Windows taskkill behavior')
-def test_taskkill_success_stops_pty_while_its_exit_is_not_yet_observed():
-    class Pty:
-        pid = 1234
-        alive = True
-        def isalive(self): return self.alive
-        def kill(self, sig): self.alive = False
-        def terminate(self, force=False):
-            if force: self.alive = False
-    process = Pty()
-    with mock.patch.object(spawn, 'run', return_value=subprocess.CompletedProcess([], 0, b'', b'')):
-        spawn.stop_tree(process)
-    assert not process.alive
-
-
-@pytest.mark.skipif(os.name != 'nt', reason='Windows taskkill behavior')
-def test_taskkill_failure_reports_live_pty_after_stopping_root():
-    class Pty:
-        pid = 1234
-        alive = True
-        def isalive(self): return self.alive
-        def kill(self, sig): self.alive = False
-        def terminate(self, force=False): self.alive = False
-    process = Pty()
-    with mock.patch.object(spawn, 'run', return_value=subprocess.CompletedProcess([], 1, b'', b'failed')):
-        with pytest.raises(RuntimeError, match='process tree'):
-            spawn.stop_tree(process)
-    assert not process.alive
+            spawn.end(Process())
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='POSIX process groups and sessions')
-def test_stop_tree_kills_detached_descendants_but_not_unrelated_process(tmp_path):
+def test_end_kills_detached_descendants_but_not_unrelated_process(tmp_path):
     release = tmp_path / 'release'
     detached_marker = tmp_path / 'detached'
     unrelated_marker = tmp_path / 'unrelated'
@@ -81,13 +43,12 @@ def test_stop_tree_kills_detached_descendants_but_not_unrelated_process(tmp_path
                               stdout=subprocess.PIPE, text=True, start_new_session=True)
     unrelated = None
     try:
-        spawn.track_tree(parent)
         unrelated = subprocess.Popen([sys.executable, fixture, 'child', str(release), str(unrelated_marker), str(tmp_path / 'unrelated-ready')],
                                      start_new_session=True)
         assert select.select([parent.stdout], [], [], 10)[0], 'detached child did not start'
         assert int(parent.stdout.readline()) > 0
         with ThreadPoolExecutor(max_workers=2) as pool:
-            list(pool.map(lambda _: spawn.stop_tree(parent), range(2)))
+            list(pool.map(lambda _: spawn.end(parent), range(2)))
         parent.wait(timeout=10)
         release.touch()
         unrelated.wait(timeout=10)

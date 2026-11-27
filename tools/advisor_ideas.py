@@ -9,9 +9,9 @@ Each idea is graded by the owner's own acts - no new button:
   taken    the owner made a task or an agent run of it, adopted its rule, or sent a reply on the task it names within a day of it
   handled  the owner put it down with Done
   wrong    the owner dismissed it (or its whole kind)
-  walked   a day went by and the owner did none of these (it is still open, or something else put it down)
+  walked   a day went by and the owner did none of these (it is still open, or something else put it down) - shown, not graded
   pending  raised less than a day ago with nothing done yet - not graded
-Useful is taken + handled; precision is useful / (useful + wrong + walked).
+Useful is taken + handled; precision is useful / (useful + wrong) - walking past is no verdict (ideagrade, 2026-11-23).
 """
 import argparse, json, os, sqlite3, sys
 from collections import Counter, defaultdict
@@ -48,7 +48,7 @@ def ideas(cx, since: str, until: str = '9999') -> list:
 def tally(xs) -> dict:
     c = Counter(i['grade'] for i in xs)
     useful, graded = c['taken'] + c['handled'], sum(c[g] for g in GRADES)
-    return {**{g: c[g] for g in GRADES}, 'pending': c['pending'], 'pct': round(100 * useful / graded) if graded else None}
+    return {**{g: c[g] for g in GRADES}, 'walked': c['walked'], 'pending': c['pending'], 'pct': round(100 * useful / graded) if graded else None}
 
 
 def line(t, since) -> str:
@@ -65,7 +65,7 @@ def report(xs, since) -> str:
         rows = [title]
         for k, v in sorted(g.items(), key=lambda kv: -len(kv[1])):
             t = tally(v)
-            rows.append(f"  {k or '(none)':<24} {'-' if t['pct'] is None else t['pct']:>4}%  " + '  '.join(f"{t[g]:>3} {g}" for g in GRADES))
+            rows.append(f"  {k or '(none)':<24} {'-' if t['pct'] is None else t['pct']:>4}%  " + '  '.join(f"{t[g]:>3} {g}" for g in (*GRADES, 'walked')))
         return rows
     out += [''] + by(lambda i: i.get('Kind') or 'idea', 'by kind:')
     if any(i['ws'] for i in xs): out += [''] + by(lambda i: i['ws'], 'by workstream:')

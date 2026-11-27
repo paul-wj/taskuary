@@ -20,10 +20,11 @@ import api from "./api";
 import { DIM, FAINT, INK } from "./theme.jsx";
 import { useVerbs } from "./actionRow.js";
 import { Md } from "./md.jsx";
-import { t } from "./i18n.js";
-import { useLocale } from "./LocaleProvider.jsx";
+import { loadWorkstreams } from "./Workstream.jsx";
 
 import { DRAFTS, STEPS, WS_LATER, canSkip, counter, skipTo, wsAnswer } from "./aboutWork.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 export { DRAFTS, MAIL_AT, STEPS, canSkip, skipTo } from "./aboutWork.js";
 
 const errText = (e) => e?.response?.data?.detail || e?.message || "That didn't work.";
@@ -133,7 +134,7 @@ export default function FirstRunAbout({ onSaved, onBack, onStep, again = false, 
   const accept = (k) => (drafts[k].state === "ready" || edited[k]) && texts[k].trim()
     ? api.post("/api/setup/first-run/about/accept", { doc: k, text: texts[k] }) : Promise.resolve();
   // ...and the workstreams under the job, sent with the same Next - still grouping, kept with the defaults once they land (wsAnswer)
-  const acceptWs = () => { const x = wsAnswer(drafts.workstreams, texts.workstreams, edited.workstreams); return x ? api.post("/api/setup/first-run/about/accept", x) : Promise.resolve(); };
+  const acceptWs = () => { const x = wsAnswer(drafts.workstreams, texts.workstreams, edited.workstreams); return x ? api.post("/api/setup/first-run/about/accept", x).then(() => { loadWorkstreams(true); }) : Promise.resolve(); };   // ...two kept here are his profiles at once: the pickers and labels read the list again
   // ON ITS STEP THE GROUPING IS UNDER WAY (the owner, 2026-11-06): queued behind the job as the mailboxes are passed; one never started
   // (setup reopened, a draft cleared) starts as the step opens - once, so a mail that shows nothing is not read over and over
   const wsStarted = useRef(false);
@@ -349,6 +350,10 @@ export function WorkstreamsConfirm({ text, onChange }) {
               {!kept ? <Typography sx={{ fontSize: 12.5, color: DIM }}>{t("Left out - Taskuary won't use this.")}</Typography> : <>
                 {r.about && <Typography sx={{ fontSize: 13, color: DIM }}>{r.about}</Typography>}
                 {r.section && <Box sx={{ mt: 0.25, "& ul": { pl: 2.5, my: 0.25 }, "& li": { fontSize: 13.5, lineHeight: 1.5 } }}><Md text={r.section} /></Box>}
+                {/* ...and, once there are two profiles, what else is this one's own: its accounts and what was learned under it (2026-11-26) */}
+                {!!r.accounts?.length && <Typography data-tq-profile-accounts="" sx={{ fontSize: 12.5, color: DIM, mt: 0.5 }}>Accounts: {r.accounts.join(", ")}</Typography>}
+                {!!r.memories?.length && <Box data-tq-profile-memories="" sx={{ mt: 0.5, "& ul": { pl: 2.5, my: 0.25 }, "& li": { fontSize: 12.5, lineHeight: 1.5, color: DIM } }}>
+                  <Typography sx={{ fontSize: 12.5, color: DIM }}>Learned here:</Typography><Md text={r.memories.map((x) => `- ${x}`).join("\n")} /></Box>}
               </>}
             </Box>
           </Box>); })}

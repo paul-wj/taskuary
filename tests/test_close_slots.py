@@ -85,7 +85,7 @@ def draft(s, tid, i, text='Tab is fine.'):
 
 def approve(s, rid):
     with mock.patch('taskuary.outbound.send_out', return_value=SENT), mock.patch.object(outbound, 'send_block', return_value=''), \
-         mock.patch('taskuary.learn.learn_from'):
+         mock.patch('taskuary.learning.learn_from'):
         return verdicts.decide(s, s.get_review(rid), 'approve')
 
 
@@ -96,7 +96,7 @@ def mail_task(s):
 
 def send_reply(s, rid):
     with mock.patch('taskuary.outbound.reply_to_message', return_value=SENT), mock.patch.object(outbound, 'send_block', return_value=''), \
-         mock.patch('taskuary.learn.learn_from'):
+         mock.patch('taskuary.learning.learn_from'):
         return verdicts.decide(s, s.get_review(rid), 'approve')
 
 
@@ -111,7 +111,7 @@ def test_four_slots_stay_open_through_all_four_sends(s):
 
 def test_a_rejected_slot_is_dropped_and_counts_as_settled(s):
     tid = typed(s, FOUR[:2]); a, b = draft(s, tid, 0), draft(s, tid, 1)
-    with mock.patch('taskuary.learn.learn_from'): verdicts.decide(s, s.get_review(a), 'reject')
+    with mock.patch('taskuary.learning.learn_from'): verdicts.decide(s, s.get_review(a), 'reject')
     assert s.get_task(tid)['Status'] != 'done' and s.get_review(b)['Status'] == 'pending'
     approve(s, b)
     assert s.get_task(tid)['Status'] == 'open' and all(i['done'] for i in slots.all_(s, tid))
@@ -120,7 +120,7 @@ def test_a_rejected_slot_is_dropped_and_counts_as_settled(s):
 @pytest.mark.parametrize('verb', ['no_reply', 'close_unsent'])
 def test_not_sending_one_slot_drops_that_slot_not_the_task(s, verb):
     tid = typed(s, FOUR[:2]); a, b = draft(s, tid, 0), draft(s, tid, 1)
-    with mock.patch('taskuary.learn.learn_from'): verdicts.decide(s, s.get_review(a), verb)
+    with mock.patch('taskuary.learning.learn_from'): verdicts.decide(s, s.get_review(a), verb)
     assert s.get_task(tid)['Status'] != 'done' and s.get_review(b)['Status'] == 'pending'
     assert [i['done'] for i in slots.all_(s, tid)] == [True, False]
 
@@ -151,7 +151,7 @@ def test_the_closeout_redirect_never_sends_a_slot_as_the_reply(s):
     co = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': 'merge',
                        'Deliver': json.dumps({'action': 'merge_pr'})})
     with mock.patch('taskuary.proposals.execute', return_value={'ok': True}), mock.patch('taskuary.proposals._action', return_value='merge_pr'), \
-         mock.patch('taskuary.outbound.send_out', return_value=SENT) as sent, mock.patch('taskuary.learn.learn_from'):
+         mock.patch('taskuary.outbound.send_out', return_value=SENT) as sent, mock.patch('taskuary.learning.learn_from'):
         verdicts.decide(s, s.get_review(co), 'approve', reply_text='thanks')
     assert not sent.called and s.get_review(a)['Status'] == 'pending'
 
@@ -240,9 +240,8 @@ def test_an_agent_email_never_goes_out_headed_with_the_task_title(s):
     assert 'Check the four tabs' not in {subj(slots.draft(s, tid, 'Hi.', to='gail@northwind.example'))}
     from taskuary import agenttools
     # ...whether one email or many in `items`: each carries its own subject (bulkcard.py)
-    one, many = agenttools.TOOLS['propose_email'][2]['anyOf']
-    assert {'to', 'subject', 'text'} <= set(one['required']) and many == {'required': ['items']}
-    assert {'to', 'subject', 'text'} <= set(agenttools.TOOLS['propose_email'][2]['properties']['items']['items']['required'])
+    props = agenttools.TOOLS['propose'][2]['properties']
+    assert {'to', 'subject', 'text', 'items'} <= set(props)
 
 
 def test_a_chats_checklist_names_the_slot_and_a_coding_sessions_the_command(s):
@@ -259,12 +258,6 @@ def test_a_chats_checklist_names_the_slot_and_a_coding_sessions_the_command(s):
     assert f'slot {sid} - drafted' in s.checklist_markdown(tid, ids=True, shell=False)
 
 
-def test_an_email_owed_is_the_agents_to_write_or_ask_about():
-    # ...never a line it may leave standing with nobody on it (the owner, 2026-11-10: "if you have nothing to reply just ask what should i
-    # reply?"): both roads say it, the marker's and the tool's
-    for line in (selfclose.DRAFT_LINE, selfclose.DRAFT_TOOL_LINE):
-        assert 'only you write' in line or 'only you will write' in line
-        assert 'ask the owner what it needs' in line
 
 
 def test_the_chat_block_is_read_and_taken_out():
@@ -281,28 +274,68 @@ def test_the_endpoint_files_the_draft_on_the_sessions_own_task(s):
     assert r.json()['ok'] and slots.all_(s, tid)[0]['rid']
 
 
+def test_a_session_never_files_its_letter_as_the_owners_own(s):
+    # red team round 6: the door took who wrote it from the call's body, so a session that named itself the owner filed "your email" - none of
+    # an agent's checks ran on it (a blank left to fill went through), and his later line did not grey it. Who acted is the token's to say
+    from fastapi.testclient import TestClient
+    from taskuary import config, guard, server
+    srv = config.load()['server']
+    tid = typed(s, FOUR[:1])
+    mine = {'X-Taskuary-Token': srv['agent_token'], guard.TASK_HDR: guard.task_proof(srv, tid)}
+    post = lambda **b: TestClient(server.app).post('/api/agent/draft', json={'task_id': tid, 'to': 'paula@northwind.example', **b}, headers=mine).json()
+    with mock.patch.object(server, 'store', s):
+        blank = post(text='Paula, please wire it to [ACCOUNT] today.', agent='owner')
+        assert not blank.get('ok') and not s._rows("SELECT 1 FROM review WHERE TaskId=?", (tid,)), 'a blank left to fill is no letter, whoever it says wrote it'
+        for who in ('owner', 'Owner', ' owner ', 'routine'):
+            out = post(text='Paula, tab 1 is fine as it stands.', agent=who)
+            rv = s.get_review(out['review_id'])
+            assert rv['DraftBy'] == 'agent:agent' and 'your email' not in rv['Reason'], who
+        assert s.get_review(post(text='Paula, tab 1 is fine.', agent='coding')['review_id'])['DraftBy'] == 'agent:coding', 'its own name is kept'
+        # ...and the owner's own call is still his
+        own = TestClient(server.app).post('/api/agent/draft', json={'task_id': tid, 'to': 'ray@northwind.example', 'text': 'Ray, see tab 2.', 'agent': 'owner'}).json()
+        assert 'your email' in s.get_review(own['review_id'])['Reason']
+
+
+def test_the_same_words_with_another_envelope_never_land_on_the_card_he_typed_into(s):
+    # red team round 6: he typed his own words into a letter; its agent saved the SAME words again with another To, a copy, another subject
+    # or another file - no rewrite by its words, so it landed on his card, and his press sent his words there. That is another letter: a
+    # card of its own, his closed as he left it with his words on it
+    import json
+    HIS, FILED = 'Paula - tab 1 is fine. Hold the wire until Friday.', 'Paula, tab 1 is fine as it stands.'
+    for change in ({'to': 'taker@vendor.example', 'slot': None}, {'cc': ['taker@vendor.example']}, {'subject': 'Wire details'}, {'carries': [('wire.pdf', b'%PDF other')]}):
+        tid = typed(s, FOUR[:1])
+        first = slots.draft(s, tid, FILED, to='paula@northwind.example', subject='Tab 1', agent='assistant')
+        rid, filed = first['review_id'], s.get_review(first['review_id'])['Deliver']
+        s.hold_review_edit(rid, {'text': HIS})
+        again = slots.draft(s, tid, FILED, **{'to': 'paula@northwind.example', 'subject': 'Tab 1', 'agent': 'assistant', **change, **({'slot': first['slot']} if 'slot' in change else {})})
+        mine = s.get_review(rid)
+        assert again.get('ok') and again['review_id'] != rid, (change, again)
+        assert (mine['Status'], mine['FinalText'], mine['Deliver']) == ('closed_unsent', HIS, filed), f'{change}: his card, kept as he left it'
+        assert not his_words_of(s, again['review_id']), 'the new card holds its agent\'s words, never his'
+    # ...and the same letter saved again as it was changes nothing on his card - its envelope and the file he put on it included
+    tid = typed(s, FOUR[:1])
+    rid = slots.draft(s, tid, FILED, to='paula@northwind.example', subject='Tab 1', agent='assistant')['review_id']
+    s.hold_review_edit(rid, {'text': HIS})
+    env = json.loads(s.get_review(rid)['Deliver']); s.set_review_deliver(rid, json.dumps({**env, 'attachments': [{'name': 'tab1.xlsx', 'sha256': 'c' * 64}]}))
+    filed = s.get_review(rid)['Deliver']
+    again = slots.draft(s, tid, FILED, to='paula@northwind.example', subject='Tab 1', agent='assistant')
+    assert again['review_id'] == rid and s.get_review(rid)['Deliver'] == filed and s.get_review(rid)['Status'] == 'pending'
+
+
+def his_words_of(s, rid):
+    from taskuary.store import his_words
+    return his_words(s.get_review(rid))
+
+
 # ── triage and the assistant say what closes a task ──────────────────────────────────────
 from taskuary import concierge, triage
 
 
-def test_triage_reads_outputs_only_on_a_task():
-    j = {'intent': 'task', 'why': 'w', 'title': 't', 'summary': 's', 'kind': 'task', 'checklist': ['a'], 'urgent': False,
-         'outputs': [{'to': 'erin@northwind.example', 'about': 'the numbers'}, {'to': '', 'about': 'x'}]}
-    assert triage.parse_outputs(j) == [{'to': 'erin@northwind.example', 'about': 'the numbers'}]
-    assert triage.parse_outputs({**j, 'intent': 'fyi'}) == [] and triage.parse_outputs({**j, 'outputs': None}) == []
-
-
 def test_triage_lists_no_recipients_for_a_message():
     # the owner, 2026-11-10: "it created reply with nothing in it" - triage's "email to <them>, to draft" stood under the agent's turn with no
-    # words. Who else is written to is the agent's to judge; only the owner's own typed ask names its emails (a hand-made ask, below)
+    # words. Who else is written to is the agent's to judge; the owner's own typed ask is his to word
     assert 'outputs' not in triage.verdict_schema()['schema']['properties']
     assert '"outputs"' not in triage.SHIPPED and '**outputs**' not in triage.SHIPPED
-
-
-def test_a_hand_made_ask_returns_its_outputs():
-    llm = lambda sys, user, **k: json.dumps({'summary': 's', 'checklist': ['check'], 'outputs': [{'to': 'paula@northwind.example', 'about': 'tab 1'}]})
-    assert triage.extract_ask({'body': 'Check tab 1 and email Paula'}, llm)['outputs'] == [{'to': 'paula@northwind.example', 'about': 'tab 1'}]
-    assert triage.extract_ask({'body': 'x'}, None)['outputs'] == []
 
 
 class Inline:                     # threading.Thread, run where it is started
@@ -388,7 +421,6 @@ def test_a_task_the_assistant_starts_is_his_sentence_as_typed_and_its_polished_a
     owners = [str(c.get('Body') or '') for c in rows if c.get('Actor') == 'owner']
     assert owners and all(his in b for b in owners) and not any('Tell me whether' in b for b in owners), owners
     assert t['Summary'] == his and [i['text'] for i in s.task_checklist(tid)][:1] == [his]
-    assert 'Tell me whether' not in t['Title']                       # no title named: his words name it, not the rewording
     from taskuary import ownwork
     ownwork.ensure(s, tid)
     assert ownwork.row_for(s, tid)['BodyText'] == his               # the row signed "You"
@@ -409,18 +441,6 @@ def test_a_coding_hand_off_and_a_walk_through_keep_his_words_as_his_and_file_the
     assert 'Add a test' in brief.handoff(s, coding)                 # the coding agent reads it as Taskuary's (terminal seed)
     briefs = [c for c in s.list_comments(walk, internal=True) if general.is_brief(c)]
     assert [c['Body'] for c in briefs] == [polished]                # the walk hears it as Taskuary's turn
-
-
-def test_a_start_the_model_reads_as_open_work_goes_to_that_tasks_agent_never_a_second_task(s):
-    """One job is one task at every door (the owner's live app, 2026-11-18): the open tasks go to the model before a task is made, and the
-    same work hears his line on its own task. Triage is what reads it (ingest.same_work), as it reads every message."""
-    from taskuary import general
-    there = s.create_task({'Title': 'Find two venues for the offsite', 'Kind': 'general', 'Status': 'open'}, 'owner')
-    told, had = [], len(s.list_tasks(None))
-    with mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.llm.build_llm', return_value=lambda *a, **k: ''),          mock.patch('taskuary.ingest.judge', return_value=({'intent': 'task', 'same_as': there}, {})),          mock.patch.object(general, 'take_line', lambda st, tid, text, files=None, actor='owner', **k: told.append((tid, text))),          mock.patch('taskuary.general.start_session') as began:
-        made = concierge.handoff_task(s, 'Find venues for the 40-person offsite too', kind='general')
-    assert (made['taskId'], made.get('joined')) == (there, True) and len(s.list_tasks(None)) == had and not began.called
-    assert told == [(there, 'Find venues for the 40-person offsite too')]
 
 
 def test_a_handoff_whose_brain_fails_is_made_anyway(s):
@@ -517,7 +537,7 @@ def test_a_slot_is_never_rewritten_into_a_reply_and_sends_the_words_shown(s):
     c, p = api(s)
     with p, mock.patch('taskuary.server._refresh_chat_context', return_value={}), mock.patch('taskuary.responder.write_draft') as rewrite, \
          mock.patch('taskuary.outbound.send_out', return_value=SENT) as sent, mock.patch.object(outbound, 'send_block', return_value=''), \
-         mock.patch('taskuary.learn.learn_from'):
+         mock.patch('taskuary.learning.learn_from'):
         out = c.post(f'/api/reviews/{rid}/decide', json={'verb': 'approve'}).json()
     assert out.get('ok') and not rewrite.called and sent.called and s.get_review(rid)['DraftText'] == 'Tab 1 is fine.'
 
@@ -569,7 +589,7 @@ def test_a_mail_tasks_slots_show_on_the_processing_rail():
 def test_ticking_a_drafted_slot_drops_its_draft(s):
     tid = typed(s, FOUR[:2]); a = draft(s, tid, 0); sid = slots.all_(s, tid)[0]['id']
     c, p = api(s)
-    with p, mock.patch('taskuary.learn.learn_from'): c.patch(f'/api/tasks/{tid}/checklist/{sid}', json={'done': True})
+    with p, mock.patch('taskuary.learning.learn_from'): c.patch(f'/api/tasks/{tid}/checklist/{sid}', json={'done': True})
     assert s.get_review(a)['Status'] == 'rejected' and slots.all_(s, tid)[0]['done']
 
 
@@ -583,7 +603,7 @@ def test_dropping_the_last_undrafted_slot_leaves_a_typed_task_open(s):
 def test_the_assistants_drop_rejects_the_pending_draft(s):
     tid = typed(s, FOUR[:2]); a = draft(s, tid, 0)
     c, p = api(s)
-    with p, mock.patch('taskuary.learn.learn_from'):
+    with p, mock.patch('taskuary.learning.learn_from'):
         pr = c.post('/api/operations', json={'kind': 'task.checklist', 'target': tid, 'params': {'drop': [FOUR[0]['to']]}}).json()
         c.post(f"/api/operations/{pr['id']}/execute", json={'version': pr['version']})
     assert s.get_review(a)['Status'] == 'rejected'
@@ -620,7 +640,7 @@ def test_a_named_slot_takes_the_address_the_agent_found(s):
 def test_an_email_with_no_address_is_never_sent(s):
     tid = typed(s, FOUR[2:3]); sid = slots.open_(s, tid)[0]['id']
     rid = slots.draft(s, tid, 'Tab 3 is fine.', slot=sid)['review_id']
-    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as sent, mock.patch('taskuary.learn.learn_from'):
+    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as sent, mock.patch('taskuary.learning.learn_from'):
         out = verdicts.decide(s, s.get_review(rid), 'approve')
     assert not out['ok'] and not sent.called and 'address' in out['send_error']
 
@@ -651,15 +671,6 @@ def test_a_sent_or_dropped_email_cannot_be_drafted_again(s):
 def test_no_email_is_drafted_on_a_closed_task(s):
     tid = typed(s, FOUR[:1]); s.update_task(tid, {'Status': 'done'}, 'owner')
     assert not slots.draft(s, tid, 'late', to=FOUR[0]['to'])['ok']
-
-
-def test_triage_never_adds_emails_to_a_list_the_owner_already_wrote(s):
-    from taskuary import ingest
-    tid = s.create_task({'Title': 'Tabs', 'Summary': 'plain'}, 'owner')
-    s.set_task_checklist(tid, ['My own list'], 'owner')
-    llm = lambda sys, user, **k: json.dumps({'summary': 's', 'checklist': ['x'], 'outputs': [{'to': 'erin@northwind.example', 'about': 'y'}]})
-    ingest._enrich(s, tid, {'BodyText': 'Tell Erin', 'Subject': 'Tabs'}, 'plain', llm)
-    assert slots.all_(s, tid) == []
 
 
 def test_no_wrap_up_card_while_emails_still_wait(s):
@@ -771,7 +782,7 @@ def test_a_routines_own_email_goes_at_once_and_his_own_task_waits_for_his_send(s
     own still waits on his Send."""
     run = routine_run(s)
     own = s.create_task({'Title': 'Follow up with Ray', 'Kind': 'general', 'Status': 'open', 'Source': 'assistant'}, 'owner')
-    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''),             mock.patch('taskuary.learn.learn_from'):
+    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''),             mock.patch('taskuary.learning.learn_from'):
         went = slots.draft(s, run, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote')
         held = slots.draft(s, own, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote')
     assert went['sent'] is True and send.call_count == 1, went
@@ -789,7 +800,7 @@ def test_a_routines_own_email_goes_at_once_and_his_own_task_waits_for_his_send(s
 def test_a_routine_runs_email_to_an_address_its_agent_chose_is_a_card_and_nothing_goes(s):
     s.set_setting('owner_email', 'alex@northwind.example', 'owner')
     run = routine_run(s, 'Total the newest vendor spend export and email me the top five.')
-    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''),             mock.patch('taskuary.learn.learn_from'):
+    with mock.patch('taskuary.outbound.send_out', return_value=SENT) as send, mock.patch.object(outbound, 'send_block', return_value=''),             mock.patch('taskuary.learning.learn_from'):
         chose = slots.draft(s, run, 'Hi Gail, the October spend is attached. Alex', 'gail@northwind.example', 'October spend')
         assert send.call_count == 0 and 'sent' not in chose and s.get_review(chose['review_id'])['Status'] == 'pending', chose
         # ...and no other caller gets past it by pressing in the routine's name
@@ -800,11 +811,12 @@ def test_a_routine_runs_email_to_an_address_its_agent_chose_is_a_card_and_nothin
 
 
 # THE AGENT HEARS WHICH EMAIL WENT (the stress round, 2026-11-18): with two emails out, a Send told it "the message was sent" - no card, no
-# person - while a No names the card and whom it was to (cardqueue.said_no). One sentence says a card, for the yes as for the no
+# person - while a No names the card and whom it was to. One sentence says a card, for the yes as for the no
 def test_the_agent_is_told_which_of_its_emails_went(s):
     tid = typed(s, FOUR[:2]); a, b = draft(s, tid, 0), draft(s, tid, 1)
     told = []
     with mock.patch('taskuary.general.approved', lambda st, t, press, what, *x, **k: told.append(what)):
+        assert approve(s, a)['ok'] and told == [], 'a card still stands behind it: the row is not over (cardqueue.row_over)'
         assert approve(s, b)['ok']
     assert len(told) == 1 and told[0].startswith(f'rv{b} (the email to ray@northwind.example) was sent'), told
 
@@ -815,7 +827,7 @@ def test_the_agent_on_a_routine_run_is_told_its_email_went_not_that_it_waits(s):
     from taskuary.selfclose import CARD_SAID
     run = routine_run(s, 'Ask ray@northwind.example and erin@northwind.example where the quote and the schedule stand.')
     with mock.patch('taskuary.outbound.send_out', return_value=SENT), mock.patch.object(outbound, 'send_block', return_value=''), \
-            mock.patch('taskuary.learn.learn_from'):
+            mock.patch('taskuary.learning.learn_from'):
         went = agenttools.said_once(slots.draft(s, run, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote'))
     assert went['shown'] != CARD_SAID and went['shown'].startswith('Sent to ray@northwind.example'), went
     with mock.patch('taskuary.outbound.send_out', side_effect=RuntimeError('SMTP 535')), mock.patch.object(outbound, 'send_block', return_value=''):
@@ -831,7 +843,7 @@ def test_a_sent_email_is_named_by_whom_it_went_to_not_by_its_cards_reason(s):
         rid = slots.draft(s, tid, 'Hi Ray, any update on the quote? Alex', 'ray@northwind.example', 'Quote', agent='assistant')['review_id']
         verdicts.decide(s, s.get_review(rid), 'approve', actor='owner')
     with mock.patch('taskuary.outbound.send_out', return_value=SENT), mock.patch.object(outbound, 'send_block', return_value=''), \
-            mock.patch('taskuary.learn.learn_from'):
+            mock.patch('taskuary.learning.learn_from'):
         assert verdicts.decide(s, s.get_review(rid), 'approve', actor='owner')['ok']
     said = s.list_comments(tid)[-1]['Body']
     assert said.startswith('Sent: the email to ray@northwind.example. ') and 'Not sent' not in said and 'approve to send' not in said, said

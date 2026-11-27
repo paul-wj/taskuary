@@ -9,6 +9,11 @@ import { t } from "./i18n.js";
 export const deliveryMeta = (review) => {
   try { return JSON.parse(review?.Deliver || "null") || {}; } catch { return {}; }
 };
+// THE ENVELOPE AS THIS CARD DREW IT, sent with its press (proposals.unlike_shown): who it goes to and who is copied, its subject, the mailbox
+// it leaves from and each file on it - one changed on the server since is not what he read, and the press does not send under it
+export const drawnEnvelope = (review) => { const m = deliveryMeta(review);
+  return { to: m.to ?? null, cc: m.cc ?? null, subject: m.subject ?? null, mailbox: m.mailbox ?? null,
+    attachments: (Array.isArray(m.attachments) ? m.attachments : []).map((f) => ({ name: f?.name || "", sha256: f?.sha256 || "" })) }; };
 // WHAT A PRESS OF THE CARD DOES, IN ITS OWN WORDS (the owner, 2026-11-16: "Accept and close" said "Sending…", then "Checking delivery…", then
 // "Sent by email" over an invite he accepted): a calendar card's act - Accepting… / Accepted - and every other card's send (buttons.json states)
 const CAL_VERB = { accept: "accept_invite", decline: "decline_invite", propose: "propose_time" };
@@ -76,3 +81,13 @@ export const sentTo = (review) => { const cc = deliveryCc(review); return `${rep
 // `text`: the words that went where the review has not been read again yet
 export const sentCardOf = (review, text = "") => ({ id: review.ReviewId, text: text || review.FinalText || review.DraftText, channel: review.Channel || "",
   done: pressWords(review).sentAs, to: sentTo(review), subject: deliverySubject(review), at: review.DecidedAt });
+// THE VERSIONS OF A LETTER ITS AGENT GAVE FOR HIM TO PICK FROM (agenttools._many: one call's `items` for one letter - walk 22, 2026-11-25): its
+// own list, [] for a letter of one. And the pick the card draws for them - one field, as its other picks are: which one the box holds now
+// ("Your words" once he changed it), and a pick puts that version in the box
+export const versionsOf = (review) => { try { const v = JSON.parse(review?.Versions || "[]"); return Array.isArray(v) && v.length > 1 ? v.map(String) : []; } catch { return []; } };
+export const versionPick = (versions, text, editable, onPick) => {
+  if (versions.length < 2) return [];
+  const at = versions.indexOf(String(text ?? ""));
+  return [{ key: "version", type: "choice", label: "Version", value: at < 0 ? "" : at, editable, onChange: (i) => { if (i !== "") onPick(versions[Number(i)]); },
+    choices: [...versions.map((_, i) => ({ value: i, label: `Version ${i + 1} of ${versions.length}` })), ...(at < 0 ? [{ value: "", label: "Your words" }] : [])] }];
+};

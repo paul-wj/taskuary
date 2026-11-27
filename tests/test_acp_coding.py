@@ -8,9 +8,9 @@ from unittest import mock
 
 import pytest
 
-from taskuary import acpcoding, agents, blackboard, codingchat, devphone, general, peers, permissions, session_artifacts, shellgate, terminal, waitroom
+from taskuary import acpcoding, agents, blackboard, chatlog, codingchat, devphone, general, peers, permissions, session_artifacts, shellgate, terminal, waitroom
 from taskuary.store import MemoryStore
-from taskuary import llm, origin
+from taskuary import cardqueue, llm, origin
 
 pytestmark = pytest.mark.acp
 FAKE = [sys.executable, str(Path(__file__).parent / 'fake_acp_server.py')]
@@ -89,8 +89,8 @@ def test_a_coding_task_on_claude_runs_over_acp_and_its_turn_is_the_chat(world, m
     assert first['sessionUpdate'] == 'user_message_chunk' and first['_meta'] == {'taskuary': 'brief'} and 'one-line comment' in first['content']['text']
     assert all(u.get('_at') for u in ups)                                            # stamped: the chat places each turn under its mail
     assert any(b.get('type') == 'diff' for u in ups if u['sessionUpdate'] == 'tool_call_update' for b in u.get('content') or [])
-    chat = codingchat.chat(s, tid)
-    assert chat['sessions'][-1]['source'] == 'acp' and chat['live']['transport'] == 'acp' and chat['live']['terminal']
+    live = chatlog.serve(s, tid)['live']
+    assert codingchat.sessions(s, tid)[-1]['source'] == 'acp' and live['transport'] == 'acp' and live['terminal']
     assert t.ext_id == 'sess_fake_1' and s.resumable_session(tid)['ExtId'] == 'sess_fake_1'
     # its Terminal: the command and its streamed output, never a blank pane
     assert '$' in t.scrollback() and 'git status --short' in t.scrollback() and 'M totals.py' in t.scrollback()
@@ -157,7 +157,7 @@ def test_the_box_while_it_works_waits_and_goes_in_as_one_prompt_and_stop_cancels
 
 def test_a_line_typed_while_it_works_is_kept_shown_and_taken_by_the_next_turn(world, monkeypatch):
     """The owner, 2026-11-08: "i asked another question and the text was never sent into the prompt". A line typed mid-turn - in the chat's box
-    or the session's Terminal - is the waiting room's: on the task, drawn as theirs on every screen (codingchat `waiting`), and the next turn's.
+    or the session's Terminal - is the waiting room's: on the task, drawn as theirs on every screen (the chat's `pending`), and the next turn's.
     And the chat's clock counts from this turn's start, never the session's or the owner's line days back (codingchat.live_of `turnStarted`)."""
     s, tid, repo = world
     monkeypatch.setenv('FAKE_ACP_HANG', '1')
@@ -167,11 +167,12 @@ def test_a_line_typed_while_it_works_is_kept_shown_and_taken_by_the_next_turn(wo
     live = codingchat.live_of(t)
     assert live['working'] and abs(live['turnStarted'] - (time.time() - 5)) < 2
     t.write('was this code completed?\r')                                                   # ...typed in its Terminal
-    assert until(lambda: [w['text'] for w in codingchat.chat(s, tid)['waiting']] == ['was this code completed?'])
+    waiting = lambda: [p['text'] for p in chatlog.serve(s, tid)['pending'] if p['kind'] == 'line']
+    assert until(lambda: waiting() == ['was this code completed?'])
     assert [w['text'] for w in general.waiting_lines(s, tid)] == ['was this code completed?']        # kept as the owner's (general.take_line)
     assert t.cancel() and idle(t, 2)
     assert until(lambda: 'was this code completed?' in ' '.join([x for k, x in t.history if k == 'said'][-1].split()))
-    assert codingchat.chat(s, tid)['waiting'] == []
+    assert waiting() == []
     ups = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'user_message_chunk']
     assert any(u['content']['text'] == 'was this code completed?' and u['_meta']['taskuary'] == 'owner' for u in ups)      # drawn as theirs
 
@@ -215,6 +216,32 @@ def test_an_agent_that_dies_mid_turn_is_said_as_a_chat_cli_that_did(world, monke
     [e] = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'error']
     # ...and nothing of the process after it: "(the agent exited)" is the log's (the overnight walk, 2026-11-11)
     assert e['content']['text'] == f'{MID_TURN}.', e['content']['text']
+
+
+# THE SAME DEATH ONE LAYER DOWN (walk 16): a Codex adapter outlives its app-server and answers the prompt with an error carrying the server's
+# stderr - and the first line of it, a deprecation warning the run had gone on past, stood on his screen as the cause
+DEAD_SERVER = ('The Codex app-server exited with code 4294967295. The agent starts it again on the next request. 2026-11-24T10:37:48Z ERROR '
+               'codex_app_server: `[features].multi_agent` is deprecated. It still controls the V1 fallback.')
+
+
+def test_an_adapter_that_answers_its_turn_with_its_servers_death_is_said_as_the_death(world, monkeypatch, tmp_path):
+    from taskuary.clipool import MID_TURN
+    s, tid, repo = world
+    (script := tmp_path / 'script.json').write_text(json.dumps([{'when': 'break now', 'error': DEAD_SERVER}]))
+    monkeypatch.setenv('FAKE_ACP_SCRIPT', str(script))
+    t = open_(s, tid, repo, seed='break now')
+    assert until(lambda: any(u['sessionUpdate'] == 'error' for u in codingchat.acp_updates(tid, t.sid)))
+    [e] = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'error']
+    assert e['content']['text'] == f'{MID_TURN}.', e['content']['text']
+
+
+def test_a_turn_error_reads_as_the_death_only_where_it_names_no_provider_status():
+    from taskuary import acp, agents
+    from taskuary.clipool import MID_TURN
+    def err(msg, method='session/prompt'): e = acp.ACPAgentError(f'{method}: {msg}'); e.method = method; return e
+    assert str(agents.prompt_failure('codex', err(DEAD_SERVER), sid='s1')) == MID_TURN
+    assert agents.prompt_failure('claude', err('Internal error: API Error: 529 Overloaded')) is None, "a provider's status is the provider's"
+    assert agents.prompt_failure('codex', err(DEAD_SERVER, 'session/new')) is None, 'no turn was on'
 
 
 def test_a_line_typed_after_the_agent_died_reopens_its_conversation_without_saying_he_pressed_resume(world, monkeypatch, tmp_path):
@@ -368,9 +395,9 @@ def test_a_coding_session_idle_past_its_period_closes_quietly_and_the_next_input
     assert acpcoding.idle_sweep() == [tid]
     assert not t.alive and t.sid not in terminal.SESSIONS and acpcoding.idled(tid, s)
     assert [c['Body'] for c in s.list_comments(tid)] == said_before                                     # not a word on the task
-    chat = codingchat.chat(s, tid)
-    assert chat['live'] and chat['live']['sid'] == sid and not chat['live']['working']                  # the same chat, at rest
-    assert any(x['sid'] == sid and x['source'] == 'acp' for x in chat['sessions'])
+    d = chatlog.serve(s, tid)
+    assert not d['working'] and not (d['live'] or {}).get('working') and d['ran']                         # the same chat, at rest
+    assert any(x['sid'] == sid and x['source'] == 'acp' for x in codingchat.sessions(s, tid))
     monkeypatch.setattr(clipool, 'IDLE_SECONDS', 30 * 60); monkeypatch.setattr(waitroom, 'later', later)
     waitroom.add(s, tid, 'now round the tax', 'owner')
     q = terminal.session_for(tid)
@@ -387,7 +414,7 @@ def test_the_plan_it_writes_is_in_the_coding_chat(world, monkeypatch):
     s, tid, repo = world
     monkeypatch.setenv('FAKE_ACP_CODE', str(repo / 'totals.py'))
     t = open_(s, tid, repo); assert idle(t)
-    ups = codingchat.chat(s, tid)['sessions'][-1]['updates']
+    ups = codingchat.sessions(s, tid)[-1]['updates']
     plans = [u for u in ups if u['sessionUpdate'] == 'plan']
     assert len(plans) == 2
     assert [(e['content'], e['status']) for e in plans[-1]['entries']] == [('Read the file', 'completed'), ('Add the comment', 'completed')]
@@ -412,6 +439,7 @@ def test_an_adapter_that_will_not_start_is_todays_terminal_said_once(world, monk
     assert isinstance(t, acpcoding.ACPCoding)
     assert until(lambda: 'pty-1' in terminal.SESSIONS) and t.sid not in terminal.SESSIONS
     pane = terminal.SESSIONS['pty-1']
+    until(lambda: pane.seeded)                            # ...registered a beat before its seed is typed in
     assert pane.seeded == 'add a one-line comment to the top of totals.py'             # the same seed, typed in as today
     assert any('did not start over ACP' in (c.get('Body') or '') and 'its terminal' in (c.get('Body') or '') for c in s.list_comments(tid))
     assert acpcoding.FELL_BACK == {'claude'}
@@ -513,42 +541,26 @@ def test_a_user_role_update_the_adapter_sent_itself_is_the_agents_not_the_owners
     s.add_comment(tid, 'owner', general.USER_TYPE, 'is the tax line right?')          # a line he typed, kept as his
     codingchat.record_update(tid, t.sid, {'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': 'is the tax line right?'}})
     codingchat.record_update(tid, t.sid, {'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': 'Compacted the conversation.'}})
-    ups = [u for ss in codingchat.chat(s, tid)['sessions'] for u in ss.get('updates') or [] if u['sessionUpdate'] == 'user_message_chunk']
+    ups = [u for ss in codingchat.owned(s, tid, codingchat.sessions(s, tid)) for u in ss.get('updates') or [] if u['sessionUpdate'] == 'user_message_chunk']
     who = {u['content']['text']: u['_meta']['taskuary'] for u in ups}
     assert who['is the tax line right?'] == 'owner' and who['Compacted the conversation.'] == 'agent'
 
 
-def test_a_coding_agent_is_told_its_duties_about_drafts_once_and_each_turn_after_carries_the_facts_alone(world, monkeypatch):
-    """The recorded walk, 2026-11-11: a coding agent said "the draft still waits on your Send" in every turn - each turn's facts came with the
-    rules again (latest wins, how to withdraw). Told once, as a chat's agent is (selfclose.DRAFTS_ONCE); a turn carries what is new."""
-    from taskuary import acp, selfclose
-    s, tid, repo = world
-    told, real = [], acp.ACPClient.prompt
-    monkeypatch.setattr(acp.ACPClient, 'prompt', lambda self, text, sent=None: (told.append(text), real(self, text, sent=sent))[1])
-    t = open_(s, tid, repo, seed='look at the totals'); assert idle(t)
-    # ...the mail and its draft after the session began (a sender nobody vouched for changes how a session is opened - not this test's)
-    mid = s.add_message({'TaskId': tid, 'ExternalId': 'm1', 'ConversationId': 'c1', 'Channel': 'email', 'Subject': 'Ledger totals', 'Status': 'routed',
-                         'BodyText': 'What does total() return?', 'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example'})
-    s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'Channel': 'email', 'DraftText': 'Hi Gail, the sum plus tax. Alex'})
-    for n, w in enumerate(('and the tax line?', 'thanks'), 2): t.prompt(w); assert idle(t, n)
-    assert len(told) == 3 and all('the sum plus tax' in x for x in told[1:]), told    # ...the draft in each turn's facts: waiting, then set aside
-    assert [x.count(selfclose.WITHDRAW_LINE) for x in told] == [0, 1, 0] and [x.count(selfclose.LATEST_LINE) for x in told] == [0, 1, 0]
-    assert not any(selfclose.NO_NEW_LINE in x for x in told)
 
 
 def test_a_memory_line_learned_mid_conversation_leads_the_coding_sessions_next_turn_once(world, monkeypatch):
     """The memory round, 2026-11-14: a fact the owner told while a CODING session ran never reached it - a chat's kept conversation is told
     what changed at the head of its next turn (general.freeze), a coding session only what its opening brief had read. The same road: the
     lines new since the session began lead its next turn once, and one taken back is named as taken back."""
-    from taskuary import acp, memoryedit
+    from taskuary import acp, memory
     s, tid, repo = world
     told, real = [], acp.ACPClient.prompt
     monkeypatch.setattr(acp.ACPClient, 'prompt', lambda self, text, sent=None: (told.append(text), real(self, text, sent=sent))[1])
-    memoryedit.remember(s, 'Ledger questions go to Gail Moreno')
+    memory.remember(s, 'Ledger questions go to Gail Moreno', 'who takes ledger questions')
     t = open_(s, tid, repo, seed='look at the totals'); assert idle(t)
     t.prompt('and the tax line?'); assert idle(t, 2)
     assert not any(general.UPDATED in x for x in told), 'nothing changed: nothing is said'
-    memoryedit.remember(s, 'Gail Moreno moved to payroll: ledger questions go to Ray Colton now', replaces='Ledger questions go to Gail Moreno')
+    memory.remember(s, 'Gail Moreno moved to payroll: ledger questions go to Ray Colton now', 'who takes ledger questions')
     t.prompt('who should review this?'); assert idle(t, 3)
     assert general.UPDATED in told[2] and 'ledger questions go to Ray Colton now' in told[2], told[2]
     assert general.UNLEARNED + chr(10) + '- Ledger questions go to Gail Moreno' in told[2]
@@ -556,7 +568,7 @@ def test_a_memory_line_learned_mid_conversation_leads_the_coding_sessions_next_t
     assert general.UPDATED not in told[3], 'said once'
     # ...and never on a stranger's task: what the owner knows is not theirs to read back (general.prompt_parts keeps the same distance)
     monkeypatch.setattr(origin, 'of_task', lambda *a, **k: ('stranger', ''))
-    memoryedit.remember(s, 'The ledger freezes on the third working day')
+    memory.remember(s, 'The ledger freezes on the third working day')
     t.prompt('one more'); assert idle(t, 5)
     assert general.UPDATED not in told[4] and 'third working day' not in told[4]
 
@@ -565,11 +577,11 @@ def test_the_taskuary_command_is_in_reach_of_every_session_however_the_app_was_s
     """The recorded walk, 2026-11-11: a coding agent told the owner "the taskuary command is not installed in this shell, so I could not read
     the board" - its rules send it to `taskuary --board`, and the app had been started by its interpreter with no such script on PATH."""
     import shutil
-    from taskuary import config, gatecmd
-    monkeypatch.setattr(config, 'home', lambda: tmp_path); monkeypatch.setattr(terminal, '_OWN', {}); monkeypatch.setattr(gatecmd, '_DIR', {})
+    from taskuary import config, gate
+    monkeypatch.setattr(config, 'home', lambda: tmp_path); monkeypatch.setattr(terminal, '_OWN', {}); monkeypatch.setattr(gate, '_DIR', {})
     monkeypatch.setattr(shutil, 'which', lambda name, path=None, **k: None)
     path = terminal.session_env('coding', 7, str(tmp_path), sid='s1')['PATH'].split(terminal.os.pathsep)
-    # ...behind the browser's and the desktop's hold, which is first on every session's PATH (gatecmd)
+    # ...behind the browser's and the desktop's hold, which is first on every session's PATH (gate)
     assert path[:2] == [str(tmp_path / 'bin' / 'gate'), str(tmp_path / 'bin')] and sys.executable in (tmp_path / 'bin' / 'taskuary.cmd').read_text(encoding='utf-8')
     assert '-m taskuary.cli "$@"' in (tmp_path / 'bin' / 'taskuary').read_text(encoding='utf-8')
     # ...and where PATH finds it already, a session's PATH is the app's own behind the hold
@@ -681,8 +693,10 @@ def test_a_waiting_card_never_moves_under_a_turn_that_only_stopped_at_his_allow(
     assert until(lambda: tail() == ['turn', 'press', 'turn']), json.dumps([conversation.items(s, tid)['items'], s._rows('SELECT * FROM heard WHERE TaskId=?', (tid,)),
                                                                          codingchat.acp_updates(tid, t.sid)], default=str)[:8000]
     got = conversation.items(s, tid)['items']; turns = [x for x in got if x['kind'] == 'turn']
-    assert live() == [('own', 'passed')], got                                                        # ...and it never moved
-    assert not turns[-2]['cards'] and not turns[-1]['cards']
+    # ...and it never moved: greyed where it stood - and nothing brings it back by itself when that turn ends (the owner, 2026-11-26: "Nothing
+    # comes back automatically"; 11-25: "Never bring back things on top. It's a chat.")
+    assert live() == [('own', 'passed')], got
+    assert not turns[-2]['cards'] and not turns[-1]['cards'] and cardqueue.again_of(s, rid) is None, got
 
 
 def test_the_work_after_his_allow_never_counts_from_before_his_press(world, monkeypatch):
@@ -694,6 +708,7 @@ def test_the_work_after_his_allow_never_counts_from_before_his_press(world, monk
     monkeypatch.setenv('FAKE_ACP_ASK', 'git push origin main'); monkeypatch.setattr(shellgate, 'trusted', lambda *a, **k: '')
     monkeypatch.setenv('FAKE_ACP_AFTER', '3')
     t = open_(s, tid, repo, seed=''); assert until(lambda: t.client and not t.busy)
+    conversation.items(s, tid)                     # ...the task he has open: its chat is in the log before the turn, as live (chatlog.migrate_open)
     general.take_line(s, tid, 'Push it.', line_id='l-one')
     assert until(lambda: permissions.pending(tid, s))
     assert until(lambda: time.time() >= (t.turn_at or time.time()) + 2.5)       # ...he presses a while after the turn began
@@ -701,10 +716,15 @@ def test_the_work_after_his_allow_never_counts_from_before_his_press(world, monk
     permissions.answer(s, tid, permissions.pending(tid, s)[0]['id'], 'allow_once')
     bad = []
     while t.busy or t.turns < 1:
-        got = conversation.items(s, tid)['items']; i = max((k for k, x in enumerate(got) if x.get('perm')), default=-1)
+        # ...his answer stands on the row it was asked on (chatlog.asked_answered): what works after is under that row's part of the turn
+        got = conversation.items(s, tid)['items']
+        i = max((k for k, x in enumerate(got) if x['kind'] == 'turn' and any(y.get('answer') for y in x.get('steps') or [])), default=len(got))
         bad += [(x['state'], round(pressed - x['started'], 1)) for x in got[i + 1:] if x['kind'] == 'turn' and x.get('started') and x['started'] < pressed - 1.01]
         time.sleep(0.05)
     assert idle(t, 1)
+    got = conversation.items(s, tid)['items']
+    assert any(y.get('answer') == 'allow_once' for x in got if x['kind'] == 'turn' for y in x.get('steps') or []), 'his answer is on its row'
+    assert not [x for x in got if x['kind'] == 'press'], 'the row is the one record of his answer'
     assert not bad, f'work under his press counted from before it (seconds early): {bad[:5]}'
 
 
@@ -833,3 +853,25 @@ def test_stop_while_it_asks_closes_the_card_and_no_press_is_offered_for_a_turn_t
     time.sleep(1.5)
     assert t.turns == 1 and not t.busy and not permissions.pending(tid, s), 'a Stop is a stop: nothing starts the agent again'
     assert t.stop_reason == 'cancelled'
+
+
+@pytest.mark.parametrize('end, then', [({'nothing_left': False}, 'tell Ray the totals are in'), ({'nothing_left': True}, None)])
+def test_a_coding_turns_end_turn_is_filed_as_a_chats_and_its_send_wakes_it_only_where_it_said_a_step_follows(world, monkeypatch, end, then):
+    """A coding agent's end_turn answered "Kept - it shows on the task" and only a chat's answer filed it (general._file): over ACP it sat in
+    selfclose's marks, read by nothing, so every Send woke it - the owner, 2026-11-25, a coding task: "You sent ..." under the card that read
+    Sent. Its turn's end files it as a chat's does (general.file_summary); a Send wakes it only where its card names a step of its own after it
+    (`then`), and where it said nothing is left the Send wakes nobody and Mark done is lit."""
+    from taskuary import agenttools, rulebook
+    from test_approve_carries_on import sent_card
+    s, tid, repo = world
+    monkeypatch.setenv('FAKE_ACP_THINK', '0.8')
+    t = open_(s, tid, repo, seed=''); assert until(lambda: t.client and not t.busy)
+    general.take_line(s, tid, 'Comment the totals function, then draft Ray the reply.', line_id='l-end')
+    assert until(lambda: t.in_turn)                  # ...its prompt is at the agent: the call is made in its turn
+    assert agenttools.call(s, tid, 'end_turn', {'did': 'The reply to Ray waits for your Send.', **end}, {}).startswith('Kept')
+    assert idle(t, 1)
+    filed = [json.loads(c['Body']) for c in s.list_comments(tid, internal=True) if c.get('ActorType') == general.SUMMARY_TYPE]
+    assert filed and filed[-1]['did'] == 'The reply to Ray waits for your Send.', 'its end_turn is the task\'s summary'
+    assert filed[-1]['nothing_left'] is end['nothing_left']
+    assert bool(general.approved(s, tid, 'Send', 'the reply was sent', review=sent_card(s, tid, then))) is bool(then)
+    if not then: assert rulebook.recommended_task(s, tid)['verb'] == 'close', 'its own "nothing left" lights Mark done'

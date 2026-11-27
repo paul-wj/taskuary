@@ -8,7 +8,7 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
-from taskuary import handbook, playbooks, server, terminal, writeup, wrapup
+from taskuary import handbook, skills, server, terminal, writeup, wrapup
 from taskuary.store import MemoryStore
 
 SESSION = 'matched the hardware store to vendor 87, expense account 6120, created bill 1043 for 84.10. ' * 8
@@ -21,17 +21,17 @@ def brain(system, user, **kw):
     time.sleep(LAT)
     if 'determination' in str(system):
         return json.dumps({'determination': 'Matched the charge.', 'actions': 'Created bill 1043', 'summary': 'Posted the bill.', 'outcome': 'did_work'})
-    return json.dumps({'entries': [], 'playbook': None})
+    return json.dumps({'entries': [], 'skill': None})
 
 
 def rows(s):
-    """Every row of every table, without the clock, the session id or file names stamped with it."""
+    """Every row of every table, without the clock, the session id, file names stamped with it, or an event's clock-made key (press:<ns>)."""
     out = {}
     for (name,) in s.cx.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
-        if name in ('setting', 'operation'): continue          # the job's own record (emptied) and the proposal ids
+        if name in ('setting', 'operation', 'change_gen'): continue   # the job's own record (emptied), the proposal ids, a count of writes
         cur = s.cx.execute(f'SELECT * FROM "{name}"'); cols = [d[0] for d in cur.description]
-        keep = [i for i, c in enumerate(cols) if not (c.endswith('At') or c.endswith('Time') or c in ('Detail', 'OperationId', 'Version', 'Generation'))]
-        out[name] = sorted(re.sub(r'[0-9a-f]{64}', 'H', re.sub(r'\d{8}-\d{6}-\d{6}|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d', 'TS', json.dumps([r[i] for i in keep], default=str)))
+        keep = [i for i, c in enumerate(cols) if not (c.endswith('At') or c.endswith('Time') or c in ('Detail', 'OperationId', 'Version'))]
+        out[name] = sorted(re.sub(r'[0-9a-f]{64}', 'H', re.sub(r'\d{8}-\d{6}-\d{6}|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d|:\d{16,}', 'TS', json.dumps([r[i] for i in keep], default=str)))
                            for r in cur.fetchall())
     return out
 
@@ -39,7 +39,7 @@ def rows(s):
 @pytest.fixture
 def world(monkeypatch, tmp_path):
     monkeypatch.setattr(handbook, 'enabled', lambda store: False)
-    monkeypatch.setattr(playbooks, 'folder', lambda: tmp_path / 'playbooks')
+    monkeypatch.setattr(skills, 'folder', lambda: tmp_path / 'skills')
     monkeypatch.setattr(writeup, '_folder', lambda store: str(tmp_path))
     closed, order = [], []
     def transcript_for(store, tid): order.append('harvest'); return SESSION, 'coding', f'sid-{tid}'
@@ -216,13 +216,16 @@ def test_mark_done_on_a_chat_agents_task_answers_before_its_ending_asks_any_ai(w
     from taskuary import general
     make, _ = world
     s, _coding = make(); c = TestClient(server.app); tid = chat_task(s)
-    gate, asked = threading.Event(), threading.Event()
-    def slow(system, user, **kw): asked.set(); gate.wait(8); return brain(system, user, **kw)
-    with mock.patch('taskuary.llm.build_llm', return_value=slow):
+    # ...the ending held once its harvest is saved, not behind an AI: an ending drafts nothing new (no skill question, 2026-11-26), so an
+    # AI-held ending was not held at all, and a fast runner (macOS CI) had it done before the press's answer was read
+    gate, real = threading.Event(), wrapup.wrap
+    def held(store, tid_, **k):
+        def saved(h): k['on_harvest'](h); gate.wait(30)
+        return real(store, tid_, **{**k, 'on_harvest': saved})
+    with mock.patch.object(wrapup, 'wrap', held):
         c.post(f'/api/tasks/{tid}/wrap', json={'close': False, 'no_reply': True, 'background': True, 'then_close': True})
         assert writeup.running(tid) and not gate.is_set(), 'the press answered while the ending was still at work'
         assert json.loads(s.get_setting(writeup.PREFIX + str(tid))).get('harvest'), 'what a restart finishes it from is saved'
-        assert asked.wait(10), 'the ending does ask its AI - behind the press'
         gate.set(); assert writeup.wait_for(tid, 30)
     assert (s.get_task(tid) or {}).get('Status') == 'done'
     assert any(str(x.get('Body') or '').startswith(wrapup.REPORT) for x in s.list_comments(tid, internal=True))
@@ -236,15 +239,23 @@ def test_a_restart_mid_ending_of_a_chat_agents_task_runs_the_ending_again(world)
     it read "restarted before the session was read" and stayed open."""
     make, _ = world
     s, _coding = make(); c = TestClient(server.app); tid = chat_task(s)
-    gate = threading.Event()
-    def stuck(system, user, **kw): gate.wait(10); raise RuntimeError('the process went away')
-    with mock.patch('taskuary.llm.build_llm', return_value=stuck):
+    class Gone(BaseException): "the process went away: nothing after it runs, no failure is written"
+    gate, real = threading.Event(), wrapup.wrap
+    def cut(store, tid_, **k):            # ...the ending stalls once its harvest is saved, as a process a restart takes down mid-ending
+        def saved(h): k['on_harvest'](h); gate.wait(30); raise Gone()
+        return real(store, tid_, **{**k, 'on_harvest': saved})
+    with mock.patch.object(wrapup, 'wrap', cut):
         c.post(f'/api/tasks/{tid}/wrap', json={'close': False, 'no_reply': True, 'background': True, 'then_close': True})
         saved = s.get_setting(writeup.PREFIX + str(tid))
+        assert json.loads(saved).get('harvest'), 'what a restart finishes it from is saved'
         writeup._JOBS.clear(); wrapup.forget(tid)
     s.set_setting(writeup.PREFIX + str(tid), saved, 'test')
     assert writeup.resume(s) == 1 and writeup.wait_for(tid, 30)
-    gate.set()
+    old = [t for t in threading.enumerate() if t.name == f'writeup-{tid}']
+    assert old, 'the cut ending was still held when the restart ran it again'
+    with mock.patch.object(threading, 'excepthook', lambda a: None):
+        gate.set()
+        for t in old: t.join(30)
     assert (s.get_task(tid) or {}).get('Status') == 'done'
     assert [str(x.get('Body') or '') for x in s.list_comments(tid, internal=True) if writeup.FAILED in str(x.get('Body') or '')] == []
     assert sum(str(x.get('Body') or '').startswith(wrapup.REPORT) for x in s.list_comments(tid, internal=True)) == 1, 'the answer is filed once'

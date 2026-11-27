@@ -18,7 +18,7 @@ One item: {id, kind, at, ...}
   turn     t:<the input before it>:<n>   state starting|working|done|stopped|failed, steps, text, cards (last), started, ended, fail
   card     r:<ReviewId>             an action outside any turn
 Ids never change once given, so the page keys by them and a turn that ends, or a line that is heard, redraws in place."""
-import functools, json, re, time
+import contextlib, functools, json, re, threading, time
 from datetime import datetime
 from pathlib import Path
 
@@ -72,7 +72,8 @@ def machinery(s: dict) -> bool:
 # ...A SENTENCE A TURN ALREADY SAID IS NOT SAID AGAIN AS THE NEXT MESSAGE'S OPENER (design round 5, I3: on Codex every follow-up turn read
 # "Paula says the meeting moved up. I'll update the draft..." and then "Paula says the meeting moved up. The summary is ready." - the model
 # opens each message of a turn with the same sentence, and both were drawn). Structure, not meaning: the same first sentence, word for word
-_LEAD = re.compile(r'\s*(.+?[.!?])(?=\s|$)', re.S)
+# ...a sentence ends where the next begins with a capital or the text ends: "at 2 p.m. works." is one (walk 18: cut at "p.m.", its "works." was left)
+_LEAD = re.compile(r"""\s*(.+?[.!?])(?=\s+["'(\[*_]*[A-Z]|\s*$)""", re.S)
 def _lead(t: str) -> tuple:
     "(its first sentence with its spaces made one, where that sentence ends) - ('', 0) where it has none."
     m = _LEAD.match(t or '')
@@ -80,7 +81,10 @@ def _lead(t: str) -> tuple:
     # "1." was cut as said already, and the list drew as one run-on paragraph - Markdown starts no list at "2.")
     return (' '.join(m.group(1).split()), m.end()) if m and re.search(r'[^\W\d_]{2}', m.group(1)) else ('', 0)
 def said_once(t: str, seen: set) -> str:
-    "`t` without its opening sentence where `seen` holds it already - and that sentence added to `seen`."
+    """`t` without its opening sentence where `seen` holds it already - and that sentence added to `seen`. A message that opens with a whole
+    message said before it goes on from that one's end (walk 18, Codex: one sentence, a tool call, then that sentence again with the rest)."""
+    w = t.split()
+    if k := max((len(x) for x in map(str.split, seen) if len(x) < len(w) and w[:len(x)] == x), default=0): t = t[re.match(r'(?:\s*\S+){%d}' % k, t).end():].strip()
     lead, end = _lead(t)
     if not lead: return t
     if lead in seen and t[end:].strip(): return t[end:].strip()
@@ -112,31 +116,72 @@ def _unsummarized(steps: list) -> list:
     return out
 
 
+def unsaid(text: str, steps: list) -> str:
+    """What of a turn's answer its said steps did not say already - '' when the words it streamed were all of it, the answer whole when they
+    said none of it (a road that streams no words). The answer is what is de-duplicated, never the stream (the owner, 2026-11-23)."""
+    # ...A FILE IS ITS NAME ON BOTH SIDES (the HIPAA walk, 2026-11-21): the answer names a file it made by its name, the words it streamed by its
+    # full path in the task's folder - compared as they stood, every answer that named a file was drawn twice
+    named = lambda t: _PATHED.sub(r'\1', _flat(t))
+    said = named(' '.join(clean(s.get('text')) for s in steps or [] if s.get('k') == 'said'))
+    if not said: return text
+    all_ = [p for p in _PARA.split(clean(text)) if _flat(p)]
+    ps = [p for p in all_ if named(p) not in said]
+    return text if len(ps) == len(all_) else '\n\n'.join(ps)
+_PATHED = re.compile(r'(?:[A-Za-z]:)?(?:[\\/][^\s\\/`\'"*()]+)+[\\/]([^\s\\/`\'"*()]+)')      # a path by its grammar: a root, its folders, its last name
+
+
 def _said(steps: list, body: str = '', seen: set = None) -> list:
     """A turn's steps with its words cleaned (clean) - and a step that says only what the turn's answer says, or nothing, or is machinery, left
     out; each message's opener once (said_once, `seen`: the openers the turn has said - the answer's own read against them after)."""
-    from .chatformat import plain_text
     out, seen = [], set() if seen is None else seen
     steps = _unsummarized(steps)
     ps, fb = {_flat(p) for p in _PARA.split(body)}, _flat(body)
     for s in steps:
         if machinery(s): continue
-        # ...a thought is one plain row: the same cleaner, and its markup said as words ("**Replacing the pending draft**" stood raw)
-        if s.get('k') == 'thought' and (w := plain_text(clean(s.get('text'))) or clean(s.get('text'))): out.append({**s, 'text': w}); continue
+        # ...A MODEL'S PRIVATE REASONING IS NO STEP (the owner, 2026-11-23: "it has to say what is actually going on" - "Locating account menu",
+        # "Awaiting final approval" stood in italics among what it did): the chat shows what happened and what the agent said; its own notes stay in
+        # its record (sessionrecord), and the one being written is the working line's while it is the newest thing (chatlog._now `thinking`)
+        if s.get('k') == 'thought': continue
         if s.get('k') != 'said': out.append(s); continue
         # ...WHAT THE ANSWER SAYS IS THE ANSWER'S, drawn once (design round 6, D2: on the Claude CLI a turn's messages streamed as steps and the
         # answer joined them - each paragraph drawn twice, the answer's opener cut as "said already"): a paragraph of a step the answer holds
         # - one of its paragraphs, or a longer run of its words (a message cut mid-word by a line he typed) - is left out, and is no opener seen
         if not (w := '\n\n'.join(p for p in _PARA.split(clean(s.get('text'))) if (f := _flat(p)) and not (f in ps or len(f) >= _RUN and f in fb))): continue
-        out.append({**s, 'text': said_once(w, seen)})
+        # ...and a message the turn already said, word for word, is drawn once (walk 11: one sentence sent as two messages around end_turn)
+        if (f := ' '.join(w.split())) in seen: continue
+        out.append({**s, 'text': said_once(w, seen)}); seen.add(f)
     return out
 
 
 # ── the ledger ───────────────────────────────────────────────────────────────────────────────────
+_ONCE = threading.local()
+
+
+@contextlib.contextmanager
+def mail_once():
+    "Inside it, this thread reads a task's mail once (_mail): one read of the chat asked it twice, a 2,000-line chat's 2,000 rows each time."
+    was = getattr(_ONCE, 'got', None); _ONCE.got = {} if was is None else was
+    try: yield
+    finally: _ONCE.got = was
+
+
 def _mail(store, tid: int) -> list:
     "Every message on the task's thread the chat draws (general.JOINED, and his own lines filed elsewhere), each with `T`: when it joined."
+    if (got := getattr(_ONCE, 'got', None)) is None: return _mail_(store, tid)
+    if (k := (id(store), int(tid))) not in got: got[k] = _mail_(store, tid)
+    return [dict(x) for x in got[k]]
+
+
+def _mail_(store, tid: int) -> list:
     from . import general
     rows = [*store._rows(general.JOINED, (tid,)), *general.room_own(store, tid)]
+    # ...BUT NEVER THE SENT-FOLDER COPY OF A LETTER TASKUARY SENT ON HIS PRESS (walk 13: every send drawn twice - the "Sent" card, then the
+    # same mail again as "You · by email"): that copy IS the card's send, drawn once by the card, and no input to the agent either (events.py)
+    if any(x.get('Own') for x in rows): mine = general.went_from_here(store, tid); rows = [x for x in rows if not (x.get('Own') and mine(x))]
+    # ...NOR HIS ASK FILED AS A MESSAGE (outbox.ask_row - the owner, 2026-11-25): drawn as "Email from You", a result he shared stood in the chat
+    # as mail he had sent while its draft still waited unsent. It is his ask, which the task's opener says in his words (chatlog.opener)
+    from .outbox import is_ask
+    rows = [x for x in rows if not is_ask(x)]
     return sorted(({**x, 'T': ep((x.get('SentAt') if x.get('Own') else None) or x.get('JoinedAt') or x.get('CreatedAt'))} for x in rows),
                   key=lambda x: (x['T'], x['MessageId']))
 
@@ -192,12 +237,13 @@ def came(x: dict) -> tuple:
     return (int(ep(x.get('CreatedAt'))), _after(x.get('Body')), 1, x['CommentId'])
 
 
-def hear(store, tid: int, lines=(), turn: bool = False, sid: str = '', standing: bool = False) -> int:
+def hear(store, tid: int, lines=(), turn: bool = False, sid: str = '', standing: bool = False, own: bool = False) -> int:
     """THE ONE HAND-OVER. Called ONCE at the moment a road gives the agent its input: `lines` - his lines it takes now, as they waited
     (store.take_lines' rows), or the name (LineId) of one sent this moment; `turn` - a turn begins, and with it the agent is told everything
-    that came in or was pressed since its last one (general.turn_facts), so those are heard here too, and the turn's own start is marked.
+    that came in or was pressed since its last one (its events, events.take), so those are heard here too, and the turn's own start is marked.
     `standing`: a line that begins a turn at the press - what already stood in the chat unheard is heard with it, before it, so nothing
-    drawn moves under his line. Each input once, whoever calls and however often. -> how many were new.
+    drawn moves under his line. `own`: the turn is his - his words a door filed itself, or his press (general.his_turn). Each input once,
+    whoever calls and however often. -> how many were new.
     WHAT ONE HAND-OVER TAKES STANDS IN THE ORDER IT CAME (the recorded flood, 2026-11-11: his lines were written down first, then his own
     replies, then the sender's mail in the order triage got through them - "34, 31, 46"): by each one's own time, and inside one second - a
     stamp is no finer - by the order the store took them in: a line knows the newest message that was there when it was typed (came).
@@ -218,7 +264,7 @@ def hear(store, tid: int, lines=(), turn: bool = False, sid: str = '', standing:
     refs += [((1, *came(x)), 'line', str(x.get('LineId') or '')) if isinstance(x, dict) else ((2, i), 'line', str(x))
              for i, x in enumerate(lines) if x]
     refs = [(k, r) for _, k, r in sorted(refs, key=lambda x: x[0]) if r]
-    if turn: refs.append(('turn', str(time.time_ns())))
+    if turn: refs += [('turn', ns := str(time.time_ns()))] + ([('own', ns)] if own else [])
     if not refs: return 0
     n = 0
     with store.lock:
@@ -239,11 +285,12 @@ def hear(store, tid: int, lines=(), turn: bool = False, sid: str = '', standing:
     # ...a draft written after that message is its answer, never set aside by it: older than the input, by the input's own time
     # ...and a letter Taskuary sent on his press, come back from his Sent folder, is no input at all (the owner, 2026-11-13: two letters
     # waited, he sent one, and its copy coming back set the other aside - "how am i supposed to send 2 messages then")
-    mine = general.went_from_here(store, tid)
-    joined = {str(x['MessageId']): x['T'] for x in _mail(store, tid) if not (x.get('Own') and mine(x))} if any(k == 'mail' for k, _ in new) else {}
-    if (at := max([now for k, _ in new if k == 'line'] + [joined.get(r, 0) for k, r in new if k == 'mail'], default=0)):
+    # ...each message greying only the cards it bears on (proposals.bears: to its sender, or on its thread); his line, every card
+    joined = {str(x['MessageId']): x for x in _mail(store, tid)} if any(k == 'mail' for k, _ in new) else {}
+    mails = [(joined[r]['T'], joined[r]) for k, r in new if k == 'mail' and r in joined]
+    if (line := any(k == 'line' for k, _ in new)) or mails:
         from . import proposals
-        proposals.set_aside_drafts(store, tid, at, actions=now if any(k == 'line' for k, _ in new) else 0)
+        proposals.set_aside_drafts(store, tid, now if line else 0., mails)
     if n: store._poke('task-changed', task_id=tid)
     return n
 
@@ -254,21 +301,21 @@ def heard(store, tid: int, kind: str, refs) -> bool:
     return bool(refs) and store._one(f"SELECT COUNT(*) AS n FROM heard WHERE TaskId=? AND Kind=? AND Ref IN ({','.join('?' * len(refs))})", (int(tid), kind, *refs))['n'] == len(refs)
 
 
-def with_turn(store, tid: int) -> list:
-    """The messages (ids) the turn that just began heard: everything heard since the turn before it began. [] for a task's first turn - its
-    prompt carries the thread. What `hear` writes down as heard, the turn's own words must carry (general.came_in): never heard and not told."""
-    m = store._rows("SELECT HId FROM heard WHERE TaskId=? AND Kind='turn' ORDER BY HId DESC LIMIT 2", (int(tid),))
-    if len(m) < 2: return []
-    return [int(r['Ref']) for r in store._rows("SELECT Ref FROM heard WHERE TaskId=? AND Kind='mail' AND HId>? AND HId<? ORDER BY HId", (int(tid), m[1]['HId'], m[0]['HId']))]
-
-
 def unheard(store, tid: int) -> set:
-    """The messages (ids) on the task that came in after the newest turn began and no hand-over took: the NEXT turn's to hear, so nothing a
-    turn is told names them (general.newest_message) - told there and again when heard, an input reached the agent twice."""
+    """The messages (ids) on the task that came in after the newest turn began and no hand-over took: what a steer's hand-over takes with
+    his lines (general.GeneralSession.steer), so they stand in the chat where the agent heard them."""
     m = store._one("SELECT MAX(At) AS a FROM heard WHERE TaskId=? AND Kind='turn'", (int(tid),))
     if not (m and m['a']): return set()
     led = {r['Ref'] for r in store._rows("SELECT Ref FROM heard WHERE TaskId=? AND Kind='mail'", (int(tid),))}
     return {x['MessageId'] for x in _mail(store, tid) if str(x['MessageId']) not in led and x['T'] + 1 > m['a']}
+
+
+# AN AGENT ON THE TASK IS NOT THE AGENT HAVING HEARD IT (the owner's live app, 2026-11-23): a held mail reopened a finished task, Trust was
+# pressed, and the press asked only whether a session existed - it opened one on the old conversation with no turn, and the mail went unheard
+def not_given(store, tid: int) -> list:
+    "The messages on the task no hand-over gave its agent (ids, in the order they joined) - from when the ledger answers for it (_since)."
+    since, led = _since(store, int(tid)) - 1, {r['Ref'] for r in store._rows("SELECT Ref FROM heard WHERE TaskId=? AND Kind='mail'", (int(tid),))}
+    return [x['MessageId'] for x in _mail(store, int(tid)) if x['T'] >= since and str(x['MessageId']) not in led]
 
 
 START_BY_WRITING = 'Write to the agent below and it starts.'
@@ -347,10 +394,12 @@ def _text(c) -> str:
 def _unfence(s: str) -> str:
     s = str(s or ''); b = s.strip()
     return b.split('\n', 1)[1].rsplit('```', 1)[0].rstrip('\n') if b.startswith('```') and b.endswith('```') and '\n' in b else s
+# ...ITS rawOutput BY THE ONE READER OF EVERY SHAPE (agents.result_text - walk 11, 2026-11-23): this kept its own, which knew no codex-acp
+# {result: CallToolResult}, so on Codex and HIPAA AI each `show` reached the page with no answer and no view was ever drawn, live or reloaded
 def _out(u) -> str:
+    from .agents import result_text
     got = '\n'.join(_unfence(_text(c.get('content'))) for c in u.get('content') or [] if isinstance(c, dict) and c.get('type') == 'content')
-    raw = u.get('rawOutput')
-    return got or (raw if isinstance(raw, str) else next((raw[k] for k in ('formatted_output', 'output', 'stdout') if raw.get(k)), '') if isinstance(raw, dict) else '')
+    return got or result_text(u.get('rawOutput'))
 def _meta(u, *ks):
     m = u.get('_meta') or {}
     for k in ks: m = m.get(k) if isinstance(m, dict) else None
@@ -383,11 +432,17 @@ def acp_steps(updates: list) -> list:
         elif kind == 'error' and _meta(u, 'taskuary') == 'error':
             from . import say
             out.append({'k': 'error', 'text': say.owner({'kind': 'turn_failed', 'raw': _text(u.get('content'))}), 'at': at})
+        elif kind == 'error' and _meta(u, 'taskuary') == 'step_error': out.append({'k': 'error', 'text': _text(u.get('content')), 'at': at})     # ...a trace road's (acp_of_trace)
         elif kind == 'compaction_update' or (kind in ('tool_call', 'tool_call_update') and (_meta(u, 'claudeCode', 'toolName') == 'compact' or str(u.get('toolCallId')) in compacts)):
             cid = str(u.get('compactionId') if kind == 'compaction_update' else u.get('toolCallId'))
             if cid not in compacts: compacts[cid] = {'k': 'compact', 'id': cid, 'at': at}; out.append(compacts[cid])
             if u.get('status'): compacts[cid]['status'] = u['status']
-        elif kind == 'plan': out.append({'k': 'plan', 'at': at, 'items': [{'text': str(e.get('content') or ''), 'status': e.get('status') or 'pending'} for e in u.get('entries') or [] if isinstance(e, dict)]})
+        # ...one plan per turn, replaced whole where it stood in it (chatlog.step `turns`): after his line the newest is a row of the new turn
+        elif kind == 'plan':
+            p = {'k': 'plan', 'at': at, 'items': [{'text': str(e.get('content') or ''), 'status': e.get('status') or 'pending'} for e in u.get('entries') or [] if isinstance(e, dict)]}
+            was = next((i for i in range(len(out) - 1, -1, -1) if out[i]['k'] in ('plan', 'you')), None)
+            if was is not None and out[was]['k'] == 'plan': out[was] = {**out[was], 'items': p['items']}
+            else: out.append(p)
         elif kind in ('tool_call', 'tool_call_update'):
             s = by.get(u.get('toolCallId'))
             if not s:
@@ -395,11 +450,26 @@ def acp_steps(updates: list) -> list:
                 # ...A SERVER'S TOOL AS ITSELF (the owner's live app, 2026-11-19: codex-acp sends one as kind `execute`, its input {server, tool,
                 # arguments} - read as a shell with no command, the row said "Ran a command it did not show" over a reply it drafted)
                 mcp = raw if isinstance(raw := u.get('rawInput'), dict) and raw.get('server') and raw.get('tool') else None
+                if mcp and isinstance(mcp.get('arguments'), dict):        # ...use_tool's as the tool it ran (agenttools.as_called)
+                    from .agenttools import as_called
+                    tool, a = as_called(mcp['server'], mcp['tool'], mcp['arguments']); mcp = {**mcp, 'tool': tool, 'arguments': a}
                 s = by[u.get('toolCallId')] = {'k': 'tool', 'id': str(u.get('toolCallId') or ''), 'at': at,
                                                'args': dict(mcp['arguments']) if mcp and isinstance(mcp.get('arguments'), dict) else {},
-                                               'name': f"mcp__{mcp['server']}__{mcp['tool']}" if mcp else
+                                               'name': f"mcp__{mcp['server']}__{mcp['tool']}" if mcp else _meta(u, 'taskuary', 'tool') or
                                                _meta(u, 'claudeCode', 'toolName') or _ACP_TOOL.get(u.get('kind')) or u.get('title') or u.get('kind') or 'tool'}
                 out.append(s)
+            # ...A PERMISSION ASKED FOR IT is its update too (acp.asked_update): it fills what the call's own updates left out - never what they
+            # said (Codex asks with its own kind, the command wrapped) - and the call waits on the answer with the agent's options, until it runs
+            if (ask := _meta(u, 'taskuary', 'ask')) is not None:
+                s['ask'] = ask
+                u = {k: v for k, v in u.items() if k in ('toolCallId', 'locations', '_meta') or k == 'rawInput' and not s['args']
+                     or k == 'title' and not s.get('title') or k == 'kind' and not s.get('tool_kind')}
+            elif u.get('status') in ('in_progress', 'completed', 'failed'): s.pop('ask', None)
+            # ...AND THE AGENT'S OWN WORDS FOR IT (the owner, 2026-11-23: adopt the open-source model): its title as it upgrades it, its kind, its
+            # files - what the row says (agentSteps.stepsOf); ours only for Taskuary's own tools and a road that gives none (acp_of_trace)
+            if isinstance(u.get('title'), str) and u['title'].strip(): s['title'] = u['title'].strip()[:300]
+            if u.get('kind'): s['tool_kind'] = str(u['kind'])
+            if (ls := [str(l['path']) for l in u.get('locations') or [] if isinstance(l, dict) and l.get('path')]): s['paths'] = ls[:8]
             if (par := _meta(u, 'claudeCode', 'parentToolUseId') or _meta(u, 'parentToolUseId') or _meta(u, 'parentToolCallId')): s['parent'] = str(par)
             # ...a command as the words it was run with too (codex-acp's ["powershell.exe", "-Command", "..."]): dropped, the row read "Ran a command"
             if isinstance(u.get('rawInput'), dict): s['args'].update({k: v for k, v in u['rawInput'].items() if k in _ARGS and (isinstance(v, str) and v.strip()
@@ -407,6 +477,8 @@ def acp_steps(updates: list) -> list:
             if u.get('status'): s['status'] = u['status']
             if (d := _meta(u, 'terminal_output_delta', 'data')): s['out'] = s.get('out', '') + d
             elif not s.get('out') and u.get('status') in ('completed', 'failed') and (o := _out(u)): s['output'] = o
+            from .sessionrecord import did
+            did(s, s.get('output') or s.get('out'))
             # ...a step that failed says why in his words (say.step_why) - its output stays for the agent and the open row
             if s.get('status') == 'failed':
                 from . import say
@@ -415,11 +487,60 @@ def acp_steps(updates: list) -> list:
             if loc and not any(s['args'].get(k) for k in _PATHS): s['args']['file_path'] = loc
             if (diffs := [c for c in u.get('content') or [] if isinstance(c, dict) and c.get('type') == 'diff']):
                 s['edit'] = {'whole': True, 'parts': [{'old': d.get('oldText') or '', 'new': d.get('newText') or ''} for d in diffs]}; s['file'] = diffs[0].get('path') or loc
+            elif (p := _meta(u, 'taskuary', 'patch')): s['edit'] = {'patch': p}; s['file'] = s.get('file') or loc
         # ...each new step keeps its update's exact clock (`_t`, record_update): a stamp to the millisecond put the words said right after his
         # press, in the press's own millisecond, ABOVE it - the ledger's hand-over time is finer (a CI runner, 2026-11-12)
         if u.get('_t'): [x.setdefault('_t', u['_t']) for x in out[n0:]]
-    for s in out: s.pop('open', None); s.pop('mid', None)
-    return out
+    # ...AND WHAT IS SAID READS AS THE OWNER READS IT (the ACP rows, 2026-11-23: words now stream into their own row, and an agent with no
+    # end_turn tool still writes Taskuary's [[TASKUARY-...]] marks into its message): the app's own marks are cut, a mark still arriving
+    # is cut from its opening brackets, and a row left empty goes
+    from .selfclose import for_screen
+    for s in out:
+        s.pop('open', None); s.pop('mid', None)
+        if s['k'] == 'said' and '[[' in str(s.get('text') or ''):
+            t = for_screen(s['text']); s['text'] = re.sub(r'\[\[[^\]]*$', '', t).rstrip()
+    return [s for s in out if not (s['k'] == 'said' and not str(s.get('text') or '').strip())]
+
+
+# EVERY ROAD WRITES THE AGENT'S OWN SHAPE (the owner, 2026-11-23: "Does this work for both ACP and HIPAA AI or any AI we use?"): a road that is
+# not ACP - claude's stream-json, Codex's JSONL, the API agent's own tool loop - records its turn as the ACP updates it stands for, here, once,
+# so acp_steps is the one projection and the page the one renderer. Each call keeps its id, its tool's own name and its input; an edit carries
+# its diff as ACP content; a paragraph it said is a message of its own. No title: our words for a call are the page's (agentSteps.describeCall)
+_OWN_EDIT = {'file_write': ('', 'text'), 'file_edit': ('old', 'new')}
+def acp_of_trace(e: dict, n: int = 0) -> list:
+    "A trace event (agents.py's vocabulary) as ACP session/updates; `n` numbers what has no id of its own. [] for what is no step."
+    from .sessionrecord import _FILE_TOOLS, _cut, _cut_said, _edit, _parsed, hide_draft, EDIT_N, SAID_N, THOUGHT_N
+    k, name, d = e.get('type'), str(e.get('name') or ''), e.get('detail')
+    d = d if isinstance(d, dict) else {}
+    if k == 'tool_call':
+        a = hide_draft(name, _parsed(d.get('args'))); a = a if isinstance(a, dict) else {'input': str(a or '')}
+        todos = a.get('todos') or a.get('plan')
+        if isinstance(todos, list) and todos and all(isinstance(t, dict) for t in todos):
+            return [{'sessionUpdate': 'plan', 'entries': [{'content': _cut(t.get('content') or t.get('step') or t.get('text') or '', 300),
+                                                           'status': str(t.get('status') or 'pending')} for t in todos]}]
+        f = next((a[x] for x in _PATHS if isinstance(a.get(x), str) and a[x]), '')
+        # ...and the API agent's own file tools (apiagent.WRITE) by their own arguments: it is Taskuary's tool, its input is ours to read
+        o, w = _OWN_EDIT.get(name, ('', ''))
+        ed = _edit(a) if name in _FILE_TOOLS else {'parts': [{'old': str(a.get(o) or '')[:EDIT_N], 'new': a[w][:EDIT_N]}]} if w and isinstance(a.get(w), str) else None
+        patch = a.get('patch') if isinstance(a.get('patch'), str) else a.get('input') if isinstance(a.get('input'), str) and re.search(r'\*\*\* (Update|Add) File|^@@', a['input'], re.M) else None
+        meta = {'tool': name, **({'patch': patch[:20000]} if patch else {})}
+        return [{'sessionUpdate': 'tool_call', 'toolCallId': str(d.get('tool_call_id') or f'{name}-{n}'), 'status': 'in_progress', 'rawInput': a,
+                 **({'locations': [{'path': f}]} if f else {}),
+                 **({'content': [{'type': 'diff', 'path': f, 'oldText': p['old'], 'newText': p['new']} for p in ed['parts']]} if ed else {}),
+                 '_meta': {'taskuary': meta, **({'parentToolUseId': str(d['parent'])} if d.get('parent') else {})}}]
+    if k == 'tool_result':
+        bad, out = bool(d.get('is_error')), str(d.get('result') or '')
+        return [{'sessionUpdate': 'tool_call_update', 'toolCallId': str(d.get('tool_call_id') or name), 'status': 'failed' if bad else 'completed',
+                 **({'content': [{'type': 'content', 'content': {'type': 'text', 'text': _cut_said(out) if bad else out}}]} if out.strip() else {})}]
+    t = str(e.get('detail') or '').strip() if not isinstance(e.get('detail'), dict) else ''
+    if k == 'progress' and name in ('text', 'agent_message') and t:
+        return [{'sessionUpdate': 'agent_message_chunk', 'messageId': f't{n}', 'content': {'type': 'text', 'text': _cut(t, SAID_N)}}]
+    if k == 'progress' and name in ('thinking', 'reasoning') and t:
+        return [{'sessionUpdate': 'agent_thought_chunk', 'messageId': f't{n}', 'content': {'type': 'text', 'text': _cut(t, THOUGHT_N)}}]
+    if k == 'error':
+        r = e['detail'].get('result') if isinstance(e.get('detail'), dict) else e.get('detail')
+        return [{'sessionUpdate': 'error', 'content': {'type': 'text', 'text': _cut(r, 400)}, '_meta': {'taskuary': 'step_error'}}] if str(r or '').strip() else []
+    return []
 
 
 # ── the list ─────────────────────────────────────────────────────────────────────────────────────
@@ -515,8 +636,10 @@ def flow_breaks(got: dict, was: dict = None) -> list:
     c nothing on the canvas goes: every item and every card of the list before is in this one
     d nothing is drawn empty
     e "working" is one fact: one turn at work, the last one, exactly when the list says working
-    f nothing is drawn above what was there, and nothing that was there changes place; a past turn's words never change
-    g a turn at work draws no card (its card comes when it has ended, as its last thing); a step it is stopped at is its permission
+    f nothing is drawn above what was there, and nothing that was there changes place; a past turn's words never change - BUT A CARD THAT WAITS
+      IS THE LAST THING (chatlog.waits_last, the owner 2026-11-26): it stands under what its agent said after it, this side of his next line
+    g a turn at work draws no card of its own (its card comes when it has ended, as its last thing) - one that waited before it stands at its
+      foot; a step it is stopped at is its permission
     h an input is in exactly one place: waiting (`pending`) or on the canvas, never both, and one that leaves the waiting room is on the
       canvas in the same read - unless he took it back (`dropped`)"""
     xs, out = got.get('items') or [], []
@@ -553,7 +676,7 @@ def flow_breaks(got: dict, was: dict = None) -> list:
     seen = {c['id'] for x in (was or {}).get('items') or [] for c in ([x] if x.get('kind') == 'card' else x.get('cards') or [])}
     for x in at:
         for c in x.get('cards') or []:
-            if c['id'] not in seen: say(f"g: the turn at work {x['id']} draws its card {c['id']}")
+            if c['id'] not in seen and c.get('under') != x['id']: say(f"g: the turn at work {x['id']} draws its card {c['id']}")
     # h: ONE PLACE AT A TIME (the owner, 2026-11-12: "it does not show in 2 places"): waiting by the box or on the canvas, never both...
     for i in {p['id'] for p in got.get('pending') or []} & set(ids): say(f'h: {i} waits by the box AND stands on the canvas')
     if was is None: return out
@@ -564,16 +687,17 @@ def flow_breaks(got: dict, was: dict = None) -> list:
     old = [x for x in was.get('items') or []]
     now, by = {x['id']: i for i, x in enumerate(xs)}, {x['id']: x for x in xs}
     for x in old:
-        if x['id'] not in now and not (live(x) and not (x.get('text') or x.get('steps'))): say(f"c: {x['id']} was on the canvas and is gone")
+        if x['kind'] != 'card' and x['id'] not in now and not (live(x) and not (x.get('text') or x.get('steps'))): say(f"c: {x['id']} was on the canvas and is gone")
     # ...but a card still waiting for his press that the turn now at work holds back (it goes on from the turn that left it - `items`)
     had = {c['id']: c for x in old for c in ([x] if x['kind'] == 'card' else x.get('cards') or [] if x['kind'] == 'turn' else [])}
+    # ...nor an offer outside the line (his own email), drawn only while no card of the line waits (chatlog._drawn: one box) - one stands again
     for c in had.keys() - {c['id'] for _, c in cards}:
-        if not (at and had[c].get('status') == 'pending'): say(f'c: the card {c} was on the canvas and is gone')
-    kept = [x['id'] for x in old if x['id'] in now]
+        if not (at and had[c].get('status') == 'pending') and not (had[c].get('offer') and lit): say(f'c: the card {c} was on the canvas and is gone')
+    kept = [x['id'] for x in old if x['id'] in now and x['kind'] != 'card']          # ...a card is set down under what was said after it (waits_last)
     if [i for i in ids if i in set(kept)] != kept: say('f: items already drawn changed their order')
     top = max((now[i] for i in kept), default=-1)
     for x in xs[:max(top, 0)]:
-        if x['id'] not in {y['id'] for y in old}: say(f"f: {x['id']} is drawn above {ids[top]}, which was already there")
+        if x['kind'] != 'card' and x['id'] not in {y['id'] for y in old}: say(f"f: {x['id']} is drawn above {ids[top]}, which was already there")
     for x in old:
         y = by.get(x['id'])
         if y and x['kind'] == 'turn' and not live(x) and str(x.get('text') or '') != str(y.get('text') or ''): say(f"f: the words of the past turn {x['id']} changed")

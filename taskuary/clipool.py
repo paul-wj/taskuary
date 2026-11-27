@@ -10,7 +10,7 @@ event closes each turn. The conversation is the same one `--resume` names, so no
 sees changes: the same answer text, the same session id, the same trace events.
 
 What a live process costs is looked after here: one turn at a time per conversation, closed when idle
-(IDLE_SECONDS) or when the pool is full (MAX_LIVE, oldest first), killed on cancel or timeout and simply
+(IDLE_SECONDS) or when the pool is full (MAX_LIVE: the oldest at rest - never one at work), killed on cancel or timeout and simply
 started again - resumed by its id - on the next message, and all of them closed when the app exits. New chat
 closes its conversation's process (close()); a caller that asks to resume a different conversation, or none,
 gets a fresh one. Started through spawn.py, so Windows never opens a console window for it.
@@ -23,6 +23,7 @@ from . import spawn
 IDLE_SECONDS = 30 * 60
 GRACE = IDLE_SECONDS         # how long a process nobody touches stays open; an agent's TURN has no limit (the owner's ruling) - this is idle time only
 MAX_LIVE = 6
+REST = 60                    # ...a conversation used this recently is between the steps of one piece of work - never what makes room (_room)
 INPUT = ['--input-format', 'stream-json']
 
 
@@ -94,11 +95,13 @@ class Live:
     def close(self):
         try: self.p.stdin.close()
         except Exception: pass
+        spawn.end(self.p)                                # ...and what it runs: a command it started ended with it (walk 21)
         try: self.p.kill()
         except Exception: pass
 
     def _send(self, prompt: str):
-        self.p.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': prompt}}) + '\n')
+        from .redact import scrub_parts         # ...a turn's prompt (words, or words and pictures) as it leaves for the CLI's provider
+        self.p.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': scrub_parts(prompt)}}) + '\n')
         self.p.stdin.flush()
 
     def turn(self, prompt: str, on_event, cancel=None, timeout: float = None) -> tuple:
@@ -166,6 +169,24 @@ class Live:
 
 _POOL: dict[str, Live] = {}
 _LOCK = threading.Lock()
+
+
+# A FULL POOL CLOSES ONLY WHAT IS AT REST, AND OTHERWISE WAITS (walk 9, 2026-11-23: three agents "died mid-turn" at once, 13 tasks open): it
+# closed the oldest conversation with no turn LOCKED on it - and the only unlocked ones were those just opened, whose turns had not yet
+# taken their lock. An agent at work is never killed (the owner: only finish or Stop): dead ones go first, then one at rest (no turn on it,
+# untouched for REST), and with none a new start waits here - _LOCK held on the way in and out, let go while it waits
+def _room(key: str):
+    said = False
+    while len(_POOL) >= MAX_LIVE:
+        now = time.time()
+        out = next((k for k, v in _POOL.items() if not v.alive()), None) or min(
+            (k for k, v in _POOL.items() if k != key and not v.lock.locked() and now - v.used > REST), key=lambda k: _POOL[k].used, default=None)
+        if out:
+            _POOL.pop(out).close(); logger.info(f'clipool: closed {out}, at rest, to make room - {MAX_LIVE} processes were open'); continue
+        if not said: logger.info(f'clipool: {key} waits for room - all {MAX_LIVE} open conversations are at work'); said = True
+        _LOCK.release()
+        try: time.sleep(0.5)
+        finally: _LOCK.acquire()
 
 
 def _sweep():
@@ -267,7 +288,7 @@ def touch(prefix: str) -> int:
     n, now = 0, time.time()
     with _LOCK:
         for k, lv in _POOL.items():
-            if (k == prefix or k.startswith(prefix + ':')) and lv.alive(): lv.used = now; n += 1
+            if _under(k, prefix) and lv.alive(): lv.used = now; n += 1
     return n
 
 
@@ -288,9 +309,7 @@ def _take(key: str, cmd: list, cwd, env, resume, sig: tuple, swap: bool = False)
         if why:
             _POOL.pop(key).close(); lv = None
         if lv is None:
-            if len(_POOL) >= MAX_LIVE:
-                old = min((k for k, v in _POOL.items() if not v.lock.locked()), key=lambda k: _POOL[k].used, default=None)
-                if old: _POOL.pop(old).close(); logger.info(f'clipool: closed {old} to make room - {MAX_LIVE} processes were open')
+            _room(key)
             # ...WHY A PROCESS STARTS, said once (a follow-up a few minutes after an answer read as a cold start, 2026-11-16): new, or what made the
             # warm one unusable - the one line that tells a slow follow-up from a warm one
             logger.info(f'clipool: starting {key}{" on " + resume if resume else ""} - {why or "none was open"}')
@@ -422,9 +441,7 @@ def _put(key: str, lv):
     with _LOCK:
         old = _POOL.get(key)
         if old is not None and old is not lv: _POOL.pop(key).close()
-        if len(_POOL) >= MAX_LIVE:
-            out = min((k for k, v in _POOL.items() if not v.lock.locked()), key=lambda k: _POOL[k].used, default=None)
-            if out: _POOL.pop(out).close(); logger.info(f'clipool: closed {out} to make room - {MAX_LIVE} processes were open')
+        _room(key)
         _POOL[key] = lv
 
 
@@ -456,10 +473,17 @@ def drop(key: str, lv) -> None:
     lv.close()
 
 
+def _under(k: str, prefix: str) -> bool:
+    """`k` is `prefix`'s conversation or one under it ('general:1', 'general:1:x'; 'concierge:' takes every concierge one; '' takes all) - by
+    whole parts: as a bare string prefix, task 1's agent idling out closed task 10's (walk 14, 2026-11-24: 'general:1' took 'general:10',
+    1.3 s into its first turn)."""
+    return not prefix or k == prefix or k.startswith(prefix.rstrip(':') + ':')
+
+
 def close(prefix: str) -> int:
-    """Close every live conversation whose key starts with `prefix` - New chat, a finished general task."""
+    """Close every live conversation that is `prefix`'s or under it (_under) - New chat, a finished general task."""
     with _LOCK:
-        keys = [k for k in _POOL if k.startswith(prefix)]
+        keys = [k for k in _POOL if _under(k, prefix)]
         gone = [_POOL.pop(k) for k in keys]
     for lv in gone: lv.close()
     return len(gone)

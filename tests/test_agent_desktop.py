@@ -7,7 +7,7 @@ from unittest import mock
 
 from taskuary import agentdesktop as ad, clis, hooks, proposals, verdicts
 from taskuary.store import MemoryStore
-from taskuary.testing import Factory
+from taskuary.testing import Factory, turn_told
 from test_browser_gate import Brain, verdict
 
 
@@ -97,7 +97,7 @@ class Holding(unittest.TestCase):
     def setUp(self):
         self.s = MemoryStore(); self.tid = Factory(self.s).task('Reply to Erin about the Payworth invoice', Tags=ad.WANTS); turn_on(self.s)
         self.told = []
-        self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(text))
+        self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(turn_told(self.s, self.tid, text)))
 
     def check(self, cmd=SEND, v=None):
         with installed(), names(), verdict(v or {'irreversible': True, 'sure': True, 'what': 'sends the reply in the mail app'}):
@@ -111,20 +111,28 @@ class Holding(unittest.TestCase):
     def pending(self): return self.s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (self.tid,))
     def denied(self, out): return out['hookSpecificOutput']['permissionDecision'] == 'deny'
 
-    def test_off_every_act_is_refused_and_a_look_still_passes(self):
-        turn_on(self.s, False)
-        self.assertTrue(self.denied(self.check()))
-        self.assertIn('Agent Desktop is off', self.check()['hookSpecificOutput']['permissionDecisionReason'])
+    def test_off_every_act_waits_on_one_card_to_let_it_and_a_look_still_passes(self):
+        # the owner, 2026-11-25: "it should find a way around it" - "Agent Desktop is off" left the agent to say so in words
+        turn_on(self.s, False); ad.mark(self.s, self.tid, False)
+        self.assertTrue(self.denied(self.check())); self.assertTrue(self.denied(self.check()))
+        self.assertIn("the owner's to press", self.check()['hookSpecificOutput']['permissionDecisionReason'])
         self.assertEqual(self.check('agent-desktop snapshot --app Notepad -i'), {})
-        self.assertEqual(self.pending(), [])
+        (card,) = self.pending()                                                             # ...one card, however often it is tried
+        self.assertEqual(json.loads(card['DraftText'])['action'], 'use_desktop'); self.assertIn('let this task use your desktop', card['Reason'])
+        with installed(): proposals.execute(self.s, card, 'owner')
+        self.assertTrue(ad.wanted(self.s.get_task(self.tid))); self.assertTrue(ad.card(self.s)['Active'])
+        self.assertEqual(self.check(v={'irreversible': False, 'sure': True, 'what': 'types'}), {})
 
-    def test_an_unmarked_task_is_refused_even_with_the_card_on(self):
+    def test_an_unmarked_task_waits_on_the_card_even_with_the_card_on(self):
         ad.mark(self.s, self.tid, False)
         out = self.check(v={'irreversible': False, 'sure': True, 'what': 'types'})
-        self.assertTrue(self.denied(out)); self.assertIn('not marked "needs desktop"', out['hookSpecificOutput']['permissionDecisionReason'])
+        self.assertTrue(self.denied(out)); self.assertEqual(len(self.pending()), 1)          # ...his press marks it; nothing runs before
         self.assertEqual(self.check('agent-desktop list-apps'), {})                          # a look is still only a look
         ad.mark(self.s, self.tid, True)
         self.assertEqual(self.check(v={'irreversible': False, 'sure': True, 'what': 'types'}), {})
+
+    def test_an_agent_cannot_ask_for_the_desktop_itself(self):
+        self.assertEqual(proposals.parse(proposals.MARK + ' {"action": "use_desktop"}'), [])
 
     def test_a_strangers_task_never_drives_the_desktop(self):
         with mock.patch('taskuary.origin.of_task', return_value=('stranger', 'a sender nobody vouched for')):
@@ -155,7 +163,7 @@ class Holding(unittest.TestCase):
         live = SimpleNamespace(sid='run1', alive=True, task_id=self.tid, send_prompt=lambda *a, **k: None)
         with mock.patch.dict('taskuary.terminal.SESSIONS', {'run1': live}, clear=True):
             out = self.check(v={'irreversible': True, 'sure': True, 'what': 'sends the reply', 'app': 'Northwind Mail'})
-            self.assertTrue(self.denied(out)); self.assertIn('End your turn now', out['hookSpecificOutput']['permissionDecisionReason'])
+            self.assertTrue(self.denied(out)); self.assertIn('rest of the job', out['hookSpecificOutput']['permissionDecisionReason']); self.assertNotIn('end your turn', out['hookSpecificOutput']['permissionDecisionReason'].lower())
             self.assertEqual(self.pending(), [])
             [req] = [r for r in ws.open_requests(ws.events(self.s, self.tid, 'run1')) if r['RequestId'].startswith(ad.READY)]
             self.assertEqual(req['Text'], "It's ready in Northwind Mail; press it there.")
@@ -178,7 +186,7 @@ class Holding(unittest.TestCase):
         self.check(); [rv] = self.pending()
         ran = []
         with installed(), mock.patch('taskuary.workerstate._live', return_value=self.sess), \
-                mock.patch.object(ad, '_run', lambda args, wait, tag: ran.append(args) or (0, '{"ok":true,"command":"click","data":{}}')):
+                mock.patch.object(ad, '_run', lambda args, wait: ran.append(args) or (0, '{"ok":true,"command":"click","data":{}}')):
             out = verdicts.decide(self.s, rv, 'approve')
         self.assertTrue(out['ok'], out)
         self.assertEqual(ran, [['click', '@s8f3k2p9:e8']])
@@ -198,10 +206,12 @@ class Holding(unittest.TestCase):
         with mock.patch('taskuary.workerstate._live', return_value=self.sess), mock.patch.object(ad, '_run') as run:
             self.assertTrue(verdicts.decide(self.s, rv, 'reject')['ok'])
         run.assert_not_called()
-        self.assertIn('did not approve it', self.heard()[0])
+        # ...told as his own with the agent's next turn: his no never wakes it (the owner, 2026-11-26)
+        from taskuary import events
+        self.assertEqual(self.heard(), []); self.assertIn('did not approve it', events.take(self.s, self.tid)[0])
 
     def test_his_yes_to_a_press_in_an_app_stands_for_the_task_and_his_no_is_told_not_asked_again(self):
-        # the roads audit, 2026-11-19 (#7): the desktop gate asks the one rule the browser's and the shell's do (actrule.decide)
+        # the roads audit, 2026-11-19 (#7): the desktop gate asks the one rule the browser's and the shell's do (gate.decide)
         self.check(); [rv] = self.pending()
         with installed(), mock.patch('taskuary.workerstate._live', return_value=self.sess),                 mock.patch.object(ad, '_run', return_value=(0, '{"ok":true,"command":"click","data":{}}')):
             self.assertTrue(verdicts.decide(self.s, rv, 'approve')['ok'])
@@ -218,11 +228,11 @@ class Holding(unittest.TestCase):
 
 class Hook(unittest.TestCase):
     def test_a_desktop_act_is_held_where_it_runs(self):
-        from taskuary import gatecmd
+        from taskuary import gate
         s = MemoryStore(); tid = Factory(s).task('Reply to Erin', Tags=ad.WANTS); turn_on(s)
         with installed(), names(), verdict({'irreversible': True, 'sure': True, 'what': 'sends'}):
-            self.assertEqual(gatecmd.judge(s, tid, 'run1', 'agent-desktop list-apps'), '')
-            self.assertIn(ad.HELD, gatecmd.judge(s, tid, 'run1', SEND))
+            self.assertEqual(gate.judge(s, tid, 'run1', 'agent-desktop list-apps'), '')
+            self.assertIn(ad.HELD, gate.judge(s, tid, 'run1', SEND))
 
 
 class Brief(unittest.TestCase):

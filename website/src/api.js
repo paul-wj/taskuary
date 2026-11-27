@@ -5,7 +5,7 @@ import demoApi, { DEMO } from "./demoApi.js";
 import { keepDetail } from "./apiError.js";
 import { staleToken, UNLINKED_EVENT } from "./unlinked.js";
 import { record, recordAction } from "./lastError.js";
-import { isWrite, noteWrite } from "./wrote.js";
+import { isWrite, noteWrite, noteSetup } from "./wrote.js";
 import { TAB } from "./liveSeq.js";
 import { FYI_HEADER, fyiBatch } from "./fyiBatch.js";
 const api = axios.create({ baseURL: "" });
@@ -21,9 +21,11 @@ api.interceptors.request.use((c) => {
 // without the other put a red banner over a refusal the app already knew how to absorb.
 // Any write, answered or refused, may have changed what the sync caption shows (wrote.js).
 const wrote = c => { if (isWrite(c)) noteWrite(); };
-api.interceptors.response.use((r) => { wrote(r.config); return r; }, (e) => {
+api.interceptors.response.use((r) => { wrote(r.config); noteSetup(r.config); return r; }, (e) => {
   wrote(e?.config);
-  if (staleToken(e, localStorage)) window.dispatchEvent(new Event(UNLINKED_EVENT));
+  const stale = staleToken(e, localStorage);
+  if (stale === "renewed") { if (!window.__tqRenewing) { window.__tqRenewing = true; window.location.reload(); } }
+  else if (stale) window.dispatchEvent(new Event(UNLINKED_EVENT));
   record(e);
   return Promise.reject(keepDetail(e));
 });

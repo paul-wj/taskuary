@@ -112,15 +112,18 @@ KIND_HINT = {'working': 'what it is doing right now', 'note': 'anything the next
 
 
 def post(store, body: str, kind: str = 'note', agent: str = '', cwd: str = '', tid: int = None,
-         files: str = '', sid: str = None) -> dict:
+         files: str = '', sid: str = None, owner: bool = False) -> dict:
     """One note on the wall. Everything but the words is optional: an agent that knows only what
     it wants to say still gets to say it. `sid` is the session that speaks: its notes are live while
-    it is, and leave every live surface when it ends (PW-178)."""
+    it is, and leave every live surface when it ends (PW-178). `owner`: the owner himself wrote it - only then may it be signed as his
+    (OWNER_AGENTS): an agent's note signed 'owner' seeded every other session as his durable guidance (the red team, 2026-11-24, T6)."""
     body = ' '.join(str(body or '').split())[:1200]
     if not body: raise ValueError('a note with no words is not a note')
     kind = str(kind or 'note').lower().strip()
     if kind not in KINDS + (SUMMARY,): raise ValueError(f"kind must be one of {', '.join(KINDS)}")
-    nid = store.add_note({'TaskId': tid, 'Agent': agent or 'agent', 'Cwd': norm(cwd), 'Kind': kind,
+    agent = ' '.join(str(agent or '').split()) or 'agent'
+    if not owner and agent.lower() in OWNER_AGENTS: agent = 'agent'
+    nid = store.add_note({'TaskId': tid, 'Agent': agent, 'Cwd': norm(cwd), 'Kind': kind,
                           'Body': body, 'Files': files or '', 'Sid': sid or None})
     return dict(store.get_note(nid))
 
@@ -401,10 +404,21 @@ def live_count() -> int:
     that" - option 1, replacing PW-084's "a desk is taken until the process ends"). The owner's own lines never wait on the cap (general.say_line
     checks none), so answering parked agents may run over it for a while; only new starts wait until the working count is back under."""
     from . import terminal as term
-    def working(t):
-        try: return t.phase() != 'parked'
-        except Exception: return True          # a session that cannot say counts, as before
-    return len([t for t in list(term.SESSIONS.values()) if t.alive and working(t)])
+    return len([t for t in list(term.SESSIONS.values()) if t.alive and _working(t)])
+
+def _working(t) -> bool:
+    try: return t.phase() != 'parked'
+    except Exception: return True              # a session that cannot say counts, as before
+
+def _at_work(tid) -> bool:
+    from . import terminal as term
+    return any(t.task_id == tid and t.alive and _working(t) for t in list(term.SESSIONS.values()))
+
+# A QUEUED START THE DRAIN SET GOING (the load run, 2026-11-24: 99 starts queued, one at work of four slots): a general start runs its whole first
+# turn on the thread that starts it, so the drain ran them one after another. Each now runs on its own thread; until its session is at work it
+# holds its slot here, so the drain and every other start read the house as full while it comes up
+_STARTING, START_WAIT = set(), 30.0
+def starting_count() -> int: return len([t for t in list(_STARTING) if not _at_work(t)])
 
 def subagent_count() -> int:
     "Subagents the live sessions left running at their last Stop (hooks.py keeps them on the session) - light load, ingest.agent_load."
@@ -448,6 +462,12 @@ def record_failure(store, tid: int, err, agent: str = '', label: str = 'The agen
     # ...and AN AI THAT COULD NOT ANSWER is the turn's own try again, queued and said where it failed (general.queue_retry) - never a second line
     from . import general
     if general.provider_down(err): return store.get_dispatch(tid)
+    # ...NOR A START WHOSE TURN RAN AND WAS CUT PART-WAY (clipool.Unfinished - it died mid-turn, ended early): that is no failed start. Its turn
+    # said so where it happened, "not run again" with Try again, and it is never run again by itself as part of it may have run (walk 14,
+    # 2026-11-24: under that line this one said "trying again at 02:57 (try 1 of 3)", and nothing ran in 17 minutes). Its start is no longer owed
+    if general._unfinished(err):
+        if not (store.get_dispatch(tid) or {}).get('Turn'): store.clear_dispatch(tid)
+        return None
     if not store.get_dispatch(tid): store.enqueue_dispatch(tid, None, agent, 'start failed - retrying')
     row = store.dispatch_failed(tid, str(err), is_permanent(err), BACKOFF, MAX_ATTEMPTS)
     if not row: return None
@@ -463,7 +483,7 @@ def record_failure(store, tid: int, err, agent: str = '', label: str = 'The agen
 def freed(store):
     """A slot came free - an assistant's turn ended or it idled out: what waits in the queue starts now (the stress round, 2026-11-10: a turn
     queued behind a full house of assistants waited for a coding session to end), never on the freeing session's own thread."""
-    if store.queued_dispatches(): drain_later(store, 0.5)
+    if store.queued_dispatches(): drain_later(store, 0.1)
 
 
 def schedule_due(store, startup: bool = False):
@@ -493,7 +513,7 @@ def drain(store):
     """A session ended, a slot freed up, or a retry came due: start what was queued, in order.
     Anything whose blocker is still working stays put; anything backing off waits its turn without
     holding the others; anything exhausted waits for the owner; anything whose task moved on is cleared."""
-    from . import terminal as term, rank
+    from . import rank
     from .ingest import has_room
     from datetime import datetime
     # a drain in flight elsewhere (a session ending, a retry timer) must not make THIS one vanish - a lost
@@ -505,49 +525,74 @@ def drain(store):
         # a ranked row's value ages a little per day waited (rank.aged) so the bottom never starves
         qs.sort(key=lambda q: -(rank.aged(q['Value'], q.get('CreatedAt')) if q.get('Value') is not None else 0.5))
         for q in qs:
-            if q.get('State') == 'failed' or not _due(q, now): continue          # exhausted, or backing off: not this pass
+            if q.get('State') == 'failed' or not _due(q, now) or q['TaskId'] in _STARTING: continue   # exhausted, backing off, or starting now
             if not has_room(store): return                                        # a capacity wait is not an attempt (PW-086)
-            # BehindTaskId is history now: likely overlap is advisory and rides into the briefing at
-            # startup; an old row parked behind another task is simply due (PW-171)
-            b, turn = q.get('BehindTaskId'), q.get('Turn')
             t = store.get_task(q['TaskId']) or {}
             from . import general
             # ...a queued TURN is a stopped agent's next one (ingest.queue_turn): a task waiting on someone still hears it, and an
             # assistant the owner opened meanwhile takes it next - only a coding session already open makes it moot
-            if t.get('Status') not in ('open', 'in_progress', *(('waiting',) if turn else ())) or (_occupied(q['TaskId']) and not (turn and general.handles(t))):
+            if t.get('Status') not in ('open', 'in_progress', *(('waiting',) if q.get('Turn') else ())) or (_occupied(q['TaskId']) and not (q.get('Turn') and general.handles(t))):
                 store.clear_dispatch(q['TaskId']); continue
             # ...A TRY AGAIN THE AI OWES (general.queue_retry) runs in its own thread, its row kept until a turn answers
-            if turn == general.RETRY_TURN: general.retry_turn(store, q['TaskId']); continue
-            try:
-                if turn:
-                    from .ingest import queued_turn
-                    queued_turn(store, q['TaskId'], turn, q.get('Brief') or '')
-                elif general.handles(t):
-                    from .ingest import _start_general
-                    # a queued GENERAL task opens its assistant session, not a CLI (PW-069). Its failure is counted and
-                    # re-armed inside; clearing the row here wrote "Started" over a launch that never happened (PW-073/085)
-                    if not _start_general(store, q['TaskId'], q.get('Brief') or None): continue      # with the brief it was queued with
-                else:
-                    from .ingest import reply_job       # a reply task's agent is told its job is the reply, queued or not
-                    term.start_on_task(store, q['TaskId'], q.get('Agent') or '', instruction=reply_job(store, q['TaskId']) or None, actor='router')
-                store.clear_dispatch(q['TaskId'])
-                store.add_comment(q['TaskId'], 'router', 'agent', 'Started - '
-                                  + ('it was waiting behind ' + task_ref(b) + ' for likely overlap, which no longer holds work back.' if b
-                                     else 'an agent slot freed up and it was next in line.'))
-            except Exception as e:
-                # a session that exists is a start that happened: what failed was the bookkeeping after it,
-                # and counting that as a failed launch would start the work twice (PW-088)
-                if _occupied(q['TaskId']):
-                    store.clear_dispatch(q['TaskId'])
-                    store.add_comment(q['TaskId'], 'router', 'agent', f'Started, but noting it afterwards failed: {_said(e)}')
-                    continue
-                logger.warning(f'queued dispatch failed for task {q["TaskId"]}: {e}')
-                record_failure(store, q['TaskId'], e, q.get('Agent') or '')
+            if q.get('Turn') == general.RETRY_TURN: general.retry_turn(store, q['TaskId']); continue
+            # ...and every other start runs on its own thread too: the drain waits only until it is at work (or done), then fills the next slot
+            tid, done, said = q['TaskId'], threading.Event(), [False]
+            _STARTING.add(tid)
+            threading.Thread(target=_start_queued, args=(store, q, t, done, said), daemon=True, name=f'queued-start-{tid}').start()
+            end = time.time() + START_WAIT          # ...a start that hangs holds its own slot (_STARTING), never the queue behind it
+            while not done.wait(0.05) and not (work := _at_work(tid)) and time.time() < end: pass
+            if not done.is_set() and work: _started(store, q, said)
         # whatever still backs off is armed by THIS pass - a restart armed only the earliest deadline and the
         # later ones waited for an unrelated session to end (PW-088)
         schedule_due(store)
     finally:
         _DRAINING.release()
+
+
+def _started(store, q, said) -> None:
+    "Its row cleared and 'Started' said - once, by whichever sees it first: the drain when its session is at work, or the start when it returns."
+    with _SAID:
+        if said[0]: return
+        said[0] = True
+    b = q.get('BehindTaskId')         # history now: likely overlap is advisory and rides into the briefing at startup (PW-171)
+    store.clear_dispatch(q['TaskId'])
+    store.add_comment(q['TaskId'], 'router', 'agent', 'Started - ' + ('it was waiting behind ' + task_ref(b) + ' for likely overlap, which no longer holds work back.'
+                                                                      if b else 'an agent slot freed up and it was next in line.'))
+
+_SAID = threading.Lock()
+
+def _start_queued(store, q, t, done, said):
+    "One queued start, on its own thread (drain): a stopped agent's turn, a general task's assistant, or a coding CLI."
+    from . import terminal as term, general
+    tid, turn = q['TaskId'], q.get('Turn')
+    try:
+        went = True
+        if turn:
+            from .ingest import queued_turn
+            queued_turn(store, tid, turn, q.get('Brief') or '')
+        elif general.handles(t):
+            from .ingest import _start_general
+            # a queued GENERAL task opens its assistant session, not a CLI (PW-069). Its failure is counted and
+            # re-armed inside; clearing the row here wrote "Started" over a launch that never happened (PW-073/085)
+            # ...None: a worked conversation with nothing unheard - no start was owed, so none is said
+            if (went := _start_general(store, tid, q.get('Brief') or None)) is False: return      # with the brief it was queued with
+        else:
+            from .ingest import reply_job       # a reply task's agent is told its job is the reply, queued or not
+            term.start_on_task(store, tid, q.get('Agent') or '', instruction=reply_job(store, tid) or None, actor='router')
+        if went: _started(store, q, said)
+        elif not said[0]: store.clear_dispatch(tid)
+    except Exception as e:
+        # a session that exists is a start that happened: what failed was the bookkeeping after it,
+        # and counting that as a failed launch would start the work twice (PW-088)
+        if _occupied(tid):
+            store.clear_dispatch(tid)
+            store.add_comment(tid, 'router', 'agent', f'Started, but noting it afterwards failed: {_said(e)}')
+            return
+        logger.warning(f'queued dispatch failed for task {tid}: {e}')
+        record_failure(store, tid, e, q.get('Agent') or '')
+    finally:
+        # ...its slot is free only now it holds no _STARTING place: the turn's own end (freed) may have looked a moment too soon
+        _STARTING.discard(tid); done.set(); freed(store)
 
 
 def drain_later(store, delay: float = 2.0):

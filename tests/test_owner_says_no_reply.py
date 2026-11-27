@@ -18,23 +18,17 @@ REP = {'determination': 'the link was dropped when the mail was read', 'actions'
 class OwnerSaysNoReply(unittest.TestCase):
     def tearDown(self): general.OPENING.clear()
 
-    def test_the_agent_is_told_the_owners_line_decides_and_how_to_put_the_draft_down(self):
-        line = general.action_line(store())
-        self.assertIn("THE OWNER'S OWN WORDS DECIDE WHETHER A REPLY IS OWED", line)
-        self.assertIn('reply_not_needed', line); self.assertIn('--reply-not-needed', line)
-        from pathlib import Path
-        coding = (Path(taskuary.__file__).parent / 'templates' / 'coding.md').read_text(encoding='utf-8')
-        self.assertIn("in any words, no reply is needed", coding); self.assertIn('--reply-not-needed', coding)
 
     def test_through_the_tool_the_waiting_draft_is_retired_and_the_sessions_end_drafts_none(self):
         s = store(); tid, rid = drafted_task(s)
-        self.assertEqual([d['review'] for d in general.draft_turns(s, tid)], [rid])
+        pending = lambda: [r['ReviewId'] for r in s._rows("SELECT ReviewId FROM review WHERE TaskId=? AND Status='pending'", (tid,))]
+        self.assertEqual(pending(), [rid])
         doors = {'not_needed': lambda t, why: verdicts.not_needed(s, t, why, 'coding')}
         got = json.loads(agenttools.call(s, tid, 'reply_not_needed', {'why': 'Alex said no reply is needed'}, doors))
         self.assertTrue(got['ok'])
         rv = s.get_review(rid)
         self.assertEqual(rv['Status'], 'closed_unsent'); self.assertEqual(rv['NotNeeded'], 'Alex said no reply is needed')
-        self.assertEqual(general.draft_turns(s, tid), [])                       # no card left to draw, on any turn
+        self.assertEqual(pending(), [])                       # no card left to draw, on any turn
         # ...and the session ending is no new draft in its place: the report's reply would have stood with Send again
         with mock.patch.object(wrapup, 'freshen', side_effect=AssertionError('no reply to refresh')), \
              mock.patch('taskuary.responder.write_draft', side_effect=AssertionError('nothing to draft')):

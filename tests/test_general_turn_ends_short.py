@@ -66,7 +66,6 @@ class TheCliFinishesInItsTurnTests(unittest.TestCase):
         # ...and the CLI's own memory folder is off: what a chat agent learns goes through Taskuary's tools, for one press
         self.assertEqual(seen['env'].get('CLAUDE_CODE_DISABLE_AUTO_MEMORY'), '1')
         self.assertEqual(clis.HEADLESS_ENV, {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1'})
-        self.assertIn(general.FINISH_LINE, seen['prompt'])
 
     def test_no_cli_taskuary_starts_keeps_a_memory_of_its_own(self):
         """It was off for a chat agent only (2026-11-11): a coding agent in a pane - whose start strips every inherited CLAUDE_CODE_* - an
@@ -107,8 +106,7 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
         seen = turn(s, tid, [asked + summ, 'There is no connection for Payworth, so I am using the browser.'],
                     judge=lambda *a, **k: json.dumps({'unfinished': False, 'why': '', 'asks_secret': True}))
         self.assertEqual(len(seen['prompts']), 2)                     # told once, by the one wake
-        for want in ('asked the owner for a password', 'you do not need the password', '[[TASKUARY-SIGNIN:'): self.assertIn(want, seen['prompts'][1])
-        self.assertIn(browserview.SIGNIN_LINE, browserview.offer())  # ...the same words its prompt offers the browser with
+        for want in ('asked the owner for a password', 'you do not need the password', 'hand_over'): self.assertIn(want, seen['prompts'][1])
         # ...and never told one is saved (design round 6, D8: "Taskuary will sign it in with your saved details", with nothing saved): the vault's
         # answer is Taskuary's own line to say
         self.assertIn("whether one is saved is not yours to know", browserview.SIGNIN_LINE)
@@ -149,7 +147,7 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
 
     def test_a_turn_that_ended_on_a_held_step_waits_on_the_owner(self):
         """The overnight run, 2026-11-03: a delete held for Approve, the agent said it was waiting for it, and the judge read the turn as
-        short. A held step is waiting on the owner: no wake. Another session's held step does not count."""
+        short. A held step is waiting on the owner: no wake - whichever session of the task held it (a card that waits on him is his move)."""
         s = MemoryStore(); tid = researcher(s)
         said = 'Nothing has changed yet, because the delete is waiting for your approval.'
         for sid, held in (('g3', 'g3'), ('g4', 'someone-else')):
@@ -158,14 +156,16 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
                           'Reason': 'held before it ran'})
             woke = []
             hooks.judge_ended(s, tid, sid, said, brain=verdict(True, 'waiting on Approve'), wait=True, then=woke.append)
-            self.assertEqual(woke, [] if sid == 'g3' else ['Approve'])
+            self.assertEqual(woke, [])
             self.assertEqual(s.last_worker_event(tid, skip=ws.NOTES)['Kind'], 'turn_end')        # never a failure
 
     def test_a_turn_that_set_its_own_check_back_is_not_woken_before_it_is_due(self):
         """Recorded on the real CLI, 2026-11-13 (invented people): two emails went on the owner's Send; the agent said "I'll check back in two
         days for Ray's quote" and set the check-back; the judge read that as work of its own, and the agent was woken ten seconds later to
-        say that nobody had answered yet. The check-back is the wake: a stored fact, read before any model. One set by an EARLIER turn says
-        nothing of this one, and a turn that says the same with none set is still the judge's to read."""
+        say that nobody had answered yet. The check-back is the wake: a stored fact, read before any model - and one set by an EARLIER turn is
+        as much on the clock (walk 14, 2026-11-24: the turn after Send said "I'll check Friday 9 a.m." on the check-back set two turns before,
+        was woken with "Nothing wakes you once a turn ends" under "Checks back Fri 9 AM", and polled the mail for 16 minutes). A turn that
+        says the same with none set is still the judge's to read."""
         from taskuary import checkback
         said = "Both emails, to Ray and to Erin, have gone out. I'll check back in two days for Ray's quote and Erin's answer on the budget."
         short, asked = verdict(True, "its own check-in in two days for Ray's quote"), []
@@ -177,8 +177,14 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
         woke = []
         hooks.judge_ended(s, tid, 'g7', said, brain=judge, wait=True, then=woke.append)
         self.assertEqual((woke, asked), ([], []), 'no wake, and no model was asked')
-        # ...a later turn on the same task, the old check-back still waiting: that turn's own short end is read as before
+        # ...a later turn on the same task, the earlier check-back still standing: no wake, no model
         s._exec("UPDATE audit SET CreatedAt='2026-11-01 09:00:00' WHERE Action='check_back'")
+        later = "Sent. Ray has it now - I'll check Friday 9 a.m. whether his quote came in."
+        ws.record(s, tid, 'g7', 'working', text='', source='api'); ws.record(s, tid, 'g7', 'turn_end', text=later, source='api')
+        hooks.judge_ended(s, tid, 'g7', later, brain=judge, wait=True, then=woke.append)
+        self.assertEqual((woke, asked), ([], []), 'a standing check-back is on the clock, whichever turn set it')
+        # ...and once the owner took it off, a short end is the judge's to read again
+        checkback.cancel(s, tid)
         ws.record(s, tid, 'g7', 'working', text='go on', source='api'); ws.record(s, tid, 'g7', 'turn_end', text=SHORT, source='api')
         hooks.judge_ended(s, tid, 'g7', SHORT, brain=verdict(True, 'the walkthrough'), wait=True, then=woke.append)
         self.assertEqual(woke, ['the walkthrough'])
@@ -204,6 +210,23 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
         s.decide_review(rid, 'approved', None, 'owner')                # ...nothing waits on him any more: the same words are the judge's to read
         hooks.judge_ended(s, tid, 'g9', said, brain=judge, wait=True, then=woke.append)
         self.assertEqual((woke, asked), (['email to Omar not yet sent'], [1]))
+
+    def test_a_turn_that_raised_a_card_of_any_kind_and_stopped_is_not_woken(self):
+        """Walk 22, 2026-11-25 (Codex): "Post on Bluesky ..." - the agent said "I'll prepare the post for your approval", raised the post's card
+        and ended. Only a LETTER that waited counted as his move, so the judge read the words as short and woke it: a second turn by itself,
+        its words under its own card. Whatever waits on him - an act, a post - is the same stored fact, and no model is asked."""
+        said = "I'll prepare the Bluesky post for your approval."
+        asked, woke = [], []
+        def judge(*a, **k): asked.append(1); return json.dumps({'unfinished': True, 'why': 'the agent still needs to draft the post'})
+        s = MemoryStore(); tid = researcher(s)
+        rid = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the agent proposes to post on Bluesky',
+                            'DraftText': json.dumps({'action': 'run_tool', 'type': 'bluesky_post', 'text': 'Our AP team closed October in four days.'})})
+        ws.record(s, tid, 'g9', 'working', text='', source='api'); ws.record(s, tid, 'g9', 'turn_end', text=said, source='api')
+        hooks.judge_ended(s, tid, 'g9', said, brain=judge, wait=True, then=woke.append)
+        self.assertEqual((woke, asked), ([], []), 'his press is next: no wake, no model asked')
+        s.decide_review(rid, 'rejected', None, 'owner')
+        hooks.judge_ended(s, tid, 'g9', said, brain=judge, wait=True, then=woke.append)
+        self.assertEqual(len(asked), 1, 'nothing waits on him any more: the words are the judge\'s to read')
 
     def test_an_unreadable_verdict_is_no_verdict(self):
         s = MemoryStore(); tid = researcher(s)
@@ -309,7 +332,7 @@ class AnOwnersAskAnsweredWithNothingTests(unittest.TestCase):
         s = MemoryStore(); a_claude(self); tid = researcher(s)
         seen = turn(s, tid, self.EMPTY, judge=self.no_judge)
         self.assertEqual(len(seen['prompts']), 2, 'once - never a loop')
-        self.assertIn('without a word to the owner', seen['prompts'][1]); self.assertIn('ask them your one question', seen['prompts'][1])
+        self.assertIn('without a word to the owner', seen['prompts'][1])
         said = [c['Body'] for c in s.list_comments(tid) if c['ActorType'] == general.ASSISTANT_TYPE]
         self.assertEqual(said[-1], general.COULD_NOT, 'in the chat, in its own name')
         asked = s.last_worker_event(tid, skip=ws.NOTES)

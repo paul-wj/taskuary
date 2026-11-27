@@ -72,13 +72,6 @@ def test_every_arrival_starts_its_own_agent_whatever_triage_judged():
         with mock.patch.object(ingest, '_start_general', return_value=True) as start: ingest._auto_general(s, tid)
         start.assert_called_once_with(s, tid, None)
 
-def test_the_class_picks_the_gear_the_one_agent_runs_on():
-    """The gear quick and normal work already had (brainroute's quick-work and work rules, the owner's AI per level): the agent's own
-    'general' job reads triage's class on every turn - quick on the light model, normal on the card's, hard on the strong."""
-    for d, tier in (('quick', 'light'), ('standard', 'standard'), (None, 'standard')):
-        s = home(); tid, _ = arrived(s, d)
-        assert brainroute.choose(s, 'general', tid, want_pick='cli:claude').tier == tier, d
-
 def test_a_quick_tasks_first_turn_is_its_agent_doing_the_work():
     """The first thing in the chat is the agent's own answer, on its first and only start: no warm turn told to hand on, no hand-on line,
     no second start behind it."""
@@ -326,4 +319,3 @@ def test_a_turn_that_ends_with_the_reply_owed_and_unwritten_leaves_on_its_card_w
     s = home(); tid, _ = arrived(s); rid = owed(s, tid)
     filed(s, tid, ANSWER)
     assert not any(r.get('DraftNeeds') for r in s._rows('SELECT DraftNeeds FROM review WHERE TaskId=?', (tid,)))
-    assert 'asks the owner the one thing it needs' in ingest.REPLY_JOB                                 # ...and its job says so, for the agent to do it itself

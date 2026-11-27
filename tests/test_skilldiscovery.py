@@ -34,6 +34,17 @@ def test_model_cannot_cite_tasks_outside_its_evidence_or_update_unowned_skills()
     finally: s.close()
 
 
+def test_native_library_skills_block_duplicate_suggestions_and_unowned_updates(tmp_path, monkeypatch):
+    from taskuary import skilldiscovery as d, config, skills
+    monkeypatch.setattr(config, 'home', lambda: tmp_path)
+    with closing(MemoryStore()) as s:
+        tid = finished(s)
+        skills.write('taskuary-reconcile', '---\nname: taskuary-reconcile\ndescription: Compare reports\n---\n\nCompare sources before deciding.\n')
+        assert d.analyze(s, llm=lambda *a, **k: answer([tid]))['state'] == 'failed'
+        assert d.analyze(s, llm=lambda *a, **k: answer([tid], action='update', target_digest='unowned'))['state'] == 'failed'
+        assert state.rows(s, 'candidate') == []
+
+
 def test_dismissed_evidence_stays_suppressed_despite_model_rewording_but_correction_can_reoffer():
     from taskuary import skilldiscovery as d
     s = MemoryStore()

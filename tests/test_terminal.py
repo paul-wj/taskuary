@@ -463,6 +463,25 @@ class TerminalTests(unittest.TestCase):
         finally:
             terminal.close(t.sid)
 
+    def test_a_pane_that_opens_on_a_session_already_ended_hears_its_end(self):
+        """macOS, release 0.4.3.2: the shard hung 35 minutes in the test above. Starting a child had grown slower (spawn.listed), the CLI
+        printed and exited before the socket subscribed, and the exit marker went to no one - the pane waited for an end already past."""
+        t = terminal.Term(ECHO, os.getcwd(), 'test')
+        terminal.SESSIONS[t.sid] = t
+        try:
+            end = time.monotonic() + 15
+            while not t.ended and time.monotonic() < end: time.sleep(.05)
+            self.assertTrue(t.ended, 'the child never ended')
+            got = []
+            with c.websocket_connect(f'/api/terminals/{t.sid}/ws') as ws:
+                def read():
+                    while not got or got[-1]['type'] != 'exit': got.append(ws.receive_json())
+                th = threading.Thread(target=read, daemon=True); th.start(); th.join(10)
+                self.assertEqual(got[-1:] and got[-1]['type'], 'exit', 'a pane opened on an ended session never heard its end')
+                self.assertIn('hello-from-pty', ''.join(m.get('data', '') for m in got if m['type'] == 'out'))
+        finally:
+            terminal.close(t.sid)
+
     def test_api_validates_before_spawning_anything(self):
         self.assertEqual(c.post('/api/terminals', json={'agent': 'ghost-cli'}).status_code, 422)
         self.assertEqual(c.post('/api/terminals', json={'cwd': os.path.join(os.getcwd(), 'no-such-dir')}).status_code, 422)
@@ -685,8 +704,7 @@ class TerminalTests(unittest.TestCase):
     @_owner
     def test_the_prompt_carries_everything_so_the_agent_never_calls_back(self):
         """An agent that goes back to Taskuary for the message spends a minute of tool calls
-        re-fetching what it was handed. The prompt says the message IS the context - and carries
-        the mail, the repo and CODING.md (which claimed to be sent every run, and never was)."""
+        re-fetching what it was handed. The prompt carries the mail and the repo, and names where its tools are."""
         tid = c.post('/api/tasks', json={'Title': 'payroll import month is wrong', 'Kind': 'coding'}).json()['taskId']
         server.store.add_message({'TaskId': tid, 'ExternalId': 'graph:PAY1', 'Channel': 'email',
                                   'FromName': 'Dana Reyes', 'FromEmail': 'dreyes@northwind.example',
@@ -694,12 +712,9 @@ class TerminalTests(unittest.TestCase):
                                   'BodyText': 'files with adjustments import in the wrong month'})
         seed = terminal.seed_text(server.store, tid, 'use the payroll date', 'northwind/Census', 'C:/src/Census')
         for s in ['Payroll import month is wrong', 'Dana Reyes', 'wrong month', 'use the payroll date',
-                  'REPO: northwind/Census', 'Do NOT look this task up again', 'fix it if it is fixable',
-                  'Do NOT create GitHub issues']:
+                  'REPO: northwind/Census', terminal.TOOLS_HELP]:
             self.assertIn(s, seed)
-        self.assertIn('CODING RULES (CODING.md)', seed)                  # CODING.md rides along (PW-185: one labelled block)
-        self.assertIn('RULES (AGENT.md', seed)                          # ...on top of the rules every worker shares (PW-182)
-        self.assertIn('Work ONLY in the repository', seed)
+        self.assertNotIn('RULES (AGENT.md', seed); self.assertNotIn('CODING.md', seed)     # no rule blocks (the owner, 2026-11-23)
         self.assertNotIn('\\n', seed)                                   # one line - a newline submits
 
     def test_the_seed_and_the_file_it_points_to_agree_on_taskuarys_api(self):
@@ -717,7 +732,6 @@ class TerminalTests(unittest.TestCase):
         seed, told = terminal.seed_text(s, tid, repo='northwind/ledger', cwd=None), context.build(s, tid)
         self.assertIn('/api/tools/run', told)                           # the file says how a system is reached...
         self.assertNotIn('call the Taskuary API', seed)                 # ...and the seed does not forbid that call
-        self.assertIn('Do NOT look this task up again', seed); self.assertIn('everything known about it is above', seed)
 
     def test_no_repo_is_guessed_from_the_task_words(self):
         """The task's words are never scored against the SOUL.md map (2026-10-11, "everything should be ai"), and triage names no
@@ -760,7 +774,7 @@ class TerminalTests(unittest.TestCase):
             return Fake()
         with mock.patch.object(terminal, 'open_session', side_effect=fake_open):
             self.assertEqual(c.post('/api/terminals', json={'agent': 'coding', 'task_id': tid, 'seed': True}).status_code, 200)
-        for s in ('imports in the wrong month', 'dreyes@northwind.example', 'Do NOT look this task up again', 'fix it if it is fixable'):
+        for s in ('imports in the wrong month', 'dreyes@northwind.example', terminal.TOOLS_HELP):
             self.assertIn(s, Fake.seeded)
 
     def test_the_prompt_is_sent_not_just_typed(self):
@@ -860,10 +874,6 @@ class TerminalTests(unittest.TestCase):
         # this test's prompt, and assert it fits, or the failure mode is invisible.
         saved = {n: server.store.get_doc(n) for n in ('agent', 'coding', 'soul', 'learned')}   # AGENT.md rides in the seed too (PW-182)
         for n in saved: server.store.save_doc(n, '', 'test')
-        # Runtime now restores blank profile documents. This test isolates terminal input,
-        # so omit that block explicitly instead of relying on an empty persisted document.
-        rules_patch = mock.patch.object(terminal, 'rules_text', return_value='')
-        rules_patch.start(); self.addCleanup(rules_patch.stop)
         # ...and the wall, the owner's standing notes, the semantic layer, and the CONTEXT FILE
         # line below. Every one of them is real prompt content that grows with whatever other
         # tests left in the shared store, and this test measures the SEED - so it owns every
@@ -887,7 +897,12 @@ class TerminalTests(unittest.TestCase):
         # and its temp-dir path joins the prompt. Its LENGTH is a property of the machine's temp
         # directory, not of the prompt, so it is not what this budget is about.
         # the browser line rides only on a machine with agent-browser installed, so it is the machine's, not the prompt's, too
-        with mock.patch('taskuary.context.write', return_value=None), mock.patch('taskuary.browserview.hint', return_value=''):
+        # ...and the fence and tick lines every seed carries (the owner, 2026-11-23: no rule blocks, so they ride on their own): the same
+        # words on every seed, and this test is about a whole line reaching the TUI, not about them - nor about AGENTS.md, the owner's own
+        # file read at every turn (selfclose.guidance), whose length is his
+        with mock.patch('taskuary.context.write', return_value=None), mock.patch('taskuary.browserview.hint', return_value=''), \
+                mock.patch.object(terminal, 'FENCE_LINE', ''), mock.patch.object(terminal, 'TICK_LINE', ''), \
+                mock.patch('taskuary.selfclose.guidance', return_value=''):
             seed = terminal.seed_text(server.store, tid)
         # Back to 1000. Switching the handbook on briefly pushed this to 1100 by adding a line
         # about how to write an entry - and a longer seed takes longer to type into a real TUI,
@@ -924,7 +939,7 @@ class TerminalTests(unittest.TestCase):
             self.assertNotIn('Levitating', seen[0])
             self.assertNotIn('esc to interrupt', seen[0])
             # ...and not the prompt WE typed in, echoed back by the pty as if the agent said it
-            self.assertNotIn('Do NOT look this task up again', seen[0])
+            self.assertNotIn('taskuary --help', seen[0])
         finally:
             terminal.close(ses['sid'])
 
@@ -946,29 +961,24 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn('Phone: 555-0100', seed); self.assertNotIn('dana@vendor.example', seed)
 
     def test_agents_open_issues_only_when_the_setting_says_so(self):
-        """Off (the default): the seed forbids tracker items and the SOUL.md tool blurb scopes
-        writes to the ask. On: both sides grant the licence. One switch, both documents."""
+        """Off (the default): the SOUL.md tool blurb scopes writes to the ask and the seed says nothing of a tracker. On: the seed says
+        GitHub is the team's tracker - a fact, not an order (2026-11-23) - and the blurb grants the licence. A push is the gates' to hold."""
         from taskuary import docsync
+        TRACKER = "GitHub is this team's issue tracker."
         tid = c.post('/api/tasks', json={'Title': 'issue policy probe', 'Kind': 'coding'}).json()['taskId']
         server.store.set_setting('agent_issues_enabled', '0', 'test')
-        self.assertIn('Do NOT create GitHub issues', terminal.seed_text(server.store, tid))
-        self.assertIn('Do NOT push, deploy', terminal.seed_text(server.store, tid))
-        server.store.set_setting('agent_push_enabled', '1', 'test')
-        self.assertIn('may push and deploy', terminal.seed_text(server.store, tid))
-        server.store.set_setting('agent_push_enabled', '0', 'test')
+        self.assertNotIn(TRACKER, terminal.seed_text(server.store, tid))
         self.assertIn('never issues or tracker items', docsync.role_text(server.store, 'tool'))
         server.store.set_setting('agent_issues_enabled', '1', 'test')
         try:
             seed = terminal.seed_text(server.store, tid)
-            self.assertNotIn('Do NOT create GitHub issues', seed)
-            self.assertIn('GitHub is the issue tracker', seed)
+            self.assertIn(TRACKER, seed)
             self.assertIn('as the work needs', docsync.role_text(server.store, 'tool'))
             # ...and the GitHub CONNECTOR's own config outranks the legacy setting: the decision
             # about GitHub lives on the GitHub card
             server.store.set_connector_config(server.store.get_connector_by_type('github')['ConnectorId'],
                                               {'use_as_tracker': False, 'agents_push': True})
-            self.assertIn('Do NOT create GitHub issues', terminal.seed_text(server.store, tid))
-            self.assertIn('may push and deploy', terminal.seed_text(server.store, tid))
+            self.assertNotIn(TRACKER, terminal.seed_text(server.store, tid))
             server.store.set_connector_config(server.store.get_connector_by_type('github')['ConnectorId'], {})
         finally:
             server.store.set_setting('agent_issues_enabled', '0', 'test')
@@ -1451,6 +1461,16 @@ class SeedCompletenessTests(unittest.TestCase):
         return s, tid
 
     @_owner
+    def test_the_seed_carries_his_agents_md_as_he_wrote_it(self):
+        """AGENTS.md is every agent's instructions (the owner, 2026-11-23): a coding session's seed reads his edit, and the fence rides beside it."""
+        s, tid = self._task('Please fix the export.')
+        s.save_doc('agents', 'Work in small steps.\n\nShow a table when it helps.', 'owner')
+        seed = terminal.seed_text(s, tid)
+        self.assertIn('Work in small steps. Show a table when it helps.', seed); self.assertIn(terminal.FENCE_LINE, seed)
+        from taskuary import selfclose
+        self.assertNotIn(selfclose.ONE_SENTENCE, seed)
+
+    @_owner
     def test_a_long_message_is_not_quietly_quartered(self):
         body = 'x' * 11000
         s, tid = self._task(body)
@@ -1477,24 +1497,37 @@ class SeedCompletenessTests(unittest.TestCase):
         loses the tail of a paragraph."""
         s, tid = self._task('z' * 200000)
         seed = terminal.seed_text(s, tid)
-        for must in ('WHAT TO DO', 'Do NOT push', 'CODING RULES (CODING.md)', 'RULES (AGENT.md'):   # PW-185 labels
+        from taskuary import selfclose
+        for must in (terminal.TOOLS_HELP, selfclose.ONE_SENTENCE, terminal.FENCE_LINE):
             self.assertIn(must, seed, must)
+
+    @_owner
+    def test_the_seed_names_where_its_tools_are_and_the_command_lists_them(self):
+        """Context, tools and one sentence (the owner, 2026-11-23): the seed gives no orders about --reply or --done - it names
+        `taskuary --help`, and that help is where each tool says how it is used."""
+        import contextlib, io, sys
+        from taskuary import cli, selfclose
+        s, tid = self._task('Please fix the export.')
+        seed = terminal.seed_text(s, tid)
+        self.assertIn(terminal.TOOLS_HELP, seed); self.assertIn(selfclose.ONE_SENTENCE, seed)
+        for gone in ('WHAT TO DO', 'WHEN FINISHED', 'REPLY:', 'Do NOT push'): self.assertNotIn(gone, seed, gone)
+        out = io.StringIO()
+        with mock.patch.object(sys, 'argv', ['taskuary', '--help']), contextlib.redirect_stdout(out), self.assertRaises(SystemExit): cli.main()
+        for flag in ('--reply', '--done', '--no-reply', '--waiting-on', '--tick', '--attach'): self.assertIn(flag, out.getvalue(), flag)
 
     @_owner
     def test_the_trim_cuts_only_the_message_never_the_rules_or_the_closing_instructions(self):
         """R4: `tail` used to run from FROM to the end of the WHOLE prompt, so a long ask trimmed
-        the rules and the closing WHAT TO DO instead of itself - a seed could end mid-word at
-        "Do NOT " with the rest of that sentence gone. The cut must land in the message, before
-        RULES (AGENT.md, and everything after it must survive whole, not just present."""
+        the rules and the closing lines instead of itself - a seed could end mid-word with the rest of
+        that sentence gone. The cut must land in the message, and everything after it must survive whole."""
         s, tid = self._task('z' * 200000)
         seed = terminal.seed_text(s, tid)
         self.assertIn('truncated here', seed)                          # it did trim something
         # the closing instructions and the rules survive WHOLE, not clipped mid-sentence
-        self.assertIn('Do NOT look this task up again - in Taskuary, its database or the mailbox', seed)
-        self.assertIn('Missing required detail? Change nothing: ask one concrete question here, '
-                      'say if the sender must answer, and wait.', seed)
+        from taskuary import selfclose
+        self.assertIn(terminal.TOOLS_HELP + ' ' + selfclose.ONE_SENTENCE, seed)
         # the cut is IN the message, strictly ahead of the rules it must never reach
-        self.assertLess(seed.index('truncated here'), seed.index('RULES (AGENT.md'))
+        self.assertLess(seed.index('truncated here'), seed.index(terminal.FENCE_LINE))
 
     @_owner
     def test_the_NEWEST_message_is_the_ask(self):
@@ -1516,35 +1549,8 @@ class SeedCompletenessTests(unittest.TestCase):
         seed = terminal.seed_text(s, tid)
         self.assertIn('the importer fails on Tuesdays', seed)
         self.assertNotIn('truncated here', seed)
-        self.assertIn('Missing required detail? Change nothing', seed)
-        self.assertIn('if the sender must answer', seed)
-
-    def test_a_coding_agent_gets_the_whole_of_its_rules(self):
-        """coding.md flattens to ~4,884 chars and was delivered as 1,800 - every coding session ran on
-        37% of its own rules, cut mid-sentence, with nothing saying so. Measured, not hardcoded, so
-        the test still means something after the document is edited."""
-        from taskuary.store import MemoryStore
-        s = MemoryStore()
-        doc = s.get_doc('coding') or ''
-        self.assertGreater(len(doc), 2000, 'the shipped coding.md should be substantial')
-        got = terminal.rules_text(s, profile='coding')
-        self.assertNotIn('truncated here', got)
-        # every non-empty line of the document survives into the flattened rules
-        for line in [l.strip(' #*-').strip() for l in doc.splitlines() if l.strip()][-3:]:
-            self.assertIn(' '.join(line.split())[:60], got, 'the END of the document was dropped')
-
-    def test_a_profile_too_long_to_fit_says_so(self):
-        from taskuary.store import MemoryStore
-        s = MemoryStore()
-        s.save_doc('coding', 'x ' * 8000, 'test')
-        got = terminal.rules_text(s, profile='coding')
-        self.assertIn('truncated here', got)      # _cut's own words - silence is the expensive kind
-
-    def test_a_short_profile_is_returned_untouched(self):
-        from taskuary.store import MemoryStore
-        s = MemoryStore()
-        s.save_doc('coding', '# Rules\nBe careful.', 'test')
-        self.assertNotIn('truncated', terminal.rules_text(s, profile='coding'))
+        from taskuary import selfclose
+        self.assertIn(selfclose.ONE_SENTENCE, seed)
 
     def test_the_ask_is_what_gives_when_the_whole_seed_is_over(self):
         """The existing priority, asserted rather than assumed: raising DOC_CHARS must not change

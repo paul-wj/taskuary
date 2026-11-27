@@ -7,7 +7,8 @@ const store = (v) => ({ getItem: () => v });
 
 test("an unkeyed page with no stored token says how to get in", () => {
   assert.equal(needsLink(doc(true), store(null)), true);
-  assert.match(UNLINKED_LINE, /taskuary --link/);
+  assert.match(UNLINKED_LINE, /from its app/);
+  assert.doesNotMatch(UNLINKED_LINE, /taskuary --|run /, "a command named on the page is one an agent that opens it runs (walk 19)");
 });
 
 test("a tab that already holds the token, or a keyed page, opens the app", () => {
@@ -38,4 +39,17 @@ test("any other failure keeps the token", async () => {
   }
   assert.equal(kept, "tok");
   assert.equal(staleToken({ response: { status: 401, data: { code: "unauthorized" } } }, { removeItem: () => { throw new Error("blocked"); } }), true);
+});
+
+test("a tab left open across a restart is refused with the old token: the new one the restart seeded is kept, and the tab reloads onto it", async () => {
+  const { staleToken } = await import("../src/unlinked.js");
+  let kept = "new";
+  const st = { getItem: () => kept, removeItem: () => { kept = null; } };
+  const refused = { config: { headers: { "X-Taskuary-Token": "old" } }, response: { status: 401, data: { code: "unauthorized" } } };
+  assert.equal(staleToken(refused, st), "renewed");
+  assert.equal(kept, "new", "the restart's token is never dropped by a tab that held the old one");
+  assert.equal(needsLink(doc(true), st), false);
+  // ...and the refused token being the stored one still drops it, as before
+  assert.equal(staleToken({ ...refused, config: { headers: { "X-Taskuary-Token": "new" } } }, st), true);
+  assert.equal(kept, null);
 });

@@ -2,7 +2,7 @@
 
 **Skills** in the sidebar holds reusable methods, not new worker roles. AI reads completed work and suggests a new Skill or an improvement to an existing one. You decide whether an Agent should do the authoring, then review the entire package before publishing it. Agents decide for themselves when to use a published Skill.
 
-This is separate from Hub discoveries, Playbooks, scheduled workflows and the existing **Import skills** conversion to worker profiles. None of those are migrated or replaced.
+The **Skills** sidebar is for discovering and reviewing methods from completed work. Approved packages appear in the native library under **Reports → Skills**, alongside starter and imported Skills. Hub findings and scheduled workflows are separate. Existing Playbooks are handled by the native library's migration, not by this discovery workflow.
 
 ## AI suggestions
 
@@ -91,7 +91,7 @@ Approved packages are linked into confirmed native discovery locations:
 
 Links point to the formal package; there are no independently updated copies. Windows uses a directory symlink when permitted, or a directory junction. A failed installation or existing conflicting entry is shown per target, not reported installed. Taskuary never overwrites unrelated Skills, another Taskuary home's binding, or a manually retargeted entry. A missing/unavailable/conflicting link is visible; native linkage can be reconciled on restart. A runtime which does not recognize either location needs its own native integration; Taskuary does not invent a discovery directory for it.
 
-New Taskuary tasks receive a compact catalogue of approved names, descriptions and paths, not every Skill body. Compatible Agents can read `SKILL.md` and supporting resources on demand; the Taskuary MCP tool **read_skill** can read published text resources. Unpublished drafts are absent from this catalogue. No Skill is forced onto a task.
+New Taskuary tasks receive a compact catalogue of approved names and descriptions, not every Skill body. The Taskuary MCP tool **skills** can read the complete `SKILL.md` by name. For a published Taskuary package, give it a relative `path` to read a bundled text resource without executing it. Unpublished drafts are absent from this catalogue. No Skill is forced onto a task.
 
 Approval exposes that complete package to compatible sessions outside Taskuary too. Some CLI loaders require refreshing or restarting an already-running session. There is no separate confirmation on each later use. A Skill cannot grant tools, send approval, credentials or other permissions its Agent does not already have.
 
@@ -99,6 +99,6 @@ The filesystem locations and API checks are **not an OS sandbox**: a program run
 
 ## Existing functionality and verification
 
-This feature is additive. Existing task/agent/reply state meanings, approvals, connectors, reports, Hub, Playbooks, Profile imports and configuration choices stay intact. Empty libraries add no Skill prompt block. Failure of Skill analysis or generation does not block ordinary work. The release gate is comparison against the recorded regression baseline plus focused isolation and rendered-browser checks, not a promise that unrelated pre-existing failures disappeared.
+Discovery does not change ordinary task, agent or reply state, connector behavior, or existing native Skills. Failure to analyze or generate a Skill does not block ordinary work.
 
 The public static demo uses clearly labeled fictional suggestions and complete sample resources. It runs no real AI/Agent and modifies no native Skill directory.

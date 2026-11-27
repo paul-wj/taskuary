@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from taskuary import learn, responder
+from taskuary import responder, learning
 from taskuary.store import MemoryStore, SQLiteStore
 from tests.test_review_delivery_safety import make_review, BODY
 
@@ -17,7 +17,7 @@ def s():
 
 
 def redraft(s, said, rid, tid):
-    with mock.patch.object(learn, 'learn_from'): return responder.draft_for_review(s, tid, rid, llm=lambda *a, **k: said)
+    with mock.patch.object(learning, 'learn_from'): return responder.draft_for_review(s, tid, rid, llm=lambda *a, **k: said)
 
 
 def test_no_reply_with_why_puts_the_pending_draft_down_as_not_needed(s):
@@ -53,3 +53,15 @@ def test_a_first_draft_that_says_no_reply_is_put_down_as_before(s):
     redraft(s, 'NO REPLY', rid, tid)
     rv = s.get_review(rid)
     assert rv['Status'] == 'no_reply' and not rv.get('NotNeeded')
+
+
+def test_the_reply_his_own_answer_greyed_is_the_one_not_needed_retires(s):
+    """Walk 11: he answered the sender outside the app; his mail set the waiting draft aside as its agent heard it, and the agent's
+    reply_not_needed was told "no reply is waiting on this task" - it told him so, over the greyed letter still standing there."""
+    from taskuary import proposals, verdicts
+    tid, mid, rid = make_review(s)
+    assert s.decide_review(rid, 'superseded', None, 'taskuary', note=proposals.SET_ASIDE)
+    out = verdicts.not_needed(s, tid, 'you told Erin yourself to hold off until Friday', 'agent')
+    rv = s.get_review(rid)
+    assert out == {'ok': True, 'review_id': rid}, out
+    assert rv['Status'] == 'closed_unsent' and rv['DecideNote'].startswith('withdrawn - ') and rv['DraftText'] == BODY

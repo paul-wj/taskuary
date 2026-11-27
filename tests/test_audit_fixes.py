@@ -128,7 +128,7 @@ class BrainTests(unittest.TestCase):
         with mock.patch.object(general, 'MAX_CONTEXT', 24_000): _system, user = general._prompt(s, tid)
         self.assertLessEqual(len(user), 24_000 + 200)
         self.assertIn('What is the one thing they are all asking for?', user)
-        self.assertTrue(user.rstrip().endswith('Do not repeat the task context.'))
+        self.assertLess(user.index('What is the one thing they are all asking for?'), user.index('SOURCE MATERIAL'))   # his line leads, never cut
         self.assertIn('older source material trimmed', user); self.assertIn('mail 8 ', user)       # newest source kept (by SentAt)
         self.assertIn(general.READ_WHOLE, user)                         # ...and what was cut is said, with how to read it whole
 
@@ -215,12 +215,13 @@ class DoorTests(unittest.TestCase):
     mandatory token affordable."""
 
     def test_f03_the_owner_token_is_minted_not_offered(self):
-        srv = {}
-        guard.ensure_tokens(lambda: {}, lambda d: None, srv)
-        self.assertTrue(srv['token'] and srv['agent_token'] and srv['token'] != srv['agent_token'])
-        kept = {'token': 'mine', 'agent_token': 'theirs'}
-        guard.ensure_tokens(lambda: {}, lambda d: None, kept)
-        self.assertEqual(kept, {'token': 'mine', 'agent_token': 'theirs'})   # an owner who chose one keeps it
+        from taskuary import config
+        srv, wrote = {}, []
+        guard.ensure_tokens(lambda: {}, wrote.append, srv)
+        self.assertTrue(srv['agent_token']); self.assertNotIn("'token'", str(wrote))
+        with mock.patch('taskuary.launchkey.in_session', return_value=False), mock.patch.object(config, '_read', return_value={}):
+            config._owner_token(srv)                                      # ...the owner's is minted in memory, never written (2026-11-25)
+        self.assertTrue(srv['token'] and srv['token'] != srv['agent_token'])
 
     def test_f03_a_name_this_server_does_not_answer_to_is_refused(self):
         # both spellings of allowed_hosts: the comma-separated string an owner types, and the
@@ -267,7 +268,7 @@ class DoorTests(unittest.TestCase):
         r = c.post('/api/tasks/purge-dropped', headers={'X-Taskuary-Token': 'wrong'})
         self.assertEqual(r.headers['content-type'].split(';')[0], 'application/json')
         self.assertEqual(r.json()['code'], 'unauthorized')
-        self.assertIn('taskuary --link', r.json()['detail'].lower())   # not "reload": a reload no longer re-seeds the token (R29)
+        self.assertIn('from its app', r.json()['detail'].lower())   # not "reload": a reload no longer re-seeds the token (R29)
         # ...which is also how an agent stops defeating the deny list by simply not sending its header
         self.assertEqual(guard.scope_of({'token': 'o', 'agent_token': 'a'}, {}), guard.ANON)
 
@@ -333,3 +334,21 @@ class DoorTests(unittest.TestCase):
                 ws.receive_json()
 
 if __name__ == '__main__': unittest.main()
+
+
+def test_an_audit_row_never_carries_a_connector_secret():
+    """The red team, 2026-11-24 (T5): a connector's create/edit row kept the ConfigJson it saved, and /api/audit/recent served a LINE channel
+    secret, a TOTP key and a password to an agent - which signed its own vendor push with the first. Written without them now, and a row
+    written before is read without them."""
+    import json
+    from taskuary.store import MemoryStore
+    s = MemoryStore()
+    cfg = {'channel_id': '1650001', 'channel_secret': 'S3CRET-line', 'totp_key': 'JBSWY3DP', 'password': 'hunter2', 'host': 'imap.vendor.example'}
+    s.audit('connector', 7, 'create', 'owner', detail={'Type': 'line', 'Name': 'LINE', 'ConfigJson': json.dumps(cfg)})
+    s._exec("INSERT INTO audit (EntityType, EntityId, Action, Actor, ActorType, Detail, CreatedAt) VALUES ('connector', 7, 'edit', 'owner', 'human', ?, '2026-11-01')",
+            (json.dumps({'Type': 'line', 'ConfigJson': json.dumps(cfg)}),))
+    rows = s.list_audit(limit=10)
+    said = ' '.join(r['Detail'] for r in rows)
+    for secret in ('S3CRET-line', 'JBSWY3DP', 'hunter2'): assert secret not in said
+    assert all('1650001' in r['Detail'] and 'imap.vendor.example' in r['Detail'] for r in rows)       # ...what was changed stays said
+    assert 'S3CRET-line' not in str(s._rows("SELECT Detail FROM audit WHERE Action='create'"))         # ...and the new row never held it

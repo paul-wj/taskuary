@@ -13,8 +13,7 @@ ONCE, mid-call or mid-tool (_await). The tools are the CLI road's own, run by th
   named session (browserview), so the pane shows it. Every act goes through browsergate.check first, exactly as a CLI's shell
   command does through its hook: a press that can't be undone is held for the owner and the agent is told so.
 - show - agenttools.show_files: a screenshot, a file, drawn in the chat (the frontend draws a `show` step's FILES_MARK rows).
-- SIGNING IN is never a tool: the agent ends its turn with [[TASKUARY-SIGNIN: site]] (selfclose.signin_marker), and the turn's
-  filing raises it (general._file -> signin.needs). A saved vault sign-in is typed by the server and the agent is woken
+- SIGNING IN is hand_over with its site (browserview.hand_over -> signin.needs), mid-turn. A saved vault sign-in is typed by the server and the agent is woken
   "Signed in - continue"; with none, the owner's ask is the secure fill page, "Save to vault for next time" on it. The secret
   never reaches the model.
 HIPAA: what the page shows goes to the card that runs the turn and nowhere else - the client's own chosen gateway.
@@ -24,6 +23,8 @@ from pathlib import Path
 from loguru import logger
 from .selfclose import SHOW_WHAT
 from .browserview import SIGNUP_LINE
+from . import gate as _gate
+from .agenttools import ALWAYS_LOAD
 
 IDLE_STEPS = 8                 # steps in a row whose answers held nothing the turn had not read already: going in circles, not working
 CAP = 12_000                  # one tool answer, as the model reads it
@@ -53,9 +54,7 @@ SHOW = _fn('show', f"Show the owner files in this chat - a screenshot, a file yo
 BRIEF = ('YOUR TOOLS: you drive Taskuary\'s browser for this task with browser_open, browser_look, browser_click, browser_fill, browser_press '
          'and browser_screenshot, and `show` puts a picture or file in this chat. DO the work - open the site, look, click, read - never tell '
          'the owner it "cannot be done from here" or ask them to paste what the page shows. A SIGN-IN PAGE: never type a password and never '
-         'ask for one - open the site\'s sign-in page, then end your turn with a final line [[TASKUARY-SIGNIN: <the site\'s domain>]]. '
-         'Taskuary signs in with the login saved in its vault and wakes you to continue; if none is saved, the owner fills it in securely '
-         '(and can save it to the vault for next time). ' + SIGNUP_LINE.replace('run `agent-browser signup`', 'call browser_signup') + 'An act that can\'t be undone (submit, pay, send, delete) may be HELD for the owner: '
+         'ask for one - open the site\'s sign-in page and call hand_over with its `site`. ' + SIGNUP_LINE.replace('run `agent-browser signup`', 'call browser_signup') + 'An act that can\'t be undone (submit, pay, send, delete) may be HELD for the owner: '
          'when a tool says so, stop and say what you will do once they approve. Say what you found from the page itself, and what you could not check.')
 # ── PHASE 2: the rest of what a CLI's hands do (the owner, 2026-11-09: "make sure hipaa thing matches capabilities of claude cli") ──────
 # Files in the task's own outputs folder (the one folder the task page serves), read with Taskuary's own readers (attachtext); a page fetched
@@ -88,23 +87,21 @@ WEB = [
 ASK_BY_CALLING = ("Call it for such a step all the same: the call is what puts the Approve button on the task, and it runs once the owner "
                   "presses. Saying in words that a step needs approval puts nothing there.")
 SHELL = [_fn('run_command', "Run a shell command in your working folder (PowerShell on Windows, bash elsewhere) - git, scripts, builds, "
-             "tests. The same rules as a Claude Code session here: a step that leaves this computer (push, publish, send), a delete outside "
-             "your folder, or a browser or desktop act that can't be undone waits for the owner's Approve; everything else runs now. "
-             + ASK_BY_CALLING,
+             "tests. The same rules as a Claude Code session here. " + _gate.brief('shell') + ' ' + ASK_BY_CALLING,
              _S({'command': {'type': 'string'}, 'why': {'type': 'string', 'description': 'what it does, in a few plain words'}}, ['command', 'why']))]
 LOCAL = {t['function']['name'] for t in (*BROWSER, SHOW, *FILES, *WRITE, *WEB, *SHELL)}
 # ONE LINE A TOOL (the owner, 2026-11-15: "MCP-style tools with simple JSON ... All methods can be searched later"): as agenttools.SHORT for
 # Taskuary's own - the whole words of each are kept (FULL) and read with find_tools
-SHORT = {'browser_open': "Open a web page in this task's browser.",
+SHORT = {'browser_open': "Open a page in this task's browser.",
          'browser_look': 'Read the page the browser is on: its elements with refs (@e1); full=true for its text.',
          'browser_click': 'Click an element by its ref.', 'browser_fill': 'Type text into a box by its ref (never a password).',
-         'browser_press': 'Press a key in the page (Enter, Tab).', 'browser_signup': 'Send the sign-up form here; Taskuary makes the password.', 'browser_screenshot': 'Save a picture of the page; answers with its path.',
+         'browser_press': 'Press a key in the page (Enter, Tab).', 'browser_signup': 'Send the sign-up form; Taskuary makes the password.', 'browser_screenshot': 'Save a picture of the page; answers with its path.',
          'show': 'Show the owner files in this chat, by path.', 'files_list': 'List a folder (default: your working folder).',
-         'file_read': 'Read a file as text (also PDF, Word, Excel).',
-         'file_write': 'Write a new file whole (docx/xlsx/pdf/pptx made real, charts too).',
-         'file_edit': 'Change a file in place, one exact piece (a sheet keeps its formulas, a document its look).',
+         'file_read': 'A file as text (also PDF, Word, Excel).',
+         'file_write': 'A new file, whole (docx/xlsx/pdf/pptx, charts too).',
+         'file_edit': 'Change one exact piece of a file; formulas and look kept.',
          'web_search': 'Search the web.', 'web_fetch': 'Read one public web page or file by its address.',
-         'run_command': 'Run a shell command in your working folder.'}
+         'run_command': 'A shell command in your folder.'}
 FULL = {}
 def _short(tools: list):
     "Each of `tools` (in place) listed by its line and lean parameters, its whole words kept in FULL."
@@ -118,15 +115,9 @@ RUN_WAIT = 600                 # one command - a build, a test run
 SEARCHERS = ('brave_search', 'tavily', 'exa', 'serpapi', 'serper')
 
 
-TOOLS_BRIEF = ("YOUR TASKUARY TOOLS are functions you call, not commands to write out - the connected systems among them (list_systems, "
-               "run_system) - and, where offered, a Claude Code session's hands: files (files_list, file_read, file_write, file_edit) "
-               "anywhere you name, the web (web_search, web_fetch for one page) and run_command (git, scripts, builds), under its rules - a "
-               "step that leaves this computer, a delete outside your folder or an act that can't be undone waits for the owner's Approve. "
-               + ASK_BY_CALLING + " Each tool is listed by one line: find_tools with its name gives its whole instructions - read them "
-               "before a first use where the line is not enough - and finds the tools not listed. " + SHOW_WHAT)
-NO_BROWSER = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET, so you cannot open a site this turn. Do not say '
-              '"cannot be done from here" and do not ask the owner to paste the page: say in one line that the browser is not set up, and '
-              'end with [[TASKUARY-ASK]] Set up the agent browser under {where} so I can do this myself?')
+TOOLS_BRIEF = ("YOUR TASKUARY TOOLS are functions you call, each listed by one line: find_tools with its name gives its whole instructions, "
+               "and finds the tools not listed.")
+NO_BROWSER = 'THIS COMPUTER HAS NO BROWSER FOR AGENTS YET - the owner sets one up under {where}.'
 # ...and A CARD THAT TAKES NO TOOLS is told so in the one fact of what it can do (capabilities.fact 'none'): its own line here ended every
 # answer "connect an AI that can use tools ... or switch this task to one?" - on a computer with no other AI, and on asks no browser served
 
@@ -162,13 +153,14 @@ def _part(s, a: dict) -> str:
 
 
 def _act(store, tid, sid, args: list) -> str:
-    "One agent-browser command in this task's browser - held for the owner first where it can't be undone (gatecmd.judge, as a CLI's is)."
-    from . import browsergate as bg, gatecmd
-    if (held := gatecmd.judge(store, tid, sid, shlex.join([bg.EXE, *args]))): return held
+    "One agent-browser command in this task's browser - held for the owner first where it can't be undone (gate.judge, as a CLI's is)."
+    from . import browsergate as bg, gate
+    if (held := gate.judge(store, tid, sid, shlex.join([bg.EXE, *args]))): return held
+    cmd = shlex.join([bg.EXE, *args])
     rc, said = bg._run(sid, args, WAIT, 'api')
-    if rc != 0: raise ValueError(said.strip()[-400:] or f'agent-browser {args[0]} failed')
-    after = bg.outcome(sid, store) if args[0] not in bg.LOOKS or args[0] in bg.NAVS else ''
-    return '\n'.join(x for x in (said.strip() or 'Done.', after) if x)
+    # ...what it did, in his words, and what the site did - the one road a CLI's command takes after it ran (browsergate.after)
+    if rc != 0: raise ValueError('\n'.join(x for x in (said.strip()[-400:] or f'agent-browser {args[0]} failed', bg.did(sid, cmd, rc=rc)) if x))
+    return '\n'.join(x for x in (said.strip() or 'Done.', bg.after(store, tid, sid, cmd)) if x)
 
 
 def _look(sid, a: dict) -> str:
@@ -254,7 +246,9 @@ def workdir(store, tid: int) -> str:
     if task.get('Kind') not in GENERAL_KINDS:
         from . import agentchannels, repochoice
         d = agentchannels.cwd_of(store, tid) or str(repochoice.scratch(tid))
-    else: d = str(config.home() / 'scratch')
+    else:
+        from . import outputs
+        d = str(outputs.work_folder(int(tid)))         # ...its own, as a CLI's is (llm.make_cli_llm)
     Path(d).mkdir(parents=True, exist_ok=True)
     return d
 
@@ -273,11 +267,12 @@ def where_line(store, tid: int) -> str:
 
 
 def env_of(store, tid: int, sid: str) -> dict:
-    "What a command runs with: the session's own environment, as a CLI's (terminal.session_env), its browser session named (browserview.env)."
+    "What a command runs with: the session's own environment, as a CLI's (child_env, terminal.session_env), its browser session named (browserview.env)."
     import os
     from . import browserview, terminal
     from .clis import HEADLESS_ENV
-    return {**os.environ, **terminal.session_env('assistant', tid, sid=sid), **browserview.env(sid), **HEADLESS_ENV}
+    from .agents import ambient, child_env
+    return child_env({**ambient(os.environ), **terminal.session_env('assistant', tid, sid=sid), **browserview.env(sid), **HEADLESS_ENV})
 
 
 SAY = {}                       # (tid, sid) -> how this turn says a step of Taskuary's own (the browser being set up) in the chat
@@ -321,15 +316,17 @@ def _search(store, tid: int, sid: str, q: str) -> str:
                   lambda url: _hands(store, tid, sid, 'web_fetch', {'url': url}))
 
 def _hands(store, tid: int, sid: str, name: str, a: dict) -> str:
-    "A CLI's own hands, run by the server: files, the web, and commands under the ONE gate a CLI's commands pass (hooks.command_gate)."
+    "A CLI's own hands, run by the server: files, the web, and commands under the ONE gate a CLI's commands pass (gate.check)."
     import os
     if name in ('files_list', 'file_read'):
         # ...a read outside the task's own folders waits for the owner, as a CLI's does (readgate.py)
-        from . import readgate, shellgate
+        from . import gate, readgate
         cwd = workdir(store, tid)
-        held, never = readgate.judge(store, tid, [_path(store, tid, a.get('path') or '.')], cwd)
+        ps = [_path(store, tid, a.get('path') or '.')]
+        if name == 'files_list': ps = readgate.listed(ps)           # ...its names only (readgate.Listed)
+        held, never = readgate.judge(store, tid, ps, cwd)
         if never: raise ValueError(never)
-        if held: return (shellgate.check(store, tid, sid, '', cwd=cwd, reads=held).get('hookSpecificOutput') or {}).get('permissionDecisionReason') or shellgate.HELD
+        if held: return gate.reason(gate.check(store, tid, sid, cwd=cwd, paths=ps)) or gate.HELD_SAID
     if name == 'files_list':
         d = _path(store, tid, a.get('path') or '.')
         if not d.is_dir(): raise ValueError(f'{d} is not a folder')
@@ -344,6 +341,12 @@ def _hands(store, tid: int, sid: str, name: str, a: dict) -> str:
             return _part(got.get('text') or f"{p.name}: {got.get('note') or 'nothing in it to read'}", a)
         return _part(p.read_text(encoding='utf-8', errors='replace'), a)
     if name in ('file_write', 'file_edit'):
+        # ...and a write outside them waits as a read does - Taskuary's own data and settings never (red team F2, readgate.judge write=True)
+        from . import gate, readgate
+        cwd, ps = workdir(store, tid), [str(_path(store, tid, x)) for x in (a.get('path'), a.get('save_as')) if x]
+        held, never = readgate.judge(store, tid, ps, cwd, write=True)
+        if never: raise ValueError(never)
+        if held: return gate.reason(gate.check(store, tid, sid, cwd=cwd, paths=ps, write=True)) or gate.HELD_SAID
         # A WORD OR EXCEL FILE IS MADE, NOT SPELLED OUT (officefiles): written as text it was a file no one could open, and the agent went on
         # to build one by hand in PowerShell - a script of output a step, for as long as it took. A PDF and a deck the same (design round 5)
         from . import officefiles as of
@@ -372,12 +375,12 @@ def _hands(store, tid: int, sid: str, name: str, a: dict) -> str:
         return _part(head + chr(10) + str(got.get('text') or '').strip(), a)
     if name == 'web_search': return _search(store, tid, sid, str(a.get('query') or ''))
     if name == 'run_command':
-        from . import hooks, shellgate, spawn
+        from . import gate, shellgate, spawn
         cmd, why = str(a.get('command') or '').strip(), ' '.join(str(a.get('why') or '').split())[:300]
         if not cmd: raise ValueError('no command given')
         cwd, shell = workdir(store, tid), 'PowerShell' if os.name == 'nt' else 'Bash'
-        held = hooks.command_gate(store, tid, sid, cmd, shell, cwd, ask=False, about=why)
-        if held: return (held.get('hookSpecificOutput') or {}).get('permissionDecisionReason') or f'{shellgate.HELD}.'
+        held = gate.check(store, tid, sid, cmd, cwd, shell, about=why)
+        if held: return gate.reason(held) or f'{gate.HELD_SAID}.'
         import subprocess, time
         # ...its own process group off Windows, so the whole of it can be ended (_kill)
         p = spawn.popen(shellgate._argv(shell, cmd), cwd=cwd, env=env_of(store, tid, sid), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -396,12 +399,8 @@ def _hands(store, tid: int, sid: str, name: str, a: dict) -> str:
 
 def _kill(p):
     "The command and everything it started: ending its shell alone left the build under it running."
-    import os, signal
     from . import spawn
-    try:
-        if os.name == 'nt': spawn.run(['taskkill', '/PID', str(p.pid), '/T', '/F'], capture_output=True, timeout=15)
-        else: os.killpg(p.pid, signal.SIGKILL)
-    except Exception as e: logger.info(f'apiagent: command {p.pid} not ended as a whole - {e}')
+    spawn.end(p)
     try: p.kill(); p.communicate(timeout=5)
     except Exception: pass
 
@@ -434,6 +433,8 @@ def no_tool(name) -> str:
 def run_tool(store, tid: int, sid: str, name: str, a: dict) -> str:
     "One tool call, run by the server. Raises ValueError with words the model can act on."
     from . import browserview as bv, browsergate as bg
+    from .agenttools import aliased
+    name, a = aliased(name, a)              # ...a kept conversation's call by an old name of the one review tool runs as it
     if (tid, sid) in OFFERED and name not in OFFERED[(tid, sid)]: raise ValueError(no_tool(name))
     if SLIMMED in json.dumps(a, ensure_ascii=False, default=str):
         raise ValueError('an argument is the line that stands for text you sent on an earlier call, not the text - nothing was done; '
@@ -461,9 +462,9 @@ def run_tool(store, tid: int, sid: str, name: str, a: dict) -> str:
     if name == 'browser_open':
         u = _url(a.get('url'))
         if not bv.state(sid, fresh=True).get('open'):
-            held = bg.check(store, tid, sid, shlex.join([bg.EXE, 'open', u]))       # a magic link is judged like a click (browsergate.carries)
-            if held: return (held.get('hookSpecificOutput') or {}).get('permissionDecisionReason') or bg.HELD
-            if not bv.start(sid, u): raise ValueError(bv.FAILED_WHY)
+            from . import gate                                                  # a magic link is judged like a click (browsergate.carries)
+            if (held := gate.check(store, tid, sid, shlex.join([bg.EXE, 'open', u]), run=True)): return gate.reason(held) or bg.HELD
+            if not bv.start(sid, u): raise ValueError(f'the browser did not start: {bv.failed_why(sid)} - nothing was opened. Call browser_open again to try once more')
         else:
             # ...A PAGE THAT CAME BUT NEVER FINISHED (an image or a tracker on it still loading) is open all the same: agent-browser's
             # "Timed out ... waiting for load state" over a page whose text was there read as a failed open (the browser-read round,
@@ -478,8 +479,8 @@ def run_tool(store, tid: int, sid: str, name: str, a: dict) -> str:
     if name == 'browser_fill': return _act(store, tid, sid, ['fill', str(a.get('ref') or ''), str(a.get('text') or '')])
     if name == 'browser_press': return _act(store, tid, sid, ['press', str(a.get('key') or '')])
     if name == 'browser_signup':
-        from . import gatecmd
-        return gatecmd.run_own(store, tid, sid, 'signup')[1]
+        from . import gate
+        return gate.run_own(store, tid, sid, 'signup')[1]
     if name == 'browser_screenshot':
         import time
         from . import outputs
@@ -527,11 +528,11 @@ def tools_for(tid: int, sid: str, browser: bool, stranger: bool = False, post=No
 # the provider's cache). Named here is every tool a measured turn did not reach for; anything not named stays in the core. ...but never
 # file_write / file_edit (an invoice to fill, 2026-11-15): a model shown only their names said it had no way to make the file, and stopped.
 # ...and THE BROWSER'S OTHER HANDS COME WITH ITS FIRST PAGE (browser_open loads BROWSER_MORE): a page is only ever looked at and clicked after one is open
-LATER = frozenset({'read_attachment', 'read_skill', 'search_knowledge', 'owner_memory', 'calendar', 'list_systems', 'run_system', 'remind', 'ask_stronger',
-                   'note_peers', 'use_repo', 'find_repos', 'propose_land', 'withdraw_draft', 'sign_form', 'answer_invite', 'set_up_meeting', 'share',
-                   'search_tasks', 'person', 'guide', 'todos', 'check_back', 'browser_look', 'browser_click', 'browser_fill', 'browser_press',
-                   'browser_signup', 'browser_screenshot', 'web_fetch', 'files_list', 'reply_not_needed', 'propose', 'my_task', 'new_task'})
-BROWSER_MORE = ('browser_look', 'browser_click', 'browser_fill', 'browser_press', 'browser_signup', 'browser_screenshot')
+LATER = frozenset({'read_attachment', 'search_knowledge', 'owner_memory', 'calendar', 'list_systems', 'run_system', 'remind', 'ask_stronger',
+                   'note_peers', 'note_lead', 'use_repo', 'find_repos', 'propose_land', 'withdraw_draft', 'keep_card', 'sign_form', 'answer_invite', 'set_up_meeting', 'share',
+                   'search_tasks', 'person', 'past_figures', 'guide', 'todos', 'check_back', 'skills', 'routines', 'browser_look', 'browser_click', 'browser_fill', 'browser_press',
+                   'browser_screenshot', 'web_fetch', 'files_list', 'reply_not_needed', 'my_task', 'new_task'}) - set(ALWAYS_LOAD)
+BROWSER_MORE = ('browser_look', 'browser_click', 'browser_fill', 'browser_press', 'browser_signup', 'browser_screenshot', 'hand_over')
 LOAD = 'find_tools'
 DEFERRED = {}                  # (tid, sid) -> {name: schema} of the tools this turn named but has not loaded
 def loader(later: list) -> dict:
@@ -547,12 +548,12 @@ def load(tid: int, sid: str, tools: list, names) -> str:
     return f"Loaded {', '.join(t['function']['name'] for t in new)} - call them now." if new else ''
 
 
-def find(tid: int, sid: str, tools: list, query) -> str:
+def find(tid: int, sid: str, tools: list, query, store=None) -> str:
     "find_tools: the whole words of the tools this session has that `query` names or asks for - and those not yet offered, added (load)."
     from . import agenttools as at
     mine = (OFFERED.get((tid, sid)) or {t['function']['name'] for t in tools}) - {LOAD}
     words = {n: FULL.get(n) or (at.instructions(n) if n in at.TOOLS else n) for n in mine}
-    hits = at.found(query, words)
+    hits = at.found(query, words, store, tid)
     if not hits: return f"No tool fits {str(query or '')!r} - name one, or say what it should do in other words."
     return '\n\n'.join([*(words[n] for n in hits), load(tid, sid, tools, hits)]).strip()
 
@@ -734,25 +735,31 @@ def turn(brain, store, tid: int, sid: str, system: str, user: str, max_tokens: i
             if not calls: return said(m)
             msgs.append({'role': 'assistant', **{k: v for k, v in m.items() if v is not None}})          # as sent: a Gemini model's thought signature rides on it
             new = False
-            for c in calls:
+            for j, c in enumerate(calls):
                 f = c.get('function') or {}
                 name = str(f.get('name') or '')
+                # ...EACH CALL BY ITS OWN ID, as an ACP agent's is (chatlog.feed keys its row by it): the provider's, else its place in this turn
+                cid = str(c.get('id') or f'{name}-{i}.{j}')
                 try: a = json.loads(f.get('arguments') or '{}') or {}
                 except ValueError: a = {}
-                if trace: trace('tool_call', name, {'args': a})
+                if trace: trace('tool_call', name, {'tool_call_id': cid, 'args': a})
+                # ...its own hands' calls by their shape (agenttools.shape); a Taskuary tool's is written at that tool's door, on every road
+                if name in LOCAL:
+                    from .agenttools import shape
+                    logger.info(f'apiagent: task {tid} calls {name} {json.dumps(shape(a), ensure_ascii=False)[:1200]}')
                 if name in (DEFERRED.get((tid, sid)) or {}): load(tid, sid, tools, [name])       # called by the name it was given: loaded as it runs
                 if name == 'browser_open': load(tid, sid, tools, BROWSER_MORE)
                 key, again = (name, json.dumps(a, sort_keys=True, default=str)), False
                 if name in reads and key in seen: out, err, again = _again(msgs, *seen[key], name, tools, budget), False, True
                 else:
-                    try: out, err = (find(tid, sid, tools, a.get('query') or ' '.join(map(str, a.get('names') or []))) if name == LOAD else _await(lambda: run_tool(store, tid, sid, name, a), cancel)), False
+                    try: out, err = (find(tid, sid, tools, a.get('query') or ' '.join(map(str, a.get('names') or [])), store) if name == LOAD else _await(lambda: run_tool(store, tid, sid, name, a), cancel)), False
                     except Exception as e:
                         if stopped(): raise
                         from .agenttools import failed          # ...in the words every tool's failure takes: never "{name} failed: " over them
                         out, err = failed(name, e), True
                         logger.info(f'apiagent: task {tid} {name} failed - {e}')
                     if name not in reads and name != LOAD: seen.clear()
-                if trace: trace('tool_result', name, {'result': out, 'is_error': err})
+                if trace: trace('tool_result', name, {'tool_call_id': cid, 'result': out, 'is_error': err})
                 msgs.append(ans := {'role': 'tool', 'tool_call_id': c.get('id') or name, 'content': _cut(out, CAP + 200)})   # ...a part's own line kept
                 if name in reads and not err and not again: seen[key] = (ans, ans['content'])
                 if again: continue                  # ...and it is nothing new read: going in circles is still counted (idle)

@@ -297,17 +297,6 @@ def extract_findings(store, title: str, evidence: str, llm) -> list:
 # when the owner explicitly asks it to save a developed idea, or when a turn genuinely clears the
 # same hard-earned bar as closeout learning. general.py consumes and removes it before display.
 HUB_MARKER = re.compile(r'<TASKUARY-HUB>(.*?)</TASKUARY-HUB>', re.S | re.I)
-ASSISTANT_LINE = (
-    'You can publish to the company Hub. The Hub is not a transcript, task log, or scratchpad: it '
-    'is only for a reusable discovery reached through substantial investigation/testing/reasoning, '
-    'or a developed new company idea with a considered rationale. If the owner explicitly asks you '
-    'to save a qualifying idea there, or this conversation clearly earns one, append one private '
-    'envelope after your answer: <TASKUARY-HUB>{"earned":true,"why_earned":"specific effort or '
-    'reasoning","topic":"company-area","kind":"new_idea|technical_solve|howto|gotcha|decision|system|people",'
-    '"title":"one durable claim","body":"why it matters and what to do","same_as":<id of a FROM HUB entry that already '
-    'says this same fact, or null>}</TASKUARY-HUB>. '
-    'Never show or explain the envelope. Do not emit it for a raw brainstorm, routine answer, or '
-    'ordinary completed task. Existing relevant entries appear under FROM HUB.')
 
 
 def assistant_entries(reply: str) -> tuple[str, list]:
@@ -332,6 +321,11 @@ def publish_assistant_entries(store, task_id: int, reply: str, author: str = 'as
         post(store, e['title'], e.get('body') or '', e.get('topic') or '', e.get('kind') or 'new_idea',
              author, task_id, clip=True, why_earned=e.get('why_earned') or '', same_as=e.get('same_as'))
     return clean
+
+
+# ...AND OFF IS HIS CHOICE (the owner, 2026-11-25: "it should find a way around it"): it ships on, so off is his word - an agent told "turn its
+# card on" passed that on to him as a step; nothing waits on a Hub entry, so the way on is without one
+OFF = "The Hub is switched off - the owner's choice; nothing was filed or read. Go on without it."
 
 
 def enabled(store) -> bool:
@@ -428,16 +422,14 @@ def run_hub_write(cfg):
 # ── the company and its people, beside the systems ──────────────────────────────────────
 # The Hub's entries are the SYSTEMS half of what a newcomer needs: an entry must be costly to discover, and "who is the head
 # accountant" never is, so the people kind stayed empty (TQ-1353, 2026-11-08). The company and its people are already written down -
-# JOB.md and LEARNED.md's "Your people" - so the Hub page SHOWS them above the systems, read-only, and never keeps a second copy.
+# JOB.md and the memory's lines about people - so the Hub page SHOWS them above the systems, read-only, and never keeps a second copy.
 def about(store) -> dict:
-    "{company: JOB.md as prompts read it, people: LEARNED.md's in-use people lines, tags off} - '' / [] while either says nothing."
+    "{company: JOB.md as prompts read it, people: the memory's in-use lines about someone} - '' / [] while either says nothing."
     from .triage import job_doc
-    from .learned_cut import lines, PEOPLE
-    from .learnedgraph import TAG
+    from . import memory
     try: company = job_doc(store)
     except Exception: company = ''
-    def plain(raw): m = TAG.match(raw); return (m.group('text') if m else raw.strip().lstrip('-* ')).strip()
-    try: people = [t for t in (plain(r) for r, _ in lines(store.doc('learned') or '', PEOPLE)) if t]
+    try: people = [r['Text'] for r in memory.in_use(store) if r['people']]
     except Exception: people = []
     return {'company': company, 'people': people}
 

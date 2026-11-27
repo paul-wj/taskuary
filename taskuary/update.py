@@ -1,7 +1,7 @@
 """Update in place, from Settings: check what the latest release is, fetch it, swap it in, come back.
 
 Everything the owner has - connections, tokens, the database, the operator documents, the
-playbooks - lives under ~/.taskuary (config.home()), never beside the program. So an update is
+skills - lives under ~/.taskuary (config.home()), never beside the program. So an update is
 only ever a program swap: nothing in the data folder is touched, and the new build opens the same
 database the old one closed. That is what makes "keep the connection and all the settings" free.
 
@@ -190,12 +190,12 @@ def _launch_swap(script: Path, cwd: Path, env: dict = None):
     breakaway = getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0x01000000)
     from . import spawn          # bare: it outlives us, so it must hold nothing of the exe's unpack folder
     try:
-        return spawn.bare(argv, creationflags=base | breakaway, **kw)
+        return spawn.bare(argv, creationflags=base | breakaway, outlive=True, **kw)
     except OSError as e:
         if getattr(e, 'winerror', None) not in (5, 87):
             raise
         logger.warning(f'update: Windows refused job breakaway ({e}); retrying detached')
-        return spawn.bare(argv, creationflags=base, **kw)
+        return spawn.bare(argv, creationflags=base, outlive=True, **kw)
 
 
 # WHY THE UPDATE COULD NOT BE WRITTEN. "[Errno 13] Permission denied" and a path tells the owner
@@ -353,7 +353,7 @@ def _apply_pip(progress=None) -> dict:
     import subprocess
     kw = ({'creationflags': getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)}
           if os.name == 'nt' else {'start_new_session': True})
-    spawn.popen([sys.executable, *sys.argv], close_fds=True, **kw)
+    spawn.popen([sys.executable, *sys.argv], close_fds=True, outlive=True, **kw)
     return {'how': 'pip', 'restarting': True, 'pip': (r.stdout or '').strip()[-300:]}
 
 

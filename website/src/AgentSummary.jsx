@@ -12,18 +12,19 @@ import { isCardReview } from "./actionCard.js";
 import { Md } from "./md.jsx";
 import { MicButton } from "./ui.jsx";
 import { MESSAGE } from "./kinds.js";
+import { senderName } from "./personName.js";
+import { keepUnsent, unsent } from "./unsent.js";
+import { AttachChip, AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, useSendWhenUp } from "./promptImages.jsx";
+import { ALERT_INK, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 import { label as btn } from "./buttons.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-import { keepUnsent, unsent } from "./unsent.js";
-import { AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, useSendWhenUp } from "./promptImages.jsx";
-import { ALERT_INK, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 
 // ...a chatbot's answer, split into sections to read (the owner, 2026-11-05): a short bold heading over each, no rules, no boxes but the email's
 const HEAD = { display: "block", color: INK, fontSize: 13.5, fontWeight: 700, mt: 1.5, mb: 0.25 };
 const Head = ({ children, first }) => <Typography component="span" sx={{ ...HEAD, ...(first ? { mt: 0 } : {}) }}>{children}</Typography>;
 const LINE = { fontSize: 13.5, lineHeight: 1.55, color: INK, overflowWrap: "anywhere" };
-const who = (r) => r.FromName || r.FromEmail || "";
+const who = (r) => senderName(r);
 
 const PARA = { ...LINE, mt: 1 };
 // A REGULAR CHAT (the owner, 2026-11-05: "it's just a chat with it summarizing in different paragraphs (short text as possible) this is the chat,
@@ -117,6 +118,11 @@ export function NoAgentChat({ task, reviews = [], cards = null, closed = "", han
     // had emptied, found the words still kept and put them back in its own box - under the same words in his bubble. A send that fails keeps them
     keepUnsent(task.TaskId, "");
     try {
+      if (handoff) {
+        await handoff.send(words, pics.paths);
+        setText(""); pics.clear();
+        return;
+      }
       const { data } = await api.post(`/api/tasks/${task.TaskId}/dispatch`, { kind: "general", instruction: words, files: pics.paths });
       setText(""); pics.clear(); onStarted?.(data);
     }
@@ -132,7 +138,7 @@ export function NoAgentChat({ task, reviews = [], cards = null, closed = "", han
       {/* ...a closed one says how it closed over the box - typing there reopens it (server._refuse_closed_chat) */}
       {!!closed && <div className="tq-aui-closed" data-tq-chat-closed="">{closed}</div>}
       <PromptBox text={text} setText={setText} pics={pics} busy={busy} onSend={send} placeholder={t(MESSAGE)}
-        inputRef={input} chips={handoff ? <AttachChip data-tq-agent-handoff={handoff.kind} name={btn(handoff.kind === "coding" ? "coding_agent" : "regular_agent")}
+        inputRef={input} chips={handoff ? <AttachChip data-tq-agent-handoff={handoff.kind} name={t(btn(handoff.kind === "coding" ? "coding_agent" : "regular_agent"))}
           icon={false} onRemove={busy ? null : handoff.cancel} /> : null}
         label={t("Send to the agent")} title={t("Starts the agent on this task with your words")} boxAttrs={{ "data-tq-no-agent-box": "" }} sendAttrs={{ "data-tq-no-agent-send": "" }} />
       {!!err && <Typography role="alert" sx={{ px: 1.5, pb: 1, fontSize: 12.5, color: ALERT_INK }}>{typeof err === "string" ? err : t(err.source)}</Typography>}

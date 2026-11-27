@@ -261,8 +261,8 @@ export const SetupPanel = ({ open, state, onClose, onGo, onDismiss, onRefresh })
           ))}
         </Box>
 
-        <Button size="small" sx={{ mt: 1, color: DIM }} onClick={() => go({ tab: "Settings", hash: "settings=config&group=How%20mail%20is%20sorted" })}>
-          {t("Optional: review models and agents")}
+        <Button size="small" sx={{ mt: 1, color: DIM }} onClick={() => go({ tab: "Settings", hash: "settings=config&group=Which%20AI%20does%20what" })}>
+          Optional: review models and agents
         </Button>
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>

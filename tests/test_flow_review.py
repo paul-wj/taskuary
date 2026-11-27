@@ -130,11 +130,12 @@ def test_an_approved_write_is_that_step_done_and_the_run_goes_on_below_it():
     assert out['waiting']
     rv = s._one("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))
     p = json.loads(rv['DraftText'])
-    assert p['flow_run'] == {'source_id': src['SourceId'], 'run_id': out['run_id'], 'step': 's1'}
+    assert p['flow_run'] == {'source_id': src['SourceId'], 'run_id': out['run_id'], 'step': 's1', 'key': flow.step_key(json.loads(src['ConfigJson'])['flow'][0])}
     ran = []
     with mock.patch.dict(reports.REGISTRY, {'smb_write': lambda cfg: (ran.append(cfg) or 'wrote 1 file', '')}), \
             mock.patch.object(workflows, '_spawn', lambda f: f()):
-        proposals.execute(s, {**rv, 'ReviewId': rv['ReviewId']})
+        from taskuary import verdicts
+        assert verdicts.decide(s, s.get_review(rv['ReviewId']), 'approve', None, None, 'owner')['ok']      # his press: the run goes on once it is recorded
     assert 'flow_run' not in ran[0]
     run = s.report_run_of_task(tid)
     assert [r['status'] for r in run['steps']] == ['ok', 'ok'] and not run['failed']
@@ -169,3 +170,86 @@ def test_fix_with_ai_on_a_run_the_app_broke_points_at_the_app_without_a_model():
         out = flow.execute(s, src, tid, llm=no_model)
     got = flow.repair(s, workflows.cfg_of(src), s.get_report_run(out['run_id']), no_model, src['SourceId'])
     assert got['cause'] == 'taskuary' and 'flow' not in got and got['fix'] == {'label': buttons.label('fix'), 'href': '#connector=reader'}
+
+
+# ── a saved report that writes ───────────────────────────────────────────────────────────────────────────────────────────
+def test_a_saved_report_that_writes_runs_on_schedule_only_where_he_always_approved_it():
+    """The owner, 2026-11-25: "Saved report can write on schedule if you authorize it on setup." A plain saved report whose run writes to a
+    connected system - its card raised to write, so nothing but this rule stops it - writes nothing on its schedule until he says so: the run
+    is a task with the write as its card, "Always approve this step" on it (the routine's own standing yes). Once pressed, the write runs now,
+    and every later scheduled run writes unpressed as a report; a changed report waits again. Invented people and paths."""
+    from taskuary import verdicts
+    s = MemoryStore()
+    card = s.get_connector_by_type('smb_file')
+    s.save_connector({'ConnectorId': card['ConnectorId'], 'Active': True, 'Scope': 'write'}, 'test')
+    cfg = {'type': 'smb_write', 'title': 'Nightly AP export for Erin', 'path': 'exports/ap.csv', 'content': 'vendor,amount', 'daily_at': '02:00'}
+    sid = s.save_source({'Channel': 'report', 'Address': cfg['title'], 'Owner': 'o', 'Active': 1, 'ConfigJson': json.dumps(cfg)}, 'o')
+    ran = []
+    write = lambda c: (ran.append(c) or 'wrote 1 file', '')
+    def scheduled():
+        src = s.get_source(sid)
+        with mock.patch.dict(reports.REGISTRY, {'smb_write': write}), mock.patch.object(reports, 'gate', REAL_GATE), \
+             mock.patch.object(workflows, '_spawn', lambda f: f()):
+            return reports._run_report_source(s, src, workflows.cfg_of(src), llm=None, trigger='schedule')
+    out = scheduled()
+    assert ran == [] and out.get('task_id'), out                                     # ...not authorized: nothing written
+    rv = s._one("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (out['task_id'],))
+    assert rv and json.loads(rv['DraftText'])['flow_run']['key'], 'the write is a card he can always approve'
+    # ...the run goes on at once and has nothing left, so it ends and closes its task UNDER the press (macOS CI, 2026-11-26: the close put
+    # the card he had just approved down as unanswered, and his press answered "already")
+    with mock.patch.dict(reports.REGISTRY, {'smb_write': write}), mock.patch.object(workflows, '_spawn', lambda f: f()):
+        got = verdicts.decide(s, s.get_review(rv['ReviewId']), 'approve', None, None, 'owner', always=True)
+    assert got['ok'] and got['always'] and len(ran) == 1, got                          # ...his press runs it now
+    assert s.get_review(rv['ReviewId'])['Status'] == 'approved' and [r['status'] for r in s.report_run_of_task(out['task_id'])['steps']] == ['ok']
+    out = scheduled()
+    assert len(ran) == 2 and not out.get('task_id'), out                              # ...and the next scheduled run writes unpressed
+    assert not s._one("SELECT 1 AS x FROM review WHERE Kind='action' AND Status='pending'")
+    s.save_source({'SourceId': sid, 'ConfigJson': json.dumps({**cfg, 'path': 'exports/elsewhere.csv'})}, 'o')
+    out = scheduled()
+    assert len(ran) == 2 and out.get('task_id'), 'a report changed since is another write: it waits again'
+
+
+def test_approve_this_write_on_setup_is_the_run_card_s_always_and_a_changed_step_asks_again():
+    """The owner, 2026-11-25: a write step shows "Approve this write" where the report is set up. Pressed there, the next scheduled run writes
+    with no card; taken back (Settings' Remove), the run is a card again, whose "Always approve this step" stores the very same yes; the step
+    changed after waits again, and the setup page's old key is refused. Invented people and paths."""
+    from fastapi.testclient import TestClient
+    from taskuary import server, verdicts
+    c, s = TestClient(server.app), server.store
+    card = s.get_connector_by_type('smb_file')
+    s.save_connector({'ConnectorId': card['ConnectorId'], 'Active': True, 'Scope': 'write'}, 'test')
+    cfg = {'type': 'smb_write', 'title': 'Nightly AP export for Gail', 'path': 'exports/ap.csv', 'content': 'vendor,amount', 'daily_at': '02:00'}
+    sid = s.save_source({'Channel': 'report', 'Address': cfg['title'], 'Owner': 'o', 'Active': 1, 'ConfigJson': json.dumps(cfg)}, 'o')
+    ran = []
+    write = lambda x: (ran.append(x) or 'wrote 1 file', '')
+    def scheduled():
+        src = s.get_source(sid)
+        with mock.patch.dict(reports.REGISTRY, {'smb_write': write}), mock.patch.object(reports, 'gate', REAL_GATE), \
+             mock.patch.object(workflows, '_spawn', lambda f: f()):
+            return reports._run_report_source(s, src, workflows.cfg_of(src), llm=None, trigger='schedule')
+    [w] = c.get(f'/api/sources/{sid}/writes').json()['data']
+    assert not w['approved'] and 'exports/ap.csv' in w['what'], w                     # ...it says what it writes, and where
+    agent = {'X-Taskuary-Token': server.cfg['server']['agent_token']}
+    assert c.post(f'/api/sources/{sid}/always', json={'step': w['step'], 'key': w['key']}, headers=agent).status_code == 403
+    assert c.post(f'/api/sources/{sid}/always', json={'step': w['step'], 'key': w['key']}).json()['ok']
+    assert c.get(f'/api/sources/{sid}/writes').json()['data'][0]['approved']
+    out = scheduled()
+    assert len(ran) == 1 and not out.get('task_id'), out                              # ...approved on setup: the scheduled run writes, no card
+    on_setup = {k: v for k, v in flow._standing(s)[str(sid)][w['key']].items() if k != 'at'}
+    row = next(r for r in c.get('/api/trusted').json()['data'] if r['kind'] == 'routine_write' and r['key']['source_id'] == str(sid))
+    assert c.post('/api/trusted/remove', json={'kind': row['kind'], 'key': row['key']}).json()['ok']        # ...Take back is Settings' Remove
+    out = scheduled()
+    assert len(ran) == 1 and out.get('task_id'), out
+    rv = s._one("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (out['task_id'],))
+    with mock.patch.dict(reports.REGISTRY, {'smb_write': write}):
+        assert verdicts.decide(s, s.get_review(rv['ReviewId']), 'approve', None, None, 'owner', always=True)['always']
+    assert {k: v for k, v in flow._standing(s)[str(sid)][w['key']].items() if k != 'at'} == on_setup     # ...the card's yes is the same yes
+    import time
+    for _ in range(200):                                                               # ...its run goes on, on its own thread
+        if [r['status'] for r in s.report_run_of_task(out['task_id'])['steps']] == ['ok'] and not workflows.running(s, sid): break
+        time.sleep(0.02)
+    s.save_source({'SourceId': sid, 'ConfigJson': json.dumps({**cfg, 'path': 'exports/elsewhere.csv'})}, 'o')
+    assert not c.get(f'/api/sources/{sid}/writes').json()['data'][0]['approved']
+    assert c.post(f'/api/sources/{sid}/always', json={'step': w['step'], 'key': w['key']}).status_code == 409   # ...the old step's key
+    n = len(ran); out = scheduled()
+    assert len(ran) == n and out.get('task_id') and 'still working' not in out['subject'], 'a step changed after its approval waits for a press again'

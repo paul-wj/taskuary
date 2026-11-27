@@ -66,9 +66,8 @@ _LOCK = threading.Lock()   # one check at a time: two clocks firing in the same 
 # placed right there when the check runs, so the prompt IS the payload's shape - the owner reads
 # which data feeds which instruction, and can move or drop a card by editing the words.
 PROMPT = (
-    'You are my assistant; twice a day, at the start and the end of my working day, you read the sources below and check in. Tell me only what a sharp human assistant who had READ everything '
-    'would lean over and say - never a summary of my inbox, never a count I can see myself. A good line connects two things I '
-    'have not connected, or names the one thing I am about to miss. Read, in this order of worth:\n'
+    'You are my assistant; twice a day, at the start and the end of my working day, you read the sources below and check in - '
+    'never a summary of my inbox, never a count I can see myself. Read:\n'
     '0. CONFIGURED SYSTEM CHECKS - current views from finance, operations, CRM, infrastructure, or any other connected system (they follow '
     'this prompt, each under its own name). Look for threshold breaches, unusual totals, sharp changes, missing expected activity, and facts '
     'that conflict across systems.\n'
@@ -95,13 +94,11 @@ PROMPT = (
     '4. THE APP AND THE SYSTEMS PEOPLE NAME:\n[taskuary.systems]\n'
     '5. WHAT REPEATS - once a week, a month of my traffic counted:\n[taskuary.automation]\n'
     'The automation worth having IN THIS APP, ranked by the minutes it saves me a week and resting on the numbers: a skip rule on '
-    'a sender nobody reads, a playbook for the question that always gets the same reply (drafted for my Send - nothing is ever '
+    'a sender nobody reads, a skill for the question that always gets the same reply (drafted for my Send - nothing is ever '
     'sent without my press), a standing prompt, a scheduled report. Never one the existing rules already cover; one a week is plenty, '
     'none when nothing repeats enough.\n'
     '6. WHAT I ALREADY KNOW - never repeat anything under ALREADY SAID, reworded or not; use my notes; draw on the knowledge base by name:\n[taskuary.memory]\n'
-    'Be useful, not busy: a check with nothing NEW posts nothing, and most checks are that. When you do speak, prefer the '
-    'specific over the general: a name, a date, a quoted phrase, a cause. One idea about my own work a day is right; three is '
-    'noise. A fact that CHANGES an earlier line (they are out of office; the failure has a cause; they answered) is new and worth one line.\n'
+    'A check with nothing NEW posts nothing. A fact that CHANGES an earlier line (they are out of office; the failure has a cause; they answered) is new and worth one line.\n'
     'End every check with a note to your next one: what you looked at and found nothing in, when something becomes worth '
     'raising (a date, a length of silence), anything you would otherwise have to work out again - facts, never rules.')
 
@@ -138,7 +135,11 @@ OLD_PROMPT_SHA = ('06a4ec48fcec9d8bbc9fc6f423f52360aa1b0a2e7f5affe31582e7da56d1e
                   # 2026-10-25, before the automation line stopped recommending an auto-answer (policy.py removed it)
                   '1470c920581d783f70e98193ff6d6998fb7ec5f126b1ce4fb855979b8a21a138',
                   # 2026-11-12, while it still said "every 30 minutes" - the Advisor reads twice a day now (TWICE_A_DAY)
-                  '4d13664387d65994e3407d7ca5f0f8d599aebbd313e3362850d0941b88bdc908')
+                  '4d13664387d65994e3407d7ca5f0f8d599aebbd313e3362850d0941b88bdc908',
+                  # 2026-11-23, while it ranked the system checks first and said three ideas were noise - alerts and ideas have their own room now
+                  '0e1ed64ff18f89d7fd62c74fd7eb4c386602926562e2e7cf53eaa5a59aca4b52',
+                  # 2026-11-24, while it carried the Advisor's goals itself - they are ADVISOR.md's now (lookout.goals)
+                  '4e7c0ce4f1567a11c1a081299a9e729358310953d7e30d8df678470e0dfe15b3')
 # TWICE A DAY, BOTH WHOLE (the owner, 2026-11-12: "run the advisor twice a day in AM and PM ... make sure the full advisor run happens"): every
 # half hour cost ~50K a look on a live install, nearly all of them whole as the day's mail moved past the short check. 07:30 is half an hour
 # after the day's job-ideas pass may start (lookout.MORNING_H), so the morning look follows it; 16:30 is before the day ends and ahead of the
@@ -197,6 +198,31 @@ def _gist(body, n=180) -> str:
 def _reply_text(review: dict | None) -> str:
     """The words that left through Review, never an unsent draft."""
     return str((review or {}).get('FinalText') or (review or {}).get('DraftText') or '').strip()
+
+
+def is_mine(store, me: str = None):
+    "A test for a message row: is it the owner's own - read back from Sent ('context'), sent from here ('out'), a note of his (`own`), or from his address?"
+    me = (me if me is not None else store.get_setting('owner_email') or '').lower()
+    return lambda c: (c.get('Status') == 'context' or c.get('Direction') == 'out' or c.get('Channel') == 'own'
+                      or bool(me) and (c.get('FromEmail') or '').lower() == me)
+
+
+def last_word(store, chain: list, mine=None) -> dict:
+    """WHO HAS THE LAST WORD ON ONE THREAD: its newest message, or a reply a card sent ON THIS THREAD (by the mail it answers) that is newer
+    and not yet read back from the Sent folder. Per conversation, never per task (walk 14: a colleague's new question joined a task whose
+    card had just answered somebody else, and that reply was taken as the last word of HIS thread - "last word YOURS" - so nothing ever said
+    he was owed an answer). {'mine', 'at', 'sent': the receipt standing in for the reply not yet read back, else None}."""
+    from .channels import _same_words
+    mine = mine or is_mine(store)
+    rows = [c for c in chain if c.get('Status') != 'skipped']
+    last = max(rows, key=lambda c: (_ts(c.get('SentAt')), c.get('MessageId') or 0)) if rows else None
+    cid = next((c.get('ConversationId') for c in rows if c.get('ConversationId')), None)
+    rv = next(iter(store.sent_replies(conversation_id=cid, limit=1) if cid else
+                   (r for c in reversed(rows) for r in store.sent_replies(message_id=c['MessageId'], limit=1))), None)
+    at, said = (rv or {}).get('DecidedAt') or (rv or {}).get('CreatedAt'), _reply_text(rv)
+    back = rv and any(mine(c) and (_same_words(c.get('OwnText') or c.get('BodyText') or '', said) or _ts(c.get('SentAt')) >= _ts(at)) for c in rows)
+    if said and not back and (not last or _ts(at) >= _ts(last.get('SentAt'))): return {'mine': True, 'at': at, 'sent': rv}
+    return {'mine': bool(last and mine(last)), 'at': (last or {}).get('SentAt'), 'sent': None}
 
 from .autoreply import is_auto as _ooo_row                 # the mail system's own auto-reply mark, never a subject (autoreply.py)
 from .counsel import is_invite as _cal_mail                # a calendar's own mail: its MIME part / Graph type, never a subject
@@ -290,15 +316,39 @@ def followups(store, hours: int, want=('followup', 'promise')) -> list:
         else:
             from . import outcomes
             late_day = outcomes.late_after(store, (inbound.get('FromEmail') or '').lower(), int(store.get_setting('slipped_default_days', 5) or 5))
+            # ...WHATEVER THE TASK'S STATUS (the owner, 2026-11-24): the thread is what waits, and a closed task is named as closed, not skipped
+            tid = r.get('TaskId') or inbound.get('TaskId')
+            on = f" On {task_ref(tid)}, {(store.get_task(tid) or {}).get('Status') or 'gone'}." if tid else ''
             out.append({'key': f"followup:{cid}", 'kind': 'followup', 'sig': _ts(r['SentAt']) + (':away' if gone else '') + step,
                         'facts': (f"You wrote {who} on {_ts(r['SentAt'])[:10]} re \"{_short(r.get('Subject'), 70)}\": \"{_short(body, 160)}\" "
-                                  f"- nothing has come back in {plural(days, 'day')}; late for them after {late_day} days." + (f" BUT {who} is {gone}." if gone else '')),
+                                  f"- nothing has come back in {plural(days, 'day')}; late for them after {late_day} days." + on + (f" BUT {who} is {gone}." if gone else '')),
                         'text': (f"No answer from {who} in {plural(days, 'day')} on \"{subj}\" - " + (f"they are {gone}; I'd wait." if gone else 'follow up?')),
                         # the person key, the day asked and whether they are away: what the slipped lane reads (funnel.slipped_followup)
-                        'action': {'type': 'followup', 'mid': inbound['MessageId'], 'tid': inbound.get('TaskId'),
+                        'action': {'type': 'followup', 'mid': inbound['MessageId'], 'tid': inbound.get('TaskId'), 'ask_mid': r['MessageId'],
                                    'who_email': (inbound.get('FromEmail') or '').lower(), 'asked_at': _ts(r['SentAt']), 'away': bool(gone)},
                         'who': who, 'subject': subj, 'days': days, 'away': gone})
     return out
+
+
+def follow_up_on(store, ask_mid: int, actor: str = 'owner') -> dict:
+    """HIS PRESS ON A FOLLOW-UP LINE (the owner, 2026-11-26: "information without action is not worth much"): the thread his sent message
+    `ask_mid` waits on goes to its task's agent as his own line, by the one road his words take (general.to_agent - a closed task opens
+    again there). A thread on no task gets one from the other side's last word, by the road Make it a task takes (ingest.task_from_message),
+    his ask with it. Everything is read from the stored message; the reply is the agent's to raise as a card, for his press.
+    -> {'taskId', 'ref', 'said'}; LookupError where the message is not a sent one of his with somebody on its thread."""
+    r = store.get_message(ask_mid) or {}
+    if not r.get('ConversationId') or not (r.get('Status') == 'context' or r.get('Direction') == 'out'): raise LookupError('that is not a message you sent')
+    inbound = _other_side(store, r['ConversationId'])
+    if not inbound: raise LookupError('nobody wrote on that thread, so there is nobody to follow up with')
+    from . import general, ingest
+    tid = r.get('TaskId') or inbound.get('TaskId')
+    if not tid:
+        tid = ingest.task_from_message(store, inbound['MessageId'], actor, 'general')
+        store.sent_onto_task(r['MessageId'], tid, f"your sent mail - what {task_ref(tid)} follows up on")
+    who, subj = inbound.get('FromName') or inbound.get('FromEmail') or 'them', _short(inbound.get('Subject'), 60)
+    said = f"Follow up with {who}" + (f' on "{subj}"' if subj else '')
+    general.to_agent(store, tid, said, actor, frm='owner', wait=False)
+    return {'taskId': tid, 'ref': task_ref(tid), 'said': said}
 
 
 def promises_due(store, now=None) -> list:
@@ -380,8 +430,7 @@ def their_asks(store, days: float = 2, hours: int = 3) -> tuple:
     pend = {r['TaskId'] for r in store.waiting_reviews()}
     # a note the owner handed an agent (channel `own`) is their own word, not an ask of them - it put
     # "You asked ... no answer from you" under People want for two handoffs the agents had already done
-    mine = lambda c: (c.get('Status') == 'context' or c.get('Direction') == 'out' or c.get('Channel') == 'own'
-                      or (c.get('FromEmail') or '').lower() == me)
+    mine = is_mine(store, me)
     seen, out, blank, away = set(), [], [], None
     # 500 rows was two quiet days; the away window reaches back up to three weeks (welcome.away_days), so the page grows with it
     for r in store.recent_messages(_since(days), limit=max(500, min(5000, int(days * 250)))):
@@ -393,7 +442,7 @@ def their_asks(store, days: float = 2, hours: int = 3) -> tuple:
         if not chain: continue
         last = chain[-1]
         # the owner's own rule (ignore), a feed connection and an auto-reply were settled without triage on purpose
-        if mine(last) or _ts(last.get('SentAt')) > cut or last.get('Status') in ('ignored', 'feed', AUTO): continue
+        if last_word(store, chain, mine)['mine'] or _ts(last.get('SentAt')) > cut or last.get('Status') in ('ignored', 'feed', AUTO): continue
         v = store.message_verdict(last['MessageId'])
         body = strip_wrapper(own_words(str(last.get('BodyText') or '')), wrapper_of(v))    # what triage named its wrapper is not quoted
         if v is not None and v.get('intent') not in ASKING: continue
@@ -635,7 +684,7 @@ def health_ideas(store, now: datetime = None) -> list:
         if waiting and not brain and not any(x['active'] and x['has_secret'] for x in appfacts.connections(store) if x['type'] in llm.AI_TYPES):
             out.append({'key': 'health:brain', 'kind': 'health', 'sig': 'no-brain',
                         'text': f'{plural(waiting, "message")} wait{"s" if waiting == 1 else ""} for triage and no brain is set to read {"it" if waiting == 1 else "them"}.',
-                        'action': {'type': 'health', 'tab': 'Settings', 'hash': 'settings=config&group=How%20mail%20is%20sorted',
+                        'action': {'type': 'health', 'tab': 'Settings', 'hash': 'settings=config&group=Which%20AI%20does%20what',
                                    'why': 'nothing is judged until a brain is chosen'}})
     except Exception as e: logger.debug(f'health: the brain check was skipped - {e}')
     return out
@@ -826,7 +875,8 @@ CONTRACT = ('\n\nYou are writing your POST on the owner\'s work rail - the short
             'the date or silence length at which something becomes worth raising, a fact you settled so it need not be worked out again. '
             'Never a standing rule about what to ignore or what is noise: the instruction decides that, and a note that says '
             '\'ignore X\' would silence you for good. Rewrite it whole each time; empty if nothing>"}.\n'
-            'At most {max_lines} entries. A line about ONE message must tell the owner something the message does not: the mail '
+            'At most {max_lines} of your own lines (idea:* and connect:*), and apart from them at most {max_lines} of the rest - the two '
+            'never share the room, so a good idea is never left out for an alert. A line about ONE message must tell the owner something the message does not: the mail '
             'is already on their work rail with triage\'s own verdict on it, so "X forwarded this with no message, I would ask '
             'what they want" is a second copy of the mail and not a line. Say the thing they could not see - who else is in it, '
             'what it answers, what it costs them on Monday - or say nothing (the owner, 2026-09-07: "Why did assistant triagger '
@@ -935,8 +985,7 @@ def _people_context(store, days: int = 2) -> tuple[str, list[int]]:
         if sender_class(r, team) != 'person': continue
         k = r.get('ConversationId') or norm_subject(_short(r.get('Subject'), 60))
         by.setdefault(k, []).append(r)
-    me = (store.get_setting('owner_email') or '').lower()
-    mine = lambda c: c.get('Status') == 'context' or c.get('Direction') == 'out' or (c.get('FromEmail') or '').lower() == me
+    mine = is_mine(store)
     def chain_of(rs):
         chain = store.thread_messages(conversation_id=rs[0].get('ConversationId'), subject=rs[0].get('Subject'), limit=12) if rs[0].get('ConversationId') else rs
         return sorted((c for c in chain if c.get('Status') != 'skipped'), key=lambda c: _ts(c.get('SentAt')))[-8:] or rs
@@ -949,7 +998,6 @@ def _people_context(store, days: int = 2) -> tuple[str, list[int]]:
     out, used, mids, shown, folded = [], 0, [], set(), {}
     for rs, chain in threads:
         if len(out) >= PEOPLE_THREADS: break
-        last = chain[-1]
         who = next((c.get('FromName') or c.get('FromEmail') for c in reversed(chain) if not mine(c)), rs[0].get('FromName') or '?')
         if who in shown and not any(mine(c) for c in chain):
             folded.setdefault(who, []).append(rs[0]); continue
@@ -959,21 +1007,10 @@ def _people_context(store, days: int = 2) -> tuple[str, list[int]]:
         # ingest that outbound line back into `message` immediately. Without this virtual final
         # message, the Assistant saw the finished task and the inbound ask, then confidently
         # claimed "nobody told them" minutes after the owner had approved and sent the reply.
-        sent = store.sent_reply(task_id=tid) if tid else None
-        if not sent:
-            for c in reversed(chain):
-                sent = store.sent_reply(message_id=c['MessageId'])
-                if sent: break
-        sent_text = _reply_text(sent)
-        sent_at = (sent or {}).get('DecidedAt') or (sent or {}).get('CreatedAt')
-        # Do not print it twice once the channel has ingested the same outbound line as context.
-        sent_norm = ' '.join(sent_text.split()).casefold()
-        own_after = any(mine(c) and (
-            ' '.join(str(c.get('BodyText') or '').split()).casefold() == sent_norm
-            or (sent_at and _ts(c.get('SentAt')) >= _ts(sent_at))) for c in chain)
-        virtual_reply = bool(sent_text and not own_after)
-        last_mine = virtual_reply or mine(last)
-        last_at = sent_at if virtual_reply else last.get('SentAt')
+        # ...a reply on THIS thread only (last_word): another person's on the same task is no answer to this one
+        lw = last_word(store, chain, mine)
+        sent, last_mine, last_at = lw['sent'], lw['mine'], lw['at']
+        virtual_reply, sent_text, sent_at = bool(sent), _reply_text(sent), lw['at']
         # ...and what TRIAGE decided when the latest line arrived - the other brain's verdict, so
         # this one argues with it in the open ("triage filed this as fyi, but...") instead of
         # raising the thread as if nothing had judged it
@@ -981,7 +1018,8 @@ def _people_context(store, days: int = 2) -> tuple[str, list[int]]:
         head = (f"- {who} [{rs[0].get('Channel')}] re \"{_short(rs[0].get('Subject'), 60)}\" - {len(rs)} new, last word {'YOURS' if last_mine else 'THEIRS'} {_when(last_at)}"
                 + (f", {task_ref(tid)} {t.get('Kind')} {t.get('Status')}" if t else '') + f" (latest mid {rs[0]['MessageId']})"
                 + (f' - triage said: "{_short(judged, 140)}"' if judged else ''))
-        first = lambda c: ((c.get('FromName') or c.get('FromEmail') or '?').split(',')[0].split() or ['?'])[0]
+        from .triage import person_name
+        first = lambda c: ((person_name(c.get('FromName')) or c.get('FromEmail') or '?').split() or ['?'])[0]     # "Blake, Erin" is Erin
         def quote(c):
             attachments = store.list_attachments(c['MessageId'])
             files = ', '.join(f"{a.get('Name') or 'attachment'}" + (f" ({a['Path']})" if a.get('Path') else '')
@@ -993,7 +1031,10 @@ def _people_context(store, days: int = 2) -> tuple[str, list[int]]:
             quotes.append(f"    you {_when(sent_at)[:6]}: \"{_gist(sent_text, 150)}\" [reply sent from Review]")
         block = '\n'.join([head] + [q for q in quotes if not q.endswith(': ""')])
         if used + len(block) > PEOPLE_CHARS: continue          # a long one is skipped, not the end of the list
-        out.append(block); used += len(block); mids += [c['MessageId'] for c in chain]; shown.add(who)
+        out.append(block); used += len(block); mids += [c['MessageId'] for c in chain]
+        # ...only a ONE-WAY thread folds the sender's later ones (walk 16: a thread he had answered folded Jordan's new pricing thread to
+        # "1 more one-way thread like the one above" - like nothing above)
+        if not (virtual_reply or any(mine(c) for c in chain)): shown.add(who)
     for who, rs in folded.items():
         subj = '; '.join(dict.fromkeys(_short(r.get('Subject'), 50) for r in rs[:4]))
         out.append(f"- {who}: {len(rs)} more one-way thread(s) like the one above - re \"{subj}\""
@@ -1064,14 +1105,19 @@ def just_handled(store, act: dict):
 
 
 def _open(store, cap: int = 20, brief: bool = False) -> str:
-    "The open tasks, one line each; `brief` leaves out how each stands - for a reader that only needs to know they exist."
-    ts = [t for t in store.list_tasks(active_only=True) if t.get('Status') in ('open', 'in_progress', 'waiting')]
+    """The open tasks, one line each; `brief` leaves out how each stands - for a reader that only needs to know they exist. How each stands is
+    the brief's one reading (evening.owed: its cards, what went and was made, what is left on him), never the title the agent gave it early on
+    (walk 14: "Send the vendor spend sheet" told as owed after it went)."""
+    from .context import asked
+    from .evening import owed
+    ts, since = [t for t in store.list_tasks(active_only=True) if t.get('Status') in ('open', 'in_progress', 'waiting')], _since(1)
     def line(t):
         if brief: return f"- {task_ref(t['TaskId'])} {_short(t.get('Title'), 100)}"
         last = _dt(store.task_last_activity(t['TaskId']) or t.get('UpdatedAt') or t.get('CreatedAt'))
         age = f"{int((datetime.now() - last).total_seconds() // 3600)}h since anything happened" if last else ''
-        state = f"{task_kinds.SHOWN} is working it" if t.get('RunStatus') == 'running' else 'a draft waits for you on the task' if t.get('ReviewStatus') == 'pending' else age
-        return f"- {task_ref(t['TaskId'])} [{t['Status']}, {t.get('Kind')}] {_short(t.get('Title'), 80)}" + (f" - {state}" if state else '')
+        try: state = owed(store, t, since)
+        except Exception as e: state = f"{t['Status']} (its state could not be read: {str(e)[:80]})"
+        return f"- {task_ref(t['TaskId'])} [{t.get('Kind')}] asked: {_short(asked(t) or t.get('Title'), 80)} - {state}" + (f" - {age}" if age else '')
     return '\n'.join(line(t) for t in ts[:cap]) or '(nothing open)'
 
 
@@ -1213,8 +1259,16 @@ def parse(store, text: str, cands: list, max_lines: int = MAX_LINES, report_id=N
                         'why': why or 'the model gave no reason - treat it as a hunch' + (f' (about mid {mid})' if mid else '')})
         else: continue
         seen.add(key)
-        if len(out) >= max_lines: break
-    return out
+    return budget(out, max_lines)
+
+
+def own_line(s: dict) -> bool: return is_model_idea(s.get('key')) or str(s.get('key') or '').startswith('connect:')
+def budget(say: list, n: int) -> list:
+    """TWO BUDGETS (the design review, 2026-11-23): the Advisor's own ideas and what the hub found - health, a report failing, a chase, a
+    promise, work gone quiet - each keep up to `n`, in order. One list capped once let three alerts push every idea off the post."""
+    k, r = [x for x in say if own_line(x)][:n], [x for x in say if not own_line(x)][:n]
+    keep = {id(x) for x in k + r}
+    return [x for x in say if id(x) in keep]
 
 
 def sent_reply_for(store, line: dict) -> dict | None:
@@ -1459,6 +1513,7 @@ def think(store, cands: list, llm, instruction: str = None, max_lines: int = MAX
           watch_source_ids=None, watch_sources=None, systems_only: bool = False, blocks=None, report_id=None, memo: str = None) -> list:
     """One call: the owner's instruction (the Reports tab), the candidates, the day, what was already said."""
     from .triage import job_doc
+    from . import lookout
     soul, job = store.doc('soul') or '', job_doc(store, SOUL_CHARS)
     direction = ((SYSTEMS_PROMPT + (f"\n\nTHE OWNER'S RULE FOR THIS MONITOR:\n{instruction.strip()}" if instruction else ''))
                  if systems_only else (instruction or PROMPT).strip())
@@ -1481,7 +1536,9 @@ def think(store, cands: list, llm, instruction: str = None, max_lines: int = MAX
               + (f"\n\nWho the owner is (their own document; its reply rules are for text sent to OTHERS):\n{soul[:SOUL_CHARS]}" if soul else '')
               # ...and what their JOB is - what they are accountable for, who they serve, the cadences. SOUL says how the
               # funnel behaves; this is what "matters" is measured against when the assistant says what comes first
-              + (f"\n\nThe owner's job (their own document - weigh what matters by it):\n{job}" if job else ''))
+              + (f"\n\nThe owner's job (their own document - weigh what matters by it):\n{job}" if job else '')
+              # ...and WHAT IT LOOKS OUT FOR is his ADVISOR.md (the owner, 2026-11-24), the same goals the look for ideas reads - never a monitor's
+              + ('' if systems_only else f"\n\nWhat you look out for (the owner's ADVISOR.md):\n{lookout.goals(store)}"))
     images = []
     if not systems_only:
         from .llm import readable_images
@@ -1897,14 +1954,15 @@ def clock(store):
     job_ideas(store)
 
 
-def job_ideas(store, wait: bool = False) -> dict:
+def job_ideas(store, wait: bool = False, asked: bool = False) -> dict:
     """LOOKING OUT FOR THE OWNER'S JOB, once a day (the owner, 2026-11-02/03): credit they are owed, a pain of others they could fix, money
     left on the table, a problem developing - each past a second look (lookout.py). The clock's tick, and the scheduled Advisor look's first
     step (reports._run_report_source, `wait`): an app opened at 09:00 fires the missed 07:30 look before the clock's first tick, and the
-    morning look is the one that carries the day's ideas. Its own once-a-day rule decides; past the day's ceiling it waits like the clock."""
+    morning look is the one that carries the day's ideas. Its own once-a-day rule decides; past the day's ceiling it waits like the clock.
+    `asked`: the owner's Run now - the look runs whatever the day's rule says, as his ask for ideas does (lookout.start), while room is left."""
     from . import brainroute, lookout
-    if not lookout.CLOCK or brainroute.auto_held(store): return {}
-    return lookout.tick(store, wait=wait)
+    if not lookout.CLOCK or (not asked and brainroute.auto_held(store)): return {}
+    return lookout.tick(store, wait=wait, force=asked and len(lookout.waiting(store)) < lookout.MAX_OPEN)
 
 
 def seeded_source(store) -> dict | None:
@@ -2032,6 +2090,12 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     # (own_identity): a monitor that also reads a Taskuary block is still its own monitor.
     if own_post:
         say = [{**s, 'key': f"report:{report_id}:{s['key']}"} if str(s.get('key') or '').startswith('idea:') else s for s in say]
+    # ONE ROAD FOR THE ADVISOR'S IDEAS (the design review, 2026-11-23): its own ideas about the job come from the job-ideas look, which
+    # reads before it proposes and has every quote, number and stake checked in code (lookout.py) - never from this post's one-shot answer,
+    # which nothing checked. The post carries what that look raised (lookout.unposted); what people said, the loose ends and the systems
+    # stay the post's own
+    advisor = not systems_only and not own_post
+    if advisor: say = [s for s in say if not (is_model_idea(s.get('key')) and (s.get('action') or {}).get('section', 'ideas') == 'ideas')]
     # the state is read AGAIN here: another process may have posted while the model was thinking, and a
     # model echoing a dismissed key changes nothing
     state = {i['Key']: i for i in store.list_ideas()}
@@ -2071,10 +2135,10 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
             if on('rules'):
                 from . import promote
                 props += promote.ideas(store, state)
-            # ...and it is a line like any other: it counts toward "Lines per post", first because it is the app's own
-            # (health rode on top of the cap, and a post said to hold 3 lines held 5 - I9, 2026-09-27)
-            say = ([x | {'why': x['action'].get('why', '')} for x in props if x['key'] not in have and fresh(state, x, now)]
-                   + list(say))[:c['max']]
+            # ...and it counts toward "Lines per post" with the other things the hub found, first because it is the app's own (health rode
+            # on top of the cap, and a post said to hold 3 lines held 5 - I9, 2026-09-27) - never toward the ideas' own room (budget)
+            say = budget([x | {'why': x['action'].get('why', '')} for x in props if x['key'] not in have and fresh(state, x, now)]
+                         + list(say), c['max'])
         except Exception as e: logger.warning(f'assistant: the health check was skipped - {e}')
     # THE SECOND LOOK (ideacheck, the design's S7): a kind under 80% useful, an item the owner acted on today, and a line the model says
     # they would already know are held - said in the post's own record of what it read, never raised
@@ -2087,7 +2151,10 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     # the report's routing card reads the lines BEFORE they post; a judge that fails leaves the run
     # unjudged, and an unjudged run reaches the owner (reports.decide's rule)
     d = _judged(judge, say) if say and judge else None
-    if not say:
+    # ...and what the job-ideas look raised since the last post joins it, as it stands - checked already, never judged or triaged again
+    from . import lookout
+    looked = lookout.unposted(store) if advisor else []
+    if not say and not looked:
         # Nothing to say is the normal outcome of a monitor and it posts NOTHING - unless the owner
         # chose "every run", in which case the check still says it ran, in one line, with what it
         # read behind it. A setting that promises every run and then shows nothing is a lie.
@@ -2107,10 +2174,6 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     say = [s for s in say if not is_personal(store, tid=(s.get('action') or {}).get('tid'), mid=(s.get('action') or {}).get('mid'))]
     rows = [store.upsert_idea(s | {'action': (s.get('action') or {}) | {'why': s['why']}
                                    | ({'source': src} if (src := source_of(s, mids, blocks)) else {})}, stamp) for s in say]
-    # ...and an idea that rests on a memory line says so where the owner's "why did it raise this?" reads (learned_cut.used)
-    from . import learned_cut
-    for s in say:
-        if (mem := (s.get('action') or {}).get('memory')): learned_cut.receipt(store, 'assistant', s['key'], [mem])
     # the source goes in the BODY, not only on the card: the Timeline's detail pane renders an
     # assistant post as its plain text, so a provenance that lived only in the React card was
     # invisible exactly where the owner reads the post
@@ -2121,11 +2184,12 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
         if not src: return head
         win = f" ({src['window']})" if src['window'] else ''
         return f"{head}\n    from: {src['label']}{win}"
-    body = ('\n'.join(_said_line(i, s_) for i, s_ in zip(rows, say)) + '\n\n' + _footer(rv)
+    posted, lines = rows + looked, say + [{'why': (a := json.loads(i.get('ActionJson') or '{}') or {}).get('why') or '', 'action': a} for i in looked]
+    body = ('\n'.join(_said_line(i, s_) for i, s_ in zip(posted, lines)) + '\n\n' + _footer(rv)
             + (f"\nNote to my next check: {note}" if note else ''))
     # the row's one line: the first idea, cut at a word, and how many more wait behind it
-    head = rows[0]['Text'] if len(rows[0]['Text']) <= 90 else rows[0]['Text'][:90].rsplit(' ', 1)[0] + '…'
-    subj = head + (f' (+{len(rows) - 1} more)' if len(rows) > 1 else '')
+    head = posted[0]['Text'] if len(posted[0]['Text']) <= 90 else posted[0]['Text'][:90].rsplit(' ', 1)[0] + '…'
+    subj = head + (f' (+{len(posted) - 1} more)' if len(posted) > 1 else '')
     identity = f'assistant:{report_id}' if own_post else 'assistant'
     name = (report_title or 'Advisor') if own_post else 'Advisor'
     mid = store.add_message({'TaskId': None, 'ExternalId': f'{identity}:{stamp}', 'ConversationId': identity, 'Channel': CHANNEL,
@@ -2136,15 +2200,15 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     # the two blocks the model does not write. What is in flight and what the day counted are facts
     # the hub already holds; asking a model to restate them is how a brief starts describing work
     # that is not there. Snapshotted onto the post so it still reads correctly tomorrow.
-    store.set_brief(mid, json.dumps({'ideas': [_public(i) for i in rows], 'reviewed': rv,
+    store.set_brief(mid, json.dumps({'ideas': [_public(i) for i in posted], 'reviewed': rv,
                                      'flight': [] if systems_only else in_flight(store),
                                      'stats': [] if systems_only else day_stats(store)}))
-    store.set_ideas_message([i['IdeaId'] for i in rows], mid)
-    store.audit('message', mid, 'assistant_post', 'assistant', 'agent', {'ideas': len(rows)})
+    store.set_ideas_message([i['IdeaId'] for i in posted], mid)
+    store.audit('message', mid, 'assistant_post', 'assistant', 'agent', {'ideas': len(posted)})
     # the ideas are ARRIVALS: each newly said one goes through the same triage as a mail (PW-199) - by
     # the TRIAGE brain, the one every message is judged by, not the assistant's own model. Unless the
     # report's triage line says not (reports.LINES, 2026-10-16): then they are shown, and only shown
-    if d is None or d.get('triage', True):
+    if rows and (d is None or d.get('triage', True)):
         try:
             from .llm import build_llm
             try: brain = build_llm(store, job='summary')
@@ -2156,8 +2220,8 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
         from . import funnel
         for i in rows:
             if not linked_task(store, i['IdeaId'], json.loads(i.get('ActionJson') or '{}')): funnel.settle(store, f"idea:{i['IdeaId']}", 'done', 'report')
-    logger.info(f'assistant: posted {len(rows)} idea(s) as message {mid}')
-    return {'ran': True, 'said': len(rows), 'message_id': mid, 'reviewed': rv, 'inputs': read, 'lines': [_public(i) for i in rows],
+    logger.info(f'assistant: posted {len(posted)} idea(s) as message {mid}' + (f', {len(looked)} of them from the job-ideas look' if looked else ''))
+    return {'ran': True, 'said': len(posted), 'message_id': mid, 'reviewed': rv, 'inputs': read, 'lines': [_public(i) for i in posted],
             **({'decided': d} if d is not None else {})}
 
 
@@ -2166,8 +2230,7 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
 # (snooze: back on its day), and done - handled some other way, which is what the rail's Done writes. Next is the
 # walk's own and touches nothing. Draft follow-up, Discuss and the talk-back chat are gone: a task's agent drafts.
 # ...and a rule question's yes (promote.py): the rule it proposed is made, through the one create path
-VERBS = ('task', 'agent', 'dismiss', 'dismiss_kind', 'snooze', 'done', 'rule', 'accept',   # accept: a workstream card's Add it (2026-11-01)
-         'habit', 'seen')                       # ...and the habits row's own: one habit's Adopt / No / Not right, and the row read (habits.py)
+VERBS = ('task', 'agent', 'dismiss', 'dismiss_kind', 'snooze', 'done', 'rule', 'accept')   # accept: a workstream card's Add it (2026-11-01)
 # WHAT THE OWNER DID WITH AN IDEA, kept where the Advisor reads it (the owner, 2026-10-02: "feedback on assistant ideas even on
 # desktop does it teach it anything? we should have that"). The idea row's status said dismissed or done - and done covered a
 # task made from it and a line merely handled alike - and a dismissed row ages out of ALREADY SAID with the rest. This log is
@@ -2188,12 +2251,12 @@ def _keep_verdict(store, i: dict, verb: str, actor: str):
     store.set_setting(VERDICTS_KEY, json.dumps(([row] + [r for r in verdicts(store) if r.get('key') != row['key']])[:VERDICTS_CAP]), actor)
     # ...and an idea taken up or turned down is a line in the memory every reader has "if it adds to understanding of the user - as long
     # as it's not bloat" (the owner, 2026-10-27): the model says what it shows about what the owner wants brought up, against the lines
-    # already there - a new line, a sharper one in place of an older, or nothing. Never one line per press (memorylines.teach)
+    # already there - a new line, a sharper one in place of an older, or nothing. Never one line per press (learning.teach)
     if verb in ('task', 'agent', 'dismiss', 'dismiss_kind') and i.get('IdeaId'):
-        from . import memorylines
+        from . import learning
         facts = '\n'.join(x for x in (f"The idea: {_short(i.get('Text'), 400)}", f"Its kind: {i.get('Kind')}" if i.get('Kind') else '',
                                        f"The owner: {VERDICT_WORD.get(verb, verb)}") if x)
-        memorylines.teach_soon(store, f'idea_{verb}', f"idea{i['IdeaId']}", facts, section='bring')
+        learning.teach_soon(store, f'idea_{verb}', f"idea{i['IdeaId']}", facts)
 
 
 def verdicts_block(store, report_id=None) -> str:
@@ -2247,9 +2310,10 @@ def _make_task(store, i: dict, a: dict, agent: bool, actor: str) -> dict:
     store.set_idea_action(i['IdeaId'], a | {'tid': tid, 'took': 'agent' if agent else 'task'})
     if agent:
         # ...as the owner's ask, not a proposal to grade (the owner, 2026-11-03: an agent answered "change it, don't adopt it as written"
-        # to an idea they had already taken up - words about the idea, not for them)
-        brief = ("The owner took up this Advisor idea and handed it to you: do the work it points at and tell them, in plain words, what you "
-                 "found and what to do next - they already chose it, so it is not a proposal to judge.\n\n" + str(a.get('title') or i.get('Text') or '').strip())
+        # to an idea they had already taken up - words about the idea, not for them). HOW THE TURN ENDS IS THE AGENT'S (the owner, 2026-11-23:
+        # "a turn does not have to end in a card if that's not required"): an answer, a card for a step that needs his yes, a reminder - its call
+        brief = ("The owner took up this Advisor idea and handed it to you: do the job it points at - they already chose it, so it is "
+                 "not a proposal to judge.\n\n" + str(a.get('title') or i.get('Text') or '').strip())
         if a.get('why'): brief += f"\n\nWhy the assistant raised it: {a['why']}"
         if a.get('type') == 'lookout':                    # ...its next step, the pitch and the ids it rests on (lookout.brief)
             from . import lookout
@@ -2273,7 +2337,7 @@ def taken_up(store, idea_id: int, a: dict, verb: str) -> dict | None:
     return {'taskId': t['TaskId'], 'ref': task_ref(t['TaskId']), 'already': took} if t else None
 
 
-def act(store, idea_id: int, verb: str, actor: str = 'owner', days: int = 1, until: str = None, line: str = None, yes: bool = None) -> dict:
+def act(store, idea_id: int, verb: str, actor: str = 'owner', days: int = 1, until: str = None) -> dict:
     """One word on one idea. Every word writes the IDEA's own status - the rail's used to write only the rail's,
     and the Advisor went on listing an idea the owner had put down as open (I4, 2026-09-27)."""
     i = store.get_idea(idea_id)
@@ -2282,18 +2346,6 @@ def act(store, idea_id: int, verb: str, actor: str = 'owner', days: int = 1, unt
     try: a = json.loads(i.get('ActionJson') or '{}')
     except ValueError: a = {}
     out = {'ideaId': idea_id, 'verb': verb}
-    # THE HABITS ROW (habits.py; the owner, 2026-11-01): one row for every habit, each answered on its own line - Adopt / No on one it asks
-    # about, Not right on one it adopted - and the row read when the owner moves on. No task, agent, reminder or rule from it: it is not work
-    if i.get('Kind') == 'habit':
-        from . import habits
-        if verb == 'habit':
-            if not line or yes is None: raise ValueError('say which habit, and yes or no')
-            return out | habits.answer(store, line, bool(yes), actor)
-        if verb == 'seen': return out | habits.seen(store, actor)
-        if verb not in ('done', 'dismiss', 'dismiss_kind'): raise ValueError('a habit is answered on its own line: Adopt, No or Not right')
-        # ...and put down whole (typed, or the phone): the adopted ones seen, the asked ones No on Not ours - never asked again
-        habits.seen(store, actor, 'seen' if verb == 'done' else 'no')
-    elif verb in ('habit', 'seen'): raise ValueError('only the habits row has that')
     if verb == 'snooze':
         # Remind me reads a day the way the task's own picker does ('2 weeks', a date, 'tomorrow')
         from . import remind

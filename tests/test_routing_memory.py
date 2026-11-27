@@ -118,6 +118,12 @@ class WhatTheNextVerdictIsTold(unittest.TestCase):
         self.assertEqual(got['kind']['value'], 'task')
         self.assertEqual(got['system']['value'], 'ADP')
 
+    def test_a_lesson_kept_when_skills_were_playbooks_is_told_as_the_skill(self):
+        rmem.learn_correction(self.s, arrived(self.s), 'skill', 'timesheet-fix', 'owner')
+        self.s._exec("UPDATE routing_fact SET Field='playbook' WHERE Field='skill'")
+        got = {r['field']: r for r in rmem.facts_for(self.s, self.her)}
+        self.assertEqual(got['skill']['value'], 'timesheet-fix'); self.assertNotIn('playbook', got)
+
     def test_one_correction_is_offered_as_tentative(self):
         self.assertTrue({r['field']: r for r in rmem.facts_for(self.s, self.her)}['kind']['tentative'])
 
@@ -186,10 +192,10 @@ class TheKindControlTeaches(unittest.TestCase):
         """Everything one door leaves behind, so "they teach the same thing" is checked against
         all of it and not just the half I happened to remember (routing evidence alone passed
         while the selector was still writing no memory line and no learned lesson at all)."""
-        from taskuary import memorylines
+        from taskuary import learning, memory
         tid = arrived(self.s)
         facts = (self.facts('kind') or [{}])[0].get('EvidenceCount') or 0
-        with mock.patch.object(memorylines, 'teach') as taught: go(tid)
+        with mock.patch.object(learning, 'teach') as taught: go(tid)
         return {'kind': self.s.get_task(tid)['Kind'],
                 'memory': sum(c.args[1] == 'not_for_agent' for c in taught.call_args_list),
                 'operations': len(self.s.operations_for(tid) or []),
@@ -214,10 +220,6 @@ class TheKindControlTeaches(unittest.TestCase):
         self.assertEqual([f['Value'] for f in said], ['ADP'])
         self.assertTrue(said[0]['Confirmed'])
 
-    def test_reassigning_the_worker_is_a_verdict_too(self):
-        self.c.patch(f'/api/tasks/{self.tid}', json={'Assignee': 'agent:coding'})
-        self.assertEqual([f['Value'] for f in self.facts('profile')], ['coding'])
-
     def test_an_unchanged_kind_teaches_nothing(self):
         self.c.patch(f'/api/tasks/{self.tid}', json={'Kind': 'coding', 'Priority': 'high'})
         self.assertEqual(self.facts('kind'), [])
@@ -230,52 +232,6 @@ class TheKindControlTeaches(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
-class OnlyTheLessonsReachThePrompt(unittest.TestCase):
-    """LEARNED.md is two documents in one file: what triage should know, and what its human reader
-    should. Only the first belongs in a prompt, and the second had been quietly crowding it out -
-    900 characters of preamble plus a section header describing content that was stripped, against
-    a 1500-character budget, so the learned rules were what got cut to make room."""
-
-    DOC = ('# LEARNED.md - what the system has learned about {{owner_first}}\n\n'
-           '_Taskuary writes this document itself, from your verdicts. Machine-written lines carry\n'
-           'a `[s:N | ev: ... ]` tag. Edit anything; **SOUL.md always outranks this file.**_\n\n'
-           '## What becomes a task\n'
-           '- {{owner_first}} avoids tasks owned by other teams. [s:20 | ev: mem1 | seen: 2026-09-02]\n\n'
-           '## Verdicts - the evidence\n'
-           '_(every verdict you give, dated, with the sender and subject it was given on.)_\n'
-           '<!-- verdicts:start -->\n- resident refunds are not ours [mem3]\n<!-- verdicts:end -->\n')
-
-    def setUp(self):
-        from taskuary import learn
-        self.out = learn.injectable(self.DOC)
-
-    def test_the_learned_rule_survives(self):
-        self.assertIn('avoids tasks owned by other teams', self.out)
-
-    def test_the_note_to_the_reader_does_not(self):
-        self.assertNotIn('Taskuary writes this document itself', self.out)
-        self.assertNotIn('SOUL.md always outranks', self.out)
-
-    def test_the_title_is_kept(self):
-        self.assertTrue(self.out.startswith('# LEARNED.md'))
-
-    def test_a_gated_section_takes_its_explainer_with_it(self):
-        # the header and its prose used to survive, describing a block that had been stripped
-        self.assertNotIn('every verdict you give', self.out)
-        self.assertNotIn('Verdicts - the evidence', self.out)
-        self.assertNotIn('resident refunds are not ours', self.out)
-
-    def test_a_document_with_no_preamble_is_left_alone(self):
-        from taskuary import learn
-        plain = '# LEARNED.md\n\n## What becomes a task\n- a rule [s:2 | ev: mem1 | seen: x]\n'
-        self.assertIn('- a rule', learn.injectable(plain))
-        self.assertTrue(learn.injectable(plain).startswith('# LEARNED.md'))
-
-    def test_nothing_at_all_is_still_nothing(self):
-        from taskuary import learn
-        self.assertEqual(learn.injectable(''), '')
 
 
 class LearnedSeesEveryCorrection(unittest.TestCase):
@@ -293,7 +249,6 @@ class LearnedSeesEveryCorrection(unittest.TestCase):
 
     def test_it_names_what_triage_had_answered(self):
         self.assertIn('triage said coding', self.said('kind', 'task'))
-        self.assertIn('triage said analyst', self.said('profile', 'coding'))
         self.assertIn('northwind/ledger', self.said('repository', 'northwind/portal'))
 
     def test_a_kind_says_what_the_kind_MEANS(self):
@@ -324,9 +279,9 @@ class TheAssistantCanTeachToo(unittest.TestCase):
     """What the chat can already set, and what it writes when it reclassifies something."""
 
     def test_a_fact_the_owner_tells_the_assistant_reaches_triage(self):
-        from taskuary import memoryedit
+        from taskuary import learning, memory
         s = store()
-        memoryedit.remember(s, 'Clocking in and out is ADP - we hold no code for it, so timesheet asks are never coding')
+        memory.remember(s, 'Clocking in and out is ADP - we hold no code for it, so timesheet asks are never coding')
         notes = ingest.notes_for(s, {'from_email': 'anyone@example.com', 'subject': 'my timesheet', 'body': 'fix my hours'})
         self.assertTrue(any('ADP' in str(n) for n in notes), 'a global fact must reach every verdict')
 

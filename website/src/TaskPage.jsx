@@ -24,16 +24,17 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
-import RemindMe, { RemindPicker } from "./RemindMe.jsx";
+import { RemindPicker } from "./RemindMe.jsx";
 import { steady } from "./steadyAnchor.js";
-import { useFoldBar } from "./foldBar.js";
 import { SlotPicker } from "./CalendarPick.jsx";
-import { ROW_LOOK } from "./ButtonBar.jsx";
-import { foldRow, heldOff, onPressing, press, sectionsOf, taskButtons, useSpineAll, useSpineVerbs, useVerbs } from "./actionRow.js";
+import { onPressing, useVerbs } from "./actionRow.js";
+import { BUTTONS_AT, FOCUS_EDGE, MOVES_AT, OPENS_FORM, PaneMoves, SEC_NAME, SpineMoves, TaskButtons } from "./TaskRow.jsx";
+import { closedBy, closedResult, pressBeat, pressOver, pressedOn } from "./pressResult.js";
+import { calMoves, taskMoves } from "./taskMoves.js";
+import { senderName } from "./personName.js";
+import { MADE_RUN } from "./madeTask.js";
 import { VERBS, choice, hint as btnHint, hintOfRow, label as btn, labelOfRow, liveVerb } from "./buttons.js";   // theme.jsx owns `label`
 import { PRIORITIES, level } from "./priority.js";
-import BlockIcon from "@mui/icons-material/Block";
-import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import AltRouteIcon from "@mui/icons-material/AltRoute";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import RefreshIcon from "@mui/icons-material/Refresh";
@@ -55,8 +56,8 @@ import { clock, fmtDate } from "./dates.js";
 import { deliveryCc, deliveryFiles, deliveryMeta, replyContext, sentCardOf } from "./replyDelivery.js";
 import { sizeText } from "./replyFiles.js";
 import { completionTransition, cutAway, filterForSelectedState, remindWaiting, remindDay } from "./taskFilter.js";
-import ReviewDecision from "./ReviewDecision.jsx";
-import BulkCard from "./BulkCard.jsx";
+import ReviewDecision, { SentReview } from "./ReviewDecision.jsx";
+import BulkReview from "./BulkCard.jsx";
 import HeldSteps from "./HeldSteps.jsx";
 import SlotList, { Letter, letterItems } from "./SlotList.jsx";
 import BatchItems from "./BatchItems.jsx";
@@ -66,7 +67,7 @@ import { onLive, touches } from "./live.js";
 import { pollCalming } from "./visible.js";
 import { PANEL, PANEL2, BORDER, DIM, FAINT, INK, card, frame, frameInner, label, step, PALETTE, hoverable, mono, ACCENT, ACCENT2, PILL_COLORS, ALERT, ALERT_BD, ALERT_INK, ALERT_TINT, BRAND } from "./theme.jsx";
 import RunSteps from "./RunSteps.jsx";
-import { askLine, byLine, cameFromLabel, cameFromWhere, channelName, filesByMessage, fromExpands, fromRows, groupConversations, groupMeta, headerFacts, isIdeaLine, isChat, madeLine, madeOf, rowText, sortedLine, todoSources, toLine, triageLine, triageSays, workflowOrigin } from "./taskSources.js";
+import { askLine, byLine, cameFromLabel, cameFromWhere, channelName, filesByMessage, fromExpands, fromRows, groupConversations, groupMeta, headerFacts, isIdeaLine, isChat, madeByHim, madeLine, madeOf, rowText, sortedLine, todoSources, toLine, triageLine, triageSays, workflowOrigin } from "./taskSources.js";
 import { latestTriageVerdict, legacyTriageVerdict, parseTriageVerdict, routeIntent } from "./triageVerdict.js";
 import { Handoff } from "./Handoff.jsx";
 import { Reshape } from "./Reshape.jsx";
@@ -75,11 +76,10 @@ import { WorkstreamSelect } from "./Workstream.jsx";
 import { Attachments, mentionsPicture } from "./Attachments.jsx";
 import { remotePicture, wordsOnly } from "./mailLinks.js";
 import ChatThread from "./ChatThread.jsx";
-import { ChannelIcon, StateChip, stateOf, TASK_STATES, asUtc, tsMs, AgentPicker, useAgents, codingProfile, RunTrace, DiffBlock, DiffFiles, timeAgo, fmtDateTime, cleanText, LinkedText, Empty, FilterPills, Confirm, isWaiting, TaskuaryMark, DraftField, assignedAgent } from "./ui.jsx";
+import { ChannelIcon, StateChip, stateOf, TASK_STATES, asUtc, tsMs, AgentPicker, useAgents, codingAgent, RunTrace, DiffBlock, DiffFiles, timeAgo, fmtDateTime, cleanText, LinkedText, Empty, FilterPills, Confirm, isWaiting, TaskuaryMark, DraftField, assignedAgent } from "./ui.jsx";
 import { Md, looksMd } from "./md.jsx";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import DoneAllIcon from "@mui/icons-material/DoneAll";
 import HistoryIcon from "@mui/icons-material/History";
 import ForwardToInboxIcon from "@mui/icons-material/ForwardToInbox";
 import CallSplitIcon from "@mui/icons-material/CallSplit";
@@ -102,18 +102,17 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 // Recover once automatically; a real module error still reaches the view boundary on retry.
 import { autostartPlan, isGeneralKind, opensOnRegular } from "./autostart.js";
 import { agentWorkspaceMode, barContinues } from "./taskWorkspace.js";
-import { SECTIONS, cameFrom, cameChip, chatLatch, homeSection, liveTerminal, soloTodo, replyHolds, agentStatus, agentWord, answeredOutside, reportLine, askInBody, askIsTitle, writeupAt, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, sameWords, sectionFade, waitingOn, workPane } from "./taskLayout.js";
+import { SECTIONS, cameFrom, cameChip, judgedMarks, chatLatch, homeSection, liveTerminal, soloTodo, startsAnother, replyHolds, agentStatus, agentWord, answeredOutside, reportLine, askInBody, askIsTitle, writeupAt, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, sameWords, sectionFade, waitingOn, workPane } from "./taskLayout.js";
 import { mainView, stageOf } from "./stages.js";
 import { chatOf, taskStatus } from "./railStatus.js";
 import { StatusPill } from "./StatusMark.jsx";
 import { ASK_TAG, BROWSER_TAG } from "./newTask.js";
 import { repoLabel } from "./repoNames.js";
 import { completionFact, completionLine, waitingEmails, wentOut,
-  AGENT, agentPhase, focusStage, generalAnswered, stillWorking, hasCorrespondent, ownerControlsCompletion, pageState, pendingProposals, pendingReplyReview, reopenedDetail, replyPhase, replySource, sentElsewhere, sentReplyReview, sessionWord, taskPhase, unsentReplyReview,
+  AGENT, agentPhase, focusStage, generalAnswered, stillWorking, hasCorrespondent, ownerControlsCompletion, pageState, pendingProposals, pendingReplyReview, reopenedDetail, replyPhase, replySource, sentElsewhere, sentReplyReview, sessionWord, taskPhase, isUnsentReply, unsentReplyReview,
 } from "./taskLifecycle.js";
 import { askNote, closeoutOf, decidedAsk, heldGroups, splitHeld } from "./reviewProposal.js";
 import PassedCard, { isPassed, isReplaced } from "./PassedCard.jsx";
-import SentCard from "./SentCard.jsx";
 import { sentStands, WENT } from "./sentLine.js";
 import { FullText } from "./assistantCards.jsx";
 import { JiraDetail } from "./JiraDetail.jsx";
@@ -140,7 +139,7 @@ import { isPublished } from "./PublishedPages.jsx";
 import EmailSomeone from "./EmailSomeone.jsx";
 import { useShareParts } from "./Share.jsx";
 import { ago, filesLine, plural } from "./timeWords.js";
-import { AGENT_KINDS, KIND_OPTIONS, KINDS, kindLabel, shortKind, shownAgent, instructionsHint } from "./kinds.js";
+import { AGENT_KINDS, KIND_OPTIONS, KINDS, kindLabel, shortKind, shownAgent } from "./kinds.js";
 import { PICK_REPO, openAppLink, takeRepoPick } from "./appLinks.js";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { place } from "./words.js";
@@ -282,7 +281,8 @@ const COLUMNS = { display: "flex", flexDirection: "column", rowGap: 2, flex: "1 
   [`@media ${PHONE_MQ}`]: { "& > [data-tq-from]:not([data-tq-from-open]):not(:has(> [data-tq-solo-box]))": { overflowY: "hidden" } } };
 // THE SHADE AND THE FOCUS (the owner, 2026-10-25: "shading for what to focus on"): the card's body a warm shade, the one section to act on
 // white with a hairline - no heavy shadow, just white against the shade
-export const SHADE = "var(--tq-inset, #f5f2ed)", FOCUS_EDGE = "var(--tq-border, #e4ded4)";
+export const SHADE = "var(--tq-inset, #f5f2ed)";
+export { FOCUS_EDGE };
 export const FOCUS = { bgcolor: "var(--tq-panel, #fff)", border: `1px solid ${FOCUS_EDGE}`, borderRadius: "10px", boxShadow: "0 1px 2px rgba(40, 30, 20, 0.04)", px: 2, py: 1.5 };
 // FROM AS A SIDEBAR while an agent works (item 6, the owner 2026-10-21): laid OVER the agent's left edge - absolutely placed in the steps
 // box, so nothing under it moves or resizes - from under the folded line to the foot, scrolling on its own
@@ -391,12 +391,10 @@ const chipBtn = { fontSize: 11.5, fontWeight: 600, height: 26, minHeight: 26, py
   borderRadius: 13, bgcolor: "var(--tq-panel, #f4f1ec)", color: INK, borderColor: BORDER,
   "&:hover": { borderColor: "var(--tq-border, #d8cfbe)", bgcolor: "var(--tq-panel, #f4f1ec)" } };
 const barBtn = { minHeight: 34, py: 0, px: 1.6, fontSize: 12.5, color: INK, borderColor: BORDER };
+const HELD_TRUST_HINT = "No agent works this until you trust the sender - the press starts it";
 const TRUST_PILL = { minHeight: 22, py: 0, px: 1.1, ml: 0.5, my: 0.25, fontSize: 12, lineHeight: 1.6, borderRadius: 999, textTransform: "none", color: INK, borderColor: BORDER, verticalAlign: "baseline" };
 // ...and the one filled move beside them. Every card's bar reads [ primaryBtn ] | [ barBtn ] [ barBtn ].
 const primaryBtn = { minHeight: 34, py: 0, px: 1.75, fontSize: 12.5 };
-const BAR_FOLD = { change: 1, reshape: 2, hand: 3, sep: 3, watch: 4, nat: 4 }, HIDE = { display: "none" };   // the Tasks tab bar's fold order (useFoldBar)
-// ...less the button the Advisor lit, which never folds (one object per lit button, so useFoldBar re-fits only when the light moves)
-const BAR_FOLD_BUT = Object.fromEntries(["", "nat", "hand", "reshape", "watch"].map((k) => [k, Object.fromEntries(Object.entries(BAR_FOLD).filter(([i]) => i !== k))]));
 // A LIVE SESSION'S CONTROLS LOOK LIKE CONTROLS. These were bare text buttons sitting next to
 // the outlined role/brain/repo pills, so the two things you could press had less edge than the
 // three facts you can only read - "buttons are still not clear what they are. and they are
@@ -446,7 +444,6 @@ function Part({ label, sub, subTitle, children, focus = false, ...rest }) {
 // ...the spine's MOVES stand at one height on every spine, a third of the way down (the owner, 2026-10-29: "the buttons on the spine stay
 // on the same spot like towards the top 1/3rd and the text is limited on top of the line"), and its words fill the room above that line -
 // newest first, none skipped, the ones that do not fit left off whole
-const MOVES_AT = 0.33;
 const fitTabLines = (tab) => {
   const ls = [...tab.querySelectorAll("[data-tq-tab-line]")];
   ls.forEach((l) => l.removeAttribute("data-tq-unfit"));
@@ -506,144 +503,6 @@ export function SectionTab({ sec, lines = [], foot = "", here = false, before = 
     </Box>
   );
 }
-// A FOLDED PANE'S STAGE MOVES (actionRow.splitRow, the owner 2026-10-29): Send to agent / Continue / Run another on Agent's spine, Draft
-// reply / Redraft on the chat's - stacked the spine's width in the row's own button look, the lit one filled. A press opens the pane and
-// starts the step there (the page's "a press opens its section"); a press on the rest of the spine opens it as before. Came from's are Not a
-// task and Remind me, which act where they stand. ...and a thin rule between the spine's words and its moves (the owner, 2026-10-29: "text,
-// a rule, then the buttons"). A `tucked` move (a sent reply's Hand it to a person) is not on a spine unless it is lit: its open pane has it
-// ...and every move there READS AS A BUTTON AT REST (the owner, 2026-10-29: "can't see the buttons on top, maybe we need color?"): the
-// controls' own slate tint with the slate edge (5.7:1 on white) and INK words; the lit one keeps its filled slate
-// ...and NOT ALL THE SAME (the owner, 2026-10-29: "what can we make them stand out but not all the same"): one slate, four weights. The
-// Advisor's pick filled (.p); a move that takes the task a stage on (`fwd`) outlined in the slate, slate words on white; Mark done the same
-// with a stronger edge (`done`), filled only when it is the pick; what acts on the whole task (`task`: Close with a note, Change, Share) quiet
-// words that take a tint on hover; a put-down (`down`: Not a task, Remind me) quiet and secondary, a faint edge - no new hue anywhere
-const PUT_DOWN = new Set(["nat", "remind", "watch"]);
-export const rankOf = (v, head = false) => { const k = String(v?.id || "").split(":").pop(); return head ? (k === "done" ? "done" : "task") : PUT_DOWN.has(k) ? "down" : "fwd"; };
-const OUTLINED = { bgcolor: "var(--tq-panel, #fff)", borderColor: ACCENT, color: "var(--tq-link, #55697a)" };
-export const MOVE_LOOK = {
-  "& .tq-ab.fwd:not(.p), & .tq-ab.done:not(.p)": OUTLINED, "& .tq-ab.done:not(.p)": { boxShadow: `inset 0 0 0 1px ${ACCENT}` },
-  "& .tq-ab.fwd:not(.p):hover:not(:disabled), & .tq-ab.done:not(.p):hover:not(:disabled)": { bgcolor: "var(--tq-panel, #f1f4f7)" },
-  // ...the task's own quiet moves still wear their pill (the owner, 2026-10-29: "these should have circle pills around them"): a faint edge
-  "& .tq-ab.task:not(.p)": { bgcolor: "var(--tq-panel, #fff)", borderColor: "var(--tq-border, #cfc8bc)", color: DIM },
-  "& .tq-ab.task:not(.p):hover:not(:disabled)": { bgcolor: "var(--tq-panel, #f6f4f0)", borderColor: ACCENT, color: INK },
-  "& .tq-ab.down:not(.p)": { bgcolor: "transparent", borderColor: "var(--tq-border, #d8d1c5)", color: FAINT },
-  "& .tq-ab.down:not(.p):hover:not(:disabled)": { bgcolor: "var(--tq-panel, #fff)", borderColor: ACCENT, color: INK } };
-const SPINE_MOVES = { ...MOVE_LOOK, display: "flex", flexDirection: "column", gap: 0.6, position: "absolute", top: `${MOVES_AT * 100}%`, left: 12, right: 12,
-  pt: 1, borderTop: `1px solid ${FOCUS_EDGE}`, cursor: "default",
-  // ...a spine in ratio can be narrow (tabW): its move's words wrap to a second line rather than cut to "Hand it t..."
-  "& .tq-ab": { width: "100%", minWidth: 0, minHeight: 30, fontSize: 12.5, px: 1, py: 0.4, justifyContent: "center", textAlign: "center", whiteSpace: "normal",
-    lineHeight: 1.2, height: "auto" } };
-const SEC_NAME = { from: "Came from", agent: "Agent" };
-const OPENS_FORM = new Set(["send-general", "start-agent", "run-another"]);   // the agent's moves that open its start box
-const stageBtn = (v, word = v.label, head = false) => <button key={v.id} type="button" className={`tq-ab ${v.tone} ${rankOf(v, head)}`} disabled={v.disabled} aria-disabled={v.disabled || undefined} data-tq-inert={v.inert ? "" : undefined} data-tq-verb={v.id}
-  title={(v.disabled && v.why) || v.title || word} onClick={(e) => press(v.id, e, e.currentTarget, v.of)}>{word}</button>;
-// THE TASK'S OWN MOVES RIDE THE CHAT'S PANE (the owner, 2026-10-30, and 2026-11-06: one chat, no Close out): Mark done first (2026-11-02), a closed
-// task's Reopen in its place (2026-11-05), then Close with a note, Attach a file and Share; Came from carries Change ▾
-function useTaskMoves(sec) {
-  const head = useSpineVerbs("head"), share = useSpineVerbs("share"), change = useSpineVerbs("change"), close = sec === "agent";
-  const lead = (v) => isDoneMove(v) || /(^|:)reopen$/.test(String(v.id));
-  return { done: close ? head.filter(lead) : NO_MOVES, task: close ? [...head.filter((v) => !lead(v)), ...share] : NO_MOVES,
-    change: sec === "from" ? change : NO_MOVES };
-}
-const NO_MOVES = [];
-function ChangeMoves({ change, even = false }) {
-  useLocale();
-  const [at, setAt] = useState(null), inert = heldOff(change);
-  return <>
-    <button type="button" className={even ? "tq-ab row" : "tq-ab s task"} aria-haspopup="menu" aria-expanded={!!at} data-tq-more="change"
-      disabled={inert} aria-disabled={inert || undefined} data-tq-inert={inert ? "" : undefined} title={tr("Split or merge, who does it or the priority")} onClick={(e) => setAt(e.currentTarget)}>{tr("Change ▾")}</button>
-    <Menu open={!!at} anchorEl={at} onClose={() => setAt(null)}>
-      {change.map((v) => <MenuItem key={v.id} dense disabled={v.disabled} data-tq-verb={v.id} sx={{ fontSize: 12.5 }}
-        onClick={(e) => { const a = at; setAt(null); press(v.id, e, a, v.of); }}>{v.label}</MenuItem>)}</Menu></>;
-}
-// ...`quiet`: an item's own whole-item moves laid on its one pane (actionRow.splitRow `all`: a report's Pause this report and Share) wear the
-// task's own quiet look, as its Change pill set them apart on the bar
-function SpineMoves({ sec, name = SEC_NAME[sec] }) {
-  useLocale();
-  const vs = useSpineVerbs(sec).filter((v) => !v.tucked || v.tone === "p"), { done, task, change } = useTaskMoves(sec);
-  if (!vs.length && !done.length && !task.length && !change.length) return null;
-  return (
-    <Box data-tq-spine-moves={sec} role="group" aria-label={tr("{name} moves", { name: tr(name) })} sx={SPINE_MOVES} onClick={(e) => e.stopPropagation()}>
-      {done.map((v) => stageBtn(v, v.label, true))}
-      {vs.map((v) => stageBtn(v, v.spine || v.label, !!v.quiet))}
-      {task.map((v) => stageBtn(v, v.label, true))}
-      {change.length > 0 && <ChangeMoves change={change} />}
-    </Box>);
-}
-// ...and OPEN, its stage moves are on a WHITE STRIP across the pane's top (the owner, 2026-10-29, "try it": the spine's white look, kept
-// while the pane is open): its name, the moves the pane does not already draw - never a card's own (Redraft, Send under the draft) nor
-// the start its open form already carries - so a pane off the bar is never a dead end, and the arrows that fold it back to its spine,
-// pointing the way its spine's would
-export const STRIP_H = 44;
-// ...in the sections (`keys`, the flow's order): the first folds right, the last left, a middle one either way - a report's too (ItemSections)
-const foldArrows = (keys, k) => { const i = keys.indexOf(k), last = keys.length - 1;
-  return [...(i > 0 ? [["left", i === last ? "›" : "‹", keys[i - 1]]] : []), ...(i >= 0 && i < last ? [["right", i ? "›" : "‹", keys[i + 1]]] : [])]; };
-const TASK_KEYS = ["from", "agent"];
-// ONE ROW OF TASK BUTTONS (the owner, 2026-11-06: "same place but can be on spine or on top if the agent spine is open but it should be one code
-// easy to change"): every move the task has, gathered off every pane (actionRow.splitRow), in SECTIONS (actionRow.TASK_GROUPS: Finish | Pass on
-// | Agent | More), a hairline between them; a move that does not apply is absent, an empty section is not drawn. Drawn once, where BUTTONS_AT says:
-// "strip", the open pane's white strip (the Agent's when it is open); "spine", Came from's spine. One line on a strip, its words never wrapped -
-// what does not fit folds into its ▾ from the right
-export const BUTTONS_AT = "strip";
-function TaskButtons({ skip = () => false, spine = false }) {
-  const by = useSpineAll(), list = taskButtons(by, skip);
-  const up = list.filter((x) => x.change || !x.v.tucked || x.v.tone === "p"), tucked = list.filter((x) => !up.includes(x)).map((x) => x.v);
-  const items = up.map((x) => (x.change ? { key: "change", change: x.change, grp: x.grp } : { key: x.v.id, v: x.v, head: x.head, grp: x.grp }));
-  if (spine) return items.length ? <Box data-tq-spine-moves="task" role="group" aria-label="Task moves" sx={SPINE_MOVES} onClick={(e) => e.stopPropagation()}>
-    {items.map((x) => (x.change ? <ChangeMoves key="change" change={x.change} /> : stageBtn(x.v, x.v.spine || x.v.label, !!x.head)))}</Box> : null;
-  return <MovesLine items={items} tucked={tucked} sec="task" name="Task" even />;
-}
-// ...one line: what does not fit folds into its ▾ from the end - never Mark done nor what is lit
-export function PaneMoves({ sec, skip = () => false, name = SEC_NAME[sec] }) {
-  useLocale();
-  const all = useSpineVerbs(sec).filter((v) => !v.card && !skip(v)), { done, task, change } = useTaskMoves(sec);
-  // ...a `tucked` move keeps its rule (a sent reply's Hand it to a person): behind the strip's ▾ unless it is lit
-  const up = all.filter((v) => !v.tucked || v.tone === "p"), tucked = all.filter((v) => !up.includes(v));
-  const own = (vs) => vs.filter((v) => !skip(v)).map((v) => ({ key: v.id, v, head: true }));
-  const items = [...own(done), ...up.map((v) => ({ key: v.id, v, head: !!v.quiet })), ...own(task), ...(change.length ? [{ key: "change", change }] : [])];
-  return <MovesLine items={items} tucked={tucked} sec={sec} name={name} />;
-}
-// ...`even` (the task's row, the owner 2026-11-06: "not all different sizes"): every button one size and one outlined look, the lit one alone
-// filled, its sections apart by a hairline (actionRow.sectionsOf) - the ▾ in More's place at the end
-function MovesLine({ items, tucked, sec, name, even = false }) {
-  // ...what folds is never Mark done nor what is lit: the others go into the ▾ from the end, wherever the lit one stands (a lit Propose a new time
-  // at the row's end was cut off at the strip's edge while the moves before it held their places)
-  const box = useRef(null), [drop, setDrop] = useState(0), [, refit] = useState(0), [at, setAt] = useState(null);
-  const sig = items.map((x) => `${x.key}:${x.v?.label || ""}:${x.v?.tone || ""}`).join("|");
-  useLayoutEffect(() => { setDrop(0); }, [sig]);
-  const { shown, out, loose } = foldRow(items, drop);
-  useLayoutEffect(() => { const b = box.current; if (b && drop < loose && b.scrollWidth > b.clientWidth + 1) setDrop((k) => k + 1); });
-  // ...and a width change measures again even when nothing was folded: a pane narrowing into a half (side by side) left its last move cut off
-  // at the edge until some unrelated draw folded it seconds later
-  useEffect(() => {
-    const b = box.current?.parentElement;
-    if (!b || typeof ResizeObserver === "undefined") return undefined;
-    let w = b.clientWidth;
-    const ro = new ResizeObserver(() => { if (Math.abs(b.clientWidth - w) > 2) { w = b.clientWidth; setDrop(0); refit((k) => k + 1); } });
-    ro.observe(b);
-    return () => ro.disconnect();
-  }, []);
-  if (!items.length && !tucked.length) return null;
-  const rest = [...out.flatMap((x) => (x.change ? x.change : [x.v])), ...tucked];
-  const btn = (x) => (x.change ? <ChangeMoves key="change" change={x.change} even={even} /> : even ? rowBtn(x.v) : stageBtn(x.v, x.v.label, !!x.head));
-  const fold = rest.length > 0 && <button key="fold" type="button" className={even ? "tq-ab row" : "tq-ab s task"} aria-label={tr("More")} aria-haspopup="menu" data-tq-more={sec}
-    disabled={heldOff(rest)} aria-disabled={heldOff(rest) || undefined} onClick={(e) => setAt(e.currentTarget)}>▾</button>;
-  const secs = even ? sectionsOf([...shown, ...(fold ? [{ key: "fold", grp: "more", fold }] : [])]) : [];
-  return <Box ref={box} data-tq-pane-moves={sec} role="group" aria-label={tr("{name} moves", { name: tr(name) })} sx={even ? EVEN_ROW : { ...MOVE_LOOK, display: "flex", gap: 0.75, flexWrap: "nowrap", minWidth: 0, overflow: "hidden",
-    // The fixed-height pane strip must not inherit the global 44px coarse-pointer button minimum.
-    "& .tq-ab": { flexShrink: 0, minHeight: 28, height: 28, px: 1.25, py: 0, fontSize: 11.5 } }}>
-    {even ? secs.map((g, i) => [i > 0 && <span key={`sep-${g.grp}`} className="tq-row-sep" aria-hidden="true" />,
-      <Box key={g.grp} component="span" data-tq-row-group={g.grp} sx={{ display: "flex", gap: 0.75, flexShrink: 0 }}>{g.items.map((x) => x.fold || btn(x))}</Box>])
-      : <>{shown.map(btn)}{fold}</>}
-    <Menu open={!!at} anchorEl={at} onClose={() => setAt(null)}>
-      {rest.map((v) => <MenuItem key={v.id} dense disabled={v.disabled} data-tq-verb={v.id} sx={{ fontSize: 12.5 }}
-        onClick={(e) => { const a = at; setAt(null); press(v.id, e, a, v.of); }}>{v.label}</MenuItem>)}</Menu></Box>;
-}
-const isDoneMove = (v) => v.id === "done" || /:done$/.test(String(v.id));
-// THE TASK ROW'S ONE BUTTON: one height, padding, font and radius for every move, outlined; the lit one (the Advisor's pick) alone filled
-const rowBtn = (v, word = v.label) => <button key={v.id} type="button" className={`tq-ab row${v.tone === "p" ? " p" : ""}`} disabled={v.disabled} aria-disabled={v.disabled || undefined} data-tq-inert={v.inert ? "" : undefined} data-tq-verb={v.id}
-  title={(v.disabled && v.why) || v.title || word} onClick={(e) => press(v.id, e, e.currentTarget, v.of)}>{word}</button>;
-const EVEN_ROW = { ...ROW_LOOK, display: "flex", alignItems: "center", gap: 1, flexWrap: "nowrap", minWidth: 0, overflow: "hidden" };
 // A QUIET CORNER BUTTON IN THE TASK'S HEADER (the owner, 2026-11-06: "AI used" and "Talk to this agent from…" must not sit at the bottom of the
 // chat): an icon with its tooltip beside Expand and the X, its content in a popover under it
 // ...`wide`: a popover with code in it (Changes) - a diff at 380px is a column of wrapped lines
@@ -680,6 +539,15 @@ const HIDDEN_WORDS = { position: "absolute", width: 1, height: 1, overflow: "hid
 const STRIP_ARROW = { appearance: "none", font: "inherit", cursor: "pointer", width: 26, height: 26, borderRadius: 99, display: "grid", placeItems: "center", flexShrink: 0,
   fontSize: 15, lineHeight: 1, border: `1px solid ${BORDER}`, bgcolor: "var(--tq-panel, #fff)", color: "var(--tq-link, #55697a)", p: 0,
   "&:hover": { bgcolor: ACCENT, color: "#fff", borderColor: ACCENT }, "&:focus-visible": { outline: `2px solid ${ACCENT}`, outlineOffset: 1 } };
+// ...and OPEN, its stage moves are on a WHITE STRIP across the pane's top (the owner, 2026-10-29, "try it": the spine's white look, kept
+// while the pane is open): its name, the moves the pane does not already draw - never a card's own (Redraft, Send under the draft) nor
+// the start its open form already carries - so a pane off the bar is never a dead end, and the arrows that fold it back to its spine,
+// pointing the way its spine's would
+export const STRIP_H = 44;
+// ...in the sections (`keys`, the flow's order): the first folds right, the last left, a middle one either way - a report's too (ItemSections)
+const foldArrows = (keys, k) => { const i = keys.indexOf(k), last = keys.length - 1;
+  return [...(i > 0 ? [["left", i === last ? "›" : "‹", keys[i - 1]]] : []), ...(i >= 0 && i < last ? [["right", i ? "›" : "‹", keys[i + 1]]] : [])]; };
+const TASK_KEYS = ["from", "agent"];
 // ...`name` and `keys` for an item's own sections (ItemSections: Came from | Report); `task`: where the task's one row of buttons stands
 export function PaneStrip({ sec, skip, onFold, fold = (to) => to, name = SEC_NAME[sec], keys = TASK_KEYS, task = null }) {
   useLocale();
@@ -812,7 +680,10 @@ function GoalSteps({ task, onOpenTask, onChanged }) {
   );
 }
 
-export default function TaskPage({ taskId: selected, listRow = null, onListChanged, onSelect, onClose, onFinish, walkLeave = null, onReminded, onLeave, onStay, onOpenTask,
+// `made`: an item Taskuary made - a report's run, a dashboard, an Advisor idea - read into a task's record (madeTask.js): this same page draws it,
+// its Came from the item's source, its chat the prompt that asked and the run that answered, its box the item's start, its row the item's moves
+// (taskMoves). Nothing is read for it here: the record is the item's, and opening it starts nothing
+export default function TaskPage({ taskId: asked, made = null, listRow = null, onListChanged, onSelect, onClose, onFinish, walkLeave = null, onReminded, onLeave, onStay, onOpenTask,
   onChanged, autostart, onAutostarted, active = true, openAct, onActOpened, canvas = false,
   onNext = null, nextBusy = false, expanded = false, onExpand = null, backArrow = false, title = "", rail = null, note = null, saidDay = null, saidHand = null, litMove = "" }) {
   useLocale();
@@ -820,10 +691,12 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const caps = useCapabilities(), canCode = caps.coding;     // no coding tool connected: coding is not offered (capabilities.js)
   const manual = caps.ai === false;                          // no AI: the owner replies and hands off from the bar's ▾ themselves
   // ...drawn from the task's read held ahead of it (taskDetail.js) - a view on the table opens whole, not as an empty shell (G8)
-  const [detail, setDetail] = useState(() => (aheadChat(selected) ? null : heldTask(selected) || lastTask(selected)));
+  const selected = made ? made.key : asked, madeRef = useRef(made); madeRef.current = made;
+  const [heldDetail, setDetail] = useState(() => (made || aheadChat(selected) ? null : heldTask(selected) || lastTask(selected)));
+  const detail = made ? made.detail : heldDetail;
   // ...A KEPT COPY IS SEEN, NEVER PRESSED (the owner, 2026-11-20): drawn from the last read on a revisit, its buttons stand as they look and take
   // no press until the fresh read has replaced it - a press never acts on a card or a state the server has moved past
-  const [keptCopy, setKeptCopy] = useState(() => (aheadChat(selected) || heldTask(selected) ? null : lastTask(selected)));
+  const [keptCopy, setKeptCopy] = useState(() => (made || aheadChat(selected) || heldTask(selected) ? null : lastTask(selected)));
   const fromKept = !!detail && detail === keptCopy;     // ...with its chat (loadDetail)
   // Which task is on screen RIGHT NOW, readable from inside any await. Every fetch here is
   // keyed to a task, and a response that lands after you clicked another one must be dropped:
@@ -933,6 +806,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // are left out of it - the terminal pane draws those live over its own socket, and they move on every read while an agent prints
   const detailLast = useRef(""), detailMoves = useRef(0), loadFailed = useRef(false);
   const servedDetail = useRef(null), detailNow = useRef(null); detailNow.current = detail;
+  // ...A LONG TASK'S OLDER MESSAGES RIDE AS WHO AND WHEN (server _cut_messages, `messagesCut`): Came from's Show all reads them whole
+  const wholeRead = useRef(false);
   detailReads.current ||= coalesce(async (id, signal) => {
     try {
       const asked = Date.now();             // the read's age, against the rail's (taskDetail.noteRead)
@@ -942,7 +817,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       const held = servedDetail.current, rev = held && held.data === detailNow.current && held.id === id ? held.data.rev : "";
       // ...and the page's first read of a task says it was OPENED: its chat's next turn starts being prepared (server: general.warm)
       const opened = held?.id !== id;
-      const { data } = await api.get(`/api/tasks/${id}`, { signal, params: rev ? { rev } : opened ? { opened: 1 } : {} });
+      const { data } = await api.get(`/api/tasks/${id}`, { signal, params: { ...(rev ? { rev } : opened ? { opened: 1 } : {}), ...(wholeRead.current ? { whole: 1 } : {}) } });
       if (stale(id)) return;
       // ...and "nothing new" is the fresh word too: what stands is the server's, pressable
       if (data?.same) { setKeptCopy(null); if (loadFailed.current) { loadFailed.current = false; setErr(""); } return false; }
@@ -972,6 +847,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...its chat waited for by ANY read while that is out: a just-started job's write re-read the task and drew its head over an empty chat
   // (the bug hunt, 2026-11-12)
   const loadDetail = useCallback(async (id, first = false) => {
+    if (madeRef.current) return;      // ...an item Taskuary made is its own record: nothing on the server to read
     if (!id) { setDetail(null); return; }
     const ahead = heldTask(id), coming = !ahead && first && aheadTask(id);
     // ...A REVISIT NEVER WAITS (the owner, 2026-11-20): with no fresh read held, the last one this page had of the task is drawn at once and the
@@ -1012,17 +888,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     // ...when the write was to THIS task (or named none): each mail landing on other work re-read it (the intake walk, 2026-10-26)
     return onLive("task-changed", (ev) => { if (selRef.current && touches(ev, selRef.current)) loadDetail(selRef.current); });
   }, [active, loadDetail]);
-  // the roster is user-config - default to whatever actually exists. A GENERAL task's blank is an answer, not a gap: it means
-  // "the profile it has", and filling it with the roster's first name sent the coding profile - which the dispatch refuses on a non-coding task (422), so
-  // Send to agent failed on every general task nobody had assigned a role (the owner, 2026-10-07: "we don't want the coding profile always")
+  // A GENERAL task's blank agent is an answer, not a gap: it runs on the assistant - only a coding start names the coding agent's row
+  // (the owner, 2026-10-07: "we don't want the coding profile always"), and with no coding tool connected every start is the general agent's (B3)
   const generalTask = opensOnRegular(detail?.task?.Kind);
-  // the profile a blank pick runs (general.py: the role triage gave, else the assistant's own)
-  const ownProfile = (agents.includes(assignedAgent(detail?.task?.Assignee)) && assignedAgent(detail?.task?.Assignee)) || (agents.includes("assistant") ? "assistant" : "");
   useEffect(() => {
-    // ...and nor is a hand-off's: on a reply or a coding task, "Use non-coding agent" left blank was refilled with the
-    // roster's first role, so a task with no profile showed - and would have started - a researcher (2026-10-15)
-    // ...nor with no coding tool connected: every start is the general agent's then, and the coding profile is refused (B3)
-    if (agents.length && !agents.includes(run.agent) && !((generalTask || handOff || !canCode) && !run.agent)) setRun((r) => ({ ...r, agent: codingProfile(agents, kinds), model: "" }));
+    if (agents.length && !agents.includes(run.agent) && !((generalTask || handOff || !canCode) && !run.agent)) setRun((r) => ({ ...r, agent: codingAgent(agents, kinds), model: "" }));
   }, [agents, kinds, run.agent, generalTask, handOff, canCode]);
   useEffect(() => { loadDetail(selected, true); }, [selected, loadDetail]);
   useEffect(() => {
@@ -1031,10 +901,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     pickerTask.current = task.TaskId;
     // another task opens on its own question, not the last one's hand-off - and a general task's box on the regular agent
     setHandOff(opensOnRegular(task.Kind));
-    const owned = assignedAgent(task.Assignee);
-    // a general task starts from the role it was handed, else blank (its configured profile) - never the roster's first name;
-    // a coding task from the profile of kind coding, else blank and the server finds it
-    setRun((r) => ({ ...r, agent: agents.includes(owned) ? owned : opensOnRegular(task.Kind) || !canCode ? "" : codingProfile(agents, kinds), model: "" }));
+    // a general task starts blank (the assistant); a coding task on the agent of kind coding, else blank and the server finds it
+    setRun((r) => ({ ...r, agent: opensOnRegular(task.Kind) || !canCode ? "" : codingAgent(agents, kinds), model: "" }));
   }, [selected, detail?.task, agents, kinds, canCode]);
   // ...and an error belongs to the task it happened on: a failed Mark done stayed up over the next task opened, as if about it.
   // Only a move from one task straight to another clears it: "That task is gone" empties the selection, and the list then
@@ -1092,7 +960,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const reopen = async () => {
     const id = selected;
     if (!id || reopening === id) return;
-    setErr(""); setReopening(id);
+    setErr(""); setReopening(id); closedBy(id, "");
     // ...and "Reopening…" never outlives its press: whatever the answer, or none, the button is the button again (the owner, 2026-11-06)
     const done = () => setReopening((r) => (r === id ? null : r)), cap = setTimeout(done, REOPEN_MAX_MS);
     try { await runOperation(api, "task.reopen", id); }
@@ -1169,6 +1037,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   }, [selected]);
   // Came from: every message drawn instead of each conversation's ends, and the one message opened in full under its row
   const [showAll, setShowAll] = useState(false);
+  useEffect(() => { wholeRead.current = showAll; if (showAll && detailNow.current?.messagesCut) loadDetail(selected); }, [showAll]);   // eslint-disable-line react-hooks/exhaustive-deps
   const [openMsg, setOpenMsg] = useState(undefined);
   // ON A PHONE From shows three lines and opens on a tap (owner-approved 2026-10-21); the tap only opens it - nothing under it is pressed
   const [fromOpen, setFromOpen] = useState(false);
@@ -1271,12 +1140,14 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // 2026-10-01). The FYI is right; the steps between were the flicker. A delete that fails puts it back with the reason.
   // ...AND IS TAKEN BACK (the owner, 2026-10-21: act at once + Undo): the server kept the task (recentlydeleted.keep_task), and the
   // list it leaves - the rail, the Tasks list - draws "Removed <title> - Undo" (Removed.jsx UndoLine, kind "task")
+  // ...WHAT IT DID SHOWN ON IT FIRST (pressResult, the owner 2026-11-23): "Not for you - filed" on the button for a beat, then the walk moves
   const notATask = async () => {
+    await pressBeat("nat");
     onLeave?.();
     let out;
     try { out = walkLeave ? (await walkLeave("not_task"))?.left : await runOperation(api, "task.not_a_task", selected); }
-    catch (e) { const msg = opError(e, uiMessage("Could not remove the task - it is still here; try Remove again.")); setErr(msg); onStay?.(msg); return; }
-    announceRemoved(fromAnswer(out, "task", t?.Title || uiMessage("the task")));
+    catch (e) { const msg = opError(e, "Could not remove the task - it is still here; try Remove again."); pressOver(); setErr(msg); onStay?.(msg); return; }
+    announceRemoved(fromAnswer(out, "task", t?.Title || "the task"));
     onSelect(null); await loadTasks(); onChanged?.();
   };
   // The task's own session - the only terminal in the app. undefined means "not looked
@@ -1386,15 +1257,19 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
 
   // Closing it is this view's; what comes NEXT is the page around it (TasksView moves to the next live row, the canvas
   // walks on) - `onFinish(status, close)` runs the close itself so the list can pre-record the state it is about to see.
-  const finish = async (status, note) => {
+  // `beaten`: the press's result was shown already (stopAndFinish's own beat)
+  const finish = async (status, note, beaten = false) => {
     setFinishing(true);
     // PUT DOWN AT THE PRESS (the owner, 2026-10-01: "you hit mark done it closes ... why does it take an extra second or 2?"): the
     // walk folds the task now and the close runs behind the "…"; a close that fails hands it back with the reason
+    // ...ONCE THE PRESS HAS SAID WHAT IT DID, on its own button (pressResult, the owner 2026-11-23): "Done" for a beat, then the move
+    if (!beaten) await pressBeat(note ? "close-note" : "done");
+    closedBy(selected, note ? "close-note" : "done");
     onLeave?.();
     // the shared road (PW-215), the Wall's Close agent too (closeAgent.jsx) - on the walk's table, the walk's one close (railwalk.leave)
     const close = walkLeave ? () => walkLeave(note ? "note" : "done", note ? { note } : {}) : () => completeTask(api, selected, note);
     try { await (onFinish ? onFinish(status, close) : close()); }
-    catch (e) { const msg = e?.response?.data?.detail || e?.message || uiMessage("Failed to finish task"); setErr(msg); onStay?.(msg); loadTasks(); return msg; }
+    catch (e) { const msg = e?.response?.data?.detail || e?.message || "Failed to finish task"; pressOver(); closedBy(selected, ""); setErr(msg); onStay?.(msg); loadTasks(); return msg; }
     finally { setFinishing(false); }
     loadTasks(); onChanged?.();
   };
@@ -1419,16 +1294,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // still waits on his own press - picks the row back up
   const sent = async ({ closes = false, said = null } = {}) => {
     if (said) setSentHere({ ...said, closing: closes });
-    // ...a beat for that line to be read before the view moves on: the close itself goes at once
-    const beat = said && closes ? new Promise((r) => setTimeout(r, SENT_BEAT)) : null;
+    // ...a beat for that line to be read before the view moves on: the close itself went with the send (pressResult's one beat, Next greyed)
+    const beat = said && closes ? pressBeat("send_close") : null;
     // ...on the walk's table that gate is the walk's close (railwalk.leave "sent"): kept open, the same row comes back
     if (closes && walkLeave) {
       if (beat) await beat;
       // ...THE PAGE MOVES ONLY ONCE THE CLOSE HAS LANDED (design round 5, I2: "Send and close" walked on to the next task with nothing sent,
       // and a second press sent it): put down at the answer, never the press - kept open, the sent line says why, and the task stays in front
       // of him (the agent walk, 2026-11-10: it went on saying "closing the task" over a task that stayed); failed, it says so where he pressed
-      try { const d = await walkLeave("sent"); if (d?.kept) { if (said) setSentHere((h) => h && { ...h, closing: false, kept: d.kept.join("; ") }); onStay?.(); } else onLeave?.(); }
-      catch (e) { onStay?.(e?.response?.data?.detail || e?.message || "Could not close it"); }
+      try { const d = await walkLeave("sent"); if (d?.kept) { pressOver(); if (said) setSentHere((h) => h && { ...h, closing: false, kept: d.kept.join("; ") }); onStay?.(); } else onLeave?.(); }
+      catch (e) { pressOver(); onStay?.(e?.response?.data?.detail || e?.message || "Could not close it"); }
       loadDetail(selected); loadTasks(); onChanged?.(); return;
     }
     if (closes) {
@@ -1450,11 +1325,12 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // WATCH IT (watch.py, the owner, 2026-11-01): not the owner's - kept open under Watching, walked after Tasks, back when the thread moves. Nothing
   // is sent. On the walk's table it is the walk's close (railwalk.leave "watch"); on a task already watched the same press ends the watch
   const watching = !!t?.WatchedAt && !["done", "dropped"].includes(t.Status);
+  const watchLine = watching ? String(detail?.watch || "") : "";       // ...what it waits for, and when it is back (watch.line)
   const watchIt = async () => {
     const off = watching;
-    if (!off) onLeave?.();
+    if (!off) { await pressBeat("watch"); onLeave?.(); }
     try { if (walkLeave && !off) await walkLeave("watch"); else await runOperation(api, "task.watching", selected, off ? { off: true } : {}); }
-    catch (e) { const msg = opError(e, uiMessage("Could not watch it - it is still here; press Watch it again.")); setErr(msg); if (!off) onStay?.(msg); return; }
+    catch (e) { const msg = opError(e, "Could not watch it - it is still here; press Watch it again."); pressOver(); setErr(msg); if (!off) onStay?.(msg); return; }
     loadDetail(selected); loadTasks(); onListChanged?.(); onChanged?.();
   };
   const dismiss = () => onClose?.();
@@ -1490,6 +1366,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     const id = selected;
     // ...and it is put down at the press like any close: the write-up below takes as long as the AI does (18 s on
     // 2026-10-01), and the task sat open on the page and the rail all that time - under For later, already seen
+    await pressBeat("done");
+    closedBy(id, "done");
     onLeave?.();
     // ...and the write-up runs on the server, which closes the task after it (writeup.py, 2026-10-20): the press is answered once
     // the session is harvested, and the page walks on. A write-up that cannot start closes the task here, as before.
@@ -1498,7 +1376,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       setTerm(null);
       return closedHere("done");
     }
-    await finish("done");
+    await finish("done", undefined, true);
   };
   // what Mark done does HERE - it said "ends the live agent session" with no session in sight (T11), and a waiting
   // draft is kept on the task, never thrown away: it can be brought back and sent later
@@ -1522,7 +1400,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // Proposals are queued after the reply, so they must not be mistaken for it - but they SHARE
   // its stage. lanes.json has one lane for both ("a reply or an action is drafted and waits for
   // your yes"), and one lane on the rail is one section on the page (the owner, 2026-09-22: "put
-  // playbook proposal combined into the reply ready section as it's part of the approval/action").
+  // skill proposal combined into the reply ready section as it's part of the approval/action").
   // ...and only the task on the table's own: the last task's record, read until the new one lands, put its Send and Redraft on the row
   // for a beat, then the row emptied and refilled (the owner, 2026-10-26: "when you load task the buttons load then go gray then reload")
   // ...the rows of a BULK CARD are its own (BulkCard, taskuary/bulkcard.py): one card for many of one act, never a card each
@@ -1543,7 +1421,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const closeoutRv = allProposals.find((p) => closeoutOf(p)) || null;
   const proposals = allProposals.filter((p) => !(pendingReview && p === closeoutRv));
   const sentReview = sentReplyReview(reviews);
-  const unsentReview = sentReview ? null : unsentReplyReview(reviews);
   // the agent's record, drawn once, on the Agent work step - the draft its run wrote, whichever round it went in
   const recordProps = { taskId: selected, pages: isGeneral ? [] : (detail?.artifacts || []).filter((a) => isPublished(a) || a.kind === "shown"),
     draft: (() => { const s = sentReplyReview(allReviews), r = pendingReview || (s ? null : unsentReplyReview(allReviews)) || s; return r ? r.FinalText || r.DraftText || "" : ""; })(),
@@ -1590,8 +1467,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const replyMessage = !detail?.batch && hasCorrespondent(sourceMessage) ? sourceMessage : null;
   // the reply cannot leave from here - its draft says so, or with none, the channel it would go back on
   const cantSend = pendingReview ? !draftCanSend(caps, pendingReview) : !!replyMessage && !canSend(caps, replyMessage.Channel);
-  const workContext = t?.Playbook
-    ? tr("Playbook · {title}{uses}", { title: t.Playbook.title, uses: t.Playbook.uses?.length ? tr(" · uses {uses}", { uses: t.Playbook.uses.join(", ") }) : "" })
+  const workContext = t?.Skill
+    ? `Skill · ${t.Skill.title}${t.Skill.uses?.length ? ` · uses ${t.Skill.uses.join(", ")}` : ""}`
     : t?.Source === "report" && sourceMessage?.SourceName
       ? tr("Report · {name}", { name: sourceMessage.SourceName }) : "";
   const openReply = async (generate = false) => {
@@ -1616,10 +1493,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // The task itself leads when no coding terminal is open. Triage already distilled an inbound
   // item into Title + Summary; falling back to its newest inbound body keeps older/promoted rows
   // equally useful. This is the human TODO, not an agent-launch advertisement.
-  // ...except where Summary is Taskuary's own brief to the agent (a playbook built with AI: the setup instructions and the example
+  // ...except where Summary is Taskuary's own brief to the agent (a skill built with AI: the setup instructions and the example
   // email's raw record - ownwork.BRIEFED): its title is the ask, and the owner's words are in the conversation
   // ...his words: the files his ask named are its Files field, pills on his line in the chat
-  const taskAsk = cleanText(t?.SourceRef === "assistant:playbook" ? t?.Title : t?.Summary || sourceMessage?.BodyText || "");
+  const taskAsk = cleanText(t?.SourceRef === "assistant:skill" ? t?.Title : t?.Summary || sourceMessage?.BodyText || "");
   // WHAT THEY ACTUALLY SAID. A task opens on one message and then keeps collecting the rest of
   // the conversation - three WhatsApp voice notes seconds apart are one thought, and ingest
   // attaches the later ones to the same task. The panel showed the FIRST and nothing else, so a
@@ -1672,8 +1549,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const opener = [...inbound].sort((a, b) => tsMs(a.SentAt) - tsMs(b.SentAt))[0];
   // THE ASK IS TRIAGE'S SUMMARY, whole (the owner, 2026-10-16: "the ask should be the triage summary") - its first sentence alone
   // read as the sender's voice ("Assistant for Backend Monitoring flags…") with the point cut off
-  // ...never Taskuary's own brief to the agent (ownwork.BRIEFED: a playbook built with AI) - its title is the ask (taskAsk)
-  const askText = (t?.SourceRef === "assistant:playbook" ? "" : cleanText(verdict?.summary || t?.Summary || opener?.ReadText || opener?.BodyText || "")) || taskAsk;
+  // ...never Taskuary's own brief to the agent (ownwork.BRIEFED: a skill built with AI) - its title is the ask (taskAsk)
+  const askText = (t?.SourceRef === "assistant:skill" ? "" : cleanText(verdict?.summary || t?.Summary || opener?.ReadText || opener?.BodyText || "")) || taskAsk;
   const askQuoted = !verdict?.summary && !t?.Summary && !!(opener?.ReadText || opener?.BodyText);   // the sender's words, not triage's
   // ...said once where it is the title's own words (taskLayout.askIsTitle): the band under the head is for a different sentence, or who it waits on
   // ...nor under What came in when it IS that one message's words (the product audit, 2026-11-08: the to-do's paragraph stood twice) - askInBody
@@ -1685,12 +1562,12 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const shownMsg = openMsg !== undefined ? openMsg : sourceCount === 1 && !askIsBody ? sources[0]?.msgs[0]?.MessageId ?? null : null;
   // ...and a task handed to a person opens on who it waits on, and when it was due (taskLayout.waitingOn)
   const waitFor = waitingOn({ task: t || {}, messages: storedMessages });
-  const made = t ? madeLine(t, timeAgo(t.CreatedAt)) : "";   // "sorted 1m ago", never "created ... by triage" (taskSources.madeLine)
+  const madeAt = t ? madeLine(t, timeAgo(t.CreatedAt)) : "";   // "sorted 1m ago", never "created ... by triage" (taskSources.madeLine)
   // WHAT RUNS THIS, in the vocabulary the brain layer landed on 2026-09-16: a ROLE picks the
   // document (every coding task's role is the profile of kind coding), a BRAIN is the CLI that runs it, and the model
   // is the brain's - it is not a property of the task, so the card does not offer one. A live
   // session names the CLI it was ASKED to run; otherwise the roster says which brain the role uses.
-  const runRole = assignedAgent(t?.Assignee) || (t?.Kind === "coding" ? codingProfile(agents, kinds) : "");
+  const runRole = t?.Kind === "coding" ? assignedAgent(t?.Assignee) || codingAgent(agents, kinds) : "";
   // NAME THE BRAIN, NOT THE PRODUCT. `term.cli` is hardcoded to the string "taskuary" on every
   // general session (general.info), so the one card that could not say which brain was running
   // read "brain taskuary" - the product's own name, on the row whose whole job is to answer that
@@ -1937,11 +1814,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...and a reply owed with nothing drafted shows its empty box in the chat, Draft with AI under it - only where nothing else waits there: a
   // GitHub finish to approve, a proposal, emails owed or a write-up under way have their own box
   // ...never on an INVITE (the owner, 2026-11-08): its answer is the calendar's card - Accept, Decline, Propose a new time - not an email
-  const replyEmpty = !!replyMessage && !detail?.calendar?.invite && !pendingReview && !sentReview && !unsentReview && !ended && !liveSession && !closeoutRv && !allProposals.length
+  const replyEmpty = !!replyMessage && !detail?.calendar?.invite && !pendingReview && !sentReview && !reviews.some(isUnsentReply) && !ended && !liveSession && !closeoutRv && !allProposals.length
     && !owesEmails && !emailsWaiting && !writeup && !outside
     && !!t && !["done", "dropped"].includes(t.Status);
   // the one line From folds to while an agent works (sessionView)
-  const fromLine = fromLineOf({ sender: ownSource, count: sourceCount, workflow: fromWorkflow, made: t ? `${detail.ref} · ${made}` : "" });
+  const fromLine = fromLineOf({ sender: ownSource, count: sourceCount, workflow: fromWorkflow, made: t ? `${detail.ref} · ${madeAt}` : "" });
   // the note a close was written with (server task.complete: "Closed out: ...") - the chat's closing line says it: the current round's
   // close (store.closeouts), never an earlier round's; a detail with no closeouts (the site's demo) reads the newest note
   const closedNote = detail?.closeouts ? round.close?.note || "" : String([...(detail?.comments || [])].reverse().find((c) => /^Closed out: /.test(String(c.Body || "")))?.Body || "").replace(/^Closed out: /, "");
@@ -1967,7 +1844,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     if (trusting) return;
     const word = scope === "org" ? strangerLine(detail)?.trustOrg : detail?.origin?.trust?.person || (strangerLine(detail)?.trust ? uiMessage("Trust them") : "");
     setTrusting(scope || "person");
-    try { await runOperation(api, "task.trust", selected, scope ? { scope } : undefined); await loadDetail(selected); loadTasks(); onChanged?.(); }
+    try { await runOperation(api, "task.trust", selected, scope ? { scope } : undefined); setChatRead((n) => n + 1); await loadDetail(selected); loadTasks(); onChanged?.(); }
     // ...the demo's no as its own line: "That didn't go through - This is the demo - ... Press Trust Priya again" asked for a press that
     // can never work (the walk, 2026-11-18)
     catch (e) { setErr(demoNo(e) || uiMessage("That didn't go through - {error}.{retry}", { error: opError(e, uiMessage("Taskuary didn't answer")), retry: word ? uiMessage(" Press {word} again.", { word }) : "" })); }
@@ -1983,13 +1860,18 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...and a task the Advisor raised on a mail it never moved here (another task's, or an older build's) came in as that mail
   const cameIn = answering || newestFirst(inbound)[0]
     || (detail?.raised && newestFirst((detail?.earlier || []).filter((m) => m.Status !== "context" && m.Direction !== "out"))[0]) || null;
-  const tabLines = () => !twoUp || !t ? {} : {
+  // ...an item Taskuary made: its source in a line or two, and the run - Taskuary's, done - with what it says
+  // ...its rows, then what it cites by name - the closed tab said "What it rests on" and nothing it rests on (the owner, 2026-11-25)
+  const madeTabs = () => ({ from: { lines: [made.source?.head, ...(made.source?.rows || []).map(([k, v]) => `${k}: ${String(v).slice(0, 120)}`),
+    ...(made.source?.links || []).map((l) => l.label)].filter(Boolean), foot: "" },
+    agent: agentStatus({ name: "Taskuary", word: "ran", said: String(made.said || "").slice(0, 240) }) });
+  const tabLines = () => !twoUp || !t ? {} : made ? madeTabs() : {
     from: fromStatus({ channel: cameIn ? cameFrom(cameIn) || channelName(cameIn.Channel) : sources[0] ? channelName(sources[0].channel) : "",
       // ...EVERY message of its conversations, newest first - the tab draws as many as it has room for (fitTabLines): who, and their words
-      msgs: newestFirst(sources.flatMap((g) => g.msgs)).map((m) => ({ who: m.who || m.FromName || m.FromEmail || (m.Direction === "out" ? tr("You") : ""),
+      msgs: newestFirst(sources.flatMap((g) => g.msgs)).map((m) => ({ who: m.who || senderName(m) || (m.Direction === "out" ? "You" : ""),
         words: (rowText(m, sourceFiles.get(m.MessageId)) || cleanText(m.ReadText || m.BodyText || "")).slice(0, 200) })),
-      count: sourceCount, workflow: fromWorkflow, made: `${detail.ref} · ${made}`, to: toLine(cameIn?.Recipients).short, sorted: sortedLine(facts, t?.Kind || "task", { short: true }) }),
-    agent: agentStatus({ profile: runRole || hasRecord || term ? agentName(t) : "",   /* Taskuary, never the profile (kinds.js shownAgent) */
+      count: sourceCount, workflow: fromWorkflow, made: `${detail.ref} · ${madeAt}`, to: toLine(cameIn?.Recipients).short, sorted: sortedLine(facts, t?.Kind || "task").replace(/^Sorted as: /, "Sorted: ") }),
+    agent: agentStatus({ name: runRole || hasRecord || term ? agentName(t) : "",   /* Taskuary (kinds.js shownAgent) */
       word: agentWord({ live: !!term?.alive || agentOpening, waiting: agentState === AGENT.waiting, failed: failedRun, stopped: stoppedRun || agentState === AGENT.stopped,
         result: resultShown, record: hasRecord, codeRun, queued: !!queuedRow }),
       // ...a path into the task's outputs as the file's name, and no markdown marks mid-line: the folded spine read
@@ -2012,6 +1894,18 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...WHOM IT WENT TO under who sent it, a plain line: its first few names, all of them with the whole email (the owner, 2026-11-03)
   const toWent = () => { const w = toLine(cameIn?.Recipients); return w.short && (
     <Typography data-tq-came-in-to="" title={w.full} sx={{ fontSize: 12.5, color: DIM, overflowWrap: "anywhere" }}>{cameInFull ? w.full : w.short}</Typography>); };
+  // ...how hard triage judged the work, or that it carries sensitive data - only when it is not ordinary, and a press corrects it (the router,
+  // 2026-10-25) - a MARK OF THE MESSAGE, beside who sent it, never after its files (the owner, 2026-11-25: it sat under the attachments pill)
+  const judgedMark = () => { const label = judgedMarks(detail?.judged); return label && <>
+    <Chip size="small" data-tq-judged="" label={label}
+      title={`${detail.judged.by === "owner" ? "You said so" : "Triage judged it so"} - in Auto, hard work runs on the strong model. Click to correct it.`}
+      onClick={(e) => setJudgeAt(e.currentTarget)} sx={{ height: 19, fontSize: 10, bgcolor: PANEL2, cursor: "pointer" }} />
+    <Menu open={!!judgeAt} anchorEl={judgeAt} onClose={() => setJudgeAt(null)}>
+      {["quick", "standard", "hard"].map((d) => <MenuItem key={d} selected={detail?.judged?.difficulty === d} sx={{ fontSize: 12 }}
+        onClick={() => judge({ difficulty: d })}>{d === "quick" ? "Quick work" : d === "hard" ? "Hard work" : "Ordinary work"}</MenuItem>)}
+      {[["ordinary", "Ordinary data"], ["sensitive", "Sensitive data"]].map(([k, l]) => <MenuItem key={k} selected={(detail?.judged?.data_class || "ordinary") === k}
+        sx={{ fontSize: 12 }} onClick={() => judge({ data_class: k })}>{l}</MenuItem>)}
+    </Menu></>; };
   const fromFacts = () => (<>
                         {!twoUp && toWent()}
                         <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, flexWrap: "wrap", "&:empty": { display: "none" } }}>
@@ -2025,18 +1919,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                               setHistOpen(true); setOpenMsg(mid); setSeekLetter(mid);
                             }}
                             sx={{ height: 19, fontSize: 10, bgcolor: PANEL2 }} />}
-                          {/* ...and how hard triage judged the work, or that it carries sensitive data - only when it is not ordinary, and a
-                              press corrects it (the router, 2026-10-25) */}
-                          {(detail?.judged?.difficulty === "hard" || detail?.judged?.data_class === "sensitive") && <Chip size="small" data-tq-judged=""
-                            label={[detail.judged.difficulty === "hard" && tr("hard work"), detail.judged.data_class === "sensitive" && tr("sensitive data")].filter(Boolean).join(" · ")}
-                            title={tr("{source} - in Auto, hard work runs on the strong model. Click to correct it.", { source: detail.judged.by === "owner" ? tr("You said so") : tr("Triage judged it so") })}
-                            onClick={(e) => setJudgeAt(e.currentTarget)} sx={{ height: 19, fontSize: 10, bgcolor: PANEL2, cursor: "pointer" }} />}
-                          <Menu open={!!judgeAt} anchorEl={judgeAt} onClose={() => setJudgeAt(null)}>
-                            {["quick", "standard", "hard"].map((d) => <MenuItem key={d} selected={detail?.judged?.difficulty === d} sx={{ fontSize: 12 }}
-                              onClick={() => judge({ difficulty: d })}>{d === "quick" ? tr("Quick work") : d === "hard" ? tr("Hard work") : tr("Ordinary work")}</MenuItem>)}
-                            {[["ordinary", "Ordinary data"], ["sensitive", "Sensitive data"]].map(([k, l]) => <MenuItem key={k} selected={(detail?.judged?.data_class || "ordinary") === k}
-                              sx={{ fontSize: 12 }} onClick={() => judge({ data_class: k })}>{tr(l)}</MenuItem>)}
-                          </Menu>
+                          {(!twoUp || !cameIn) && judgedMark()}
                           {!twoUp && fromExpands(sources) && <Link component="button" type="button" underline="hover" onClick={() => setShowAll((v) => !v)}
                             sx={{ ml: "auto", fontSize: 12 }}>{showAll ? tr("Show less") : tr("Show all {count}", { count: sourceCount })}</Link>}
                         </Box>
@@ -2092,9 +1975,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                                     (the owner, 2026-10-16: "wasn't this supposed to be a chat back and forth if you hit show all?") - and an email
                                     thread as every row, each opening its letter. Each scrolls in its own box, so one long thread cannot bury the next. */}
                                 <Box sx={{ mt: 0.5, minWidth: 0 }}>
-                                  {showAll && isChat(g.channel) ? <ChatThread messages={g.msgs} maxHeight={THREAD_MAX} />
+                                  {showAll && isChat(g.channel) ? <ChatThread messages={g.msgs.filter((m) => !m.stub)} maxHeight={THREAD_MAX} />
                                     : <Box data-tq-thread-box="" sx={showAll ? { maxHeight: THREAD_MAX, overflowY: "auto", minWidth: 0 } : undefined}>
-                                        <ConversationRows rows={fromRows(g, 3, showAll)} open={shownMsg} onOpen={(f) => setOpenMsg(f(shownMsg))} narrow
+                                        <ConversationRows rows={fromRows(g, 3, showAll).filter((r) => !r.m?.stub)} open={shownMsg} onOpen={(f) => setOpenMsg(f(shownMsg))} narrow
                                           onExpand={() => setShowAll(true)} files={sourceFiles} fetchFor={fetchFor} subject={g.title} /></Box>}
                                 </Box>
                               </Box>
@@ -2108,8 +1991,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                             <Box sx={{ width: 24, height: 24, borderRadius: 1, bgcolor: "var(--tq-inset, #f1eee8)", display: "grid", placeItems: "center", flexShrink: 0 }}>
                               <ChannelIcon channel="workflow" sx={{ fontSize: 14 }} /></Box>
                             <Box sx={{ flex: 1, minWidth: 0 }}>
-                              <Typography noWrap sx={{ color: INK, fontWeight: 600, fontSize: 13 }} title={fromWorkflow.title}>{tr("Workflow · {title}", { title: fromWorkflow.title })}</Typography>
-                              <Typography variant="caption" sx={{ color: DIM, fontSize: 11.5, display: "block" }} title={`${detail.ref} · ${made}`}>
+                              <Typography noWrap sx={{ color: INK, fontWeight: 600, fontSize: 13 }} title={fromWorkflow.title}>Workflow · {fromWorkflow.title}</Typography>
+                              <Typography variant="caption" sx={{ color: DIM, fontSize: 11.5, display: "block" }} title={`${detail.ref} · ${madeAt}`}>
                                 {fromWorkflow.line} · {whenShort(t?.CreatedAt)}</Typography>
                             </Box>
                             {fromWorkflow.link && <Link href={fromWorkflow.link} underline="hover" sx={{ fontSize: 12, flexShrink: 0 }}>{tr("Open the routine")}</Link>}
@@ -2120,7 +2003,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                                 onFix={fromWorkflow.sourceId != null && fromWorkflow.runId != null
                                   ? () => { openAppLink(`report=${fromWorkflow.sourceId}&fix=${fromWorkflow.runId}`); } : null} /></Box>}
                           </Box>
-                        ) : <Typography variant="caption" sx={{ display: "block", color: FAINT, mt: 0.25 }}>{detail.ref} · {made}</Typography>}
+                        ) : <Typography variant="caption" sx={{ display: "block", color: FAINT, mt: 0.25 }}>{detail.ref} · {madeAt}</Typography>}
                         {fromLinks()}
   </>);
   // WHAT ITS MESSAGES LINK TO (linkdocs), each once - the items behind the task, a press from it (the redesign,
@@ -2143,7 +2026,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       onClick={() => { pickRepo(); if (twoUp) openSection("agent"); requestAnimationFrame(() => document.querySelector("[data-tq-repo-picker]")?.scrollIntoView({ block: "nearest", behavior: "smooth" })); }}>
       {PICK_CODE}</Button>);
   const fromSorted = () => (
-                      <Box data-tq-sorted="" title={`${detail.ref} · ${made}${triaged.at ? ` · ${tr("sorted {time}", { time: whenShort(triaged.at) })}` : ""}`}
+                      <Box data-tq-sorted="" title={`${detail.ref} · ${madeAt}${triaged.at ? ` · sorted ${whenShort(triaged.at)}` : ""}`}
                         sx={{ display: "flex", gap: 1, alignItems: "flex-start", pt: 1, borderTop: `1px solid ${BORDER}` }}>
                         <AltRouteIcon sx={{ fontSize: 15, color: "var(--tq-link, #55697a)", mt: 0.2, flexShrink: 0 }} />
                         <Typography sx={{ fontSize: 12, color: DIM, minWidth: 0, overflowWrap: "anywhere", lineHeight: 1.5 }}>
@@ -2162,13 +2045,29 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const CARD = { bgcolor: "var(--tq-panel, #fff)", border: `1px solid ${FOCUS_EDGE}`, borderRadius: "12px", px: 2, py: 1.75, minWidth: 0, display: "flex", flexDirection: "column", gap: 0.75 };
   const cardHead = { fontSize: 12, fontWeight: 600, color: DIM };
   const cameReport = !!cameIn && t?.Source === "report" && typeof cameIn.MessageId === "number";
-  const fromCards = () => (
+  // ...AN ITEM TASKUARY MADE CAME FROM ITS SOURCE (madeTask: the owner, 2026-11-24): the routine that runs it - its schedule, prompt, the data it
+  // reads, where it goes, Edit - or what an idea rests on, each mail and task it cites a link into the app; in What came in's own card
+  const madeFrom = () => { const src = made.source || {};
+    return <Box data-tq-from-cards="" data-tq-made-source={made.kind} sx={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 2 }}>
+      <Box data-tq-came-in="" sx={CARD}>
+        <Typography sx={cardHead}>{src.head || "Where it comes from"}</Typography>
+        {(src.rows || []).map(([k, v]) => <Box key={k} data-tq-source-row={k} sx={{ display: "grid", gridTemplateColumns: "88px minmax(0, 1fr)", gap: 1, alignItems: "baseline" }}>
+          <Typography sx={{ fontSize: 12, color: DIM }}>{k}</Typography>
+          <Typography sx={{ fontSize: 13.5, color: INK, lineHeight: 1.5, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{v}</Typography></Box>)}
+        {(src.links || []).map((l) => <Link key={`${l.href}${l.label}`} href={l.href} underline="hover" data-tq-cite={l.href}
+          onClick={(e) => { e.preventDefault(); openAppLink(l.href); }} sx={{ display: "block", fontSize: 13, color: "var(--tq-link, #55697a)" }}>{l.label} ↗</Link>)}
+        {src.edit && <Link href={src.edit.href} underline="hover" data-tq-made-edit="" onClick={(e) => { e.preventDefault(); openAppLink(src.edit.href); }}
+          sx={{ display: "block", fontSize: 12.5, color: "var(--tq-link, #55697a)", mt: 0.4 }}>{src.edit.label} ↗</Link>}
+      </Box></Box>; };
+  const fromCards = () => made ? madeFrom() : (
     <Box data-tq-from-cards="" sx={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 2, "@container (min-width: 620px)": { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } }}>
       <Box data-tq-came-in="" sx={CARD}>
         <Typography sx={cardHead}>{tr("What came in")}</Typography>
         {cameIn ? <>
-          <Typography sx={{ fontSize: 13, color: DIM }}>{byLine(cameIn.who || cameIn.FromName || cameIn.FromEmail, cameFromWhere(cameIn),
-            cameIn.SentAt ? whenShort(cameIn.SentAt) : "")}</Typography>
+          <Box data-tq-came-in-head="" sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+            <Typography sx={{ fontSize: 13, color: DIM }}>{byLine(cameIn.who || senderName(cameIn), cameFromWhere(cameIn),
+              cameIn.SentAt ? whenShort(cameIn.SentAt) : "")}</Typography>
+            {judgedMark()}</Box>
           {toWent()}
           {/* ...THE MESSAGE ITSELF, never Taskuary's notes about it (the real-Claude walk, 2026-11-19: "paying is Alex's own action, and the
               sender is unverified" stood where the vendor's mail should): what Taskuary made of it is the card beside, and the agent's */}
@@ -2186,20 +2085,22 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
           {!flow && !cameReport && <Link component="button" type="button" underline="hover" data-tq-came-in-more="" aria-expanded={cameInFull}
             onClick={() => setCameInFull((v) => !v)} sx={{ display: "block", fontSize: 12.5, color: "var(--tq-link, #55697a)", mt: 0.4, textAlign: "left" }}>
             {cameInFull ? "Show less" : `Show the whole ${cameIn.Channel === "email" ? "email" : "message"}`}</Link>}
-          {!flow && cameInFull && cameIn.Channel !== "jira" && typeof cameIn.MessageId === "number" && <Attachments messageId={cameIn.MessageId} dense original={cameIn.SourceLink} />}
-        </> : !sources.length && fromWorkflow ? fromConvs() : <Typography sx={{ fontSize: 13, color: DIM }}>{detail.ref} · {made}</Typography>}
+          {!flow && cameInFull && typeof cameIn.MessageId === "number" && <Attachments messageId={cameIn.MessageId} dense original={cameIn.SourceLink} />}
+        </> : !sources.length && fromWorkflow ? fromConvs() : <Typography sx={{ fontSize: 13, color: DIM }}>{detail.ref} · {madeAt}</Typography>}
         {fromFacts()}
       </Box>
-      <Box data-tq-sorted="" title={`${detail.ref} · ${made}${triaged.at ? ` · sorted ${whenShort(triaged.at)}` : ""}`} sx={CARD}>
+      <Box data-tq-sorted="" title={`${detail.ref} · ${madeAt}${triaged.at ? ` · sorted ${whenShort(triaged.at)}` : ""}`} sx={CARD}>
         {/* ...in his words, never the app's own name for its sorting (design round 5, 2026-11-19: "What triage made of it") */}
         <Typography sx={cardHead}>How Taskuary read it</Typography>
         <Typography sx={{ fontSize: 15, lineHeight: 1.5, color: INK }}>{madeOf(facts, t?.Kind || "task")}</Typography>
-        {triaged.why && <Typography sx={{ fontSize: 13, lineHeight: 1.5, color: DIM, overflowWrap: "anywhere" }}>{triaged.why}</Typography>}
+        {/* ...a WATCH says what it waits for and when it is back (the server's watch.line, the header's and the rail's same words) - in triage's why's place */}
+        {(watchLine || triaged.why) && <Typography data-tq-watch-line={watchLine ? "" : undefined} sx={{ fontSize: 13, lineHeight: 1.5, color: DIM, overflowWrap: "anywhere" }}>
+          {watchLine || triaged.why}</Typography>}
         {triaged.later > 0 && <Typography sx={{ fontSize: 12.5, color: FAINT }}>{plural(triaged.later, "later message")} joined this task</Typography>}
         {workContext && <Typography sx={{ fontSize: 12.5, color: FAINT }}>Works from: {workContext}</Typography>}
         {facts.pills.filter((p) => p.tone === "alert" && p.key !== "priority").map((p) => (
-          <Typography key={p.key} data-tq-fact-alert={p.key} sx={{ fontSize: 12.5, color: ALERT_INK, fontWeight: 600 }}>{tr(p.label)}: {p.key === "repo" && p.value === "none - not started" ? tr("none - not started") : p.value}{pickOnAlert(p, { ml: 1 })}</Typography>))}
-        {/* which workstream it is under, and the picker that moves it - as the repo picker moves it to a checkout (the owner, 2026-11-01) */}
+          <Typography key={p.key} data-tq-fact-alert={p.key} sx={{ fontSize: 12.5, color: ALERT_INK, fontWeight: 600 }}>{p.label}: {p.value}{pickOnAlert(p, { ml: 1 })}</Typography>))}
+        {/* which profile it is under, and the picker that moves it - as the repo picker moves it to a checkout (the owner, 2026-11-01) */}
         <WorkstreamSelect taskId={selected} value={detail?.workstream} onDone={() => { loadDetail(selected); loadTasks(); }} />
       </Box>
     </Box>
@@ -2213,7 +2114,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       {timeline.length > CONV_KEEP && <Link component="button" type="button" underline="hover" data-tq-conversation-more="" onClick={() => setShowAll((v) => !v)}
         sx={{ display: "block", fontSize: 12, mb: 0.4, textAlign: "left" }}>{showAll ? tr("Show fewer") : tr("Show all {count}", { count: timeline.length })}</Link>}
       <Box ref={cameFromRef} sx={{ minWidth: 0, scrollMarginTop: 8 }}>
-        <ConversationRows rows={(showAll ? timeline : timeline.slice(-CONV_KEEP)).map((m) => ({ m }))} open={shownMsg} onOpen={(f) => setOpenMsg(f(shownMsg))}
+        <ConversationRows rows={(showAll ? timeline : timeline.slice(-CONV_KEEP)).filter((m) => !m.stub).map((m) => ({ m }))} open={shownMsg} onOpen={(f) => setOpenMsg(f(shownMsg))}
           files={sourceFiles} fetchFor={fetchFor} newest={timeline.at(-1)?.MessageId} />
       </Box>
     </Part>
@@ -2259,20 +2160,21 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       } else { setErr(msg); setStartFail({ ...failOf(e), text: msg, again: startCodingAgent }); }
     } finally { endStart(id); }
   };
-  const startGeneralAgent = async () => {
+  const startGeneralAgent = async (again) => {
     const id = selected;
     if (!beginStart(id, "general")) return;
     setErr(""); setStartFail(null);
     // RUN ANOTHER AGENT is a second agent, not Continue (the owner, 2026-10-27: "it just opened the same window instead of a new one"):
     // the box under that title asks for a new conversation (general.new_run) - a live one is paused first, as the coding start does
-    const another = !!(report || detail?.transcript || term?.alive || generalStarted);
+    // ...read at the press; its Try again replays it (taskLayout.startsAnother)
+    const another = startsAnother({ report, transcript: detail?.transcript, alive: term?.alive, started: generalStarted }, again);
     try {
       if (another && term?.alive) { await api.post(`/api/tasks/${id}/pause`, {}); if (!stale(id)) setTerm(null); }
       // one shared dispatch whatever the task's kind was: it switches the kind, starts (or reuses) the
       // assistant session and records the live worker - a relabelled task is not a started one (PW-213)
-      // profile, brain and model - whichever of them was chosen; blank means "as configured"
+      // brain and model - whichever of them was chosen; blank means "as configured"
       const { data } = await api.post(`/api/tasks/${id}/dispatch`,
-        { kind: "general", agent: run.agent || null, pick: run.pick || null, model: run.model || null, ...(another ? { fresh: true } : {}),
+        { kind: "general", pick: run.pick || null, model: run.model || null, ...(another ? { fresh: true } : {}),
           // what was typed in the box goes to it - this sent the pickers and dropped the words
           instruction: run.instruction.trim() || null, files: runPics.paths });
       const outcome = outcomeOf(data);
@@ -2286,57 +2188,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       onChanged?.();
     } catch (e) {
       if (!stale(id)) {
-        const msg = e?.response?.data?.detail || uiMessage("Could not start the agent - check that an AI is connected under Connections, then press it again.");
-        setErr(msg); setStartFail({ ...failOf(e), text: msg, again: startGeneralAgent });
-      }
-    } finally { endStart(id); }
-  };
-  // An explicit handoff selects the next Send in the existing chat; the press alone never starts work.
-  const dispatchFromChat = async (text, files) => {
-    const id = selected, kind = t?.DoneWhen || handOff || !canCode ? "general" : "coding";
-    if (!beginStart(id, kind)) throw new Error(tr("Starting…"));
-    try {
-      let target = id;
-      if (t?.DoneWhen) {
-        const { data } = await api.get(`/api/tasks/${id}/steps`), step = (data.steps || []).find((s) => !s.done);
-        if (!step) throw new Error(tr("Every step is done - close the goal, or add a step."));
-        target = step.tid || (await api.post(`/api/tasks/${id}/steps/${step.id}/start`)).data.taskId;
-      }
-      if (kind === "coding" && startRepo) await api.put(`/api/tasks/${target}/repo`, { repo: startRepo });
-      const codingRole = ["coding", "cli"].includes(String(kinds[run.agent] || "").toLowerCase());
-      const agent = kind === "coding" ? (codingRole ? run.agent : codingProfile(agents, kinds)) : codingRole ? "" : run.agent;
-      const { data } = await api.post(`/api/tasks/${target}/dispatch`, { kind, agent: agent || null,
-        brain: kind === "coding" ? run.brain || null : null, pick: kind === "general" ? run.pick || null : null,
-        model: run.model || null, instruction: text || null, files,
-        ...(target !== id ? { via: id } : {}) });
-      const outcome = outcomeOf(data);
-      if (outcome.state === "needs_repo") {
-        if (!stale(id)) setRepoPick(true);
-        throw new Error(outcome.text);
-      }
-      if (!["started", "existing"].includes(outcome.state)) throw new Error(outcome.text);
-      if (!stale(id)) { setTerm(data.session || null); setRestartOpen(false); askTaken(id); setChatRead((n) => n + 1); }
-      await Promise.all([loadDetail(id), loadTasks()]); onChanged?.();
-      if (target !== id) (onOpenTask || onSelect)?.(target);
-      return data;
-    } finally { endStart(id); }
-  };
-  // TRIAGE'S OFFER, taken with one press (the owner, 2026-10-28: "I can register you for the webinar and put it on your calendar"):
-  // the general agent starts on it by the one dispatch door; anything that signs up or sends still waits for the owner's yes
-  const acceptOffer = async () => {
-    const id = selected;
-    if (!beginStart(id, "general")) return;
-    setErr(""); setStartFail(null);
-    try {
-      const { data } = await api.post(`/api/tasks/${id}/offer`, {});
-      const outcome = outcomeOf(data);
-      if (!stale(id)) setTerm(outcome.state === "started" || outcome.state === "existing" ? (data.session || null) : null);
-      await Promise.all([loadDetail(id), loadTasks()]);
-      onChanged?.();
-    } catch (e) {
-      if (!stale(id)) {
-        const msg = e?.response?.data?.detail || uiMessage("Could not start the agent - check that an AI is connected under Connections, then press it again.");
-        setErr(msg); setStartFail({ ...failOf(e), text: msg, again: acceptOffer });
+        const msg = e?.response?.data?.detail || "Could not start the agent - check that an AI is connected under Connections, then press it again.";
+        setErr(msg); setStartFail({ ...failOf(e), text: msg, again: () => startGeneralAgent(another) });
       }
     } finally { endStart(id); }
   };
@@ -2354,7 +2207,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       const child = step.tid || (await api.post(`/api/tasks/${id}/steps/${step.id}/start`)).data.taskId;
       // `via`: the press was made HERE, so a start that fails is left on the goal, where its line is read (server._pressed_on)
       // ...with what was said in the box: the owner's words are the step's ask, the step and the goal its material
-      const { data } = await api.post(`/api/tasks/${child}/dispatch`, { kind: "general", agent: run.agent || null, pick: run.pick || null, model: run.model || null, via: id,
+      const { data } = await api.post(`/api/tasks/${child}/dispatch`, { kind: "general", pick: run.pick || null, model: run.model || null, via: id,
         instruction: run.instruction.trim() || null, files: runPics.paths });
       if (!stale(id)) { askTaken(id); runPics.clear(); setRestartOpen(false); }
       const outcome = outcomeOf(data);
@@ -2365,6 +2218,30 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     } catch (e) {
       // ...with its ways past it as buttons on the error, as the task's own start has: the sentence stood alone (the matrix's verify, 2026-10-20)
       if (!stale(id)) { const msg = e?.response?.data?.detail || uiMessage("Could not start the agent on the next step"); setErr(msg); setStartFail({ ...failOf(e), text: msg, again: startGoalStep }); }
+    } finally { endStart(id); }
+  };
+  // An explicit choice of agent uses this handoff only when the conversation changes road.
+  const dispatchFromChat = async (text, files, kind) => {
+    const id = selected;
+    if (!beginStart(id, kind)) throw new Error(tr("Starting…"));
+    try {
+      let target = id;
+      if (t?.DoneWhen) {
+        const { data } = await api.get(`/api/tasks/${id}/steps`), step = (data.steps || []).find((s) => !s.done);
+        if (!step) throw new Error(tr("Every step is done - close the goal, or add a step."));
+        target = step.tid || (await api.post(`/api/tasks/${id}/steps/${step.id}/start`)).data.taskId;
+      }
+      const coding = kind === "coding", agent = coding ? codingAgent(agents, kinds) : null;
+      if (coding && startRepo) await api.put(`/api/tasks/${target}/repo`, { repo: startRepo, ...(agent ? { agent } : {}) });
+      const { data } = await api.post(`/api/tasks/${target}/dispatch`, { kind, agent,
+        brain: coding ? run.brain || null : null, pick: coding ? null : run.pick || null,
+        model: run.model || null, instruction: text || null, files, ...(target !== id ? { via: id } : {}) });
+      const outcome = outcomeOf(data);
+      if (outcome.state === "needs_repo" && !stale(id)) setRepoPick(true);
+      if (!["started", "existing", "queued"].includes(outcome.state)) throw new Error(outcome.text);
+      if (!stale(id)) { setTerm(data.session || null); askTaken(id); setChatRead((n) => n + 1); }
+      await Promise.all([loadDetail(id), loadTasks()]); onChanged?.();
+      if (target !== id) (onOpenTask || onSelect)?.(target);
     } finally { endStart(id); }
   };
   // CONTINUE SESSION is the rail's box here too (T14): one road (/continue-work) for a coding and a regular agent, and
@@ -2400,7 +2277,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     if (a && canvas && t) { window.dispatchEvent(new CustomEvent("tq-close-note", { detail: { task: t, ref: t.ref || `TQ-${String(t.TaskId).padStart(4, "0")}`, close: closeWithNote } })); return; }
     setNoteAtRaw(a);
   };
-  const noteable = !!t && !term?.alive && !["done", "dropped"].includes(String(t?.Status || ""));
   const continued = () => {
     const id = selected;
     if (!stale(id)) setResultOpen(true);
@@ -2419,9 +2295,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const runFix = failedRun ? detail?.agentStory?.fix || null : null;
   // HANDED TO ANOTHER AI at the task's head (SwitchAi): Continue's road with the AI picked (server._take_ai) - what works it stops, the press is
   // his line in the chat ("You handed this to Codex CLI (gpt-6.2)"), the new AI picks the conversation up and takes the task's later turns
-  const aiNow = term?.pick || (term?.alive && term?.cli ? `cli:${term.cli}` : "") || detail?.ranOn?.pick || "";
-  const aiChoices = switchChoices({ coding: ["coding", "cli"].includes(String(t?.Kind || "").toLowerCase()), codingOptions, generalBrains, brainModels,
-    current: aiNow, model: term?.model || detail?.ranOn?.model || "", read: agentsRead });
+  // ...and before any AI has worked it, the one that WILL (the server's willRun, the router's own answer): never a bare "AI" (the owner, 2026-11-23)
+  const ranAi = term?.pick || (term?.alive && term?.cli ? `cli:${term.cli}` : "") || detail?.ranOn?.pick || "", will = ranAi ? null : detail?.willRun || null;
+  const aiNow = ranAi || will?.pick || "";
+  const aiAsk = { coding: ["coding", "cli"].includes(String(t?.Kind || "").toLowerCase()), codingOptions, generalBrains, brainModels,
+    current: aiNow, model: term?.model || detail?.ranOn?.model || will?.model || "", read: agentsRead, named: will?.brain || detail?.ranOn?.brain || "" }, aiChoices = switchChoices(aiAsk);
   const switchAi = async (o) => {
     const id = selected;
     if (!beginStart(id, "switch")) return;
@@ -2458,7 +2336,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...and Continue picks the agent's conversation back up, so the Result unfolds to it (it rests on its summary otherwise) - once it is
   // SENT (continued), not at the press that opens the box: unfolding there swapped the summary for the full record under the new box, the
   // pane blanked while it loaded, and a "Back to the result" stood over the result it was already showing (the owner, 2026-10-30)
-  const continuePress = (e, a) => (failedRun ? (setResultOpen(true), tryAgain()) : setContinueAt(steady(a || e?.currentTarget)));
+  // ...and a failed run's Try again the same: unfolded at the press, its reason and button went and the conversation hidden under them came up
+  // before anything was sent - then again as the start landed (the owner, 2026-11-23: "the whole thing flickered"); continued() unfolds it once sent
+  const continuePress = (e, a) => (failedRun ? tryAgain() : setContinueAt(steady(a || e?.currentTarget)));
   // THE NEW STEP'S BOX - Send to agent's / Run another agent's start, or Continue's - drawn once, placed by the layout (first in the desk's pane)
   // ...a function: the start box it holds (nextRunForm) is built further down
   const newStep = () => (<>
@@ -2564,14 +2444,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // reads a task, and nothing is asked beside the read the page already makes
   const rec = notDone && detail?.task?.TaskId === selected ? detail?.recommended || null : null;
   const filled = (verb) => liveVerb(rec?.verb) === verb;
-  // THE TASKS TAB'S BAR IS ONE LINE (2026-10-23, foldBar.js): Change folds first, then Split or merge, Hand off with its rule, Not a task;
-  // Mark done and Remind me never fold, nor the button that is filled
-  const bar = useFoldBar(BAR_FOLD_BUT[{ remove: "nat", forward: "hand", split: "reshape", watch: "watch" }[liveVerb(rec?.verb)] || ""],
-    `${t?.TaskId}|${notDone}|${finishing}|${t?.RemindAt || ""}|${watching}`);
-  const [barAt, setBarAt] = useState(null);
   // THE CALENDAR'S ANSWERS (calwrite.py, server task_detail's `calendar`): an invite waiting on the owner is answered from the row -
-  // Accept, Decline, Propose a new time - and a thread asking for a time offers Find a time. Each DRAFTS into the chat for the
-  // owner's Send; a card that may not write says so on the error line with its sign-in as the way out (failures.py's fix).
+  // Accept, Decline, Propose a new time - and a thread asking for a time offers Find a time. Accept and Decline tell the calendar at
+  // the press, and the answer's card says what went (or what failed, with the way past it); the others DRAFT into the chat for the
+  // owner's Send. A card that may not write says so on the error line with its sign-in as the way out (failures.py's fix).
   const calAsk = notDone && !liveSession ? detail?.calendar || null : null;
   const [slotAt, setSlotAt] = useState(null);           // { act, at } - Propose a new time / Find a time's free times
   const calAnswer = async (act, slot = null) => {
@@ -2579,9 +2455,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     setErr(""); setStartFail(null);
     try {
       const { data } = await api.post(`/api/messages/${calAsk.mid}/calendar`, { act, ...(slot || {}) });
-      if (!data?.ok) { setErr(data?.say || uiMessage("That could not be drafted.")); setStartFail({ text: data?.say || "", fix: data?.fix || null, retry: false }); return; }
-      setOpenStage("reply"); loadDetail(selected); onChanged?.();
-    } catch (e) { setErr(e?.response?.data?.detail || e?.message || uiMessage("That could not be drafted.")); }
+      if (!data?.ok) { setErr(data?.say || "That could not be drafted."); setStartFail({ text: data?.say || "", fix: data?.fix || null, retry: false }); return; }
+      if (!data.sent) setOpenStage("reply");
+      loadDetail(selected); onChanged?.();
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || "That could not be drafted."); }
   };
   // A LATE ANSWER NO AGENT WAS WOKEN FOR IS CHASED FROM THE ROW (the owner, 2026-11-10: "job of agent is to be helpful and do as much as
   // possible"): the task's recommended move lights Chase (rulebook.LATE) - a move its row draws only when it is the lit one. It drafts the
@@ -2594,15 +2471,12 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     setChasing(false);
   };
   // ...and once a calendar card waits in the chat its press and its other answers are ON it: the bar holds them only while none does
+  // ...and while an agent works the task they stand greyed, not gone (taskMoves: one toolbar in every state) - it is answering for him
   const calCard = !!pendingReview && deliveryMeta(pendingReview).kind === "calendar";
-  const calVerbs = !calAsk || calCard ? [] : calAsk.invite ? [
-    { id: "accept_invite", group: "decide", tone: "s", label: btn("accept_invite"), run: () => calAnswer("accept"), title: btnHint("accept_invite") },
-    { id: "decline_invite", group: "decide", tone: "s", label: btn("decline_invite"), run: () => calAnswer("decline"), title: btnHint("decline_invite") },
-    { id: "propose_time", group: "decide", tone: "s", label: btn("propose_time"), run: (e, a) => setSlotAt({ act: "propose", at: steady(a || e?.currentTarget) || document.body }), title: btnHint("propose_time") },
-  ] : [{ id: "find_time", group: "decide", tone: "s", label: btn("find_time"), run: (e, a) => setSlotAt({ act: "schedule", at: steady(a || e?.currentTarget) || document.body }), title: btnHint("find_time") }];
-  // the task's own controls ride in the header strip only while a session hides the task card - and never on the canvas,
-  // whose row holds them
-  const headControls = sessionView && !inRow && notDone;
+  const calOn = notDone && !calCard ? detail?.calendar || null : null, calOff = liveSession ? { disabled: true, why: "an agent is working on it" } : {};
+  const calVerbs = calMoves(calOn, { accept: () => calAnswer("accept"), decline: () => calAnswer("decline"),
+    propose: (e, a) => setSlotAt({ act: "propose", at: steady(a || e?.currentTarget) || document.body }),
+    find: (e, a) => setSlotAt({ act: "schedule", at: steady(a || e?.currentTarget) || document.body }) }, { label: btn, hint: btnHint }, calOff);
   // THE STATUS IN THE HEADER IS THE RAIL'S (the redesign, owner-approved 2026-10-21): the same mark and word the rail row wears for this
   // task - the live session's own word first, then the rail's row (on the canvas), then the server's state (railStatus.taskStatus)
   // ...and the rail's agent lane only while no newer read of this task takes it back: a rail built while the agent worked said "agent
@@ -2624,23 +2498,27 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // so a general task could never be handed to the coding agent from here. It opens the agent step; a live session is paused
   // (its handover kept for the next) when the new one starts (startCodingAgent).
   // THE AGENT BOX, OPENED: the agent step, its box open in it and brought into view - one box at a time on the canvas (tq-next-run)
-  const openBox = () => { if (canvas) window.dispatchEvent(new CustomEvent("tq-next-run")); setOpenStage(solo ? "from" : "agent"); setRestartOpen(true); setBoxAt((n) => n + 1); };
+  const openBox = () => {
+    if (canvas) window.dispatchEvent(new CustomEvent("tq-next-run"));
+    if (home && solo) setToAgent(selected);
+    setOpenStage("agent"); setRestartOpen(true); setBoxAt((n) => n + 1);
+  };
   const chatHandoff = home && restartOpen ? { id: boxAt, kind: t?.DoneWhen || handOff || !canCode ? "general" : "coding",
-    send: dispatchFromChat, cancel: () => setRestartOpen(false) } : null;
+    send: dispatchFromChat, separate: !!t?.DoneWhen, cancel: () => setRestartOpen(false) } : null;
   const runAnother = { id: "run-another", group: "agent", label: labelOfRow("run-another"), disabled: !!noAiWhy, why: noAiWhy,
     run: openBox, title: hintOfRow("run-another") };
-  const changeVerbs = !notDone ? [] : [
-    { id: "kind", group: "more", label: labelOfRow("kind"), run: (e, a) => setPick({ what: "kind", at: steady(a || e?.currentTarget) }), title: hintOfRow("kind") },
-    { id: "priority", group: "more", label: labelOfRow("priority"), run: (e, a) => setPick({ what: "priority", at: steady(a || e?.currentTarget) }), title: hintOfRow("priority") },
-    // a repository is a coding tool's question: with none connected there is nothing to pick one for (B3)
-    // ...and a start HELD for it is the row's own move, not a More item: "It needs a repository" sat over a row with nothing to press
-    ...(heldRepo || (!isGeneral && canCode) ? [{ id: "repo", group: heldRepo ? "decide" : "more", tone: heldRepo ? "p" : undefined, label: btn("pick_repo", repoOf(t) ? "set" : null), run: pickRepo,
-      title: heldRepo ? heldWhy : btnHint("pick_repo") }] : []),
-  ];
-  const rowVerbs = !t ? [] : !notDone || reopening === selected
-    ? [{ id: "reopen", group: "decide", tone: "s", label: reopening === selected ? tr("Reopening…") : labelOfRow("reopen"), run: reopen,
-      disabled: reopening === selected, why: tr("it is reopening"), title: hintOfRow("reopen") }]
-    : [
+  // THE TASK'S OWN MOVES ARE ONE TOOLBAR (taskMoves.js, the owner 2026-11-23): the same buttons in every state - held, at work, closed - greyed
+  // with why where they do not apply now; only the stage moves below come and go with what they act on
+  const closedNow = !notDone || reopening === selected;
+  const ownMoves = !t ? [] : taskMoves({ made: made?.moves, closed: closedNow, closedWith: reopening !== selected ? closedResult(selected, closedNow) : "", live: liveSession, reopening: reopening === selected, finishing, waitingDraft: !!pendingReview,
+    watching, invite: !!calOn?.invite, own: madeByHim(t), away: remindWaiting(t) ? `Back ${remindDay(t.RemindAt)}` : "", manual, repo: { held: heldRepo, can: !isGeneral && canCode },
+    // ...held for a sender he has not trusted: its Trust is the row's lit move, wherever the chat that says why is folded (detail.origin.held)
+    trust: detail?.origin?.held ? { label: detail.origin.trust?.person || "Trust them", busy: trusting === "person", hint: HELD_TRUST_HINT } : null },
+  { trust: () => trustPress(""), reopen, done: askFinish, note: (e, a) => setNoteAt(steady(a || e?.currentTarget)), nat: notATask, remind: (e, a) => remindHere(steady(a || e?.currentTarget)), watch: watchIt,
+    hand: () => setHandoff(true), reshape: () => setReshape(true), kind: (e, a) => setPick({ what: "kind", at: steady(a || e?.currentTarget) }),
+    priority: (e, a) => setPick({ what: "priority", at: steady(a || e?.currentTarget) }), repo: pickRepo },
+  { label: labelOfRow, hint: hintOfRow, doneHint: markDoneHint, natTitle: NAT_TITLE, repo: btn("pick_repo", repoOf(t) ? "set" : null), repoHint: heldRepo ? heldWhy : btnHint("pick_repo") });
+  const rowVerbs = !t ? [] : closedNow || made ? ownMoves : [
       ...calVerbs,
       ...(rec?.verb === "chase" && !liveSession ? [{ id: "chase", group: "decide", label: chasing ? "Drafting…" : rec.label || btn("chase"), disabled: chasing,
         run: chase, title: btnHint("chase") }] : []),
@@ -2650,20 +2528,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       ...(manual && replyMessage && !liveSession && !calAsk?.invite && (stage !== "reply" || !pendingReview) ? [{ id: "reply", group: "more", label: openingReply ? tr("Drafting…") : replyPrimary,
         spine: openingReply ? tr("Drafting…") : !pendingReview && !sentReview ? btn("reply", "none") : undefined,
         disabled: !!openingReply, run: () => (pendingReview ? setOpenStage("reply") : openReply(true)), title: hintOfRow("reply") }] : []),
-      // done off the app - a call - closes with what came of it: the card opens in the conversation, under the item. It is Mark
-      // done with words, so it registers with Mark done and the row stands it beside that (actionRow.rowOf)
       // REVIEW CHANGES STAYS AFTER THE SESSION IS GONE (the owner, 2026-11-10: "yes, keep it"): lit on work left to review (rulebook
       // changes_waiting), it opens the task's own landing card's diff - one road to the diff (LandingCard LANDING_DIFF); the checkout's
       // drawer only where no card stands to take it
       ...(!liveSession && filled("review_changes") ? [{ id: "diff", group: "agent", label: labelOfRow("diff"), title: hintOfRow("diff"), run: () => {
         const ask = { taskId: t.TaskId, handled: false }; window.dispatchEvent(new CustomEvent(LANDING_DIFF, { detail: ask })); if (!ask.handled) setDiffOpen(true); } }] : []),
-      ...(noteable && !liveSession ? [{ id: "close-note", group: "more", label: labelOfRow("close-note"), run: (e, a) => setNoteAt(steady(a || e?.currentTarget)),
-        title: hintOfRow("close-note") }] : []),
       ...(liveSession ? [
         // NO STOP AND SAVE (the owner, 2026-11-10: "no need for stop and save button"): the x on the running turn is the one stop, and
         // typing carries the work on
         ...(liveCodingSession ? [{ id: "diff", group: "agent", label: labelOfRow("diff"), run: () => setDiffOpen(true), title: hintOfRow("diff") }] : []),
-        ...(notDone && !chatPane ? [runAnother] : []),
+        ...(!chatPane ? [runAnother] : []),
       ] : continueHere ? [
         // ...not a second Connect an AI on the canvas (the owner, 2026-10-26: "why would we need connect an ai? if you don't get through ai
         // setup the whole thing doesn't work"): the Result's line says why and points at Connections
@@ -2687,36 +2561,22 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       // it OPENS the step where the agent and its instructions are chosen - nothing starts until that step's own button
       : startHere ? [{ id: "start-agent", group: "agent", lead: !pendingReview, label: ranBefore ? labelOfRow("run-another") : labelOfRow("start-agent"),
         run: openBox, title: ranBefore ? hintOfRow("run-another") : hintOfRow("start-agent") }] : []),
-      // MESSAGE SOMEONE - email or chat - whoever started the task (the owner, 2026-10-09) - is Share's "Email a summary" now (the owner,
-      // 2026-10-23: one Share button); never where nothing can be sent from here (the owner, 2026-10-22) - useShare below
-      // NO ASK SENDER (the owner, 2026-10-27: "remove the Ask sender button"): a question for the sender is a reply - Reply asks it. An agent
-      // or the Assistant may still park one (task.clarify), and it waits in Review for its Send like any draft
-      { id: "done", group: "more", label: finishing ? tr("Marking done…") : labelOfRow("done"), disabled: finishing, run: askFinish, title: markDoneHint, promote: !liveSession && !pendingReview, beside: liveSession, onCard: !!pendingReview && !liveSession },   // a live session has no primary;
-      // ...nor a waiting draft: its Send, under the draft, is the move (2026-10-06), so Mark done stands outlined beside Next -
-      // and so do Start an agent and Next (`onCard`): a second filled button on the bar pulled the eye off the draft
-      // ONE VERB FOR IT, button and dialog (U13): "Dismiss" on the bar deleted the task behind a dialog that said Delete
-      { id: "nat", group: "more", label: labelOfRow("nat"), run: notATask, title: tr(NAT_TITLE) },
-      { id: "remind", group: "more", label: remindWaiting(t) ? tr("Back {day}", { day: remindDay(t.RemindAt) }) : labelOfRow("remind"), run: (e, a) => remindHere(steady(a || e?.currentTarget)),
-        title: hintOfRow("remind") },
-      { id: "watch", group: "more", label: labelOfRow("watch", watching ? "on" : null), run: watchIt, title: hintOfRow("watch", watching ? "on" : null) },
-      ...(manual ? [{ id: "hand", group: "more", label: labelOfRow("hand"), run: () => setHandoff(true), title: hintOfRow("hand"), tucked: true }] : []),
-      { id: "reshape", group: "more", label: labelOfRow("reshape"), run: () => setReshape(true), title: hintOfRow("reshape") },
+      ...ownMoves,
       // ...whenever an agent has worked it and the bar's lead is not already the agent step (a paused general session had neither)
       // ...never on a chat task (the owner, 2026-11-05: "we can remove those 2 buttons like continue agent or start new agent. Just type and it
       // continues") - nor its stronger-model twin
-      ...(!chatPane && !liveSession && notDone && (ranBefore || generalStarted) && !startHere ? [runAnother] : []),
-      ...(!chatPane && !liveSession && notDone && detail?.strongAgain && (failedRun || ((ranBefore || generalStarted) && detail?.judged?.sure === false))
-        ? [{ id: "strong-again", group: "more", label: strongGoing ? tr("Starting…") : labelOfRow("strong-again"), disabled: strongGoing || !!startingAgent,
-          run: strongAgain, title: tr("{hint} - on {brain}, {model}", { hint: hintOfRow("strong-again"), brain: detail.strongAgain.brain, model: detail.strongAgain.model }) }] : []),
-      // WHAT THE PILLS USED TO CHANGE, on the row now that the pills only read (section 1's redesign, 2026-10-16): the same PATCHes
-      // and the same repository picker, each a menu at the row's button
-      ...changeVerbs,
+      ...(!chatPane && !liveSession && (ranBefore || generalStarted) && !startHere ? [runAnother] : []),
+      ...(!chatPane && !liveSession && detail?.strongAgain && (failedRun || ((ranBefore || generalStarted) && detail?.judged?.sure === false))
+        ? [{ id: "strong-again", group: "more", label: strongGoing ? "Starting…" : labelOfRow("strong-again"), disabled: strongGoing || !!startingAgent,
+          run: strongAgain, title: `${hintOfRow("strong-again")} - on ${detail.strongAgain.brain}, ${detail.strongAgain.model}` }] : []),
     ];
+  // ...off the canvas the same row's presses run here, on these verbs (TaskButtons `act`), and say what they did on their button (pressedOn)
+  const actHere = (id, e, a) => { const v = rowVerbs.find((x) => x.id === id); if (!v || v.disabled) return undefined; pressedOn(id); return v.run?.(e, a); };
   // ...and where the task lays its panes, their STAGE MOVES leave the bar for them (actionRow.splitRow): the verbs say which pane is open
   // and whether an agent is live, whose bar is Stop and save alone
   // ...a chat task's strip is never a live agent's: its moves are the task's own row (TaskButtons), working or not
   const laid = twoUp && active && !!t ? { open: section } : null;
-  useVerbs("task", laid ? rowVerbs.map((v) => ({ ...v, laid })) : rowVerbs, inRow && !!t, detail?.ref || "");
+  useVerbs("task", laid ? rowVerbs.map((v) => ({ ...v, laid })) : rowVerbs, inRow && !!t, made ? made.navRef || "" : detail?.ref || "");
   // A PRESS OPENS THE SECTION IT BELONGS TO (the owner, 2026-10-27: "when you hit a button on the bottom that relates to a group, the correct
   // section opens"): the reply's, the draft's, the close's and the agent's presses open the chat - never a closed section for the thing
   // pressed. Heard before it runs (actionRow.onPressing), the row's presses and a card's own alike
@@ -2734,9 +2594,13 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // (sharing.py) - and "Email a summary", the AI's message about the work (EmailSomeone), wherever something can be sent from here.
   // A draft either way lands in this task's chat, its Send under it
   const hasResult = resultShown || codeRun, canSummary = !liveSession && !cantSend && notDone;
-  const { badge: shareBadge, menu: shareMenu } = useShareParts(`task:${t?.TaskId}`, { kind: fromWorkflow ? "workflow" : "agent", title: t?.Title || "", task: t?.TaskId },
-    inRow && !!t && !liveSession && (hasResult || canSummary), {
-      noResult: hasResult ? "" : tr("there is no result to share yet - an agent's Result or a routine run is what goes"),
+  // ...an item Taskuary made shares ITS result (madeTask `share`: a report off its message, a dashboard's frozen rows), by the same road
+  const { badge: shareBadge, menu: shareMenu } = useShareParts(made ? made.share?.owner || `made:${selected}` : `task:${t?.TaskId}`,
+    made ? made.share?.result || {} : { kind: fromWorkflow ? "workflow" : "agent", title: t?.Title || "", task: t?.TaskId },
+    inRow && !!t && (!made || !!made.share?.on), made ? made.share?.opts || {} : {
+      // ...ON EVERY TASK, greyed with why where nothing can go now (taskMoves: one toolbar in every state)
+      offWhy: liveSession ? "an agent is still working" : !(hasResult || canSummary) ? "there is nothing to share from here yet" : "",
+      noResult: hasResult ? "" : "there is no result to share yet - an agent's Result or a routine run is what goes",
       summary: canSummary ? () => setEmailOpen(true) : null,
       summaryWhy: liveSession ? tr("an agent is still working") : !notDone ? tr("the task is closed - reopen it first") : tr("nothing can be sent from here"),
       // ...a closed task's result is drafted on a task of its own (sharing.email): that one opens instead
@@ -2758,18 +2622,15 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const nextRunForm = (
                     <RunForm title={report || detail?.transcript || term?.alive || generalStarted ? labelOfRow("run-another") : labelOfRow("start-agent")}
                       value={run.instruction} onValue={runText} pics={runPics} autoFocus={restartOpen}
-                      placeholder={tr(ASK_WHAT)}
-                      note={goalRun ? tr("It starts on the goal's next step, with what you write here.") : tr("It gets the task, its messages and files, and what was saved last time.")}
-                      /* coding asks ONE question (which CLI); a hand-off asks three - which profile, which brain, which model - and all
-                         three reach the session. */
-                      picker={<AgentPicker agents={agents} models={models} kinds={kinds} coding={!generalOnly}
-                          agent={run.agent} model={run.model}
+                      placeholder={ASK_WHAT}
+                      note={goalRun ? "It starts on the goal's next step, with what you write here." : "It gets the task, its messages and files, and what was saved last time."}
+                      /* coding asks ONE question (which CLI); a hand-off asks two - which brain, which model - and both reach the session. */
+                      picker={<AgentPicker models={models} coding={!generalOnly} model={run.model}
                           brains={brainList} brainModels={brainModels} brain={run.brain || ""}
-                          generalBrains={generalBrains} brainsRead={agentsRead} codingReady={codingReady} pick={run.pick || ""} has={ownProfile}
+                          generalBrains={generalBrains} brainsRead={agentsRead} codingReady={codingReady} pick={run.pick || ""}
                           browser={String(t?.Tags || "").split(/[\s,]+/).includes(BROWSER_TAG)}
                           onPick={(p) => setRun((r) => ({ ...r, pick: p }))}
                           onBrain={(b) => setRun((r) => ({ ...r, brain: b, model: "" }))}
-                          onAgent={(a) => setRun((r) => ({ ...r, agent: a }))}
                           onModel={(m) => setRun((r) => ({ ...r, model: m }))} size={28} />}
                       actions={<>
                         {!generalOnly && <span title={runWhy(true) || undefined}><Button size="small" variant="contained" disableElevation
@@ -2781,7 +2642,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         {/* NO REPOSITORY CHOSEN IS NO HOLD (the owner, 2026-11-06): the agent picks it once it starts (use_repo) - the
                             RepoSelect below still pins one first when the owner chooses */}
                         {/* it SWITCHES the row rather than dispatching on the spot: the pickers above
-                            become the profile, brain and model, and the next press starts it */}
+                            become the brain and model, and the next press starts it */}
                         {!generalOnly && <Button size="small" variant="outlined" disabled={!!startingAgent}
                           startIcon={<TaskuaryMark size={13} />}
                           onClick={() => { setHandOff(true); setRun((r) => ({ ...r, agent: "", pick: "", model: "" })); }}>{choice("agent", "regular_agent")}</Button>}
@@ -2794,7 +2655,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         {/* ...and the coding agent is one press away from a hand-off, never chosen for the owner */}
                         {handOff && canCode && !goalRun && <Button size="small" variant="outlined" disabled={!!startingAgent}
                           startIcon={<TerminalIcon sx={{ fontSize: 14 }} />}
-                          onClick={() => { setHandOff(false); setRun((r) => ({ ...r, agent: codingProfile(agents, kinds), pick: "", model: "" })); }}>{choice("agent", "coding_agent")}</Button>}
+                          onClick={() => { setHandOff(false); setRun((r) => ({ ...r, agent: codingAgent(agents, kinds), pick: "", model: "" })); }}>{choice("agent", "coding_agent")}</Button>}
                         {(restartOpen || report || detail?.transcript) && <Button size="small" variant="text"
                           onClick={() => setRestartOpen(false)}>{tr("Cancel")}</Button>}
                       </>}>
@@ -2872,25 +2733,30 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // button"): the held steps it approved, and every reply that went - drawn by the chat in the turn that set it up (GeneralWorkspace turnCards)
   const liveAsks = askCards.filter((g) => g.reviews.some((r) => r.Status === "pending")).length;
   const asksBelow = !!(pendingReview || owesEmails || (handInPane && handoff) || calAsk?.invite);
-  // ...AND SO DOES EACH CARD THAT STILL WAITS (the spine audit, 2026-11-09): a held step, a browser act, a drafted playbook rode one block under
+  // ...AND SO DOES EACH CARD THAT STILL WAITS (the spine audit, 2026-11-09): a held step, a browser act, a drafted skill rode one block under
   // whichever turn was newest, and the last two stood again at the chat's foot with a second Approve. Each is drawn once, in the turn that
   // raised it (`rid`: the chat's payload names that turn). A to-do no agent has touched has no turns: its cards stay over its box (chatBody)
   const inTurns = !solo && !["done", "dropped"].includes(t?.Status), decided = () => { loadDetail(selected); loadTasks(); onChanged?.(); };
   // ...AND A DRAFT THE AGENT REPLACED stays a dimmed record where it stood (the owner, 2026-11-10: "it should go gray and then it should generate
   // new email action box under it"): by its time, as it stood while it waited (agentSummary.draftHome), the new card in the turn that wrote it
-  const sentBox = sentStands(sentHere, allReviews, inTurns);
+  const sentBox = sentStands(sentHere, inTurns);
   const letters = new Set(letterItems(detail?.checklist, allReviews).map((x) => x.rv.ReviewId));
   const replacedCards = allReviews.filter(isReplaced).map((r) => ({ key: `replaced:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, byRow: true, record: true,
     node: <ReviewDecision review={r} past /> }));
+  // ...AND EVERY OTHER REPLY THAT DID NOT GO, the same: greyed in the turn that wrote it (walk 6, 2026-11-23: a second block drew the newest one
+  // after the chat, under everything, with a live "Bring it back to send" - over a letter whose words had already gone out as an email)
+  const unsentCards = allReviews.filter((r) => isUnsentReply(r) && !isPassed(r) && !isReplaced(r)).map((r) => ({ key: `unsent:${r.ReviewId}`,
+    at: r.CreatedAt || "", rid: r.ReviewId, byRow: true, record: true, node: <ReviewDecision review={r} past /> }));
   // ...AND THE REPLY THAT WAITS IS A CARD OF ITS TURN like every other (the one log, stage 8: the log places it - chatlog.advance - and the
   // page's own placing of it, under a turn it guessed or loose at the foot, is gone): drawn where its row stands, by its review
+  // ...its Send and close only where nothing else holds the close (card.may_close: another card, or the check-back its agent set - walk 16)
   const replyNode = inTurns && pendingReview && replyCardShown(pendingReview) ? [{ key: `reply:${pendingReview.ReviewId}`, at: pendingReview.CreatedAt || "",
     rid: pendingReview.ReviewId, waits: true, node: <Box data-tq-review={pendingReview.ReviewId}><ReviewDecision review={pendingReview} closeout={closeoutRv}
-      toRow={inRow} onMarkDone={askFinish} onSent={sent} closeOnSend onRemind={(e, a) => remindHere(steady(a || e?.currentTarget))}
-      onEmailInstead={() => setEmailOpen(true)} why={rec?.state === "draft_ready" ? rec.why || "" : ""}
+      went={sentHere?.id === pendingReview.ReviewId ? sentHere : null} toRow={inRow} onMarkDone={askFinish} onSent={sent} closeOnSend={!detail?.queue?.closes} onRemind={(e, a) => remindHere(steady(a || e?.currentTarget))}
+      why={rec?.state === "draft_ready" ? rec.why || "" : ""}
       onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} /></Box> }] : [];
-  const turnCards = [...replyNode, ...passedCards, ...batches.map((rs) => ({ key: `batch:${rs[0].Batch}`, at: rs[0].CreatedAt || "", rid: rs[0].ReviewId, waits: true,
-      node: <BulkCard rows={rs} tid={t?.TaskId} onChanged={decided} /> })), ...replacedCards, ...pressedCards.map((g) => ({ key: g.key, at: g.at, rid: g.reviews[0].ReviewId,
+  const turnCards = [...replyNode, ...passedCards, ...batches.map((rs) => ({ key: `batch:${rs[0].Batch}`, at: rs[0].CreatedAt || "", rid: rs[0].ReviewId, waits: true, steps: true,
+      node: <BulkReview rows={rs} tid={t?.TaskId} onChanged={decided} /> })), ...replacedCards, ...unsentCards, ...pressedCards.map((g) => ({ key: g.key, at: g.at, rid: g.reviews[0].ReviewId,
       node: g.held ? <HeldSteps reviews={g.reviews} onChanged={decided} /> : <PassedCard reviews={g.reviews} /> })),
     ...(inTurns ? askCards : []).map((g) => ({ key: g.key, at: g.reviews[0].CreatedAt || "", rid: g.reviews[0].ReviewId, waits: true, also: asksBelow, note: g.held ? "" : askNote(g.reviews[0]),
       node: g.held ? <HeldSteps reviews={g.reviews} toRow={inRow && !pendingReview && liveAsks === 1} onChanged={decided} />
@@ -2903,7 +2769,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         node: <Letter taskId={t?.TaskId} item={letterOf[r.ReviewId] || null} rv={r} onChanged={decided} /> })),
     // ...and the reply just pressed here says what the press did to the task beside it (`closing`, `kept`), as it did where its draft stood
     ...allReviews.filter((r) => r.Kind !== "action" && r.Kind !== "slot" && WENT.includes(r.Status) && r.ReviewId !== sentBox?.id)
-      .map((r) => ({ key: `sent:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, node: <SentCard {...sentCardOf(r)}
+      .map((r) => ({ key: `sent:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, node: <SentReview {...sentCardOf(r)}
         {...(sentHere?.id === r.ReviewId ? { closing: sentHere.closing, kept: sentHere.kept } : {})} /> }))];
   // ...the reply that went is that card in its turn, so the chat's cards say it no second time - no "What was sent", no To over it
   const sentCarded = !!sentReview && turnCards.some((c) => c.key === `sent:${sentReview.ReviewId}`);
@@ -2970,8 +2836,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
               queue mounts, so two surfaces cannot say different things about one draft. */}
           {pendingReview ? (<>
             <Box data-tq-review={pendingReview.ReviewId}>
-            <ReviewDecision review={pendingReview} closeout={closeoutRv} toRow={inRow} onMarkDone={askFinish} onSent={sent} closeOnSend onRemind={(e, a) => remindHere(steady(a || e?.currentTarget))}
-              onEmailInstead={() => setEmailOpen(true)} why={rec?.state === "draft_ready" ? rec.why || "" : ""}
+            <ReviewDecision review={pendingReview} closeout={closeoutRv} toRow={inRow} onMarkDone={askFinish} onSent={sent} closeOnSend={!detail?.queue?.closes} onRemind={(e, a) => remindHere(steady(a || e?.currentTarget))}
+              why={rec?.state === "draft_ready" ? rec.why || "" : ""}
               onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} /></Box>   {/* the list's row moves too (T19) */}
           </>) : (
             <>
@@ -3004,7 +2870,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   once the item has ended, where it named a sender nothing is going to
                   ...and beside an email the task owes it is the REPLY's To, said so (the owner, 2026-11-02): under the owed
                   address it read as that email's To. The email wears its own (SlotList) */}
-              {(replyMessage || sentReview) && (!ended || sentReview || unsentReview) && !(sentCarded && !pendingReview) && chatReplyShown({ replyMessage, pendingReview, sentReview, unsentReview }) && (
+              {(replyMessage || sentReview) && (!ended || sentReview) && !(sentCarded && !pendingReview) && chatReplyShown({ replyMessage, pendingReview, sentReview }) && (
               <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.8, mt: 1.1, minWidth: 0 }}>
                 <Typography sx={{ ...label, flexShrink: 0 }} data-tq-reply-to="">{owesEmails ? tr("Reply to") : tr("To")}</Typography>
                 <Typography variant="body2" noWrap sx={{ color: INK, fontWeight: 600 }}>
@@ -3066,25 +2932,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                     {sentReview.FinalText || sentReview.DraftText}</Typography>
                 </Box>
               )}
-              {/* the draft closed without sending stays readable here, the task done or not */}
-              {unsentReview && (
-                <Box sx={{ bgcolor: PANEL2, border: `1px dashed ${BORDER}`, borderRadius: 1.25,
-                  px: 1.1, py: 0.85, mt: 0.9 }}>
-                  {/* ...why, as the chat says it (proposals.passed_why, 2026-11-17): a draft the chat moved past was never "closed" */}
-                  <Typography sx={{ ...label, display: "block" }}>{unsentReview.Why || tr("Not sent - closed without sending")}</Typography>
-                  <Typography variant="body2" sx={{ color: DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                    {unsentReview.DraftText}</Typography>
-                  {/* ...and it can still go: the draft comes back to send, the task done or not (T11) */}
-                  {hasCorrespondent(replyMessage) && (
-                    <Button size="small" sx={{ mt: 0.75, fontSize: 11 }} onClick={() => {
-                      const id = selected;
-                      api.post(`/api/reviews/${unsentReview.ReviewId}/reopen`)
-                        .then(() => { if (!stale(id)) { loadDetail(id); setOpenStage("reply"); } })
-                        .catch((e) => { if (!stale(id)) setErr(e?.response?.data?.detail || uiMessage("Could not bring the draft back")); });
-                    }}>{tr("Bring it back to send")}</Button>
-                  )}
-                </Box>
-              )}
             </>
           )}
           {/* A PROPOSAL IS THE SAME KIND OF ASK, so it shares this section rather than
@@ -3114,8 +2961,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const waits = !!(chatReview || proposals.length - (inTurns ? asks.length : 0) || (owesEmails && !inTurns) || handoff);
   // ...ONLY WHAT CAN STILL BE DONE (the owner, 2026-11-05: "it's a chat nothing else"): a draft waiting on Send, an invite to answer, emails owed -
   // never a closed task's "Mark done 11m ago", a reply sent outside or a draft closed without sending; the chat says those
-  const chatCards = sentBox ? <SentCard {...sentBox} /> : !["done", "dropped"].includes(t?.Status) && (waits || (!inTurns && kept.length) || upFailed
-    || chatReplyShown({ replyMessage, pendingReview: chatReview, sentReview: null, unsentReview: null }) || calAsk?.invite) ? <Box ref={cardsRef} data-tq-chat-cards="" data-tq-waits={waits ? "" : undefined}
+  const chatCards = sentBox ? <SentReview {...sentBox} /> : !["done", "dropped"].includes(t?.Status) && (waits || (!inTurns && kept.length) || upFailed
+    || chatReplyShown({ replyMessage, pendingReview: chatReview, sentReview: null }) || calAsk?.invite) ? <Box ref={cardsRef} data-tq-chat-cards="" data-tq-waits={waits ? "" : undefined}
       sx={{ minWidth: 0, "& textarea": { fontSize: "13.5px !important", lineHeight: "1.5 !important", color: INK } }}>{chatBody()}</Box> : null;
   return (
     <>
@@ -3158,56 +3005,31 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                 {/* ...only while there ARE controls to wrap. On the assistant's canvas there are none up here, and the strip still
                     wrapped: Expand and the X took a row of their own under a cut title (the 2026-10-07 design pass) */}
                 <Box sx={{ display: "flex", gap: 0.9, rowGap: 0.5, alignItems: "center",
-                  flexWrap: headControls ? { xs: "wrap", sm: "nowrap" } : "nowrap" }}>
+                  flexWrap: "nowrap" }}>
                   <Typography sx={{ color: "var(--tq-link, #41525f)", fontVariantNumeric: "tabular-nums", flexShrink: 0,
                     letterSpacing: ".015em", fontWeight: 600, fontSize: 11.5 }}>{detail.ref}</Typography>
                   {/* NO CHIPS BESIDE THE TITLE (the redesign, owner-approved 2026-10-21): what triage made of it is the last line of From,
                       and the state is the one pill at the right - the title has the row */}
                   <Typography title={(askText || "").length > t.Title.length ? askText : t.Title} sx={{ color: INK, flex: 1, fontWeight: 600,
                     fontSize: liveSession ? 12.5 : 14,
-                    minWidth: headControls ? { xs: 90, sm: 180 } : 0,
-                    flexBasis: headControls ? { xs: "calc(100% - 90px)", sm: "auto" } : "auto",
+                    minWidth: 0, flexBasis: "auto",
                     letterSpacing: "-.005em" }} noWrap>
                     {t.Title}
                   </Typography>
-                  {/* A LIVE SESSION HIDES THE TASK CARD ENTIRELY (the gate is !term?.alive below), so
-                      with the card goes every task control - and the owner wants the session to keep
-                      the space (2026-09-16: "if agent in progress we want it small to give the most
-                      space to the agent canvas"). The four controls ride up here instead: the same
-                      four, in the same order, labels dropped to icons after the first. */}
-                  {headControls && (
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-                      <Button size="small" variant="contained" disableElevation startIcon={finishing ? <CircularProgress size={11} color="inherit" /> : <DoneAllIcon sx={{ fontSize: 13 }} />}
-                        sx={{ fontSize: 10.5, minHeight: 24, py: 0, px: 1 }}
-                        title={markDoneHint}
-                        disabled={finishing} onClick={askFinish}>{finishing ? tr("Marking done…") : labelOfRow("done")}</Button>
-                      <Tooltip title={`${labelOfRow("nat")}. ${tr(NAT_TITLE)}`}>
-                        <IconButton size="small" sx={{ color: "var(--tq-danger, #7a2f3c)" }} onClick={notATask}>
-                          <BlockIcon sx={{ fontSize: 15 }} /></IconButton>
-                      </Tooltip>
-                      <RemindMe task={t} compact onDone={reminded} act={remindAct} onLeave={onLeave} onStay={onStay} />
-                      <Tooltip title={`${labelOfRow("watch", watching ? "on" : null)} - ${hintOfRow("watch", watching ? "on" : null)}`}>
-                        <IconButton size="small" sx={{ color: "var(--tq-link, #55697a)" }} onClick={watchIt} data-tq-verb="watch">
-                          <VisibilityOutlinedIcon sx={{ fontSize: 15 }} /></IconButton>
-                      </Tooltip>
-                      <Tooltip title={`${labelOfRow("hand")} - ${hintOfRow("hand")}`}>
-                        <IconButton size="small" sx={{ color: "var(--tq-link, #55697a)" }} onClick={() => setHandoff(true)}>
-                          <ForwardToInboxIcon sx={{ fontSize: 15 }} /></IconButton>
-                      </Tooltip>
-                      <Tooltip title={`${labelOfRow("reshape")} - ${hintOfRow("reshape")}`}>
-                        <IconButton size="small" sx={{ color: "var(--tq-success, #6f8a6e)" }} onClick={() => setReshape(true)}>
-                          <CallSplitIcon sx={{ fontSize: 15 }} /></IconButton>
-                      </Tooltip>
-                    </Box>
-                  )}
+                  {/* ...and WHICH PROFILE it is under, a quiet word by the title - only once he keeps two (the owner, 2026-11-26) */}
+                  {detail?.workstream?.name && <Typography data-tq-task-profile="" noWrap title={`Profile: ${detail.workstream.name}`}
+                    sx={{ color: FAINT, fontSize: 11.5, flexShrink: 1, minWidth: 0 }}>{detail.workstream.name}</Typography>}
                   {/* THE STATUS, TOP RIGHT: the rail's own mark and word for this task (railStatus.taskStatus) - its logo ringed while an
                       agent works. A task Taskuary closed under a working agent says so on its hover (the list row's "agent stopped"). */}
                   {/* ...and beside it the agent's check-back, its × cancelling it (CheckBackChip, the owner 2026-11-06) - desktop only */}
+                  {/* ...AN ITEM TASKUARY MADE says where it is from and when, in the status's place - no agent, AI or check-back of its own yet */}
+                  {made ? !!made.aside && <Box data-tq-made-aside="" sx={{ flexShrink: 0, color: DIM, fontSize: 11.5, display: "flex", alignItems: "center", gap: 0.75 }}>{made.aside}</Box> : <>
                   <CheckBackChip task={t} onChanged={() => { loadDetail(t.TaskId); onChanged?.(); }} />
                   <StatusPill status={status} agent={agentName(t)} note={interruptedTask ? tr(INTERRUPTED) : ""}
                     logo={<ChannelIcon channel={rail?.channel || t.Source || "email"} sx={{ fontSize: 13 }} />} />
                   {/* ...and the AI that works it, a press away from another (SwitchAi) - on every open task, at work or at rest */}
-                  {notDone && <SwitchAi choices={aiChoices} busy={startingAgent === "switch"} onPick={switchAi} />}
+                  {/* ...named, or not drawn until an AI is known (the owner, 2026-11-23: a bare "AI" chip said nothing) */}
+                  {notDone && aiChoices.said && <SwitchAi ask={aiAsk} off={detail?.aiOff || ""} busy={startingAgent === "switch"} onPick={switchAi} />}
                   {/* ...what AI the task used, and - a coding task in Developer mode - the chats its agent can be talked to from: quiet corner
                       buttons, each its popover (the owner, 2026-11-06: never at the bottom of the chat) */}
                   <HeadPop id="ai-used" title={tr("AI used")} icon={<TokenOutlinedIcon sx={{ fontSize: 16 }} />}><AiUsed taskId={t.TaskId} pop /></HeadPop>
@@ -3218,7 +3040,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   {detail?.checkout && <HeadPop id="changes" title="Changes" wide icon={<DifferenceOutlinedIcon sx={{ fontSize: 16 }} />}>
                     <CodeChanges taskId={t.TaskId} /></HeadPop>}
                   {canCode && t.Kind === "coding" && <HeadPop id="agent-channels" title="Talk to this agent from…" icon={<ForumOutlinedIcon sx={{ fontSize: 16 }} />}>
-                    <AgentChannels taskId={t.TaskId} pop /></HeadPop>}
+                    <AgentChannels taskId={t.TaskId} pop /></HeadPop>}</>}
                   {/* ON THE ASSISTANT CANVAS Expand gives the view the whole canvas - the pane keeps its size either way.
                       Next is NOT up here: it sits under the view, where the walk has always put it (CanvasItem) */}
                   {onExpand && (
@@ -3235,9 +3057,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       the task behind it - the session keeps running; from the task, X goes to the list.
                       ...but a CHAT is the task itself (chatPane): stepping back drew the same chat, and "Back to task" did nothing he could
                       see (design round 6, D8, recorded) - its X goes to the list, the agent still at work */}
-                  <Tooltip title={sessionView && !chatPane ? "Back to the task — the session keeps running" : "Close — back to the list (the task stays)"}>
+                  {(!made || onClose) && <Tooltip title={sessionView && !chatPane ? "Back to the task — the session keeps running" : "Close — back to the list (the task stays)"}>
                     <IconButton aria-label={sessionView && !chatPane ? "Back to task" : "Close task"} size="small" onClick={() => (sessionView && !chatPane ? setPeek(true) : dismiss())}><CloseIcon sx={{ fontSize: 15 }} /></IconButton>
-                  </Tooltip>
+                  </Tooltip>}
                 </Box>
               </Box>
               {detail.hubLearning && <Typography role="status" data-tq-hub-learning={detail.hubLearning.status}
@@ -3295,7 +3117,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                     aria-label={fromDrawer || twoUp ? tr("Came from") : undefined} aria-hidden={twoUp && !isOpen("from") ? true : undefined}
                     onClickCapture={stacked && !solo ? phoneFromTap : undefined} sx={twoUp ? { ...SECTION(isOpen("from"), openW("from"), false, false, fades), gap: 1.75 }
                       : { minWidth: 0, display: "flex", flexDirection: "column", gap: 1.75, ...(fromDrawer ? { ...card, px: 1.5, py: 1.25, ...FROM_SIDE } : PHONE_FROM(fromOpen || solo)) }}>
-                    {twoUp && <SectionHead sec={SECTIONS[0]} sub="what came in, and how Taskuary read it" here={hereSec === "from"}
+                    {twoUp && <SectionHead sec={SECTIONS[0]} sub={made ? "what made it" : "what came in, and how Taskuary read it"} here={hereSec === "from"}
  />}
                     {/* SECTION 1, IN THE ORDER THE OWNER APPROVED (2026-10-16): the ask, what there is to do, where it came from - and no
                         buttons. "The buttons stay on bottom by the prompt box like always. No buttons there." On the canvas that is the row
@@ -3317,15 +3139,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                           the To do already say it - triage's reading opens the agent's chat only */}
                       {flow && fromConversation()}
                       {/* THE ASK - one line of what is wanted; the whole summary is the tooltip when the line cut it */}
-                      {(askBand || waitFor || detail?.offer) && <Part label={tr("The ask")} data-tq-ask="" data-tq-quoted={askQuoted ? "" : undefined}>
+                      {(askBand || waitFor) && <Part label="The ask" data-tq-ask="" data-tq-quoted={askQuoted ? "" : undefined}>
                         {waitFor && <Typography data-tq-waiting-on="" sx={{ color: INK, fontSize: 13.5, fontWeight: 600, lineHeight: 1.45 }}>{waitFor.line}</Typography>}
                         {askBand && <Typography title={askText} sx={{ color: INK, fontSize: 14, lineHeight: 1.45, overflowWrap: "anywhere",
                           display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{askBand}</Typography>}
-                        {/* WHAT AN AGENT COULD DO about it, as triage offered it - one press starts it (ingest.offer_of) */}
-                        {detail?.offer && <Box data-tq-offer="" sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5, flexWrap: "wrap" }}>
-                          <Typography sx={{ color: INK, fontSize: 13.5, lineHeight: 1.45, flex: "1 1 200px", overflowWrap: "anywhere" }}>{detail.offer}</Typography>
-                          <Button size="small" variant="outlined" onClick={acceptOffer} sx={{ textTransform: "none", flex: "0 0 auto" }}>{tr("Yes, do it")}</Button>
-                        </Box>}
                       </Part>}
                       {/* TO DO - the checklist triage drew from the ask (PW-075): boxes are progress on the list, never task completion -
                           closing the task stays the owner's separate decision. The WHOLE LINE is the target, not the 16px box: on a
@@ -3463,8 +3280,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         (taskLifecycle.agentPhase); the heading now says what the chip says. */}
                     {/* AN EMPTY AGENT WORK ROW IS QUIET (the owner, 2026-10-25: Agent work stays where it is, the reply is what the eye should
                         land on): no agent ran, nothing to say - a smaller, dimmer line, the same press opening it */}
-                    <WorkflowHeading number="2" sec={twoUp && !sessionView ? SECTIONS[1] : null} here={hereSec === "agent"} quiet={agentEmpty} title={<span title={instructionsHint(runRole) || undefined}>{!term?.alive ? (chatPane && hasGeneralHistory ? tr("{agent} answered", { agent: agentName(t) }) : resultShown ? tr("Result") : tr("Agent work"))
-                      : answered ? tr("{agent} answered", { agent: agentName(t) })
+                    <WorkflowHeading number="2" sec={twoUp && !sessionView ? SECTIONS[1] : null} here={hereSec === "agent"} quiet={agentEmpty} title={<span>{!term?.alive ? (chatPane && hasGeneralHistory ? `${agentName(t)} answered` : resultShown ? "Result" : "Agent work")
+                      : answered ? `${agentName(t)} answered`
                       : agentState === AGENT.waiting ? says(subState(term), agentName(t))   /* asked, approval, stuck (T6) */
                         : tr("{agent} is working", { agent: agentName(t) })}</span>}
                     /* ...and the agent's state is the task header's pill alone (StatusPill): its chip here said it a second time, one above
@@ -3613,12 +3430,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         ? { ml: 0.9, pl: 1.1, borderLeft: `1px solid ${BORDER}`, flexShrink: 0 }
                         : { mt: 1.25 }) }}>
                       {/* plain words on the facts (the audit, 2026-10-17): "role" and "brain" were the app's own vocabulary */}
-                      {/* the profile is no chip of its own (the owner, 2026-10-28: "works as researcher" named instructions as the worker):
-                          it is told on hover, beside the AI it ran on */}
                       {factBrain && <Box sx={{ ...chipBtnStatic }}
-                        title={(factBrain === detail?.ranOn?.brain ? tr("The AI that did this work. Which AI the agents use is set in Settings, not per task.")
-                          : tr("The AI that does the work. Which AI the agents use is set in Settings, not per task."))
-                          + (detail?.routeWhy ? ` ${tr("Last AI call: {reason}", { reason: detail.routeWhy })}` : "") + (runRole ? ` ${tr("{hint} - set in Settings.", { hint: instructionsHint(runRole) })}` : "")}>
+                        title={(factBrain === detail?.ranOn?.brain ? "The AI that did this work. Which AI the agents use is set in Settings, not per task."
+                          : "The AI that does the work. Which AI the agents use is set in Settings, not per task.")
+                          + (detail?.routeWhy ? ` Last AI call: ${detail.routeWhy}` : "")}>
                         <Box component="span" sx={{ color: FAINT, fontWeight: 600 }}>AI</Box>&nbsp;{factBrain}</Box>}
                       {/* the repository pill only where a coding tool is connected (B3) */}
                       {!isGeneral && canCode && <Button size="small" variant="outlined" sx={chipBtn}
@@ -3687,7 +3502,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       {/* ONE CHAT FOR EVERY KIND (the owner, 2026-11-06: "one shared chat object for coding and regular"): the component reads its own
                           source (chatStream.chatSource) - a coding task's sessions, or the general agent's conversation - and the branch's landing
                           card joins it wherever the task works in a checkout */}
-                      <GeneralWorkspace key={`${t.TaskId}-${generalRevision}`} task={t} compact onSession={generalSession} reread={chatRead}
+                      <GeneralWorkspace key={`${t.TaskId}-${generalRevision}`} task={t} compact onSession={generalSession} reread={chatRead} trustOnRow={!watching}
+                        agentHandoff={chatHandoff}
                         queued={chatPane && !liveSession && queuedRow && !queuedRow.retryTurn ? <QueuedStart taskId={t.TaskId} queued={queuedRow} line onChanged={() => { loadTasks(); loadDetail(t.TaskId); }} /> : null}
                         stopTries={queuedRow?.retryTurn ? () => api.delete(`/api/tasks/${t.TaskId}/dispatch`).then(() => { loadTasks(); loadDetail(t.TaskId); }).catch(() => {}) : null}
                         liveSid={term?.alive && term.mode === "assistant" ? term.sid : ""}
@@ -3695,10 +3511,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         onAnswered={() => { findTerm(selected); loadTasks(); loadDetail(selected); onChanged?.(); }}
                         toolsAt={canvas ? chatTools : null} noAiSaid={!notDone || (failedRun && runFix?.href === place("ai").href)} noTools={!liveSession} noComposer={isGeneral && continueHere && !chatPane} chat={home}
                         opening={agentOpening} seed={chatPane ? chatSeed : null}
-                        came={home ? { label: cameChip(sourceMessage) || (sources.length ? cameFromLabel(sources) : fromWorkflow ? `Routine · ${fromWorkflow.title}` : "Came from"),
+                        came={home ? { label: cameChip(sourceMessage) || (sources.length ? cameFromLabel(sources) : fromWorkflow ? `Routine · ${fromWorkflow.title}` : made?.came || "Came from"),
                           title: "Where this came from - opens it", onOpen: twoUp ? () => openSection("from") : null } : null}
                         closedLine={closedSaid} term={term}
-                        turnCards={turnCards}
+                        turnCards={made ? [{ key: MADE_RUN, rid: MADE_RUN, node: made.turn }] : turnCards} made={made}
                         landing={detail?.checkout && <LandingCard key={`land-${t.TaskId}`} taskId={t.TaskId} inChat
                           onChanged={() => { loadDetail(selected); onChanged?.(); }} />}
                         onChanged={() => { findTerm(selected); loadDetail(selected); onChanged?.(); }} />
@@ -3715,7 +3531,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       <Box key={r.RunId} sx={{ mb: 0.75, p: 1, bgcolor: r.Status === "running" ? "var(--tq-inset, #dfeade)" : PANEL2, borderRadius: 1.5, border: `1px solid ${BORDER}` }}>
                         <Box sx={{ display: "flex", gap: 0.75, alignItems: "center" }}>
                           <TaskuaryMark size={13} />
-                          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} title={instructionsHint(r.AgentName) || undefined}>{tr("run {id} · {agent} · {status}", { id: r.RunId, agent: shownAgent(r), status: displayState(r.Status) })}</Typography>
+                          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} >run {r.RunId} · {shownAgent(r)} · {r.Status}</Typography>
                           {r.Status === "running" && <CircularProgress size={11} />}
                           <Typography variant="caption" sx={{ color: FAINT }}>{tr("· {time} · by {who}", { time: timeAgo(r.StartedAt), who: r.DispatchedBy })}</Typography>
                         </Box>
@@ -3733,59 +3549,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                 </Box>
               </Box>
               </Box>
-              {/* THE TASKS TAB'S BAR, AT THE FOOT (the owner, 2026-10-16: "the buttons stay on bottom by the prompt box like always. No
-                  buttons there."). The canvas draws these as its row over the chat line (rowVerbs, ActionRow); the Tasks tab has no
-                  row, so its view keeps the same moves here, under the sections, instead of inside the Task card. The two endings
-                  first, then a rule, then the reroutes, then Change - what the task's pills used to set. While a session fills the page
-                  the header carries them (headControls). */}
-              {!inRow && !sessionView && (
-                <Box data-tq-task-bar="" ref={bar.ref} sx={{ display: "flex", alignItems: "center", gap: 0.8, flexWrap: "nowrap", flexShrink: 0, minWidth: 0,
-                  px: 1.75, py: 1, borderTop: `1px solid ${BORDER}`, bgcolor: "var(--tq-panel, #fff)", "& > *": { flexShrink: 0, whiteSpace: "nowrap" } }}>
-                  {notDone ? <>
-                    {/* THE TASKS TAB FILLS THE TASK'S OWN RECOMMENDED MOVE, the canvas's own (the design, phase A): Mark done was dark on every task */}
-                    <Button size="small" variant={filled("close") ? "contained" : "outlined"} disableElevation startIcon={finishing ? <CircularProgress size={14} color="inherit" /> : <DoneAllIcon sx={{ fontSize: 16 }} />}
-                      sx={filled("close") ? primaryBtn : barBtn}
-                      title={markDoneHint}
-                      disabled={finishing} onClick={askFinish}>{finishing ? tr("Marking done…") : labelOfRow("done")}</Button>
-                    <Button size="small" variant={filled("remove") ? "contained" : "outlined"} disableElevation startIcon={<BlockIcon sx={{ fontSize: 15 }} />}
-                      sx={filled("remove") ? primaryBtn : { ...barBtn, color: "var(--tq-danger, #7a2f3c)", borderColor: "var(--tq-border, #e0c6cb)" }} data-tq-bar-item="nat" style={bar.shown("nat") ? undefined : HIDE}
-                      title={tr(NAT_TITLE)}
-                      onClick={notATask}>{labelOfRow("nat")}</Button>
-                    <RemindMe task={t} sx={filled("defer") ? primaryBtn : barBtn} lit={filled("defer")} onDone={reminded} act={remindAct} onLeave={onLeave} onStay={onStay} said={saidDay} />
-                    <Button size="small" variant={filled("watch") ? "contained" : "outlined"} disableElevation sx={filled("watch") ? primaryBtn : barBtn}
-                      data-tq-bar-item="watch" data-tq-verb="watch" style={bar.shown("watch") ? undefined : HIDE}
-                      startIcon={<VisibilityOutlinedIcon sx={{ fontSize: 15, color: filled("watch") ? "inherit" : "var(--tq-link, #55697a)" }} />}
-                      title={hintOfRow("watch", watching ? "on" : null)} onClick={watchIt}>{labelOfRow("watch", watching ? "on" : null)}</Button>
-                    <Divider orientation="vertical" flexItem sx={{ mx: 0.4, my: 0.6, borderColor: BORDER }} data-tq-bar-item="sep" style={bar.shown("sep") ? undefined : HIDE} />
-                    <Button size="small" variant={filled("forward") ? "contained" : "outlined"} disableElevation sx={filled("forward") ? primaryBtn : barBtn}
-                      data-tq-bar-item="hand" style={bar.shown("hand") ? undefined : HIDE}
-                      startIcon={<ForwardToInboxIcon sx={{ fontSize: 16, color: filled("forward") ? "inherit" : "var(--tq-link, #55697a)" }} />}
-                      title={tr("Not ours to do — the AI writes the forward, you send it.")}
-                      onClick={() => setHandoff(true)}>{labelOfRow("hand")}</Button>
-                    <Button size="small" variant={filled("split") ? "contained" : "outlined"} disableElevation sx={filled("split") ? primaryBtn : barBtn}
-                      data-tq-bar-item="reshape" style={bar.shown("reshape") ? undefined : HIDE}
-                      startIcon={<CallSplitIcon sx={{ fontSize: 16, color: filled("split") ? "inherit" : "var(--tq-success, #6f8a6e)" }} />}
-                      title={tr("Two jobs in here, or a duplicate? Break it in two, or fold it into the task it repeats.")}
-                      onClick={() => setReshape(true)}>{labelOfRow("reshape")}</Button>
-                    <Button size="small" variant="outlined" sx={barBtn} endIcon={<ExpandMoreIcon sx={{ fontSize: 16 }} />} data-tq-bar-item="change" style={bar.shown("change") ? undefined : HIDE}
-                      title={canCode ? tr("Who does it, the priority or the repository") : tr("Who does it or the priority")}
-                      onClick={(e) => setPick({ what: "menu", at: e.currentTarget })}>{tr("Change")}</Button>
-                    {/* ...what did not fit, behind one ▾ - the same handlers, in the bar's order */}
-                    {bar.folded.length > 0 && <Button size="small" variant="outlined" sx={{ ...barBtn, minWidth: 34, px: 0.75 }} data-tq-bar-more=""
-                      aria-haspopup="menu" aria-expanded={!!barAt} aria-label={tr("More actions")} onClick={(e) => setBarAt(e.currentTarget)}>▾</Button>}
-                    <Menu open={!!barAt} anchorEl={barAt} onClose={() => setBarAt(null)}>
-                      {bar.folded.includes("watch") && <MenuItem sx={{ fontSize: 12.5 }} title={hintOfRow("watch", watching ? "on" : null)} onClick={() => { setBarAt(null); watchIt(); }}>{labelOfRow("watch", watching ? "on" : null)}</MenuItem>}
-                      {bar.folded.includes("nat") && <MenuItem sx={{ fontSize: 12.5 }} title={tr(NAT_TITLE)} onClick={() => { setBarAt(null); notATask(); }}>{labelOfRow("nat")}</MenuItem>}
-                      {bar.folded.includes("hand") && <MenuItem sx={{ fontSize: 12.5 }} onClick={() => { setBarAt(null); setHandoff(true); }}>{labelOfRow("hand")}</MenuItem>}
-                      {bar.folded.includes("reshape") && <MenuItem sx={{ fontSize: 12.5 }} onClick={() => { setBarAt(null); setReshape(true); }}>{labelOfRow("reshape")}</MenuItem>}
-                      {bar.folded.includes("change") && <MenuItem sx={{ fontSize: 12.5 }} onClick={() => { const a = barAt; setBarAt(null); setPick({ what: "menu", at: a }); }}>{tr("Change…")}</MenuItem>}
-                    </Menu>
-                  </> : (
-                    <Button size="small" variant="outlined" disabled={reopening === selected}
-                      startIcon={reopening === selected ? <CircularProgress size={11} /> : <RefreshIcon sx={{ fontSize: 15 }} />}
-                      title={tr("Reopens the task only. No agent starts until you choose one.")}
-                      onClick={reopen}>{reopening === selected ? tr("Reopening…") : labelOfRow("reopen")}</Button>
-                  )}
+              {/* OFF THE CANVAS (the Tasks tab, a session filling the page) THE TASK'S ROW IS THE CANVAS'S OWN (TaskButtons, the owner 2026-11-23: one
+                  toolbar, one builder): the same moves in the same order, at the foot, pressed in place - never a bar of its own beside it */}
+              {!inRow && (
+                <Box data-tq-task-bar="" sx={{ flexShrink: 0, minWidth: 0, px: 1.75, py: 1, borderTop: `1px solid ${BORDER}`, bgcolor: "var(--tq-panel, #fff)" }}>
+                  <TaskButtons verbs={rowVerbs} act={actHere} />
                 </Box>
               )}
             </>
@@ -3895,7 +3663,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         onDrafted={() => { setEmailOpen(false); loadDetail(selected); loadTasks(); onChanged?.(); setOpenStage("reply"); }} />}
       {t && <ContinueBox task={t} anchor={continueAt} asked={leftAsking} signin={(!term?.alive && detail?.leftSignin) || ""} onClose={() => setContinueAt(null)} onDone={continued} />}
       {t && <CloseNote anchor={noteAt} taskRef={t.ref || ""} onClose={() => setNoteAtRaw(null)} onSubmit={closeWithNote} />}
-      {t && inRow && <RemindPicker task={t} anchor={remindAt} onClose={() => setRemindAt(null)} onDone={reminded} act={remindAct} onLeave={onLeave} onStay={onStay}
+      {t && <RemindPicker task={t} anchor={remindAt} onClose={() => setRemindAt(null)} onDone={reminded} act={remindAct} onLeave={onLeave} onStay={onStay}
         said={remindSaid} />}
       {calAsk && slotAt && <SlotPicker mid={calAsk.mid} act={slotAt.act} anchor={slotAt.at} onClose={() => setSlotAt(null)}
         onRefused={(data) => { setErr(data?.say || ""); setStartFail({ text: data?.say || "", fix: data?.fix || null, retry: false }); }}
@@ -3925,7 +3693,6 @@ const Fold = ({ title, children }) => (
 // `sec`: the section it heads in the desk's three (2026-10-27) - then its line is the sections' one style (SectionHead): "2 · AGENT", one dim
 // descriptor (its own title where that is not the section's name, its description), "up to here" where the task is
 // THE REPLY THAT JUST WENT, where its draft stood (TaskPage sentHere): its card, pressed - SentCard
-const SENT_BEAT = 1600;
 
 const WorkflowHeading = ({ number, title, description, chip, tone, folded, onToggle, action, tools, quiet = false, sec = null, here = false, sub = undefined }) => {
   useLocale();

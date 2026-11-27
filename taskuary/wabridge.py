@@ -437,7 +437,7 @@ def start(force_install: bool = False, wait: bool = False, filter_policy: dict =
                 out = open(lg, 'ab')
                 # bare: detached, outlives us by design - so it must hold nothing of the exe's unpack folder (spawn's note)
                 p = spawn.bare([node(), 'bridge.mjs'], cwd=str(run), stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                     env=env, **kw)
+                                     env=env, outlive=True, **kw)
                 _launched(p.pid)
                 # until it answers or dies, not a fixed 2.5s: loading Baileys outlasts that on a cold Windows start, so a copy that died
                 # on EADDRINUSE a moment later was already called running - the card's Start said yes and the bridge stayed down (#269)
@@ -794,7 +794,12 @@ def check_link(store, c: dict, read=None, now: float = None):
     try: st = read() or {}
     except Exception as e: logger.debug(f'whatsapp link check: {e}'); return _LINK['err']
     if st.get('connected'):
-        if _LINK['down']: logger.info(f"whatsapp link is back after {now - _LINK['down']:.0f}s")
+        if _LINK['down']:
+            logger.info(f"whatsapp link is back after {now - _LINK['down']:.0f}s")
+            # ...and what the chat was owed while it was down goes now, not on the next question (walk 6, H4: an answer failed at 503 and
+            # was never sent again when the link came back)
+            from . import remote_assistant
+            if store is not None: threading.Thread(target=remote_assistant.flush_owed, args=(store,), name='taskuary-whatsapp-owed', daemon=True).start()
         # ...and connected is not reading: a link whose every message fails to decrypt brings nothing in, open socket or not
         from .messengers import wa_unreadable, UNREADABLE_SAY
         if wa_unreadable(st, now):

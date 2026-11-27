@@ -3,13 +3,13 @@ has - has a Done on the view (a held press is a card in the chat since 2026-11-1
 known to the server only by matching those words. It is their press now, by the road every other press takes: the hand-over closes, the
 agent is told by Taskuary that they SAY it is done (nothing saw the page move, so it looks first), and the page reads one quiet line.
 And the press the page itself saw read "You browser act pressed." under Taskuary's own line saying the same. Invented people."""
-import time, unittest
+import json, time, unittest
 from types import SimpleNamespace
 from unittest import mock
 
 from taskuary import browsergate as bg, browserview, general, workerstate as ws
 from taskuary.store import MemoryStore
-from taskuary.testing import Factory
+from taskuary.testing import Factory, turn_told
 
 PAY, SITE = 'https://pay.vendor.example/checkout', 'vendor.example'      # the one name of a site (signin.site_name)
 
@@ -18,7 +18,7 @@ class DoneIsAPress(unittest.TestCase):
     def setUp(self):
         self.s = MemoryStore(); self.tid = Factory(self.s).task('Pay the course fee')
         self.told = []
-        self.sess = SimpleNamespace(sid='run1', alive=True, task_id=self.tid, send_prompt=lambda text, as_owner=True, **k: self.told.append((text, as_owner)))
+        self.sess = SimpleNamespace(sid='run1', alive=True, task_id=self.tid, send_prompt=lambda text, as_owner=True, **k: self.told.append((turn_told(self.s, self.tid, text), as_owner)))
         live = mock.patch.dict('taskuary.terminal.SESSIONS', {'run1': self.sess}, clear=True); live.start()
         self.addCleanup(live.stop); self.addCleanup(bg.HANDS.clear)
         up = mock.patch.object(browserview, 'state', return_value={'open': True, 'url': PAY}); up.start(); self.addCleanup(up.stop)
@@ -83,13 +83,14 @@ class DoneIsAPress(unittest.TestCase):
         while general.starting(self.tid) and time.time() < end: time.sleep(.01)
         self.assertFalse(general.starting(self.tid), 'and no longer once it has handed on')
 
-    def test_the_step_the_page_saw_done_is_one_line_in_plain_words(self):
+    def test_a_page_that_moved_on_without_his_press_is_never_said_as_his(self):
+        # walk 7, 2026-11-23: the page turned into a browser error and the chat read "You did the step on" it - he had pressed nothing
         rid = self.turn()
         self.assertTrue(bg.pressed(self.s, self.tid, rid, {'href': PAY + '/next', 'title': 'Next'}))
-        self.assertIn('the page moved on', self.heard()[0][0])
-        self.assertEqual(self.lines(), [f'You did the step on {SITE}.'])
-        self.assertEqual(self.said(), [], 'said once: no second line by Taskuary above it')
-        self.assertFalse(any('browser act' in x for x in self.lines()))
+        self.assertIn("moved on without their I'm done", self.heard()[0][0])
+        self.assertEqual(self.lines(), [], 'only his I\'m done is his')
+        self.assertEqual(self.said(), [])
+        self.assertNotIn(rid, self.open())
 
     def test_a_page_the_agent_moved_on_is_never_said_as_his(self):
         # the owner's rule, tell the truth (2026-11-19): the agent opened another page while a human check waited on him, and the chat read
@@ -104,7 +105,12 @@ class DoneIsAPress(unittest.TestCase):
         self.assertNotIn(rid, self.open())
         notes = [c['Body'] for c in self.s.list_comments(self.tid, internal=True)]
         self.assertTrue(any(n.startswith(bg.NOT_NEEDED_ANY_MORE) for n in notes)) and self.assertFalse(any('You did the step' in n for n in notes))
-        self.assertIn('they did nothing there', self.heard()[0][0])
+        # ...its own move is no new input (walk 7, 2026-11-23: an agent at rest was woken four times after its turn, one more paragraph each):
+        # at rest it begins no turn; at work it goes into that turn
+        self.assertEqual(self.told, [], 'an agent at rest is never woken by what its own work did')
+        steered = []; self.sess.steer = lambda said=None: steered.append(said) or True
+        rid = self.turn(); self.assertTrue(bg.left_by_agent(self.s, self.tid, rid))
+        self.assertEqual(self.told, []); self.assertIn('they did nothing there', steered[0])
 
     def test_a_step_that_was_not_done_draws_no_press(self):
         rid = self.turn()
@@ -123,7 +129,7 @@ class DoneIsAPress(unittest.TestCase):
 
     def test_a_resting_agent_is_started_on_it(self):
         rid, woke = self.turn(), []
-        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(general, 'to_agent', lambda s, t, w, *a: woke.append(w) or 'woke'):
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(general, 'to_agent', lambda s, t, w, *a, **kw: woke.append(w) or 'woke'):
             self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
         self.assertIn('open it again', woke[0]); self.assertEqual(self.open(), [])
 
@@ -134,7 +140,7 @@ class DoneIsAPress(unittest.TestCase):
         from taskuary import taskstate
         rid, woke = self.turn(), []
         bg.HANDS.clear()
-        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(browserview, 'state', return_value={'open': False}),                 mock.patch.object(general, 'to_agent', lambda s, t, w, *a: woke.append(w) or 'woke'):
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {}, clear=True), mock.patch.object(browserview, 'state', return_value={'open': False}),                 mock.patch.object(general, 'to_agent', lambda s, t, w, *a, **kw: woke.append(w) or 'woke'):
             ask = bg.shown_ask({**taskstate.open_question(self.s, self.tid), 'resting': True})
             self.assertIn('has closed', ask['text']); self.assertNotIn('on the page. I', ask['text'])
             self.assertEqual(ask['choices'], ['Try again']); self.assertEqual(ask['request_id'], rid)
@@ -162,5 +168,221 @@ class DoneIsAPress(unittest.TestCase):
         self.assertEqual(general.PRESSES['browser_act_pressed']({}), 'did the step on the page')
         self.assertIn('browser_act_not_pressed', general.QUIET)
 
+    def test_a_step_only_he_can_do_is_one_card_raised_mid_turn_and_his_im_done_wakes_the_agent_once(self):
+        """Walk 7, 2026-11-23, and the owner: "Anything for sign in etc should be handed to users with a card ... I need the agent to do its
+        job." Ten prompt places told the agent to END ITS TURN with a marker, and three robot checks stood at once with one shown. One call
+        mid-turn: a card for him, the turn goes on (nobody is woken), a second is refused while the first waits, and his I'm done wakes it once."""
+        from taskuary import agenttools, signin
+        out = json.loads(agenttools.call(self.s, self.tid, 'hand_over', {'what': 'tick the "I\'m not a robot" box'}, {}))
+        self.assertTrue(out['ok'] and 'go on with the rest' in out['says'].lower(), out)
+        rid = bv_open = self.open()
+        self.assertEqual(len(rid), 1); self.assertEqual(self.told, [], 'raised mid-turn: the agent is not woken, it goes on')
+        again = json.loads(agenttools.call(self.s, self.tid, 'hand_over', {'what': 'enter the card number'}, {}))
+        self.assertFalse(again['ok']); self.assertIn('one at a time', again['why']); self.assertEqual(self.open(), bv_open)
+        ws.answer(self.s, self.tid, rid[0], '', press=True)
+        self.assertEqual(len(self.heard()), 1); self.assertIn("I'm done", self.told[0][0])
+        # ...a sign-in Taskuary can do itself is done with no card; one it cannot is his card
+        with mock.patch.object(signin, 'saved', return_value={'Secret': 'x'}), mock.patch.object(signin, '_auto'), \
+                mock.patch.object(signin, 'shows_signin', return_value=True):
+            got = browserview.hand_over(self.s, self.tid, 'sign in', 'vendor.example', 'run1', watch=None)
+        self.assertTrue(got['ok'] and got.get('auto')); self.assertEqual(self.open(), [], 'the saved sign-in goes in: nothing asked of him')
+        with mock.patch.object(signin, 'saved', return_value=None), mock.patch.object(signin, 'shows_signin', return_value=True):
+            got = browserview.hand_over(self.s, self.tid, 'sign in', 'vendor.example', 'run1', watch=None)
+        self.assertTrue(got['ok'] and not got.get('auto')); self.assertEqual([ws.ask_of(r)['ask'] for r in self.open()], ['signin'])
+
+    def test_a_saved_sign_in_typed_mid_turn_never_takes_back_the_turn_s_own_answer(self):
+        """Walk 10 (2026-11-23): the agent called hand_over mid-turn, a saved sign-in was typed, and the road written for a turn that ENDED on
+        a sign-in marker took back "the next answer" as a step - the turn's closing words (what it did, why it stopped) never reached the chat.
+        Mid-turn the answer is the turn's own; a marker's turn ended on the hand-over, and only that answer is a step."""
+        import threading
+        from taskuary import conversation, signin, vault
+        self.addCleanup(signin._TRIED.clear)
+        for ended, back in ((False, False), (True, True)):
+            signin._TRIED.clear()
+            with mock.patch.object(signin, 'saved', return_value={'User': 'u', 'Secret': 's'}), mock.patch.object(vault, 'unseal', return_value='pw'), \
+                    mock.patch.object(signin, 'shows_signin', return_value=True), mock.patch.object(signin, 'asks_code', return_value=False), \
+                    mock.patch.object(signin, 'type_in', return_value={}), mock.patch.object(signin, '_continue'), \
+                    mock.patch.object(signin, '_chat', return_value=True), mock.patch.object(signin, 'typing'), mock.patch.object(signin, '_used'), \
+                    mock.patch.object(signin, '_audit'), mock.patch.object(conversation, 'take_back') as took:
+                got = browserview.hand_over(self.s, self.tid, 'sign in', 'vendor.example', 'run1', watch=None, ended=ended)
+                for th in [t for t in threading.enumerate() if t.name == f'signin-{self.tid}']: th.join(5)
+            self.assertTrue(got.get('auto'), got)
+            self.assertEqual(took.called, back, f'ended={ended}')
+
+    def test_a_step_named_with_its_site_on_a_page_that_asks_no_sign_in_is_his_turn_and_says_so(self):
+        """Walk 10 (2026-11-23): "Enter your date of birth" on a sign-up page, handed over with its site, took the saved sign-in's road and
+        answered "Taskuary is signing in ... with what it keeps" - while the step went to him as a card ten seconds later."""
+        from taskuary import signin
+        typed = []
+        with mock.patch.object(signin, 'saved', return_value={'Secret': 'x'}), mock.patch.object(signin, '_auto', side_effect=lambda *a: typed.append(a)), \
+                mock.patch.object(signin, 'shows_signin', return_value=False), mock.patch.object(signin, 'on_signin_page', return_value=False):
+            got = browserview.hand_over(self.s, self.tid, 'Enter your date of birth, then press Next', 'signup.vendor.example', 'run1', watch=None)
+        self.assertTrue(got['ok'] and not got.get('auto'), got)
+        self.assertIn('Handed to the owner', got['says']); self.assertNotIn('signing in', got['says'])
+        self.assertEqual([ws.ask_of(r)['ask'] for r in self.open()], ['turn']); self.assertEqual(typed, [], 'no saved sign-in typed into it')
+
+    def test_a_post_page_or_an_unreadable_one_handed_over_with_its_site_is_his_turn_and_nothing_is_typed_or_sent(self):
+        """Walk 11 (2026-11-23): the agent handed over the last step on a news site's submit page - title, address and text boxes, a user-name
+        box elsewhere, no password - and the app answered "Taskuary is signing in", typed the saved user name into the TITLE and sent the post.
+        A page is a sign-in only where it shows a password or a code box; one that cannot be read is never one. Both are his card."""
+        from taskuary import signin
+        class Page:
+            def __init__(self, f): self.f = f
+            def fields(self, want=''): return self.f
+            def close(self): pass
+        class Gone:
+            def fields(self, want=''): raise signin.SignInError('the page did not let Taskuary look at it')
+            def close(self): pass
+        post = {'top': True, 'href': 'https://news.example/submit', 'user': True, 'password': False, 'loose': 3}
+        for page in (Page(post), Gone()):
+            for r in self.open(): ws.answer(self.s, self.tid, r, '', press=True)
+            typed = []
+            with mock.patch.object(signin, 'saved', return_value={'User': 'u', 'Secret': 's'}), mock.patch.object(signin, 'connect', return_value=page), \
+                    mock.patch.object(signin, '_auto', side_effect=lambda *a: typed.append(a)), mock.patch.object(signin, 'type_in', side_effect=lambda *a, **k: typed.append(a)), \
+                    mock.patch.object(bg, 'page_error', return_value=''):
+                got = browserview.hand_over(self.s, self.tid, 'Press submit to post the story', 'news.example', 'run1', watch=None)
+            self.assertTrue(got['ok'] and not got.get('auto'), got); self.assertNotIn('signing in', got['says'].lower())
+            self.assertEqual([ws.ask_of(r)['ask'] for r in self.open()], ['turn']); self.assertEqual(typed, [], 'no saved sign-in typed or sent')
+
+    def test_a_hand_over_is_the_page_of_the_tab_it_names_and_an_error_page_is_never_his(self):
+        """Walk 9 (CLI 8, 4): three sites in three tabs - "Sign in to Reddit" was handed over as "Your turn in the browser on linkedin.com", the
+        tab in front; and LinkedIn's own error page was handed to him as a "security check". The tab of the site named comes to the front first,
+        by each tab's own address; an error page goes back to the agent as the error it is, with nothing raised for him."""
+        tabs = [{'id': 'AAA1', 'type': 'page', 'url': 'https://www.linkedin.example/feed'}, {'id': 'BBB2', 'type': 'page', 'url': 'https://www.reddit.example/login'}]
+        switched = []
+        with mock.patch.object(browserview, 'pages', return_value=tabs), mock.patch.object(browserview, 'active_tab', return_value='AAA1'), \
+                mock.patch.object(browserview, 'switch_tab', side_effect=lambda sid, t: switched.append(t) or True), \
+                mock.patch.object(bg, 'page_error', return_value=''), mock.patch('taskuary.signin.shows_signin', return_value=True), \
+                mock.patch('taskuary.signin.needs') as needs:
+            browserview.hand_over(self.s, self.tid, 'Sign in to Reddit so I can post the tip', 'reddit.example', 'run1', watch=None)
+        self.assertEqual(switched, ['BBB2']); self.assertTrue(needs.called)
+        bad = 'TASKUARY: https://www.linkedin.example/checkpoint answered with an error (HTTP 404). Decide the next step: ...'
+        with mock.patch.object(browserview, 'pages', return_value=tabs), mock.patch.object(browserview, 'active_tab', return_value='AAA1'), \
+                mock.patch.object(bg, 'page_error', return_value=bad):
+            got = browserview.hand_over(self.s, self.tid, 'complete the security check', 'linkedin.example', 'run1', watch=None)
+        self.assertFalse(got['ok']); self.assertIn('HTTP 404', got['why']); self.assertEqual(self.open(), [], 'nothing was handed to him')
+
+    def test_a_step_on_a_connected_services_site_for_what_its_card_does_is_never_handed_to_him_and_reading_still_is(self):
+        """The owner, 2026-11-26: "we have linkedin connected, no need for browser what is wrong here?" - his post's agent opened linkedin.com
+        and handed him "Sign in to LinkedIn so I can attach the video to the draft". What the step is for is the guard model's to read: one
+        for what the connected card does goes back to the agent as that fact, nothing raised; a sign-in to read his own posts is still his
+        step; and with no AI to read it the step stands - the site is never shut, only its act is the card's."""
+        from taskuary import outbound, signin
+        asked = []
+        def brain(system, user, **kw): asked.append((system, user)); return json.dumps({'writes': 'attach the video' in user})
+        on = [mock.patch.object(browserview, 'state', return_value={'open': True, 'url': 'https://www.linkedin.com/uas/login'}), mock.patch.object(bg, 'page_error', return_value=''),
+              mock.patch.object(outbound, 'connect_fix', return_value=None), mock.patch.object(signin, 'shows_signin', return_value=True),
+              mock.patch.object(signin, 'saved', return_value=None)]
+        for m in on: m.start(); self.addCleanup(m.stop)
+        self.assertEqual(bg.check(self.s, self.tid, 'run1', 'agent-browser open https://www.linkedin.com/feed/'), {}, 'its site opens and reads like any other')
+        with mock.patch('taskuary.llm.build_llm', return_value=brain):
+            got = browserview.hand_over(self.s, self.tid, 'Sign in to LinkedIn so I can attach the video to the draft', 'linkedin.com', 'run1', watch=None)
+            self.assertFalse(got['ok'], got); self.assertEqual(self.open(), [], 'nothing was handed to him')
+            for want in ('LinkedIn is connected', 'its card', 'with its picture or video', 'still open and read'): self.assertIn(want, got['why'])
+            self.assertIn('LinkedIn', asked[0][0]); self.assertIn('attach the video', asked[0][1])
+            got = browserview.hand_over(self.s, self.tid, 'Sign in to LinkedIn so I can read your recent posts', 'linkedin.com', 'run1', watch=None)
+            self.assertTrue(got['ok'], got); self.assertEqual(len(self.open()), 1)
+        with mock.patch('taskuary.llm.build_llm', return_value=None):
+            self.assertEqual(bg.card_act(self.s, 'https://www.linkedin.com/uas/login', 'Sign in to LinkedIn so I can attach the video to the draft'), '')
+
+    def test_a_bare_sign_in_on_a_connected_services_site_is_read_with_what_he_asked(self):
+        """Walk 25, 2026-11-26: "Post this video on LinkedIn", LinkedIn connected - the agent opened linkedin.com and handed him "Sign in to
+        LinkedIn". The step says nothing of what it is for, so the guard read nothing in it and it stood. What he asked of this task's agent
+        goes to the same reader: asked to post, the sign-in is for the post and the card's road is the answer; asked to read, it is his step."""
+        from taskuary import outbound, signin
+        seen = []
+        def brain(system, user, **kw): seen.append(user); return json.dumps({'writes': 'Post this video' in user})
+        on = [mock.patch.object(browserview, 'state', return_value={'open': True, 'url': 'https://www.linkedin.com/uas/login'}), mock.patch.object(bg, 'page_error', return_value=''),
+              mock.patch.object(outbound, 'connect_fix', return_value=None), mock.patch.object(signin, 'shows_signin', return_value=True),
+              mock.patch.object(signin, 'saved', return_value=None), mock.patch('taskuary.llm.build_llm', return_value=brain)]
+        for m in on: m.start(); self.addCleanup(m.stop)
+        self.s.add_comment(self.tid, 'owner', general.USER_TYPE, 'Read my last three LinkedIn posts and say which did best')
+        self.assertEqual(bg.card_act(self.s, 'https://www.linkedin.com/uas/login', 'Sign in to LinkedIn', said=bg.asked(self.s, self.tid)), '',
+                         'asked to read, the sign-in is his step')
+        self.assertIn('Read my last three', seen[0])
+        self.s.add_comment(self.tid, 'owner', general.USER_TYPE, 'Post this video on LinkedIn')
+        got = browserview.hand_over(self.s, self.tid, 'Sign in to LinkedIn', 'linkedin.com', 'run1', watch=None)
+        self.assertFalse(got['ok'], got); self.assertEqual(self.open(), [], 'nothing was handed to him')
+        self.assertIn('LinkedIn is connected', got['why']); self.assertIn('its card', got['why'])
+        self.assertIn('Sign in to LinkedIn', seen[-1]); self.assertIn('Post this video on LinkedIn', seen[-1])
+
+    def test_the_press_a_gate_refused_is_never_handed_to_him_as_his_step(self):
+        """Walk 25, 2026-11-26: his X post handed over, the agent's typing did not land and its Post was refused over the empty box - "the
+        post's words are not on x.com". It then handed him "Click the Post button on x.com to publish your post (the text and image are
+        already filled in)", and that stood as a page step. The press the gate answered with a fact is answered with the same fact at this
+        door, while the fact stands; another step on that page is his as ever, and once the words are in the refusal is gone."""
+        post = {'action': 'run_tool', 'type': 'x_post', 'network': 'X', 'text': 'Northwind now closes its books in four days.'}
+        card = self.s.add_review({'TaskId': self.tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(post), 'Reason': 'the agent proposes to post on X'})
+        self.s.decide_review(card, 'approved', json.dumps({**post, 'result': {'browser': True}}), 'owner')        # ...he pressed Post via the browser
+        pg = {'url': 'https://x.example/compose/post', 'open': True, 'name': 'X', 'fields': [],
+              'elements': '- textbox "What is happening?!" [ref=e9]\n- button "Post" [ref=e11]'}
+        speaks = [{'hold': True, 'what': 'Publish your post on X', 'why': 'it speaks for you', 'kind': 'speaks'}]
+        asked = []
+        def brain(system, user, **kw): asked.append(user); return json.dumps({'same': 'Click the Post button' in user})
+        on = [mock.patch.object(browserview, 'state', return_value={'open': True, 'url': pg['url']}), mock.patch.object(bg, 'page_error', return_value=''),
+              mock.patch.object(bg, 'page', side_effect=lambda sid: pg), mock.patch.object(bg, 'judge', side_effect=lambda store, todo, *a, **k: speaks[:len(todo)]),
+              mock.patch('taskuary.llm.build_llm', return_value=brain)]
+        for m in on: m.start(); self.addCleanup(m.stop)
+        self.addCleanup(bg.REFUSED.clear)
+        robot = 'tick the "I am not a robot" box'
+        self.assertTrue(browserview.hand_over(self.s, self.tid, robot, '', 'run1', watch=None)['ok'], 'nothing was refused yet: any step is his')
+        ws.answer(self.s, self.tid, self.open()[0], '', press=True); self.assertEqual(asked, [])
+        no = bg.check(self.s, self.tid, 'run1', "agent-browser click '@e11'")['hookSpecificOutput']['permissionDecisionReason']
+        self.assertIn("the page's box is empty", no)
+        got = browserview.hand_over(self.s, self.tid, 'Click the Post button on x.example to publish your post (the text and image are already filled in)', '', 'run1', watch=None)
+        self.assertFalse(got['ok'], got); self.assertEqual(self.open(), [], 'nothing was handed to him')
+        self.assertIn("the page's box is empty", got['why']); self.assertIn('Type the post into its box first', got['why'])
+        self.assertIn('Publish your post on X', asked[0]); self.assertIn('Click the Post button', asked[0])
+        self.assertTrue(browserview.hand_over(self.s, self.tid, robot, '', 'run1', watch=None)['ok'], 'another step on that page is his')
+        ws.answer(self.s, self.tid, self.open()[0], '', press=True)
+        pg['fields'] = [{'k': 'text', 't': 'textarea', 'f': 0, 'v': post['text']}]                               # ...the words are in
+        n = len(asked)
+        self.assertEqual(bg.refused_press(self.s, self.tid, 'run1', 'Click the Post button on x.example'), '')
+        self.assertEqual((len(asked), bg.REFUSED), (n, {}), 'the fact no longer stands: nothing is asked, nothing kept')
+
 
 if __name__ == '__main__': unittest.main()
+
+
+class TheHandedTabIsHis(unittest.TestCase):
+    """WALK 9 (2026-11-23): the agent handed him a robot check on one tab, he approved another card of the task, and that press's result was
+    bound as the ANSWER to the hand-over - it closed, the task idled out, the browser went with it, and the agent's last words still promised
+    the page. A tab handed to him is his (browsergate.owner_tabs) until his I'm done: Taskuary's words go in as the next turn, the gate never
+    moves or closes that tab, and a tab that closes anyway says so on his card with a way on."""
+    setUp = DoneIsAPress.setUp
+    turn = DoneIsAPress.turn
+    open = DoneIsAPress.open
+
+    def test_a_press_elsewhere_reaches_the_agent_and_never_closes_his_step(self):
+        rid = self.turn()
+        self.sess.waiting = lambda: True                                            # the chat at rest after the turn that handed it over
+        with mock.patch.object(general, '_next_turn') as nt:
+            self.assertEqual(general.to_agent(self.s, self.tid, 'The owner approved it and Taskuary ran the click.', frm='taskuary'), 'told')
+        self.assertTrue(nt.called)
+        self.assertEqual(self.open(), [rid], 'the robot check is still his')
+        self.assertTrue(general.page_needs_owner(self.s, self.tid), 'and the session is not idled out from under it')
+        from taskuary import waitroom
+        with mock.patch.object(waitroom, 'state', return_value=('asking', self.sess)), \
+             mock.patch.object(waitroom, 'to_general', return_value=False) as tg, mock.patch.object(general, 'GeneralSession', SimpleNamespace):
+            waitroom.add(self.s, self.tid, 'Your landing went in.', 'router'); waitroom._deliver(self.s, self.tid)
+        self.assertTrue(tg.called); self.assertEqual(self.open(), [rid])
+
+    def test_the_gate_never_moves_or_closes_his_tab_and_a_new_tab_runs(self):
+        with mock.patch.object(browserview, 'active_tab', return_value='T1'): self.turn()
+        with mock.patch.object(browserview, 'active_tab', return_value='T1'):
+            for cmd in ('agent-browser open https://futuretools.example/news', 'agent-browser reload', 'agent-browser tab close', 'agent-browser close'):
+                said = bg.check(self.s, self.tid, 'run1', cmd)['hookSpecificOutput']['permissionDecisionReason']
+                self.assertIn("the owner's", said, cmd)
+            self.assertEqual(bg.check(self.s, self.tid, 'run1', 'agent-browser tab new https://futuretools.example/news'), {})
+        with mock.patch.object(browserview, 'active_tab', return_value='T2'):
+            self.assertEqual(bg.check(self.s, self.tid, 'run1', 'agent-browser open https://futuretools.example/news'), {})
+            self.assertIn('close', bg.check(self.s, self.tid, 'run1', 'agent-browser close')['hookSpecificOutput']['permissionDecisionReason'])
+
+    def test_a_tab_that_closes_anyway_says_so_on_his_card_and_the_agent_is_told(self):
+        with mock.patch.object(browserview, 'active_tab', return_value='T1'): rid = self.turn()
+        req = ws.asking_of(self.s, self.sess)
+        with mock.patch.object(browserview, 'pages', return_value=[{'id': 'T2', 'url': PAY}]), mock.patch.object(bg, '_tell') as told:
+            self.assertTrue(bg.shown_ask(req)['gone'])
+            self.assertTrue(bg.tab_gone(self.s, self.tid, rid))
+        self.assertIn('closed before they did the step', told.call_args[0][2])
+        with mock.patch.object(browserview, 'pages', return_value=[{'id': 'T1', 'url': PAY}]): self.assertNotIn('gone', bg.shown_ask(req))

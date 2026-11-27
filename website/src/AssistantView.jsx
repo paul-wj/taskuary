@@ -25,6 +25,7 @@ import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import ViewSidebarIcon from "@mui/icons-material/ViewSidebar";
 import api from "./api.js";
 import { DEMO_SAID, demoNo } from "./apiError.js";
+import { SIDE_NAV } from "./sideNav.js";
 import { runOperation } from "./taskOps.js";
 import { draftJob, openReply, rewriteReceipt } from "./replyDraft.js";
 import { DEMO } from "./demoApi.js";
@@ -35,6 +36,7 @@ import { loadGeneral } from "./lazyGeneral.js";
 // the static demo's guided journey: nothing outside the demo build ever draws it, so nothing there fetches it
 const DemoJourney = DEMO ? lazyView(() => import("./DemoJourney.jsx")) : () => null;
 import { BACK, advisedIn, aimed, navEnd, onPressed, onPressing, press as pressRow, walkMove, leaveRow, rowNow, rowDrawable, rowReady, rowTable, useHosted, useRowHold, useRowVerbs, useVerbs } from "./actionRow.js";
+import { useBeat } from "./pressResult.js";
 import { forgetTasks, heldTask, notePile, pageRead, prefetchTask, recRead, watchReads, watchRecs } from "./taskDetail.js";
 import { readLists } from "./connectorLists.js";
 import { ALL_LABELS, VERBS, hint as btnHint, howFar, label as btn, liveVerb, verbOfRow } from "./buttons.js";
@@ -74,9 +76,10 @@ import ContinueBox from "./ContinueBox.jsx";
 import { AgentAsk } from "./RunForm.jsx";
 import CloseNote from "./CloseNote.jsx";
 import { AttachImage, ImageTray, usePromptImages, useSendWhenUp } from "./promptImages.jsx";
-import { handToItem } from "./ItemSections.jsx";
+import { startsItems } from "./ItemSections.jsx";
+import { handToItem } from "./itemHand.js";
 import { afterCancel, afterConfirm, afterExecute, holdsProposal, markExecuted, proposalSay } from "./proposalCard.js";
-import { LEVEL_META, LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, withOpened, stillLeaving, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, liveBrowseId, pastView, lastActIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, tableItemOf, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
+import { AGENT_VERBS, LEVEL_META, LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, withOpened, stillLeaving, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, madeHere, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, drawnKey, tableCardIndex, keysOf, liveBrowseId, pastView, lastActIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, itemVerbs, tableItemOf, settledHistory, sinceOpener, walkOf, walkPlace } from "./funnelPile.js";
 import { FYI_PAGE, ageHover, subLine, answersTo, awayFromClear, closedElsewhere, coveredByReload, fyiHasRoom, fyiTail, heldSince, latestLine, levelHint, pileRows, pinOf, rowKeys, sameRow, sentChips } from "./funnelPile.js";
 import { railStatus, rowWhy } from "./railStatus.js";
 import { UndoLine } from "./Removed.jsx";
@@ -86,7 +89,7 @@ import { actReceipt, lineKeys, mergeDurableTurns, nextBadge, pickLine, placeLine
 import { lightOf, litAfter, litOn, litPick, litPull } from "./assistantLight.js";
 import * as pageView from "./pageView.js";
 import DigestText from "./DigestText.jsx";
-import { canGoBack, firstAppLink, linkName, navBack, onBackTo, onStep, openAppLink, recordPlace } from "./appLinks.js";
+import { firstAppLink, linkName, navBack, navTarget, onBackTo, onStep, openAppLink, recordPlace } from "./appLinks.js";
 import { goStraight } from "./SetupWithAi.jsx";
 import { BOARD, hashFor, opensTask } from "./canvasLinks.js";
 import { canSend, cannotStart, useCapabilities } from "./capabilities.js";
@@ -102,12 +105,12 @@ import { onFirstRun, readFirstRun } from "./firstRunState.js";
 import FeedView from "./FeedView.jsx";
 import { MORE_PX, SECTION_WORDS, backAt, dueWord, holdsNew, levelOf, madeRow, placed, pressOnto, pulledRow, rowOfTask, withWalk } from "./funnelPile.js";
 import { STAYS, dropHeld, ghostsOf, keepHeld, movedEntry } from "./movedFyi.js";
-import { isImportant, level as priorityOf } from "./priority.js";
+import { isImportant, urgentMark } from "./priority.js";
 import { age, ago, band, bandUntil, plural } from "./timeWords.js";
 import { jiraStatusText, jiraStatusTip, jiraStatusTone } from "./jiraStatus.js";
 const GeneralWorkspace = lazyView(loadGeneral);
 import CanvasItem, { CANVAS_ITEM_HEIGHT, showsTask, wordsCap } from "./CanvasItem.jsx";
-import { PaneMoves } from "./TaskPage.jsx";
+import { PaneMoves } from "./TaskRow.jsx";
 import ActionRow from "./ActionRow.jsx";
 import { floorOf } from "./inView.js";
 const CanvasBrowse = lazyView(() => import("./CanvasBrowse.jsx"));
@@ -189,22 +192,16 @@ const picksOf = (providers) => (providers || []).map((p) => p.pick).join("|");
 // own line (errText, failOf, proposeFailed) reads its `detail`
 const refusedPress = (say) => Object.assign(new Error(say || "That did not go through."), { response: { data: { detail: say || "That did not go through." } } });
 // what an empty rail offers: the same doors as the welcome block (runChip knows these three)
-const idleChips = () => [{ verb: "newtask", label: "New task", uiButton: "new_task" }, { verb: "setupask", label: "Set something up", uiLabel: true }, { verb: "tour", label: "Change my setup", uiLabel: true }];
-// Client-authored receipts keep their English text for conversation matching;
-// only their explicit UI descriptor is translated when rendered.
+// NOTHING ON THE TABLE: the bar's one exception to Back and Next (the owner, 2026-11-10: "even these should just be shortcut to new... that's
+// it and myabe change my setup. don't like that many buttons") - the sidebar's own New (sideNav), which starts a task, a report or a routine,
+// and Change my setup. `bar`: they stand on the bar, where nothing else but the walk does (actionRow.splitRow)
+const NEW_DOOR = SIDE_NAV.find((n) => n.key === "new");
+const IDLE_CHIPS = [{ verb: "newtask", label: NEW_DOOR.label, hint: NEW_DOOR.hint, uiLabel: true, bar: true }, { verb: "tour", label: "Change my setup", uiLabel: true, bar: true }];
 const uiReceipt = (source, values = {}) => ({
   text: source.replace(/\{(\w+)\}/g, (match, key) => Object.hasOwn(values, key) ? String(values[key] ?? "") : match),
   uiSource: source,
   uiValues: values,
 });
-// the presses that start an agent on an item: each opens the agent box first (askAgent) - `coder` is coding_agent's old name
-const AGENT_VERBS = ["coding_agent", "regular_agent", "coder"];
-// A NOT-OURS taken further goes on as chips under its receipt (followUps) - "From now on", "No more ideas like this". Each carries its own
-// operation on the same message (or idea): the item is filed and off the pile by the time it is pressed, so it cannot be looked up again.
-const FURTHER = { not_ours_sender: (p) => ({ kind: "preference.exclude_sender", target: p.target, params: { scope: "sender" } }),
-  not_ours_kind: (p) => ({ kind: "idea.act", target: p.target, params: { ...(p.params || {}), verb: "dismiss_kind" } }) };
-const followUps = (p, out) => (out?.status === "done" && p?.verb === "not_ours" && p.target != null
-  ? (p.alts || []).filter((a) => FURTHER[a.verb]).map((a) => ({ verb: a.verb, label: a.label, follow: FURTHER[a.verb](p) })) : []);
 const speakOn = () => { try { return localStorage.getItem("taskuary_speak") === "1"; } catch { return false; } };
 const speak = (text) => {
   if (!text || typeof window === "undefined" || !window.speechSynthesis) return;
@@ -784,11 +781,16 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                 const inBatch = batched(i);
                 // URGENT IS A QUIET SHADE ON THE ROW, IN ITS PLACE (the owner, 2026-10-22: "remove the urgent section and just add quiet
                 // shading around it") - no heading of its own, no icon, no word; Next walks it in its place
+                const goal = String(i.kind || "").startsWith("goal");
+                const page = i.tid ? pageRead(i.tid) : null, why = rowWhy(i, page);
+                const st = i.settling || goal || i.kind === "meeting" ? null : railStatus(i, !canSend(sendCaps, i.channel), page);
                 const hot = !i.settling && isUrgent(i);
                 // ...and the DOT says the stored priority whatever the band (2026-10-26): a draft waiting for the owner's yes, a blocked agent,
                 // a goal or a wait on someone never reaches band 1, so an urgent one drew regular's sage - raising important to urgent
                 // visibly lowered its mark. The owner's ruling (2026-10-25): the category IS the dot's colour. The band and the walk stay
-                const urgentDot = !i.settling && (hot || priorityOf(i.priority) === "urgent");
+                // ...UNTIL IT IS ANSWERED OR DONE (walk 25, 2026-11-26: the red dot stood on a task whose reply had gone an hour before, "agent
+                // done" beside it): urgent is on him NOW - a row whose own status reads done wears none (priority.urgentMark)
+                const urgentDot = urgentMark(i, hot, st);
                 // ...and IMPORTANT a quieter mark of its own, in its place too - never a move (the owner, 2026-10-25: "show it as a mark
                 // in its row's place"); urgent outranks it, so an urgent row wears urgent's shade alone
                 const imp = isImportant(i, hot);
@@ -809,9 +811,6 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                 // same reading the task header's pill takes). The words and emoji on the row's right go, so the title has the room; the
                 // state's words are the icon's label and hover. A row in a band whose heading already says it (fyi, report) wears none;
                 // a goal keeps its own mark. Urgent is the row's shading, a meeting its time.
-                const goal = String(i.kind || "").startsWith("goal");
-                const page = i.tid ? pageRead(i.tid) : null, why = rowWhy(i, page);
-                const st = i.settling || goal || i.kind === "meeting" ? null : railStatus(i, !canSend(sendCaps, i.channel), page);
                 const shown = st && (st.spins || meta.word !== BAND_SAYS[level]) ? st : null;
                 const word = i.settling ? ""
                   : i.kind === "meeting" ? t("invite · {time}", { time: fmtTime12(i.when) })
@@ -840,8 +839,8 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                       onClick={() => (isCur ? onCurrent?.() : !i.settling && onPull(i.key))}
                       onPointerEnter={() => { if (!isCur && i.tid) prefetchTask(api, i.tid); }}
                       onPointerDown={() => { if (!isCur && i.tid) prefetchTask(api, i.tid); }}   /* a touch has no hover: read at the press */
-                      aria-label={urgentDot ? t("{title} - urgent", { title: i.title }) : imp ? t("{title} - important", { title: i.title }) : undefined}
-                      title={[i.who, t(st?.word || meta.word), i.ref, i.moved ? t("moved to Tasks as {ref}", { ref: i.moved.ref }) : "", imp ? t("important") : "", i.promoted ? t("moved up - it looked urgent") : "", dangerLine(i.danger, i.danger_aim), why].filter(Boolean).join(" · ")}>
+                      aria-label={urgentDot ? `${i.title} - urgent` : imp ? `${i.title} - important` : undefined}
+                      title={[i.who, st?.word || meta.word, i.ref, i.profile, i.moved ? `moved to Tasks as ${i.moved.ref}` : "", imp ? "important" : "", i.promoted ? 'moved up - it looked urgent' : '', dangerLine(i.danger, i.danger_aim), why].filter(Boolean).join(" · ")}>
                       <div className="t">
                         {/* AN AGENT AT WORK is a ring spinning round the row's icon (the owner, 2026-10-21) - it stops when the agent
                             finishes, asks, fails or is stopped; the highlighted border stays the table's alone. A goal wears its mark. */}
@@ -853,14 +852,10 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                             and on the card (B3, 2026-10-29) - a warning in the row's own height, never a gate */}
                         {!!i.danger && <span className="tq-pile-danger" data-tq-danger="" style={{ color: "var(--tq-danger, #8a3646)" }} aria-label={dangerLine(i.danger, i.danger_aim)}>⚠</span>}
                         <b className={goal ? "goal-t" : undefined}>{i.title}</b>
-                        {/* A JIRA ISSUE SAYS WHERE IT STANDS IN ITS OWN WORKFLOW (2026-11-10: distinguish Jira statuses):
-                            the provider's status word in a compact badge beside the subject - "Open" beside an "In
-                            Progress" row read as the row's own state, so it is the Jira's words, in Jira's words, and a
-                            row with no snapshot reads exactly as it did before (jiraStatus.js) */}
-                        {!goal && jiraStatusText(i) && <span className={`tq-pile-jira${jiraStatusTone(i) ? ` tone-${jiraStatusTone(i)}` : ""}`}
-                          data-tq-jira={jiraStatusText(i)} data-tq-jira-tone={jiraStatusTone(i) || undefined}
-                          title={jiraStatusTip(i)}>{jiraStatusText(i)}</span>}
-                        {/* NO WORKSTREAM CHIP ON THE RAIL (the owner, 2026-11-08: "little card taskuary AI .... on rail. hate that") - the task's own page still says it */}
+                        {/* NO CHIP ON THE RAIL (the owner, 2026-11-08: "little card taskuary AI .... on rail. hate that"): with two profiles a row says
+                            which in a quiet word where it has the room, whole - and where it has none, nothing: never a title's room, never a
+                            cut word (.tq-pile-profile, 2026-11-26). With one profile it is not drawn at all */}
+                        {!!i.profile && <span className="tq-pile-profile" data-tq-row-profile="" title={`Profile: ${i.profile}`}><span>{i.profile}</span></span>}
                         {/* NO "+N" FOR NEW REPLIES (the owner, 2026-10-26), on the phone neither. ONE FYI ROW PER EMAIL THREAD (trust audit P2, 2026-10-28): the newest mail speaks; the rest are counted in their own words */}
                         {i.thread_n > 0 && <span className="tq-pile-steps" data-tq-thread-n={i.thread_n} title="it opens on all of them">· {i.thread_n} more on the thread</span>}
                         {/* a goal's row is "🎯 title · 2 of 5 steps" - its count, never its TQ number (the owner, 2026-10-21) */}
@@ -1063,7 +1058,7 @@ function Line({ m, lastBrief = false, live, last, moves = false, actions, fresh,
   const chips = barHolds && !m.card ? []          // the task view's own row under the chat holds its words, Next included
     : pageOver && !m.card ? [{ verb: "next", label: btn("next") }]   // ...and under a page only the walk's way on (pageOver)
     : said.length || !last || m.role !== "assistant" || m.proposal || kind === "proposal" || kind === "fyis"
-    ? said : idle ? idleChips() : [{ verb: "next", label: btn("next") }];
+    ? said : idle ? IDLE_CHIPS : [{ verb: "next", label: btn("next") }];
   // A REPORT, AN FYI OR A MEETING ON THE TABLE is drawn in a task's three sections, at a task's height (ItemSections, the owner 2026-10-28)
   const table = live && canvas && m.card && !foldsAs(canvas.folded, m.card.key) && !canvas.browsing ? wordsCap(canvas.height) : null;
   const card = live && m.card && kind ? {
@@ -1082,7 +1077,7 @@ function Line({ m, lastBrief = false, live, last, moves = false, actions, fresh,
     brief: <BriefCard card={m.card} onStart={actions.start} />,
     // SET UP TASKUARY is the two cards, not the 13-stop walk (the owner, 2026-10-14: "what is this garbage ... where are the cards")
     firstrun: <FirstRun revisit onChanged={actions.reload} onWalk={() => actions.start(null)} />,
-    fyis: <FyisCard card={c} onDone={actions.done} onSurface={actions.surface} onTimeline={actions.timeline} onPropose={actions.propose} onAgent={actions.agent} table={table}
+    fyis: <FyisCard card={c} onDone={actions.done} onTimeline={actions.timeline} onAgent={actions.agent} table={table}
       movedTo={actions.movedTo} onOpenRef={actions.openRef} />,
   }[kind] : null;
   // A STOP THE WALK HAS MOVED PAST is a finished step, not something the assistant said. Falling
@@ -1111,7 +1106,7 @@ function Line({ m, lastBrief = false, live, last, moves = false, actions, fresh,
   // THE WORDS RIDE IN THE CARD (2026-09-23): Next beside the card's verb, every other word on its
   // quiet Also line. Only answer chips (a model's own options) and a card-less line keep the strip.
   const inCard = !!card && kind !== "walk" && kind !== "setup";
-  const verbs = inCard ? chips.filter((c) => c.verb) : [];
+  const verbs = inCard ? itemVerbs(kind, chips.filter((c) => c.verb)) : [];
   // a card that has FOLDED or been walked past is not the item any more - its recorded words (Stop and save, Remind me)
   // were still offered while it closed (the owner, 2026-10-06: "why do we still have these buttons while it's closing a task?");
   // all it keeps is the way on
@@ -2597,7 +2592,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       // (the repositories stay on the proposal card's own picker here - the chat has them only where there is no card)
       // ...and a SEND that went carries its own (concierge.sent_chips): Mark done and Next - the item stays on the table
       const chips = (out.status !== "done" || p.kind === "review.approve") && res?.chips?.length ? res.chips.filter((c) => !(out.repo && c.verb === "repo"))
-        : step === "offer" || out.status !== "done" ? [{ verb: "next", label: btn("next") }] : followUps(p, out);
+        : step === "offer" || out.status !== "done" ? [{ verb: "next", label: btn("next") }] : [];
       // A PRESS THAT WENT THROUGH IS A BADGE ON ITS CARD, never "Done - Mark done · TQ-0001." under it (the owner, 2026-10-22: "we don't
       // need that text ever"). A line stays only where it carries a way on (a send's Mark done and Next, Not ours taken further, a
       // sweep's Next) - and a press that did NOT go through is said, as a failure
@@ -2657,7 +2652,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     if (real) { pressRow(real.id, null, anchor); return null; }
     // a fix is a place (advisor.for_key's href), never a proposal: with no '<rid>:fix' on the row it opens the place itself
     if (liveVerb(a.verb) === "fix" && a.href) { openAppLink(a.href); return null; }
-    if (a.verb === "answer_agent") { askAnswer(currentRef.current); return null; }
     // MAKE A TASK TO FIX THIS (advisor.failure): a failure nothing here fixes becomes a task of its own, carrying what failed - made by
     // the same tool the assistant uses, so it has a receipt like any act, then opened
     if (liveVerb(a.verb) === "new_task" && a.task) {
@@ -2708,22 +2702,23 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     setAgentOn(null);
     await runProposal({ ...data, key: data.key || item.key });
   };
-  // ANSWER IT has nothing to send until the owner says it: pressed bare it was refused ("What should I tell...?"). The box is where
-  // the answer goes - the server passes what is typed over a waiting agent to it
-  const askAnswer = (item) => {
-    noteLine(item?.agent ? { source: "Type your answer below - it goes straight to {agent} that is waiting.", values: { agent: item.agent } } : { source: "Type your answer below - it goes straight to the agent that is waiting." });
-    setTimeout(() => composeRef.current?.focus(), 0);
-  };
-  // THE CALENDAR'S ANSWERS (calwrite.py): Accept and Decline draft at once; Propose a new time and Find a time open the free times
-  // first (SlotPicker). Each lands on the table as a draft with Send lit, as a reply does - nothing reaches the calendar before the
-  // owner's Send. A card that may not write says so in one line, with its sign-in as the way out (failures.py's fix).
+  // ...and the start every item's own box takes his line by (ItemSections.startsItems): the box is this road, never a second one
+  startsItems(startOnItem);
+  // THE CALENDAR'S ANSWERS (calwrite.py): Accept and Decline tell the calendar at the press (the owner, 2026-11-26) and say what went;
+  // Propose a new time and Find a time open the free times first (SlotPicker) and land on the table as a draft with Send lit, as a
+  // reply does. A send that failed is that card, its way past it on it. A card that may not write says so in one line, with its
+  // sign-in as the way out (failures.py's fix).
   const calendarDrafted = (data, item) => {
     if (!data?.ok) {
       setMsgs((m) => [...m, { id: `r${Date.now()}`, role: "receipt", status: "error", ...(data?.say ? { text: data.say } : uiReceipt("That could not be drafted.")), tid: item?.tid, ref: item?.ref,
         chips: [...(data?.fix?.href ? [{ verb: "go", href: data.fix.href, label: data.fix.label }] : []), { verb: "next", label: VERBS.next.label, uiButton: "next" }] }]);
       return;
     }
-    setLit({ verb: "approve", label: VERBS.approve.label, line: "", key: `review:${data.reviewId}`,
+    if (data.sent) {
+      setMsgs((m) => [...m, { id: `r${Date.now()}`, role: "receipt", status: "done", text: data.say, tid: item?.tid, ref: item?.ref, chips: [{ verb: "next", label: btn("next") }] }]);
+      putOnTable(null, "sync"); return;
+    }
+    setLit({ verb: "approve", label: btn("approve"), line: "", key: `review:${data.reviewId}`,
              tid: item?.tid ? Number(item.tid) : null, landed: false });
     putOnTable(null, "sync"); deferInChat(() => surfaceRef.current?.(`review:${data.reviewId}`), 300);
   };
@@ -2750,15 +2745,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     if (c.verb === "setupask") { askSetup(); return; }
     // ...and the end of the walk's way to walk again: the day card's own button and handler, on the row (the owner, 2026-10-22)
     if (c.verb === "walk") { start(null); return; }
-    // ...a Not ours taken further, under its receipt (followUps): the item it names, whatever is on the table now - run at once
-    if (c.follow?.kind) {
-      setBusy(true); setErr("");
-      try {
-        await runOperation(api, c.follow.kind, c.follow.target, c.follow.params);
-        setMsgs((m) => pressChip(m, c));          // its badge on the line it was under, not "<word> - done." (2026-10-22)
-      } catch (e) { setErr(errNotice(e)); } finally { setBusy(false); }
-      return;
-    }
     if (c.verb === "tour") { await setup(); return; }
     const item = currentRef.current || currentItem;
     const key = item?.key || current;
@@ -2777,7 +2763,6 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       } catch (e) { setErr(errNotice(e)); } finally { setBusy(false); }
       return;
     }
-    if (c.verb === "answer_agent") { askAnswer(item); return; }
     // SEND TO AGENT ASKS WHAT FIRST (the owner, 2026-10-23): the agent box opens where the item is - nothing starts at the press
     if (AGENT_VERBS.includes(c.verb) && !c.text) { askAgent(item, c.verb); return; }
     // one item by name - one the walk already showed and will not repeat yet ("N things you've already seen")
@@ -2949,7 +2934,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       const { data } = await api.post("/api/setup/walk", { at });
       if (walkAdvances(at, data.total)) pushStop(data);
       else setMsgs((m) => [...m, { id: `w${Date.now()}`, role: "receipt",
-        ...uiReceipt("Walk finished. Change my setup below starts it again any time."), chips: idleChips() }]);
+        ...uiReceipt("Walk finished. Change my setup below starts it again any time."), chips: IDLE_CHIPS }]);
     } catch {      // the card stays where it is; nothing was lost - but a press that did nothing says so
       setMsgs((m) => [...m, { id: `w${Date.now()}`, role: "receipt", status: "error", ...uiReceipt("That step didn't load. Press it again.") }]);
     }
@@ -3109,7 +3094,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     setRailOpen(false); if (old) setOld(null); setExpanded(false);
     const id = `b${Date.now()}`;
     // THE SAME AREA MOVES ITS CARD: a link or a button for the area already open re-places that card, never posts a second
-    // one - a second unmounted the first mid-dialog (a #playbook link opening New playbook), and old links posted two
+    // one - a second unmounted the first mid-dialog (a #skill link opening New skill), and old links posted two
     setMsgs((m) => {
       const live = [...m].reverse().find((x) => x.role === "browse" || (x.card && !x.card.background_event));
       if (live?.role === "browse" && live.area === area) return m.map((x) => (x.id === live.id ? { ...x, state, down: false } : x));
@@ -3234,7 +3219,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       {/* the start of the walk: the day's meetings, then who wants what - the best of the Morning
           digest, on the screen the day opens on (2026-09-23) */}
       <DayHold loading={pileLoading || mailReading}>
-      <DayOpener groups={items.length ? summarize(railPile ? pileRows(railPile) : items).groups : []} onSection={walkSection}
+      <DayOpener groups={items.length ? summarize(railPile ? pileRows(railPile) : items).groups : []} onSection={walkSection} onOpen={(k) => pull(k, null)}
         loading={mailReading || pileLoading} top={<SinceBlock onOpen={(k) => pull(k, null)} onReading={setMailReading} />} />
       {/* no "Nothing is waiting on you - ask me anything" line when the day is empty: the card above says it and the buttons below
           are the choices (the owner, 2026-10-22: "what is this blank text?? buttons do the talking.." / "I hate free text") */}
@@ -3245,10 +3230,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
       </DayHold>
       <div className="tq-modes">
         {/* pressable while the day counts or the walk is busy: the press is held (walkQueued) and runs once it can */}
+        {/* ...the day fills in above this row as it lands and moves it under the pointer: the press still lands (secondClick.js) */}
         <button type="button" className="tq-chip primary" disabled={walkQueued || starting || resetting || (!counting && !canAdvance && !onYou)}
-          // ...kept on the press itself while loading: the day fills in above this row as it lands and moves it, and a click
-          // whose release lands after the move never reaches the button
-          onPointerDown={counting ? () => setWalkQueued(true) : undefined}
           onClick={() => (counting || walkOff ? setWalkQueued(true) : start(null))}
           title={btnHint("walk")}>{starting || walkQueued ? t("Getting your first one...") : btn("walk")}</button>
         {/* NO "Set up Taskuary" HERE: setup is the Setup button on the top bar, never a choice in the chat (the owner, 2026-10-19) */}
@@ -3319,7 +3302,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   setupCovered.current = !!(firstRun && (browsing || setupCard));
   // THE TABLE, ONE RECORD (tableState.js): folded by its X or under a page opened over it, the item keeps its key - and the Advisor
   // keeps quiet, its button never acting on what nobody can see. The strip speaks only for the item on the table, at rest.
-  const table = tableOf({ current, cardKey, foldedKey, browsing, setup: setupOn.current, over: !!setupCard });
+  const drawn = old || firstRun || current || cardKey ? null : drawnKey(shown, (c) => showsTask(c, cardFor(c)));
+  const table = tableOf({ current, cardKey, drawn, foldedKey, browsing, setup: setupOn.current, over: !!setupCard });
   // ...and the row draws only ITS verbs from the frame it changes (actionRow.rowTable), none of the one a press is leaving: both in one
   // commit, before the paint - no frame shows the old task's buttons, and a press that fails gives them back in the frame it says so
   useLayoutEffect(() => { rowTable(table.key); leaveRow(flight?.from); }, [table.key, flight?.from]);
@@ -3327,7 +3311,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // ...ONE BOX ON A TASK (the owner, 2026-11-22: "yes" - every task page had the task's "Message the agent..." and this "Ask..." under it):
   // while a task is in view its own box is the only one; the Assistant's comes back on the rail, or over a page opened on top
   // ...by the item's own task, whatever row opened it ("review:5", "processing:…" - the walk, 2026-11-22: "task:N" alone missed every row)
-  const taskInView = !!(currentItem?.tid || /^task:\d+$/.test(table.key || "")) && !table.place && !table.folded;
+  // ...and what Taskuary made on its own, whose Agent tab has the box (madeHere)
+  const taskInView = !!(currentItem?.tid || drawn || /^task:\d+$/.test(table.key || "") || madeHere(currentItem)) && !table.place && !table.folded;
   const tableSays = tableWords(table, currentItem?.ref || (/^task:(\d+)$/.test(table.key || "") ? `TQ-${table.key.slice(5).padStart(4, "0")}` : ""));
   // THE ASSISTANT'S LIGHT OUTRANKS THE ADVISOR'S while its item is on the table: the owner asked for that act in words, and the Advisor's line
   // over it would name another button (assistantLight.js); it goes out at the next press or when the table moves on
@@ -3369,17 +3354,34 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   const hanging = !!state && !old && !walk && !browsing && shown.length > 0 && !busy && !starting && !nextComing && rowEmpty && (canNext || !!err || proposing);
   useVerbs("floor", [{ id: "floor:next", group: "next", label: btn("next"), tone: "p", title: btnHint("next"),
     run: () => { setErr(""); surface(null, null); } }], hanging);
-  // NAV: BACK BESIDE NEXT, NO NEXT ON THE LAST ONE (the owner, 2026-10-27: "on the first one no Back, like no Next on the last one"). Back
-  // stands while there is a place to go back to (appLinks.navBack); Next goes when it has nothing below it (walk.below)
-  const walkNow = walkOf(pile), onWalk = !!currentItem && !!walkNow && (walkNow.on === currentItem.key || (walkNow.members || []).includes(currentItem.key));
-  // ...BACK IS THE ONE LIST OF PLACES HE WAS ON (the spec's part E, 2026-11-19): the bar's Back walked the rail's row above, the corner arrow the
-  // address - two Backs, two answers. Both step back over the places he and the walk moved through (appLinks.navBack)
-  const [canBack, setCanBack] = useState(canGoBack);
-  useEffect(() => onStep(() => setCanBack(canGoBack())), []);
-  const moving = busy || deferring || resetting;
+  // NAV: BACK BESIDE NEXT, NO NEXT ON THE LAST ONE (the owner, 2026-10-27: "on the first one no Back, like no Next on the last one"). Next goes
+  // when the walk has nothing below (walk.below); what Back means is appLinks.navTarget's alone, from what the view IS (funnelPile.walkPlace)
+  const walkNow = walkOf(pile), viewIs = walkPlace({ table, item: currentItem, pile, off: firstRun || !!old || !!walk }), onWalk = viewIs.onWalk;
+  const [, setStepped] = useState(0);                 // ...a step of history moves what a page's Back returns to
+  useEffect(() => onStep(() => setStepped((n) => n + 1)), []);
+  const backNav = navTarget(viewIs);
+  // ...and through a press's beat (pressResult): its result is on its button, the move comes after it - one move at a time
+  const beat = useBeat(), moving = busy || deferring || resetting || beat;
+  // ...greyed, and refused, while a move is out (the owner, 2026-11-03): a row's Back draws its row at its press as Next does; it reads nothing
+  // and passes nothing, the row it leaves stays exactly as it was
+  const goBack = () => {
+    if (backNav.disabled || moving || turnFlight.current) return undefined;
+    if (backNav.to === "place") return navBack();
+    if (deferredChat.current.size) return undefined;
+    setRailOpen(false); browseDown();
+    return surface(null, null, null, false, "back");
+  };
+  const goBackRef = useRef(goBack); goBackRef.current = goBack;
+  // ...Alt+Left is the same Back: the window's own history step went to the page he came from on a walk row
+  useEffect(() => {
+    if (!active) return undefined;
+    const k = (e) => { if (e.altKey && e.key === "ArrowLeft" && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); goBackRef.current(); } };
+    window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
+  }, [active]);
   // ...and on a desk Back is ALWAYS on the bar, greyed where there is nowhere to go back to (the owner, 2026-10-29: the bar is Back and Next)
-  useVerbs("nav", [{ id: BACK, group: "back", label: btn("back"), title: btnHint("back"), disabled: !canBack || moving, why: moving ? "" : "nothing to go back to",
-    run: navBack }], canBack || (deskChat && !firstRun));
+  useVerbs("nav", [{ id: BACK, group: "back", label: backNav.label || btn("back"),
+    title: backNav.kind === "row" ? btnHint("back") : backNav.label || backNav.why, disabled: backNav.disabled || moving, why: moving ? "" : backNav.why,
+    run: goBack }], !backNav.disabled || (deskChat && !firstRun));
   const atEnd = !!current && table.speaks && onWalk && !walkNow.below;
   useEffect(() => { navEnd(atEnd); }, [atEnd]);
   useEffect(() => () => navEnd(false), []);
@@ -3391,7 +3393,8 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
   // first load replaces the conversation, and a card posted before it would be wiped
   const doneReq = useRef(0);
   useEffect(() => {
-    if (!request?.n || request.n === doneReq.current || !state) return;
+    // ...a report's row is looked for on the rail, so that ask waits for the rail: asked first, the demo opened its dashboard's setup page (2026-11-24)
+    if (!request?.n || request.n === doneReq.current || !state || (request.kind === "report" && !pile)) return;
     doneReq.current = request.n;
     // ...`at` numbers the ask, so a view already open on the page opens the card a second link names (ConnectorsView, SettingsView)
     if (request.kind === "browse") browseRef.current?.(request.area, { ...(request.state || {}), at: request.n });
@@ -3408,6 +3411,12 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     }
     else if (request.kind === "task") { if (request.fromUrl) byUrl.current = true; openTaskRef.current?.(request); }
     else if (request.kind === "msg") openMsgRef.current?.(request.mid);   // #msg=N: that message's card (canvasLinks)
+    // ...A REPORT'S OWN ROW, drawn as its rail press draws it (the demo opens on its dashboard - the owner, 2026-11-22): the rail row of that
+    // report's latest run; none on the rail, its page
+    else if (request.kind === "report") {
+      const row = (pileRef.current?.items || []).find((i) => Number(i.source_id) === Number(request.sid) && !i.settling);
+      if (row) pullRef.current?.(row.key); else browseRef.current?.("reports", { section: "reports", open: Number(request.sid), at: request.n });
+    }
     else if (request.kind === "new") browseRef.current?.("new", request.state || {});     // #new-task: the New card in the conversation (addressed: Message them)
     // Back to the address with no place: the walk's own table, the page over it put down (appLinks.onPlace)
     // ...and on a chat that held nothing but pages, the empty chat comes back as it was - its greeting, day card and Walk button: the folded
@@ -3415,7 +3424,7 @@ export default function AssistantView({ onOpenTask, onNavigate, active = true, r
     else if (request.kind === "home") { setRailOpen(false); setFoldedKey(null); browseDownRef.current?.(); putOnTable(null, "view");
       setMsgs((m) => (m.length && m.every((x) => x.role === "browse") ? [] : m)); }
     if (request.fromUrl) { navHow.current = "replace"; urlStep.current = true; urlWant.current = request.kind === "task" && request.tid ? `#task=${request.tid}` : ""; }
-  }, [request, state]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [request, state, pile]);   // eslint-disable-line react-hooks/exhaustive-deps
   // A COLD LINK TO A TASK (#task=N in a new tab) draws that task first: the conversation came back with the walk's last item on
   // the table, which drew whole - its view and every read behind it - for the 0.6-1 s the link's own pull took, then gave way.
   // The page stays on its loading spinner until the pull has answered (or failed); what it then draws is what it drew before.

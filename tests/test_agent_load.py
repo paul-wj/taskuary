@@ -51,3 +51,27 @@ def test_a_drain_waits_on_light_load_too():
         with mock.patch.dict(terminal.SESSIONS, {'x': subs(1)}, clear=True): bb.drain(s)
         start.assert_not_called()                                                 # 0.2 + 1 does not fit in 1
         bb.drain(s); assert start.call_args[0][1:] == (tid, 'notes')
+
+def test_a_full_queue_fills_every_free_slot_and_each_freed_one_at_once():
+    # the load run (2026-11-24): 99 starts queued, one at work of four slots - each general start ran its whole first turn on the drain's thread.
+    # Cap 4, 12 queued starts, 1 s turns: four at work at a time, all twelve done in about three turns' time
+    s = home(auto_sessions='4'); tids = [s.create_task({'Title': f'Job {i}', 'Kind': 'general'}, 't') for i in range(12)]
+    for t in tids: s.enqueue_dispatch(t, None, 'assistant', '4 agents are already running')
+    peak, ended, lock = [0], [], threading.Lock()
+    def turn(st, tid, brief=None):
+        ses = NS(alive=True, task_id=tid, subagents=[], phase=lambda: 'working')
+        terminal.SESSIONS[f'general:{tid}'] = ses
+        with lock: peak[0] = max(peak[0], bb.live_count())
+        time.sleep(1.0)
+        ses.phase = lambda: 'parked'; ended.append(tid); bb.freed(st)           # the turn ends, its slot frees (general.send_prompt)
+        return True
+    # ...AT ONCE: a freed slot's own drain runs; the slow retry (its seconds-long timer) never fires, so only a start on the free fills a slot
+    retries = []
+    def later(st, delay=2.0): threading.Thread(target=bb._safe, args=(st,)).start() if delay < 1 else retries.append(delay)
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True), mock.patch.object(ingest, '_start_general', side_effect=turn),          mock.patch.object(bb, 'drain_later', later):
+        t0 = time.time(); bb.drain(s)
+        while len(ended) < 12 and time.time() - t0 < 30: time.sleep(0.05)
+    assert sorted(ended) == sorted(tids), f'{len(ended)} of 12 ran on freed slots alone (retries asked: {retries})'
+    assert peak[0] == 4, peak                                                    # every free slot filled, never one over the cap
+    assert not s.queued_dispatches()
+    assert all(sum(c['Body'].startswith('Started - ') for c in s.list_comments(t)) == 1 for t in tids)

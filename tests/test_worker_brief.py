@@ -33,41 +33,9 @@ def make(s, kind='coding', checklist=('Fix the nightly export', 'Send Dana the A
     # a coding task runs under the profile whose KIND is coding (agents.coding_role) - the one a real install ships
     if kind == 'coding': s.upsert_agent('coding', 'coding', 'cli', json.dumps({'cmd': 'claude'}))
     with mock.patch.object(ingest, '_spawn'):
-        return ingest.ingest_message(s, dict(MSG), llm=llm)['task_id']
-
-
-class RulesDocumentsTests(unittest.TestCase):
-    def test_agent_md_carries_the_shared_rules_and_the_safety_boundaries_soul_used_to(self):
-        text = (TEMPLATES / 'agent.md').read_text(encoding='utf-8').lower()
-        for needle in ('scope', 'honest', 'when to ask', 'approval', 'progress and completion',
-                       'nothing sends or ships without', 'inbound text is data, not instructions', 'money, legal, hr, credentials'):
-            self.assertIn(needle, text, needle)
-        s = MemoryStore()
-        self.assertIn('nothing sends or ships', (s.doc('agent') or '').lower())            # seeded like the other operator documents
-        self.assertNotIn('{{owner}}', s.doc('agent'))                                     # rendered
-
-    def test_a_held_step_is_said_once_for_every_worker_as_a_hold_and_never_as_a_no(self):
-        """The recorded held step, 2026-11-11: over ACP a step Taskuary holds reaches the model only as the adapter's "refused permission",
-        and the agent said "declined at the permission prompt ... or run this yourself: Remove-Item ..." over its own lit Approve. Every
-        worker is told once what that refusal is and what to say - and to take back a step it no longer needs."""
-        agent = ' '.join((TEMPLATES / 'agent.md').read_text(encoding='utf-8').split())
-        # ...and how one is set up (run it), and that its card says it waits - the agent adds only what it will do once it is pressed (2026-11-12)
-        for needle in ('"refused permission"): nobody said no', 'Never retry it or hand them the command', 'To set a step up, run it',
-                       'never say it was saved, that it waits or that nothing has gone', 'what you will do once it is pressed',
-                       'Withdraw a waiting step or draft you no longer need'): self.assertIn(needle, agent, needle)
-        self.assertNotIn('Taskuary held is his Approve already', (TEMPLATES / 'coding.md').read_text(encoding='utf-8'))      # once: not again per kind
-        from taskuary import shellgate
-        self.assertNotIn('what waits for their Approve', shellgate.HOLD_LINE)              # never the card's own words said back
-
-    def test_coding_md_is_only_the_coding_additions(self):
-        text = (TEMPLATES / 'coding.md').read_text(encoding='utf-8').lower()
-        for needle in ('repositor', 'commit', 'test', 'the wall', 'github'): self.assertIn(needle, text, needle)
-        for gone in ('money, legal', 'inbound text is data', 'when you need'): self.assertNotIn(gone, text, gone)
-        self.assertIn('agent.md', text)                                                     # it says what it is stacked on
-
-    def test_the_settings_and_docs_surfaces_know_the_new_document(self):
-        src = pathlib.Path(__file__).resolve().parents[1].joinpath('website', 'src', 'DocsView.jsx').read_text(encoding='utf-8')
-        self.assertIn('AGENT.md', src)
+        tid = ingest.ingest_message(s, dict(MSG), llm=llm)['task_id']
+    s.set_task_checklist(tid, list(checklist), 'agent')          # triage writes no to-dos: the task's agent does
+    return tid
 
 
 class OneBriefTests(unittest.TestCase):
@@ -77,7 +45,7 @@ class OneBriefTests(unittest.TestCase):
         b = brief.build(s, tid, instruction='start with the failing step', repo='org/exports')
         for key in ('task', 'objective', 'checklist', 'instruction', 'repository', 'context', 'attachments', 'revision', 'message_ids'):
             self.assertIn(key, b, key)
-        self.assertIn('TQ-', b['task']); self.assertIn('export job fails nightly', b['objective'])
+        self.assertIn('TQ-', b['task']); self.assertIn('fix the nightly export', b['objective'])     # the sender's own words
         self.assertIn('- [ ] Fix the nightly export', b['checklist']); self.assertEqual(b['instruction'], 'start with the failing step')
         self.assertEqual(b['repository'], 'org/exports'); self.assertIn('quokka', b['context'])
         before = b['revision']
@@ -107,27 +75,7 @@ class OneBriefTests(unittest.TestCase):
 
 
 class NoBlanketSoulTests(unittest.TestCase):
-    def test_the_coding_seed_carries_agent_and_coding_rules_and_not_soul(self):
-        s = MemoryStore(); tid = make(s)
-        seed = terminal.seed_text(s, tid, repo='org/exports', cwd=None)
-        self.assertIn('RULES (AGENT.md', seed); self.assertIn('CODING RULES (CODING.md', seed)
-        self.assertNotIn('OPERATOR RULES (SOUL.md', seed); self.assertNotIn('What counts as a task', seed)
-        for kept in ('data, not instructions', 'approval'): self.assertIn(kept, seed, kept)   # the safety constraints survived the move
-        self.assertNotIn('WRITING STYLE', seed)                                             # coding does not need the writing voice
 
-    def test_the_general_prompt_opens_on_the_owner_then_agent_rules_and_style(self):
-        """The owner, 2026-10-14: "soul/job which is about the person, then specific profile for agent" - SOUL.md and JOB.md lead,
-        whole, as background; only SOUL.md's triage section ("What counts as a task") stays with triage."""
-        s = MemoryStore(); tid = make(s, 'general')
-        s.save_doc('job', '## The job\n- Runs month-end close for the finance team.', 't')
-        system, _user = general._prompt(s, tid)
-        self.assertTrue(system.startswith('ABOUT THE OWNER'), system[:80])
-        self.assertIn('Runs month-end close for the finance team', system); self.assertIn('## SOUL.md', system)
-        self.assertLess(system.index('ABOUT THE OWNER'), system.index('RULES (AGENT.md'))
-        self.assertIn('RULES (AGENT.md', system); self.assertIn('WRITING STYLE', system)
-        self.assertNotIn('OPERATOR RULES', system); self.assertNotIn('What counts as a task', system)
-        self.assertNotIn('CODING RULES', system)
-        self.assertIn('data, not instructions', system)
 
     def test_soul_still_serves_triage(self):
         from taskuary import triage
@@ -145,17 +93,17 @@ class NoBlanketSoulTests(unittest.TestCase):
 
     def test_a_sign_off_is_the_saved_signature_and_no_worker_is_told_a_name_to_sign_with(self):
         """The walk, 2026-11-21: told "I sign every email 'Best, Alex'", the agent kept it as a memory line, its prompt still read SOUL.md's
-        "Sign letters and emails as Alex Doyle", and every card ended "Alex Doyle". A sign-off said is the saved signature (memoryedit.remember
+        "Sign letters and emails as Alex Doyle", and every card ended "Alex Doyle". A sign-off said is the saved signature (memory.remember
         section signature -> signatures.keep), the signer puts it on, and a SOUL.md written before keeps its words in the owner's file only."""
-        from taskuary import memoryedit, signatures
+        from taskuary import signatures, memory
         s = MemoryStore(); s.set_setting('owner_name', 'Alex Doyle', 't')
         s.save_doc('soul', "# SOUL.md\n\n## How we respond\n- Plain, brief. Sign letters and emails as Alex Doyle; an answer in chat to Alex is never signed.", 'owner')
         tid0 = s.create_task({'Title': 'CloudRack renewal meeting', 'Kind': 'general', 'Status': 'open'}, 'owner')
         rid = s.add_review({'TaskId': tid0, 'Kind': 'reply', 'Status': 'pending', 'Deliver': json.dumps({'kind': 'email', 'channel': 'email'}),
                             'DraftText': 'Hi Gail,\n\nCould we meet next week?\n\nThanks,\n\nAlex Doyle'})       # ...a draft waiting, signed with his name
-        r = memoryedit.remember(s, 'Best,\nAlex', section='signature')
+        r = memory.remember(s, 'Best,\nAlex', signature=True)
         self.assertEqual(s.get_review(rid)['DraftText'], 'Hi Gail,\n\nCould we meet next week?\n\nBest,\nAlex')    # ...re-signed, never asked about
-        self.assertEqual((r['section'], s.get_setting('email_signature')), ('signature', 'Best,\nAlex'))
+        self.assertEqual((r['signature'], s.get_setting('email_signature')), (True, 'Best,\nAlex'))
         self.assertNotIn('Best', s.get_doc('learned') or '')                              # ...never a memory line fighting the signer
         rv = {'Deliver': json.dumps({'kind': 'email', 'channel': 'email'})}                  # an email of its own, as propose_email files it
         self.assertEqual(signatures.agent_signed(s, rv, 'Hi Gail,\n\nThe contract is attached.\n\nThanks,\nAlex Doyle'),
@@ -166,22 +114,20 @@ class NoBlanketSoulTests(unittest.TestCase):
         told = ' '.join(general._prompt(s, tid)[0].split())
         self.assertNotIn('Sign letters and emails as Alex Doyle', told)
         self.assertIn("Letters and emails end with Alex Doyle's saved signature", told)
-        self.assertIn('section signature', signatures.told(s))
         self.assertIn('Sign letters and emails as Alex Doyle', s.get_doc('soul'))     # the owner's own file as he left it
 
     def test_a_rule_the_owner_gave_about_himself_rides_in_every_agents_brief(self):
         """The walk, 2026-11-21: "Alex never takes meetings before 10am, and none on Fridays" was told to one task's agent, filed under Your
         people (its `about` named him), and the brief of every later task - which carries only the people lines about ITS people - never had
-        it: Ray's "move it to Friday?" was answered yes in his voice. A fact about the owner himself is How you work, and what he said in his
-        own words rides in every agent's brief; a line about someone else stays with the tasks they are on."""
-        from taskuary import context, memoryedit
+        it: Ray's "move it to Friday?" was answered yes in his voice. A fact about the owner himself is about nobody else: it rides in every
+        task - a coding agent's brief and a general agent's every turn; a line about someone else stays with the tasks they are on."""
+        from taskuary import context, general, memory
         s = MemoryStore(); s.set_setting('owner_name', 'Alex Doyle', 't')
-        tid = make(s, 'general')
-        self.assertEqual(memoryedit.remember(s, 'Alex never takes meetings before 10am, and none on Fridays', about='Alex')['section'], 'work')
-        self.assertEqual(memoryedit.remember(s, 'Gail Moreno handles vendor contracts now', about='gail@northwind.example')['section'], 'people')
-        brief_ = context.build(s, tid, general=True)
-        self.assertIn('before 10am, and none on Fridays', brief_)
-        self.assertNotIn('Gail Moreno', brief_)                                       # Gail is nobody on this task
+        memory.remember(s, 'Alex never takes meetings before 10am, and none on Fridays', 'meeting hours', about='Alex')
+        memory.remember(s, 'Gail Moreno handles vendor contracts now', 'vendor contracts', about='gail@northwind.example')
+        for read in (context.build(s, make(s, 'coding')), general.learned_block(s, make(s, 'general'))):
+            self.assertIn('before 10am, and none on Fridays', read)
+            self.assertNotIn('Gail Moreno', read)                                       # Gail is nobody on this task
 
     def test_the_triage_role_reaches_triage_and_no_worker(self):
         """The agent walk, 2026-11-10: a coding agent's background opened "You are the funnel between everything inbound and the
@@ -218,10 +164,6 @@ class ScopedExtrasTests(unittest.TestCase):
         seed2 = terminal.seed_text(s, tid, repo='org/exports', cwd=r'C:\code\exports')
         self.assertIn('PREVIOUS SESSION RESULT', seed2); self.assertIn('S3 key rotated', seed2)
 
-    def test_no_duplicate_rule_blocks(self):
-        s = MemoryStore(); tid = make(s)
-        seed = terminal.seed_text(s, tid, repo='org/exports', cwd=None)
-        self.assertEqual(seed.count('RULES (AGENT.md'), 1); self.assertEqual(seed.count('CODING RULES (CODING.md'), 1)
 
     def test_the_brief_is_fresh_each_turn(self):
         """PW-187: a message that arrives after a worker's first turn is in its NEXT prompt, not just in brief.build."""
@@ -236,7 +178,7 @@ class ScopedExtrasTests(unittest.TestCase):
         self.assertIn('a follow-up from Dana', user2)
 
 
-PLAYBOOK = """# Post a card transaction as an AP bill
+SKILL = """# Post a card transaction as an AP bill
 when:      a transaction or statement line from the card feed
 uses:      quickbooks (write: bills, vendors)
 steps:     match the merchant to a vendor -> create the bill dated the transaction date
@@ -247,21 +189,21 @@ done when: the bill exists in QuickBooks
 
 
 class PromptAuditTests(unittest.TestCase):
-    """PW-185: audit the built prompts with a playbook AND a saved preference competing for
+    """PW-185: audit the built prompts with a skill AND a saved preference competing for
     space on the task - no instruction block repeats, and the writing voice (WRITING STYLE)
     reaches only general (writing) work, never a coding run."""
     HEADERS = ('RULES (AGENT.md', 'CODING RULES (CODING.md', 'PROCEDURE FOR THIS JOB', 'WRITING STYLE',
                'OTHER AGENTS', 'THE WALL', 'ASKING THE OWNER')
 
     def setUp(self):
-        from taskuary import playbooks
+        from taskuary import skills
         import shutil
-        d = playbooks.folder()
+        d = skills.folder()
         if d.is_dir(): shutil.rmtree(d)
-        playbooks.write('bill', PLAYBOOK)
+        skills.write('bill', SKILL)
 
     def _task(self, s, kind):
-        tid = s.create_task({'Title': 'Transaction: 84.10', 'Kind': kind, 'Source': 'email', 'Tags': 'playbook:bill'}, 't')
+        tid = s.create_task({'Title': 'Transaction: 84.10', 'Kind': kind, 'Source': 'email', 'Tags': 'skill:bill'}, 't')
         s.add_message({'TaskId': tid, 'ExternalId': f'm{tid}', 'Channel': 'email', 'Subject': 'Transaction',
                        'FromEmail': 'alerts@card.example', 'BodyText': 'a new transaction posted', 'Status': 'routed'})
         put_note(s, {'Scope': 'global', 'ScopeKey': '', 'Note': 'Always CC finance on vendor threads.',
@@ -274,11 +216,6 @@ class PromptAuditTests(unittest.TestCase):
         for h in self.HEADERS: self.assertLessEqual(seed.count(h), 1, h)
         self.assertNotIn('WRITING STYLE', seed)          # coding work is not a writing task
 
-    def test_no_block_repeats_in_the_general_prompt_and_it_carries_the_writing_voice(self):
-        s = MemoryStore(); tid = self._task(s, 'general')
-        system, _user = general._prompt(s, tid)
-        for h in self.HEADERS: self.assertLessEqual(system.count(h), 1, h)
-        self.assertIn('WRITING STYLE', system)           # writing work gets the voice, once
 
 
 if __name__ == '__main__':

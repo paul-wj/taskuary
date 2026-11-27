@@ -86,6 +86,19 @@ export const refreshPilePresentation = (current, fresh) => {
 export const walkOf = (pile) => pile?.walk || null;
 export const nextMarkerKey = (pile) => { const b = walkOf(pile)?.below; return b ? (b.startsWith("fyis:") ? b.slice(5).split(",")[0] : b) : null; };
 // can Next go on from here: the walk says what is below; before any walk was read, anything on the rail
+// WHAT THE VIEW ON SCREEN IS, for Back (appLinks.navTarget): a ROW of the walk - the item on the table, in view, a row of the rail (an FYI batch by
+// its rows; below the top while the walk's word catches up, there is a row above and the server says which), or the walk's end with nothing on
+// the table (Back goes to the last row it walked, railwalk.back from its end) - and its row above; else a page, an item off the rail among them
+// (a closed task Search opened: the walk is on it, but it is no row). Read from the view, never from how he got there
+export const walkPlace = ({ table, item, pile, off = false }) => {
+  const walk = walkOf(pile), rail = pile?.items || [];
+  const onWalk = !!item && !!walk && (walk.on === item.key || (walk.members || []).includes(item.key));
+  const keys = item ? [item.key, ...(item.members || []), ...(onWalk ? walk.members || [] : [])] : [];
+  const onRail = keys.some((k) => rail.some((r) => answersTo(r, k))), underTop = onRail && !answersTo(rail[0], item.key);
+  const end = !item && !table?.key && !table?.place && !table?.folded && !!walk?.ended;
+  const row = !off && (table?.speaks ? onRail : end);
+  return { row, above: !row ? null : onWalk || end ? walk.above || null : underTop ? "above" : null, onWalk };
+};
 export const canAdvance = (pile, ready) => walkOf(pile) ? !!walkOf(pile).below : (ready || []).length > 0;
 
 // Until durable Current lands, reload restores the latest explicitly surfaced card. Passive
@@ -172,6 +185,9 @@ export const interactiveCardIndex = (messages) => {
 // put the item's own durable line back above the one before it. The newest card still leads, unless it is another ITEM while the table's
 // own line is in the chat and not put down; a proposal, the walk or the brief after it lead as before.
 const keyed = (c, key) => c?.key === key || (c?.aliases || []).includes(key);
+// ...the key of the card tableCardIndex draws live when nothing was put on the table - an item `shows` draws as itself (CanvasItem.showsTask) - or null
+export const drawnKey = (messages, shows) => { const i = interactiveCardIndex(messages), m = i >= 0 ? messages[i] : null;
+  return m && !m.proposal && !NOT_ITEMS.has(m.card.kind) && shows(m.card) ? m.card.key || null : null; };
 export const tableCardIndex = (messages, key) => {
   const at = interactiveCardIndex(messages), top = at >= 0 ? messages[at] : null;
   if (!key || !top || top.proposal || NOT_ITEMS.has(top.card.kind) || keyed(top.card, key)) return at;
@@ -292,6 +308,16 @@ const cardKind = (item) => {
 };
 
 export const cardFor = (item) => (item ? assistantFocus(item).card : null);
+// WHAT TASKUARY MADE ON ITS OWN (the owner, 2026-11-23: "Anything that comes in on the Agent tab shows the input prompt that created it (even if
+// automated: a report, routine, dashboard, Advisor)"): a report's run, a dashboard, an Advisor's line open on the Agent tab as a chat with its own
+// box (assistantCards madeSection) - so, like a task, it is the one box on screen; what came in from outside stays on Came from
+const MADE = ["report", "dashboard", "idea"];
+export const madeHere = (item) => MADE.includes(cardFor(item));
+// the presses that start an agent on an item - `coder` is coding_agent's old name
+export const AGENT_VERBS = ["coding_agent", "regular_agent", "coder"];
+// ...and NONE ON WHAT TASKUARY MADE (the owner, 2026-11-24: "don't need both send to agent and message on bottom no?"): its box starts the agent
+// on it (AssistantView.startOnItem) and is the one way in - the row keeps the rest. What came in from outside keeps its Send to agent
+export const itemVerbs = (card, verbs) => (MADE.includes(card) ? verbs.filter((c) => !AGENT_VERBS.includes(c.verb)) : verbs);
 
 // HOW LONG IT HAS WAITED ON YOU, beside the item's ref on the action row: the rail's gutter says it per row, but the eye is on the
 // buttons when deciding, and an old ask looked the same there as a new one (the row-bot comparison, 2026-10-07). Only what is on
@@ -380,6 +406,16 @@ export const rowOfTask = (items, n) => (items || []).find((i) => Number(i.tid) =
 // ...`closed`: a hit on a task closed or let go, drawn as the closed card it is - with no row on the rail (pulledRow), never one drawn at the
 // press and taken off a beat later when its card came back closed (the owner, live 2026-11-20)
 export const madeRow = (tid, title, closed = false) => ({ key: `task:${tid}`, kind: "task", tid: Number(tid), title: String(title || "").slice(0, 300), ...(closed ? { closed: true } : {}) });
+// ...AND A ROUTINE'S RUN IS ITS NEW TASK AT THE PRESS, as New's is (the owner, live 2026-11-25: "I hit Run on the routine for posting, it first opened
+// one I closed, then created a new one"): opened by its #task= link alone, no rail row held the run yet, so the routine's page went down at the press
+// and the task under it - the run before, closed - stood there until the new one's read came. `openTask`: the canvas's (TaskHubPage.openTask); a page
+// with none follows the link. False when the run made no task (a report runs in the background)
+export const openRun = (data, openTask, link) => {
+  const tid = Number(data?.task_id) || 0;
+  if (!tid) return false;
+  if (openTask) openTask(tid, { row: madeRow(tid, data.title) }); else link(`task=${tid}`);
+  return true;
+};
 // NEXT TURNS BLUE AS SOON AS THE MOVE SAVES (the owner, 2026-11-06): a light walk answer (no rail rides) carries the walk's whole word -
 // below included - and the rail on screen takes it until its own read lands, so a second press draws its row and Back stands at once
 export const withWalk = (pile, walk) => (pile && walk && "below" in walk ? { ...pile, walk } : pile);

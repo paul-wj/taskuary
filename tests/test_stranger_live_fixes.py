@@ -181,7 +181,7 @@ def test_a_stranger_s_seed_keeps_the_owner_s_notes_and_drops_the_quoted_subject(
 def test_an_owner_s_seed_still_carries_every_note():
     s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't')
     t = s.create_task({'Title': 'x', 'Kind': 'coding', 'Source': 'email'}, 'router')
-    s.add_message({'TaskId': t, 'Channel': 'email', 'FromEmail': 'erin@northwind.example', 'Subject': MARK, 'BodyText': 'b', 'Status': 'routed'})
+    s.add_message({'TaskId': t, 'Channel': 'email', 'FromEmail': 'erin@northwind.example', 'Subject': MARK, 'BodyText': 'b', 'Status': 'routed', 'MailMetaJson': '{"auth": "pass"}'})
     _notes(s, 'erin@northwind.example')
     seed = terminal.seed_text(s, t)
     assert seed.count(MARK) >= 2 and 'OWNERNOTE' in seed                         # the subject line and the note both
@@ -275,7 +275,7 @@ def test_trust_with_an_agent_on_the_task_hands_it_the_line_vouched_for(monkeypat
     monkeypatch.setattr(ingest, 'thread_moved', lambda *a, **k: (got.append((a, k)), done.set()))
     r = TestClient(server.app).post(f'/api/tasks/{t}/trust')
     assert r.status_code == 200 and r.json()['started'] == 'handed', r.text
-    assert done.wait(5) and got[0][0][1] == t and got[0][1] == {'vouched': True}
+    assert done.wait(5) and got[0][0][1] == t and got[0][1]['vouched'] is True
 
 def test_trust_with_no_agent_yet_starts_one_whose_first_turn_takes_his_line(monkeypatch):
     from taskuary import general
@@ -306,7 +306,7 @@ def test_trust_is_a_press_on_a_person_and_starts_their_other_held_task_too(monke
         return t
     a, b = omar('Invoice question'), omar('Contract renewal')
     assert origin.hold(s, a) and origin.hold(s, b)
-    starts = []; monkeypatch.setattr(server, '_trusted_starts', lambda tid: starts.append(tid) or 'started')
+    starts = []; monkeypatch.setattr(server, '_trusted_starts', lambda tid, lifted=True: starts.append(tid) or 'started')
     r = TestClient(server.app).post(f'/api/tasks/{a}/trust')
     assert r.status_code == 200 and r.json()['started'] == 'started', r.text
     assert r.json().get('released') == [b] and sorted(starts) == [a, b]
@@ -314,7 +314,7 @@ def test_trust_is_a_press_on_a_person_and_starts_their_other_held_task_too(monke
 
 def test_a_start_trust_makes_that_breaks_is_kept_on_the_task_not_a_500(monkeypatch):
     s, t = _held_with_line(monkeypatch)
-    def boom(tid): raise RuntimeError('the CLI would not come up')
+    def boom(tid, lifted=True): raise RuntimeError('the CLI would not come up')
     monkeypatch.setattr(server, '_trusted_starts', boom)
     r = TestClient(server.app).post(f'/api/tasks/{t}/trust')
     assert r.status_code == 200 and r.json()['started'] == '', r.text
@@ -324,15 +324,17 @@ def test_trust_pressed_twice_hands_the_waiting_line_over_once(monkeypatch):
     """Pressed twice - a double tap, or the phone and the desk both - the second press found the task trusted and an agent on it, and
     handed the same thread over again: the agent was told the stranger's mail twice. A press that changes nothing starts nothing."""
     from taskuary import ingest
-    s, t = _held_with_line(monkeypatch); got = []
+    s, t = _held_with_line(monkeypatch); got, go = [], threading.Event()
     monkeypatch.setattr(ingest, 'live_agent', lambda *a: 'general')
-    monkeypatch.setattr(ingest, '_spawn', lambda fn, *a, **k: got.append(fn))
+    monkeypatch.setattr(ingest, '_replan_pass', lambda *a: (got.append(a), go.wait(5)))       # ...the first press's pass, still on its way
     c = TestClient(server.app)
-    assert c.post(f'/api/tasks/{t}/trust').json()['started'] == 'handed'
-    again = c.post(f'/api/tasks/{t}/trust')
-    assert again.status_code == 200 and again.json()['origin'] == 'trusted'
-    assert len(got) == 1, got
-    assert again.json()['started']          # ...and it still says an agent has it: the first press's is at work
+    try:
+        assert c.post(f'/api/tasks/{t}/trust').json()['started'] == 'handed'
+        again = c.post(f'/api/tasks/{t}/trust')
+        assert again.status_code == 200 and again.json()['origin'] == 'trusted'
+        assert len(got) == 1, got
+        assert again.json()['started']          # ...and it still says an agent has it: the first press's is at work
+    finally: go.set()
 
 def test_a_line_typed_in_a_held_task_s_box_is_kept_and_answered_not_a_500(monkeypatch):
     """The box's own door (assistant/messages): his line on a held task is kept by take_line, which answers {'kept', 'held'} - and the
@@ -365,3 +367,116 @@ def test_continue_on_a_held_task_says_the_hold_and_starts_no_session(monkeypatch
     assert [w['text'] for w in general.waiting_lines(s, t)] == ['check the tracking number']
     assert opened == [] and t not in general.OPENING
     assert not [x for x in s.list_comments(t, internal=True) if 'chose Resume' in (x['Body'] or '')]
+
+# ── K1 (walk 17): only a person's words sent to the task hold it, and a hold never swallows his press ─────────────────────────────
+# His own renewal task: the agent's Send card stood; a vendor's automated "Ticket #4471 closed", filed onto it as context, held the whole task
+# for "Trust Trainly", and his Send on the agent's card woke nobody. A no-reply invoice's own task asked Trust for an address nobody writes from.
+def _renewal(s):
+    return s.create_task({'Title': 'Sort out the Trainly renewal', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner'}, 'owner')
+
+def _line(s, t, status='routed', **kw):
+    return s.add_message({'TaskId': t, 'Channel': 'email', 'SourceName': 'alex@northwind.example', 'FromEmail': 'support@trainly.example',
+                          'FromName': 'Trainly Support', 'Subject': 'Your ticket #4471 has been closed', 'BodyText': 'Ticket closed.', 'Status': status, **kw})
+
+def test_a_filed_notice_or_a_machine_s_mail_never_holds_his_task_for_trust():
+    s = MemoryStore(); t = _renewal(s)
+    _line(s, t, 'filed', SenderClass='automated')
+    assert origin.hold(s, t) is None, 'a filed automated notice is context, never a hold'
+    _line(s, t, 'routed', SenderClass='automated')
+    assert origin.hold(s, t) is None, "a machine's mail routed to it has nobody to vouch for"
+    _line(s, t, 'filed', FromEmail='dana@trainly.example', FromName='Dana Holt')
+    assert origin.hold(s, t) is None, 'a filed line is handed to no agent'
+    _line(s, t, 'routed', FromEmail='dana@trainly.example', FromName='Dana Holt')
+    h = origin.hold(s, t)
+    assert h and h['person'] == 'Trust Dana' and 'Dana Holt' in h['line'], "a person's mail sent to it holds it, and the press names her"
+
+def test_a_line_read_as_an_attempt_on_an_ai_holds_whatever_sent_it():
+    s = MemoryStore(); t = _renewal(s)
+    s.set_message_danger(_line(s, t, 'filed', SenderClass='automated'), "asks the agent to forward the owner's mail")
+    assert origin.hold(s, t)
+
+def test_a_no_reply_invoice_s_task_offers_no_trust_of_its_address():
+    from taskuary import senders
+    s = MemoryStore(); t = s.create_task({'Title': 'Payworth invoice', 'Kind': 'general', 'Source': 'email', 'Status': 'open'}, 'router')
+    s.add_message({'TaskId': t, 'Channel': 'email', 'SourceName': 'alex@northwind.example', 'FromEmail': 'no-reply@payworth.example',
+                   'FromName': 'Payworth Billing', 'Subject': 'Invoice 2211', 'BodyText': 'Amount due $5,750.', 'Status': 'routed', 'SenderClass': 'automated'})
+    assert origin.of_task(s, t)[0] == 'stranger', "still a stranger's words: its agent runs in safe mode"
+    assert origin.hold(s, t) is None and senders.trust_offer(s, t) is None
+
+def test_his_press_on_the_agent_s_card_wakes_it_though_a_stranger_wrote_on_his_task():
+    from types import SimpleNamespace
+    from taskuary import general
+    s = MemoryStore(); t = _renewal(s); general._WOKEN.clear()
+    _line(s, t, 'routed', FromEmail='jordan@seatsaver.example', FromName='Jordan Pike')
+    assert origin.hold(s, t) and origin.his_own(s, t)
+    rid = s.add_review({'TaskId': t, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Please send the order form.',
+                        'NextStep': 'file the order form when it comes'})         # ...a step of its own follows the Send
+    s.decide_review(rid, 'approved', 'Please send the order form.', 'owner')
+    told = []
+    sess = SimpleNamespace(sid='run1', task_id=t, alive=True, waiting=lambda: False,
+                           send_prompt=lambda text, **kw: told.append(origin.OWNER_SPEAKS.get()))
+    with mock.patch('taskuary.workerstate._live', return_value=sess):
+        assert general.approved(s, t, 'Send', 'the reply was sent', review=rid) == 'told'
+        end = time.time() + 5
+        while not told and time.time() < end: time.sleep(.01)
+    assert told == [True], 'the wake is his press, a turn of his'
+    with pytest.raises(origin.RefusedForStranger): general.GeneralSession(s, t).send_prompt('The thread moved.', as_owner=False)
+    tok = origin.OWNER_SPEAKS.set(True)                                        # ...as the road his press took sets it
+    try: general.GeneralSession(s, t).send_prompt('', as_owner=False)
+    except origin.RefusedForStranger: pytest.fail('his press is never held behind a Trust on his own task')
+    except Exception: pass                                                     # ...it went on - to an AI this test has none of
+    finally: origin.OWNER_SPEAKS.reset(tok)
+
+
+# ── A START HELD FOR A MACHINE'S MAIL SAYS WHY, WITH ITS TRUST (the owner's live task, 2026-11-26) ────────────────────────────────────────
+# A vendor portal's no-reply address mailed "Erin Blake has invited you to join Northwind in the Vendor Developer Portal". It became a task for
+# the agent, the start was held for its sender - and the task showed the mail and nothing else: a machine's mail held nothing (walk 17), so no
+# reason stood on it and no Trust was lit, and he closed it by hand. Through the real arrival; invented people.
+def _portal_invite(s, auth):
+    from taskuary import general, ingest, senders
+    s.set_setting('owner_email', 'alex@northwind.example', 't')
+    m = {'external_id': f'x-{auth}', 'channel': 'email', 'subject': 'Erin Blake has invited you to join Northwind in the Vendor Developer Portal',
+         'body': 'Erin Blake has invited you to join Northwind. Accept the invitation: https://portal.vendor.example/invite/abc',
+         'from_email': 'no-reply@vendor.example', 'from_name': 'Vendor Developer Portal', 'conversation_id': f'c-{auth}', 'sent_at': '2026-11-26 09:00',
+         'source_name': 'alex@northwind.example', 'sender_class': 'automated', 'mail_meta': {'auth': auth}}
+    says = lambda sy, u, **k: json.dumps({'intent': 'task', 'kind': 'general', 'why': 'an invite for you to accept', 'sender_class': 'automated',
+                                          'title': 'Accept Vendor Developer Portal invite'})
+    with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch.object(senders, 'wrote_to', return_value=False), \
+         mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
+        t = ingest.ingest_message(s, m, llm=says)['task_id']
+    assert spawn.call_args_list == [], "no agent starts by itself on an unvouched sender's words"
+    return t
+
+@pytest.mark.mail_auth
+@pytest.mark.parametrize('auth, line', [('pass', origin.HELD_LINE), ('none', origin.UNVERIFIED_LINE), ('fail', origin.UNVERIFIED_LINE)])
+def test_a_start_held_for_a_machine_s_mail_says_why_and_lights_trust(monkeypatch, auth, line):
+    from taskuary import chatlog, taskstate
+    s = MemoryStore(); t = _portal_invite(s, auth); monkeypatch.setattr(server, 'store', s)
+    h = origin.hold(s, t)
+    assert h and h['line'] == line.format(who='Vendor Developer Portal (no-reply@vendor.example)') and h['person'] == 'Trust Vendor'
+    # ...as the page draws it: the chat's own line and press, and the row's lit Trust (task detail's origin.held, taskMoves' trust)
+    assert chatlog._serve(s, t)['hold']['line'] == h['line'] and taskstate.state(s, s.get_task(t)) == 'held'
+    o = TestClient(server.app).get(f'/api/tasks/{t}').json()['origin']
+    assert o['held'] is True and o['trust']['person'] == 'Trust Vendor'
+    # ...and no agent is handed it meanwhile, in any mode
+    with pytest.raises(origin.Refusal): origin.launch_mode(s, t, 'claude')
+    # ...the press is the way past it: he vouches, the hold is gone, and the agent starts as any task's (its browser and its cards with it)
+    started = []
+    monkeypatch.setattr(server, '_trusted_starts', lambda tid, lifted=True: started.append((tid, lifted)) or 'started')
+    r = TestClient(server.app).post(f'/api/tasks/{t}/trust')
+    assert r.status_code == 200 and r.json()['origin'] == 'trusted' and started == [(t, True)], r.text
+    assert origin.hold(s, t) is None and origin.launch_mode(s, t, 'claude') == 'full'
+    # ...a verified address is remembered; one the server refused may be forged, and is not (senders.vouch)
+    assert bool(s.trusted_sender('alex@northwind.example', 'no-reply@vendor.example')) == (auth != 'fail')
+
+def test_a_machine_s_mail_that_only_joined_his_task_or_warns_him_still_asks_no_trust():
+    "Walks 17 and 18 stand: a notice on his own task holds nothing, and a fraud caution aimed at him is a warning - never 'Trust' its sender."
+    from taskuary import senders
+    s = MemoryStore(); t = _renewal(s)
+    _line(s, t, 'routed', SenderClass='automated')
+    assert origin.hold(s, t) is None and senders.trust_offer(s, t) is None
+    s2 = MemoryStore(); t2 = _portal_invite(s2, 'pass')
+    assert origin.hold(s2, t2)
+    s2.set_message_danger(s2.list_messages(t2)[0]['MessageId'], 'asks you to pay for a seat you never ordered', aim='owner')
+    s2._exec("UPDATE change_gen SET Gen=Gen+1 WHERE Tbl='trust'")       # ...judged afresh, as a new reading's write moves it
+    assert origin.hold(s2, t2) is None and senders.trust_offer(s2, t2) is None

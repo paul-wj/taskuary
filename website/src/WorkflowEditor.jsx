@@ -4,20 +4,21 @@
 // asks first, when it is done, and when it runs. Every one of those is a field here, the actions sit in one place at the top,
 // and Run now is there for a workflow that is not saved yet (it saves, then runs).
 import React, { useEffect, useMemo, useState } from "react";
-import { t } from "./i18n.js";
-import { useLocale } from "./LocaleProvider.jsx";
-import { Alert, Box, Button, Chip, CircularProgress, MenuItem, Select, Switch, TextField, Typography } from "@mui/material";
+import { Alert, Autocomplete, Box, Button, Chip, CircularProgress, MenuItem, Select, Switch, TextField, Typography } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import api from "./api";
 import { label as btnLabel } from "./buttons.js";
 import { BORDER, DIM, FAINT, INK, card } from "./theme.jsx";
-import { useAgents } from "./ui.jsx";
 import { removeNow } from "./Removed.jsx";
 import { effortChoices, keepEffort, modelChoices } from "./workflowBrain.js";
 import WorkflowSteps from "./WorkflowSteps.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+import { useWrites } from "./ApproveWrite.jsx";
 import { REPAIR, REPORT_WORDS, asReport, asSteps, askFor, diffKeys, firstMissing, onlyReads, outputsOf, toSaved } from "./workflowFlow.js";
 import { openAppLink } from "./appLinks.js";
+import { openRun } from "./funnelPile.js";
 import { useScheduleWords } from "./reportWords.js";
 
 const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
@@ -94,8 +95,7 @@ export const SchedulePicker = ({ sched, setSched, cron = "" }) => {
 
 
 export default function WorkflowEditor({ sourceId, sources, connectors, types, draft, reload, onBack, onSaved, note, composer, lastRun,
-  lastRunRec, fixRun, onFixTaken, onReport }) {
-  useLocale();
+  lastRunRec, fixRun, onFixTaken, onReport, onOpenTask = null }) {
   const cur = sources.find((s) => s.SourceId === sourceId) || null;
   const [cfg, setCfg] = useState(() => ({ type: "agent", access: "write", ...(cur ? parse(cur.ConfigJson) : draft || {}) }));
   const [sched, setSched] = useState(() => scheduleOf(cur ? parse(cur.ConfigJson) : draft || {}));
@@ -103,14 +103,14 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
   useEffect(() => { if (!cur && draft) { setCfg({ type: "agent", access: "write", ...draft }); setSched(scheduleOf(draft)); } }, [draft, cur]);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
+  // his skills, for "Uses skill" - the one library (GET /api/skills); none read yet is no list, and the box still takes a name
+  const [skillList, setSkillList] = useState([]);
+  useEffect(() => { let on = true; api.get("/api/skills").then(({ data }) => { if (on) setSkillList(data?.data || []); }).catch(() => {}); return () => { on = false; }; }, []);
   // REMOVE IS AT ONCE (the owner, 2026-10-21): the Workflows list says "Removed <it> - Undo", and Recently deleted keeps it 30 days
   const remove = async () => {
     try { await removeNow(() => api.delete(`/api/sources/${cur.SourceId}`), "workflow", cfg.title || cur.Address); await reload(); onBack(); }
     catch (e) { setMsg(e?.response?.data?.detail ? { ok: false, text: e.response.data.detail } : { ok: false, key: "It could not be removed." }); }
   };
-  const { agents, kinds } = useAgents();
-  // who does it: the general profiles. A coding name only runs code work (a repository folder below), so it is not offered here
-  const roles = agents.filter((a) => !["coding", "cli"].includes(String(kinds[a] || "").toLowerCase()));
   const live = useMemo(() => (connectors || []).filter((c) => c.Active), [connectors]);
   const uses = (cfg.uses || []).map(Number);
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
@@ -125,6 +125,7 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
   const [outputs, setOutputs] = useState(() => outputsOf(lastRunRec?.steps));
   const [repair, setRepair] = useState(null);       // {was, explain} while the AI's repair waits on Keep or Discard
   const setFlow = (f) => setCfg((c) => ({ ...c, flow: typeof f === "function" ? f(c.flow || []) : f }));
+  const [writes, reloadWrites] = useWrites(cur?.SourceId, cur?.ConfigJson);     // its write steps as saved, each with "Approve this write"
   const names = Object.fromEntries((connectors || []).map((c) => [c.ConnectorId, c.Name || c.Type]));
   const turnIntoSteps = async () => {
     setBusy("steps"); setMsg(null);
@@ -191,9 +192,9 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
     setBusy("run");
     try {
       const { data } = await api.post(`/api/reports/${sid}/rerun`);
-      if (data.task_id) { openAppLink(`task=${data.task_id}`); return; }
-      setMsg({ ok: true, key: "{title} is running.", params: { title: data.title } });
-    } catch (e) { setMsg(e?.response?.data?.detail ? { ok: false, text: e.response.data.detail } : { ok: false, key: "It could not be started." }); }
+      if (openRun(data, onOpenTask, openAppLink)) return;
+      setMsg({ ok: true, text: `${data.title || "It"} is running.` });
+    } catch (e) { setMsg({ ok: false, text: e?.response?.data?.detail || "It could not be started." }); }
     finally { setBusy(""); }
   };
   const toggle = async () => {
@@ -252,7 +253,8 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
             action={onReport ? <Button size="small" color="inherit" sx={{ whiteSpace: "nowrap" }} onClick={() => onReport(asReport(cfg))}>{btnLabel("make_report")}</Button> : null}>
             {t(REPORT_WORDS)} {t("Add a step that acts - open a task, draft a message, write to a system - or make it a report.")}</Alert>}
           <WorkflowSteps flow={cfg.flow || []} setFlow={setFlow} outputs={outputs} setOutputs={setOutputs} connectors={connectors} types={types}
-            agents={roles} title={cfg.title} sourceId={cur?.SourceId} inputs={cfg.inputs} changed={changed} />
+            title={cfg.title} sourceId={cur?.SourceId} inputs={cfg.inputs} changed={changed}
+            writes={writes} savedFlow={cur ? parse(cur.ConfigJson).flow || [] : []} onWrites={reloadWrites} />
           {!(cfg.flow || []).length && <Typography component="button" type="button" onClick={() => setCfg((c) => { const n = { ...c }; delete n.flow; return n; })}
             sx={{ border: 0, bgcolor: "transparent", p: 0, mt: 0.5, cursor: "pointer", color: "var(--tq-link, #55697a)", fontSize: 12, fontWeight: 600 }}>
             {t("Use one agent prompt instead")}</Typography>}
@@ -270,12 +272,18 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
             <Typography variant="caption" sx={{ color: FAINT }}>{t("so the same reads and writes run as code, and the AI only judges")}</Typography>
           </Box>
         </Field>}
-        <Field label="Who does it" hint="the profile whose rules it works by">
-          <Select size="small" displayEmpty value={roles.includes(cfg.agent) && cfg.agent !== "assistant" ? cfg.agent : ""} onChange={(e) => set("agent", e.target.value)}
-            sx={{ minWidth: 220, bgcolor: "var(--tq-panel, #fff)", fontSize: 13 }}>
-            <MenuItem value="" sx={{ fontSize: 13 }}>{t(roles.includes("assistant") ? "assistant (the default)" : "the default")}</MenuItem>
-            {roles.filter((a) => a !== "assistant").map((a) => <MenuItem key={a} value={a} sx={{ fontSize: 13 }}>{a}</MenuItem>)}
-          </Select>
+        {/* A ROUTINE'S TWO PARTS (the owner, 2026-11-26): its own instructions above, and - optionally - one of his skills it uses to do
+            the job. A link to Reports -> Skills, never a copy: the skill is edited there. A coding routine names its CLI's own slash command */}
+        <Field label="Uses skill" hint="optional - one of your skills, read by the agent on every run. What it does, above, stays this routine's own.">
+          <Autocomplete size="small" freeSolo autoHighlight options={skillList.map((b) => b.slug)} value={cfg.skill || ""} data-tq-routine-skill=""
+            onChange={(e, v) => set("skill", String(v || "").replace(/^\//, ""))}
+            onInputChange={(e, v, why) => { if (why === "input") set("skill", v.replace(/^\//, "")); }}
+            renderOption={(props, o) => { const b = skillList.find((x) => x.slug === o); return (
+              <Box component="li" {...props} key={o} sx={{ display: "block !important" }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 600, color: INK }}>{b?.title || o}</Typography>
+                <Typography variant="caption" sx={{ color: FAINT, display: "block" }} noWrap>{b?.description}</Typography>
+              </Box>); }}
+            renderInput={(p) => <TextField {...p} placeholder="none" />} sx={{ width: 380, maxWidth: "100%", bgcolor: "var(--tq-panel, #fff)" }} />
         </Field>
         {brain && <Field label="Model" hint="the general agents' own unless this job is hard enough to need a stronger model or more thought">
           <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
@@ -312,7 +320,7 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
           <TextField size="small" fullWidth value={cfg.done_when || ""} placeholder={t('one finance task per duplicate pair; "all clear" when there are none')}
             onChange={(e) => set("done_when", e.target.value)} sx={{ bgcolor: "var(--tq-panel, #fff)" }} />
         </Field>
-        {/* A MAIL STARTS IT (the owner, 2026-10-21): said in words, like a playbook's "when" - triage is shown it beside the playbooks
+        {/* A MAIL STARTS IT (the owner, 2026-10-21): said in words, like a skill's "when" - triage is shown it beside the skills
             and starts this workflow on a mail that is one; the run is that mail's task, and its steps read it as {{mail.subject}} */}
         <Field label="Start when a mail like this arrives" hint="optional - describe the mail in words; triage starts this routine when one like it comes in, and the steps read it as {{mail.from}}, {{mail.subject}}, {{mail.body}}">
           <TextField size="small" fullWidth value={cfg.on_mail || ""} placeholder={t("a vendor sends an invoice for something we ordered")}
@@ -324,10 +332,6 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
         <Box component="details" sx={{ mt: 1, borderTop: `1px solid ${BORDER}`, pt: 1.5 }}>
           <Box component="summary" sx={{ cursor: "pointer", color: DIM, fontSize: 12.5, fontWeight: 600 }}>{t("More")}</Box>
           <Box sx={{ mt: 1.5 }}>
-            <Field label="Saved skill" hint="a slash command with the steps written down, run before the words above (optional)">
-              <TextField size="small" value={cfg.skill || ""} placeholder="weekly-user-review"
-                onChange={(e) => set("skill", e.target.value.replace(/^\//, ""))} sx={{ bgcolor: "var(--tq-panel, #fff)", width: 280 }} />
-            </Field>
             {steps && <Field label="When a step fails" hint="the AI repairs the step toward the goal; a fix that would change the goal, or send or write somewhere new, always waits for you">
               <Select size="small" value={cfg.repair || "auto"} onChange={(e) => set("repair", e.target.value)} sx={{ minWidth: 300, bgcolor: "var(--tq-panel, #fff)", fontSize: 13 }}>
                 {REPAIR.map(([v, w]) => <MenuItem key={v} value={v} sx={{ fontSize: 13 }}>{t(w)}</MenuItem>)}

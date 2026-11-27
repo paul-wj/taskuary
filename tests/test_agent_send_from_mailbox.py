@@ -27,10 +27,10 @@ def test_the_brief_never_names_a_mailbox_card_as_a_tool_type(s):
     assert 'tools: gmail' not in brief
     for l in (l for l in brief.splitlines() if 'tools:' in l):
         assert all(t.strip() in reports.REGISTRY for t in l.split('tools:')[1].split(',')), l
-    assert SIDE in brief and 'propose_email' in brief and '`from`' in brief
+    assert SIDE in brief and 'propose (kind email)' in brief and '`from`' in brief
     # ...one road, by what the session has (the agent walk, 2026-11-10): the tool, or - a CLI Taskuary's tools are not wired into - the verb
     shell = docsync.agent_systems(s, tooled=False)
-    assert 'taskuary --draft' not in brief and 'taskuary --draft' in shell and '--from' in shell and 'propose_email' not in shell
+    assert 'taskuary --draft' not in brief and 'taskuary --draft' in shell and '--from' in shell and 'propose' not in shell
 
 
 def test_the_email_leaves_from_the_mailbox_the_agent_named(s):
@@ -41,7 +41,7 @@ def test_the_email_leaves_from_the_mailbox_the_agent_named(s):
     again = slots.draft(s, tid, 'Hi, the training materials, take two.', 'erin@volunteers.example', 'Volunteer training materials')
     assert again['review_id'] == out['review_id'] and json.loads(s.get_review(out['review_id'])['Deliver'])['mailbox'] == SIDE
     with mock.patch.object(outbound, 'send_out', return_value={'channel': 'email', 'to': ['erin@volunteers.example']}) as sent, \
-         mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learn.learn_from'):
+         mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learning.learn_from'):
         verdicts.decide(s, s.get_review(out['review_id']), 'approve')
     assert sent.call_args.kwargs['mailbox'] == SIDE
 

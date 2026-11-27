@@ -9,7 +9,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import bulkcard, cardqueue, conversation, general, github, outbound, proposals, server, taskstate, verdicts
+from taskuary import bulkcard, cardqueue, conversation, events, general, github, outbound, proposals, server, taskstate, verdicts
 from taskuary.store import MemoryStore
 from test_agent_toolbox import hdr
 from test_own_ask_no_reply import own_task
@@ -25,8 +25,8 @@ def call(tid, name, **a):
     return json.loads(r['content'][0]['text'])
 
 
-def world():
-    s = MemoryStore(); tid = own_task(s, 'general')
+def world(kind='general'):
+    s = MemoryStore(); tid = own_task(s, kind)
     s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Set up.'); s._exec("UPDATE comment SET CreatedAt='2000-01-01 00:00:00'")
     gh = s.get_connector_by_type('github')
     s.save_connector({'ConnectorId': gh['ConnectorId'], 'Secret': 'ghp_stand_in', 'Active': 1}, 'test')
@@ -37,10 +37,19 @@ def emails(n): return [{'to': f'owner{i}@cedar.example', 'subject': f'Interest i
                        for i in range(n)]
 
 
-def press(s, key, skip=(), told=None):
+def hears(told, woke=None):
+    """What its agent hears of a run, into `told`: woken with it (general.to_agent, also into `woke`), or handed it in its next turn
+    (events.note) - a run that all went and names no next step wakes nobody (the owner, 2026-11-25)."""
+    note = events.note
+    def wake(st, t, said, actor='owner', heard=None, **k):
+        told.append(said); woke is not None and woke.append(said); return (heard and heard('woke')) or 'woke'
+    return mock.patch.multiple(general, to_agent=wake), mock.patch.object(events, 'note', lambda st, t, text: told.append(text) or note(st, t, text))
+
+
+def press(s, key, skip=(), told=None, woke=None):
     told = [] if told is None else told
-    with mock.patch.object(general, 'to_agent', lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('woke')) or 'woke'):
-        return bulkcard.run(s, key, skip, wait=True), told
+    a, b = hears(told, woke)
+    with a, b: return bulkcard.run(s, key, skip, wait=True), told
 
 
 class GitHub:
@@ -73,19 +82,58 @@ def test_twenty_five_emails_are_one_card_and_one_press_sends_them_all():
     assert s.get_review(q['live'][3])['DecideNote'] == bulkcard.LEFT
 
 
-def test_a_few_emails_raised_in_one_call_stand_one_at_a_time_whichever_road_made_them():
-    """Design round 5, I4: Claude's three caterer emails came as one bulk card ("3 emails - review a few, then do them all", one Send, a guessed
-    address sent unopened) while Codex, raising them one call each, showed "1 of 3". A few stand one at a time whichever road made them; the
-    bulk card is for many (bulkcard.MANY)."""
+def test_a_bulk_card_and_a_run_of_cards_stand_alike_on_a_coding_task_and_a_chat_task():
+    """ONE CHAT (the owner, 2026-11-25: "it should be exactly the same, only difference is what level of feedback it shows by default"): a
+    coding task's bulk card, and its cards raised one call each, stand in its chat where a chat task's do - read by the one list."""
+    from taskuary import chatlog
+    def drawn(kind, bulk):
+        s, tid = world(kind)
+        with mock.patch.object(server, 'store', s):
+            if bulk: call(tid, 'propose_email', items=emails(3))
+            else:
+                for e in emails(3): call(tid, 'propose_email', **e)
+            d = chatlog.serve(s, tid, 'steps')
+        cards = [(x['kind'], [(k['what'], k['status'], k.get('n')) for k in ([x] if x['kind'] == 'card' else x.get('cards') or [])]) for x in d['items']]
+        return cards, d['queue']['line'], d['queue']['held'], d['queue']['sets']
+    for bulk in (True, False):
+        assert drawn('coding', bulk) == drawn('general', bulk), bulk
+    assert [w for _, c in drawn('coding', True)[0] for w in c] == [('batch', 'pending', 3)]
+    cards, line, held, sets = drawn('coding', False)
+    assert len([w for _, c in cards for w in c]) == 1 and line.startswith('1 of 3') and len(held) == 2 and sets == {}, 'three calls: three cards, one after another, never tabs'
+    assert drawn('coding', True)[3] == {}, 'one act to many is the list card, never tabs'
+
+
+def test_one_call_is_one_card_whatever_its_count_and_separate_calls_are_cards_one_after_another():
+    """The owner, 2026-11-25: "if it's 3 of the same email to different people then it goes in a bulk card because it's one action to multiple
+    people. If separate emails need to be sent they should come one after another ... this is something the agent should decide which tool to
+    use." How the agent calls decides it, never a count: three in one call are ONE card, the same three a call each stand "1 of 3"."""
     s, tid = world()
-    with mock.patch.object(server, 'store', s): out = call(tid, 'propose_email', items=emails(bulkcard.MANY - 2))
-    assert out['ok'] and out['on_the_card'] == 3 and 'batch' not in out and 'one at a time' in out['shown'], out
+    with mock.patch.object(server, 'store', s): out = call(tid, 'propose_email', items=emails(3))
+    assert out['ok'] and out['on_the_card'] == 3 and out['batch'] and 'ONE card' in out['shown'], out
+    q = cardqueue.state(s, tid)
+    assert len(q['units']) == 1 and len(q['live']) == 3, q
+    s, tid = world()
+    with mock.patch.object(server, 'store', s):
+        for e in emails(3): call(tid, 'propose_email', **e)
     q = cardqueue.state(s, tid)
     assert len(q['units']) == 3 and len(q['live']) == 1 and (q['n'], q['of']) == (1, 3), q
     assert not s._rows('SELECT 1 FROM review WHERE TaskId=? AND Batch IS NOT NULL', (tid,))
-    s, tid = world()
-    with mock.patch.object(server, 'store', s): out = call(tid, 'propose_email', items=emails(bulkcard.MANY))
-    assert out['batch'] and out['on_the_card'] == bulkcard.MANY
+
+
+def test_versions_of_one_reply_are_one_card_he_picks_from_never_the_last_one_alone():
+    """Walk 22, 2026-11-25 (Claude): one call, `items` "Yes - Thursday 2pm works" and "No - let us keep Friday" for one reply. Each item was
+    filed as its own reply, the second rewrote the first, and ONE card stood holding only the "No". Versions of one thing are one card
+    holding each of them: the first in its box, the rest his to pick."""
+    from test_own_ask_no_reply import mailed_task
+    s = MemoryStore(); tid = mailed_task(s, 'general')
+    yes, no = 'Hi Erin, yes - Thursday 2pm works. Alex', 'Hi Erin, no - let us keep Friday. Alex'
+    with mock.patch.object(server, 'store', s): out = call(tid, 'propose', kind='reply', items=[{'text': yes}, {'text': no}])
+    [rv] = s._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND TRIM(IFNULL(DraftText,''))<>''", (tid,))
+    assert out['ok'] and out['on_the_card'] == 1 and '2 versions' in out['shown'], out
+    assert rv['DraftText'] == yes and json.loads(rv['Versions']) == [yes, no], 'both kept on the one card, the first in its box'
+    # ...and a later rewrite by its agent is one letter again
+    s.update_review_draft(rv['ReviewId'], 'Hi Erin, Thursday at 2 it is. Alex', None)
+    assert not s.get_review(rv['ReviewId'])['Versions']
 
 
 def test_forty_issues_closed_with_some_refused_counts_each_and_says_why():
@@ -109,12 +157,14 @@ def test_cancel_stops_the_rest_and_what_was_not_run_still_waits_on_the_card():
     with mock.patch.object(server, 'store', s):
         out = call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='duplicates', items=[{'number': n} for n in range(1, 41)])
     gh, told = GitHub(delay=0.05), []
-    with mock.patch.object(github.requests, 'patch', gh.patch), mock.patch.object(general, 'to_agent', lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('woke')) or 'woke'):
+    w1, w2 = hears(told)
+    with mock.patch.object(github.requests, 'patch', gh.patch), w1, w2:
         bulkcard.run(s, out['batch'])
         end = time.time() + 20
         while bulkcard.state(s, out['batch'])['done'] < 5 and time.time() < end: time.sleep(0.01)
         bulkcard.cancel(s, out['batch'])
         while bulkcard.state(s, out['batch'])['state'] != 'stopped' and time.time() < end: time.sleep(0.02)
+        while not told and time.time() < end: time.sleep(0.02)
     st = bulkcard.state(s, out['batch'])
     assert st['state'] == 'stopped' and 5 <= st['done'] < 40
     waiting = [r for r in bulkcard.rows(s, out['batch']) if r['Status'] == 'pending']
@@ -180,12 +230,37 @@ def test_sends_that_did_not_go_still_wait_on_the_card_and_its_agent_never_sets_t
     assert len(waiting) == 4, 'a send that did not go still waits on its card'
     [said] = told
     assert 'set up again only what failed' not in said
-    assert 'Did not go and still on the card for their press: 4' in said and 'never set them up again' in said, said
+    assert 'Did not go and still on the card for their press: 4' in said, said
+    ev = events.take(s, tid)[0]
+    assert all(f"Card rv{r['ReviewId']} " in ev for r in waiting) and ev.count('the card waits for his press') >= 4, ev
     rest = cardqueue.state(s, tid)['units'][0]
     assert cardqueue.what(s, rest) == '4 emails', 'what still waits on it, not what it once held'
     assert cardqueue.screen(s, tid).split('Waiting for his press now')[1].split('\n')[0].count('rv') == 4, cardqueue.screen(s, tid)
     stopped = {**st, 'state': 'stopped'}
     assert 'not run' not in bulkcard.summary(s, out['batch'], stopped), 'a row that ran and failed is no row that was not run'
+
+
+def test_a_row_rewritten_after_his_press_is_not_sent():
+    """Security round 5 (H2): the run read each row again at its turn, so an agent could change who a letter not yet sent goes to - or
+    what it says - after his press, and it went under that press. His press covers the rows as they read at the press (locked rule 2)."""
+    s, tid = world()
+    with mock.patch.object(server, 'store', s):
+        out = call(tid, 'propose_email', items=emails(4))
+    rids = [r['ReviewId'] for r in bulkcard.rows(s, out['batch'])]
+    went = []
+    def send(*a, **k):
+        went.append((k.get('to'), a, k))
+        if len(went) == 1:                         # ...while the first letter goes, the third's recipient and the fourth's words are rewritten
+            s._exec("UPDATE review SET Deliver=replace(Deliver, 'owner2@cedar.example', 'mallory@elsewhere.example') WHERE ReviewId=?", (rids[2],))
+            s._exec("UPDATE review SET DraftText='Wire the deposit to account 1234.' WHERE ReviewId=?", (rids[3],))
+        return {'channel': 'email', 'to': k.get('to') or []}
+    with mock.patch.object(outbound, 'send_out', send), mock.patch.object(outbound, 'send_block', lambda *a, **k: ''):
+        st, told = press(s, out['batch'])
+    assert (st['done'], st['failed']) == (2, 2), st
+    assert 'mallory@elsewhere.example' not in str(went) and 'Wire the deposit' not in str(went), 'nothing he did not press left'
+    assert st['rows'][str(rids[2])] == st['rows'][str(rids[3])] == bulkcard.CHANGED
+    assert [r['Status'] for r in bulkcard.rows(s, out['batch'])][2:] == ['pending', 'pending'], 'a changed row waits for a press of its own'
+    assert 'changed after your press' in told[0]
 
 
 def test_a_press_on_a_bulk_card_the_chat_moved_past_sends_nothing():
@@ -217,7 +292,7 @@ def test_two_presses_at_once_are_one_run_and_its_agent_hears_it_once():
     sent, told, slow = [], [], bulkcard.running
     def send(*a, **k): time.sleep(0.02); sent.append(k.get('to')); return {'channel': 'email', 'to': k.get('to') or []}
     with mock.patch.object(outbound, 'send_out', send), mock.patch.object(outbound, 'send_block', lambda *a, **k: ''), \
-         mock.patch.object(general, 'to_agent', lambda st, t, said, actor='owner', **k: told.append(said) or 'woke'), \
+         hears(told)[0], hears(told)[1], \
          mock.patch.object(bulkcard, 'running', lambda *a: (slow(*a), time.sleep(0.05))[0]):      # ...both presses read it before either marks it
         presses = [threading.Thread(target=bulkcard.run, args=(s, out['batch'])) for _ in range(2)]
         for t in presses: t.start()
@@ -273,10 +348,10 @@ def test_a_bulk_card_next_in_line_is_named_as_the_card_names_itself():
     with mock.patch.object(server, 'store', s):
         call(tid, 'propose_email', to='erin@northwind.example', subject='Issues', text='Erin - closing the stale issues next.')
         call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='stale', items=[{'number': n} for n in range(1, 41)])
-        call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='stale', items=[{'number': n} for n in range(41, 41 + bulkcard.MANY)])
+        call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='stale', items=[{'number': n} for n in range(41, 41 + 5)])
     us = cardqueue.state(s, tid)['units']
     assert cardqueue.line(cardqueue.state(s, tid)) == '1 of 3 · next: 40 issues'
-    assert [cardqueue.what(s, u) for u in us] == ['the email to erin@northwind.example', '40 issues', f'{bulkcard.MANY} issues']
+    assert [cardqueue.what(s, u) for u in us] == ['the email to erin@northwind.example', '40 issues', f'{5} issues']
 
 
 def test_after_a_bulk_run_its_agent_hears_what_still_waits_behind_it():
@@ -289,7 +364,9 @@ def test_after_a_bulk_run_its_agent_hears_what_still_waits_behind_it():
     with mock.patch.object(outbound, 'send_out', lambda *a, **k: {'channel': 'email', 'to': k.get('to') or []}), mock.patch.object(outbound, 'send_block', lambda *a, **k: ''):
         st, told = press(s, out['batch'])
     [said] = told
-    assert '10 done' in said and f"rv{last['review_id']}, the email to gail@northwind.example" in said, said
+    assert '10 done' in said, said
+    ev, note = events.take(s, tid)[0], f"Card rv{last['review_id']} (the email to gail@northwind.example):"
+    assert f'{note} up for his press' in ev and f'{note} he' not in ev, 'the woken turn reads the note behind them still up, by its card event'
 
 
 def chat_cards(s, tid):
@@ -319,7 +396,7 @@ def test_a_standing_bulk_card_names_the_sentence_his_next_line_greys_it_with():
     over his new line for a read (~230 ms) - two Sends over the line that had just written past them. It names the sentence, as a draft does."""
     s, tid = world()
     with mock.patch.object(server, 'store', s):
-        call(tid, 'propose_email', items=emails(bulkcard.MANY))
+        call(tid, 'propose_email', items=emails(5))
         items = conversation.items(s, tid)['items']
     cards = [k for x in items for k in ([x] if x['kind'] == 'card' else x.get('cards') or [])]
     assert [(k['what'], k['status'], k.get('aside')) for k in cards] == [('batch', 'pending', proposals.WROTE_PAST)]
@@ -368,6 +445,21 @@ def test_its_agent_takes_back_a_bulk_card_by_the_ids_it_was_told():
     assert {s.get_review(x)['Status'] for x in rids} == {'closed_unsent'}
     assert cardqueue.state(s, tid)['units'][0]['rids'] == [note], 'the note to Gail is the next card'
 
+
+def test_a_calls_replaces_never_takes_back_a_card_one_of_its_items_stands_as():
+    """A real Codex run, 2026-11-25: two post cards raised, then the same two again as `items` with `replaces` the first. Shared by every item,
+    the second item withdrew the card the first had just raised again, and the call answered "nothing was filed" over a card it took off his
+    screen. A card raised again stands for its item, and `replaces` takes back only a card none of them stands as."""
+    s, tid = world()
+    x, li = 'Approvals at Northwind are simpler now.', 'When you submit an expense you should know what happens next.'
+    with mock.patch.object(server, 'store', s):
+        a, b = call(tid, 'propose', kind='post', network='x', text=x)['review'], call(tid, 'propose', kind='post', network='linkedin', text=li)['review']
+        out = call(tid, 'propose', kind='post', items=[{'network': 'x', 'text': x}, {'network': 'linkedin', 'text': li}], replaces=str(a))
+        assert out['ok'] and out['on_the_card'] == 2, out
+        assert [s.get_review(r)['Status'] for r in (a, b)] == ['pending', 'pending']
+        out = call(tid, 'propose', kind='post', items=[{'network': 'x', 'text': x + ' Live Monday.'}], replaces=str(a))
+        assert out['ok'] and s.get_review(a)['Status'] == 'closed_unsent', 'a card none of them stands as is taken back, once'
+
 def test_two_presses_at_once_are_one_run_and_one_true_telling():
     """Pressed on the phone and the desk in the same moment: both presses started a run, each row went once (its own road refuses a second),
     and the agent was told twice - each telling "5 done, 5 failed" over ten issues that had all closed."""
@@ -375,7 +467,8 @@ def test_two_presses_at_once_are_one_run_and_one_true_telling():
     with mock.patch.object(server, 'store', s):
         out = call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='duplicates', items=[{'number': n} for n in range(1, 11)])
     gh, told, go = GitHub(delay=0.02), [], threading.Barrier(2)
-    with mock.patch.object(github.requests, 'patch', gh.patch), mock.patch.object(general, 'to_agent', lambda st, t, said, actor='owner', **k: told.append(said) or 'woke'):
+    w1, w2 = hears(told)
+    with mock.patch.object(github.requests, 'patch', gh.patch), w1, w2:
         def press_it():
             go.wait()
             try: bulkcard.run(s, out['batch'], wait=True)
@@ -411,7 +504,7 @@ def test_a_routine_runs_many_emails_go_at_once_and_its_agent_hears_the_true_coun
         if 'owner1@' in str(to): raise RuntimeError('mailbox refused the recipient')
         sent.append(to); return {'channel': 'email', 'to': list(to)}
     with mock.patch.object(server, 'store', s), mock.patch.object(outbound, 'send_out', send), \
-            mock.patch.object(outbound, 'send_block', lambda *a, **k: ''), mock.patch('taskuary.learn.learn_from'):
+            mock.patch.object(outbound, 'send_block', lambda *a, **k: ''), mock.patch('taskuary.learning.learn_from'):
         out = call(tid, 'propose_email', items=emails(3))
     assert len(sent) == 2, sent
     assert (out['ok'], out['sent'], out['on_the_card']) == (True, 2, 1), out
@@ -423,10 +516,12 @@ def test_one_at_a_time_counts_only_the_cards_that_stood_for_his_press():
     back; the new first one read "4 of 7 · next: the email to erin" - the run counted the three dead ones. Only cards that stood for his press
     count: waiting, or settled by his press."""
     s, tid = world()
-    with mock.patch.object(server, 'store', s): call(tid, 'propose_email', items=emails(3))
+    def three():
+        for e in emails(3): call(tid, 'propose_email', **e)
+    with mock.patch.object(server, 'store', s): three()
     old = [r['ReviewId'] for r in s._rows("SELECT ReviewId FROM review WHERE TaskId=?", (tid,))]
     for r in old: s.decide_review(r, 'closed_unsent', None, 'agent', note="superseded - a later turn's reply took its place")
-    with mock.patch.object(server, 'store', s): call(tid, 'propose_email', items=emails(3))
+    with mock.patch.object(server, 'store', s): three()
     q = cardqueue.state(s, tid)
     assert (q['n'], q['of']) == (1, 3) and cardqueue.line(q).startswith('1 of 3 · next: '), q
     s.decide_review(q['live'][0], 'approved', None, 'owner'); cardqueue.FRESH, was = 0, cardqueue.FRESH
@@ -469,3 +564,63 @@ def test_a_card_next_in_line_names_its_person_not_their_address():
     from taskuary import peoplesearch
     with mock.patch.object(peoplesearch, 'known', lambda store, kind: [{'to': 'erin@northwind.example', 'name': 'Erin Blake'}]):
         assert cardqueue.what(s, u) == 'the email to Erin Blake'
+
+
+def test_a_bulk_run_that_all_went_wakes_nobody_and_one_with_a_failure_wakes_its_agent_once():
+    """The owner, 2026-11-25: his approval "sends it without further triggering the agent unless it fails of course or there are next steps".
+    Ten issues closed: the agent is woken by nothing and hears the run in its next turn; a run where one was refused wakes it once, with why."""
+    s, tid = world()
+    with mock.patch.object(server, 'store', s):
+        out = call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='stale', items=[{'number': n} for n in range(1, 6)])
+    told, woke = [], []
+    with mock.patch.object(github.requests, 'patch', GitHub().patch): press(s, out['batch'], told=told, woke=woke)
+    assert woke == [] and len(told) == 1 and '5 done, 0 failed' in told[0], (told, woke)
+    with mock.patch.object(server, 'store', s):
+        out = call(tid, 'propose', action='run_tool', type='github_close', repo=REPO, why='stale', items=[{'number': n} for n in range(6, 9)])
+    told, woke = [], []
+    with mock.patch.object(github.requests, 'patch', GitHub(bad={7}).patch): press(s, out['batch'], told=told, woke=woke)
+    assert len(woke) == 1 and '1 failed' in woke[0] and 'issue was deleted' in woke[0], woke
+
+
+def test_versions_stand_on_the_one_card_also_where_each_item_took_the_place_of_the_one_before():
+    """Walk 23, 2026-11-25 (the HIPAA road): "two versions - one yes, one declining" became ONE card holding only the decline, answered as "one
+    card with a tab each, 1 of them", and the agent told him it had drafted both. Where an item's letter does not rewrite the one before it
+    but takes its place (the earlier one closed as replaced), the one card that stands still holds every item's words as its versions."""
+    from test_own_ask_no_reply import mailed_task
+    from taskuary import wrapup
+    s = MemoryStore(); tid = mailed_task(s, 'general')
+    yes, no = 'Hi Erin, yes - I will speak on the panel. Alex', 'Hi Erin, thank you, but I have to decline this time. Alex'
+    real = wrapup.agent_reply
+    def replacing(store, task_id, text, *a, **k):
+        # ...each item files a letter of its own: the one standing is closed as replaced first, as a later turn's letter closes an earlier one
+        for r in store._rows("SELECT ReviewId FROM review WHERE TaskId=? AND Status='pending' AND Kind='draft_reply'", (task_id,)):
+            store.decide_review(r['ReviewId'], 'closed_unsent', None, 'assistant', note=wrapup.REPLACED)
+        return real(store, task_id, text, *a, **k)
+    with mock.patch.object(server, 'store', s), mock.patch.object(wrapup, 'agent_reply', replacing):
+        out = call(tid, 'propose', kind='reply', items=[{'text': yes}, {'text': no}])
+    [rv] = s._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND TRIM(IFNULL(DraftText,''))<>''", (tid,))
+    assert out['ok'] and out['on_the_card'] == 1 and '2 versions' in out['shown'], out
+    assert rv['DraftText'] == yes and json.loads(rv['Versions']) == [yes, no], 'both versions on the one card that stands, the first in its box'
+
+
+def test_words_given_beside_items_that_every_item_gives_again_are_answered_with_the_fix_never_dropped():
+    """The same walk's other shape: one version written beside `items` and the other inside it. What stands beside `items` is shared by every
+    item; where every item gives its own, the one beside them would go nowhere - one card, one version, and "both" said. Answered with the
+    exact fix, and nothing is filed."""
+    from test_own_ask_no_reply import mailed_task
+    s = MemoryStore(); tid = mailed_task(s, 'general')
+    with mock.patch.object(server, 'store', s):
+        r = c.post(f'/api/mcp?task={tid}', headers=hdr(tid), json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'propose', 'arguments': {
+            'kind': 'reply', 'text': 'Hi Erin, yes - I will speak on the panel. Alex', 'items': [{'text': 'Hi Erin, thank you, but I have to decline. Alex'}]}}}).json()['result']
+    said = r['content'][0]['text']
+    assert r['isError'] and '`text`' in said and 'its own item' in said, said
+    assert not s._rows("SELECT 1 FROM review WHERE TaskId=? AND TRIM(IFNULL(DraftText,''))<>''", (tid,)), 'nothing was filed'
+    # ...a field the items share is theirs as ever
+    with mock.patch.object(server, 'store', s):
+        out = call(tid, 'propose', kind='email', subject='October close', text='The October close is done. Alex',
+                   items=[{'to': 'gail@northwind.example'}, {'to': 'paula@northwind.example'}])
+    assert out['ok'] and out['on_the_card'] == 2, out
+    # ...and what its agent passed is on the server's record by its shape - each key, a text by its length, never a word of his (agenttools.shape)
+    from taskuary import agenttools
+    assert agenttools.shape({'kind': 'reply', 'text': 'Hi Erin - yes.', 'answers': 12, 'items': [{'text': 'x' * 400, 'to': ['erin@northwind.example']}]}) == {
+        'kind': 'text(5)', 'text': 'text(14)', 'answers': 12, 'items': [{'text': 'text(400)', 'to': 'list(1)'}]}, "a call's shape names no word of his"

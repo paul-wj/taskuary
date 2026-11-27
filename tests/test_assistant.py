@@ -141,7 +141,7 @@ class PostTests(unittest.TestCase):
                 return json.dumps({'say': [{'key': 'idea:intacct-payment-spike',
                                             'text': 'Intacct payments are unusually high today.',
                                             'why': 'Intacct payments: 125000 versus a normal 40000.',
-                                            'mid': None, 'task': None}], 'notes': ''})
+                                            'mid': None, 'task': None, 'section': 'systems'}], 'notes': ''})
             out = assistant.run(s, llm=llm, force=True)
         finally:
             reports.REGISTRY.pop('_finance_watch', None)
@@ -231,7 +231,7 @@ class PostTests(unittest.TestCase):
         def llm(system, user, **k):
             seen.append(user)
             return json.dumps({'say': [{'key': 'followup:c1', 'text': "Dana owes you the reconciled ledger since Tuesday - I'd nudge.", 'mid': None},
-                                       {'key': 'idea:ledger-close', 'text': 'Q3 close is a week out; I would book the sign-off now.', 'mid': None, 'task': None}]})
+                                       {'key': 'idea:ledger-close', 'text': 'Q3 close is a week out; I would book the sign-off now.', 'mid': None, 'task': None, 'section': 'loose'}]})
         out = assistant.run(s, llm=llm, force=True)
         self.assertEqual(out['said'], 2)
         row = s.get_message(out['message_id'])
@@ -259,8 +259,8 @@ class PostTests(unittest.TestCase):
         def llm(system, user, **k):
             self.assertIn('"why":', system)
             return json.dumps({'say': [{'key': 'followup:c1', 'text': "Dana owes you the ledger - I'd nudge.", 'why': 'four days is long for her', 'mid': None},
-                                       {'key': 'idea:po-numbers', 'text': 'Two PO questions this week - I would keep a PO sheet.', 'why': 'mails on "Invoice 88" and "Q3 ledger" both circle a reference number', 'mid': None, 'task': None},
-                                       {'key': 'idea:hunch', 'text': 'Something feels off with the close.', 'mid': None, 'task': None}]})
+                                       {'key': 'idea:po-numbers', 'text': 'Two PO questions this week - I would keep a PO sheet.', 'why': 'mails on "Invoice 88" and "Q3 ledger" both circle a reference number', 'mid': None, 'task': None, 'section': 'people'},
+                                       {'key': 'idea:hunch', 'text': 'Something feels off with the close.', 'mid': None, 'task': None, 'section': 'loose'}]})
         out = assistant.run(s, llm=llm, force=True)
         row = s.get_message(out['message_id']); brief = json.loads(row['Brief'])
         ideas = brief['ideas']
@@ -298,7 +298,7 @@ class PostTests(unittest.TestCase):
         s._exec('UPDATE source SET ConfigJson=? WHERE SourceId=?', (json.dumps(c), src['SourceId']))
         from taskuary.reports import run_report_source
         out = run_report_source(s, s.get_source(src['SourceId']), llm)
-        self.assertTrue(out['ran']); self.assertIn('Only chase vendors', seen[0]); self.assertIn('At most 5 entries', seen[0])
+        self.assertTrue(out['ran']); self.assertIn('Only chase vendors', seen[0]); self.assertIn('At most 5 of your own lines', seen[0])
         self.assertEqual([r for r in s.feed(limit=10) if r['Channel'] == 'report'], [])           # no report row - the assistant posts its own kind
         # switched off on the Reports tab: the scheduler's call does nothing, 'ask now' still answers
         s._exec('UPDATE source SET Active=0 WHERE SourceId=?', (src['SourceId'],))
@@ -311,7 +311,7 @@ class PostTests(unittest.TestCase):
     def test_lines_per_post_is_a_setting(self):
         s = self._seed()
         s.set_setting('assistant_max_lines', '2', 't')
-        say = [{'key': f'idea:n{i}', 'text': f'idea number {i}', 'mid': None, 'task': None} for i in range(5)]
+        say = [{'key': f'idea:n{i}', 'text': f'idea number {i}', 'mid': None, 'task': None, 'section': 'people'} for i in range(5)]
         out = assistant.run(s, llm=lambda *a, **k: json.dumps({'say': say}), force=True)
         self.assertEqual(out['said'], 2)
 
@@ -341,6 +341,23 @@ class PostTests(unittest.TestCase):
         self.assertIn('[reply sent from Review]', seen['user'])
         self.assertEqual(out['said'], 0)
         self.assertEqual(s.list_ideas('open'), [])
+
+    def test_a_reply_on_one_thread_is_not_the_last_word_of_another_on_the_same_task(self):
+        """Walk 14 (NEW-c): a colleague's new question (a duplicate payment) joined a busy task on a thread of its own; the card's reply to the
+        vendor on that task was taken as the last word of HIS thread - "last word YOURS" - and no surface said he was owed an answer."""
+        s = _store()
+        tid = s.create_task({'Title': 'Trainly renewal', 'Kind': 'general', 'Status': 'open'}, 't')
+        dana = _mail(s, 'dana@vendor.example', 'Trainly quote', 'We can do $9.60 a seat - reply approved to accept.', hours=5, days=0,
+                     conv='c-dana', tid=tid, status='routed', name='Dana Holt')
+        rid = s.add_review({'TaskId': tid, 'MessageId': dana, 'Kind': 'draft_reply', 'DraftText': 'approved', 'Status': 'pending'})
+        s.decide_review(rid, 'approved', 'approved', 'owner')
+        omar = _mail(s, 'omar@northwind.example', 'Duplicate payment?', 'We paid Trainly twice in October, $2,550 x2 - refund or credit?',
+                     hours=4, days=0, conv='c-omar', tid=tid, status='routed', name='Omar Keller')
+        s.add_route(omar, tid, 'attach', None, 'the same job', [], 'triage', verdict={'intent': 'task', 'asks_owner': True})
+        txt = assistant._people(s)
+        self.assertIn('- Omar Keller [email] re "Duplicate payment?" - 1 new, last word THEIRS', txt)
+        self.assertIn('- Dana Holt [email] re "Trainly quote" - 1 new, last word YOURS', txt)      # ...her own thread still is answered
+        self.assertEqual([a['action']['mid'] for a in assistant.unanswered(s)], [omar])
 
     def test_a_promise_you_made_is_your_own_open_item_not_a_chase(self):
         s = _store()
@@ -406,7 +423,7 @@ class ButtonTests(unittest.TestCase):
         (the session had not answered yet, so it still read as fresh) and taught the verdict twice. The second press finds the task
         the first one made and starts nothing."""
         s, mid, idea = self._posted()
-        with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch('taskuary.memorylines.teach_soon') as taught:
+        with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch('taskuary.learning.teach_soon') as taught:
             first = assistant.act(s, idea['IdeaId'], 'agent')
             again = assistant.act(s, idea['IdeaId'], 'agent')
             made = assistant.act(s, idea['IdeaId'], 'task')
@@ -452,7 +469,7 @@ class ButtonTests(unittest.TestCase):
     def test_not_ours_teaches_nothing_and_stays_down_until_the_facts_change(self):
         """I10: Not ours only never repeats - the lesson it wrote went to a block no prompt reads."""
         s, mid, idea = self._posted()
-        with mock.patch('taskuary.learn.learn_from') as learn:
+        with mock.patch('taskuary.learning.learn_from') as learn:
             assistant.act(s, idea['IdeaId'], 'dismiss')
         learn.assert_not_called()
         self.assertEqual(s.get_idea(idea['IdeaId'])['Status'], 'dismissed')
@@ -501,6 +518,17 @@ class ButtonTests(unittest.TestCase):
         seen = {}
         assistant.think(s, [], lambda system, user, **k: seen.update(system=system) or '{"say": []}')
         self.assertIn('The portal is the vendor app.', seen['system'])                     # past the old 1500-char cut
+
+    def test_a_senders_new_thread_is_its_own_line_after_one_he_answered(self):
+        """Walk 16: Jordan's pricing thread ("20-30% unused seats") was folded to "1 more one-way thread(s) like the one above" because an
+        earlier Jordan thread, which Alex had answered, was shown - like nothing above, and the Advisor never read the pricing."""
+        s = _store()
+        _mail(s, 'jordan@vendor.example', 'Demo next week?', 'Could we show you Spendly next week?', days=1, conv='demo', name='Jordan Pike')
+        _mine(s, 'Demo next week?', 'Thursday works.', 1, 'demo')
+        _mail(s, 'jordan@vendor.example', 'Seat pricing', 'Most teams find 20-30% unused seats.', days=0, hours=2, conv='price', name='Jordan Pike')
+        txt, _ = assistant._people_context(s, 2)
+        self.assertIn('20-30% unused seats', txt)
+        self.assertFalse(any('more one-way thread' in l for l in txt.splitlines()), txt)
 
     def test_the_month_of_counts_is_read_once_a_week_and_only_a_real_run_starts_the_week(self):
         """Automation ideas, folded into the Advisor (the owner, 2026-09-25): its evidence rides in the Advisor's payload
@@ -815,7 +843,7 @@ class WhatItReadsTests(unittest.TestCase):
         s = _store()
         self._chat(s, 'Priya Shah', 'can you please fill out the performance review?', hours=4)
         long = "I would go into Monday's Target Meeting with Priya's note that exporting freezes the app every afternoon at four"
-        out = assistant.run(s, llm=lambda *a, **k: json.dumps({'say': [{'key': 'idea:a', 'text': long, 'mid': None}, {'key': 'idea:b', 'text': 'Second.', 'mid': None}]}), force=True)
+        out = assistant.run(s, llm=lambda *a, **k: json.dumps({'say': [{'key': 'idea:a', 'text': long, 'mid': None, 'section': 'people'}, {'key': 'idea:b', 'text': 'Second.', 'mid': None, 'section': 'people'}]}), force=True)
         row = s.get_message(out['message_id'])
         self.assertEqual(row['Subject'], long[:90].rsplit(' ', 1)[0] + '… (+1 more)')
         self.assertEqual(out['reviewed']['people'], 1); self.assertIn('1 thread(s) of what people said', row['BodyText'])
@@ -830,7 +858,7 @@ class WhatItReadsTests(unittest.TestCase):
         tid = s.create_task({'Title': 'July financials', 'Kind': 'coding', 'Status': 'in_progress'}, 't')
         self._chat(s, 'Priya Shah', 'can you please fill out the performance review?', hours=4)
         out = assistant.run(s, force=True, llm=lambda *a, **k: json.dumps(
-            {'say': [{'key': 'idea:a', 'text': f'TQ-{tid:04d} July financials has not moved since Tuesday.', 'mid': None, 'about': f'TQ-{tid:04d}'}]}))
+            {'say': [{'key': 'idea:a', 'text': f'TQ-{tid:04d} July financials has not moved since Tuesday.', 'mid': None, 'about': f'TQ-{tid:04d}', 'section': 'loose'}]}))
         self.assertTrue(out['reviewed']['model'])                                  # the pass ran; it did not fall back
         self.assertEqual([l['action'].get('tid') for l in out['lines']], [tid])    # from the model's `about`
         # a ref in the words alone ties it to nothing: which task a line is about is the model's to say (2026-10-11)

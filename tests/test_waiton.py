@@ -54,6 +54,29 @@ class DeclareTests(unittest.TestCase):
         self.assertFalse(self.s.get_task(self.tid)['WaitingOn'])
 
 
+class NamedNeverAnId(unittest.TestCase):
+    """The owner's live task, 2026-11-25: its header read "waiting for Whatsapp:133702382264527's input" - a chat's sender id where the person's
+    name belongs. Whoever a task waits on is named by the message's own name, else the name saved for the chat, else the chat as he says it."""
+    ID, CONV = 'whatsapp:15550100', 'whatsapp:15550100@s.whatsapp.net'
+    def setUp(self):
+        self.s = store(); self.tid = Factory(self.s).attachable(from_email=ERIN).tid
+
+    def wa(self, name):
+        self.s.add_message({'TaskId': self.tid, 'ExternalId': f'wa-{name}', 'Channel': 'whatsapp', 'ConversationId': self.CONV,
+                            'FromName': name, 'FromEmail': self.ID, 'BodyText': 'I will check and get back to you.', 'Status': 'routed'})
+        self.assertTrue(waiton.declare(self.s, self.tid, name, 'agent')['ok'])
+        self.assertEqual(self.s.get_task(self.tid)['WaitingOn'], self.ID, 'kept by the id that matches their next line')
+        [w] = waiton.on_them(self.s, self.s.get_task(self.tid))          # ...what taskstate.standing names for 'them'
+        return w['who'], waiton.word('them', w['who'])
+
+    def test_a_whatsapp_sender_is_named_by_their_name(self):
+        self.assertEqual(self.wa('Gail Moreno'), ('Gail Moreno', "waiting for Gail's input"))
+
+    def test_with_no_name_it_is_the_chat_never_its_id(self):
+        who, said = self.wa('15550100')                 # ...the poller's stand-in name: the chat's own number
+        self.assertEqual((who, said), ('the WhatsApp chat', lanes.word('theirs')))
+
+
 class WakeTests(unittest.TestCase):
     """The answer arriving through ingest - judged fyi ("Thursday works" reads as nothing to do), which used to file it."""
     def setUp(self):
@@ -65,7 +88,24 @@ class WakeTests(unittest.TestCase):
         out, _, _ = arrive(self.s, 'w1', PAULA, 'Paula Vance', 'The file is the 8/17 one.')
         t = self.s.get_task(self.tid)
         self.assertEqual((out['status'], out['task_id']), ('attached', self.tid))       # routed onto the task, never filed away
-        self.assertEqual((t['WaitingOn'], t['Status'], str(t['WokeMid'])), (None, 'open', str(out['message_id'])))
+        # ...the wait itself ends with the agent's turn that reads it (waiton.settle): a holding reply is no answer (walk 17, K2)
+        self.assertEqual((t['WaitingOn'], t['Status'], str(t['WokeMid'])), (PAULA, 'open', str(out['message_id'])))
+        from taskuary import taskstate
+        self.assertNotEqual(taskstate.standing(self.s, self.tid)['waits_on'], 'them', 'her line moves it on - no longer waiting on her')
+
+    def test_a_holding_reply_read_to_a_turns_end_leaves_the_wait_for_her_answer_on_a_new_thread(self):
+        """Walk 19 (S6a then S5a): her holding reply woke the task, its agent read it and ended its turn without asking again, and the wait was
+        gone - so her real answer, on a new thread, reached triage with nothing saying the task waited on her, and was filed as FYI."""
+        from taskuary import context, taskstate, workerstate as ws
+        self.s._exec("UPDATE task SET WaitingSince='2026-01-01 09:00:00' WHERE TaskId=?", (self.tid,))     # ...asked her earlier
+        out, _, _ = arrive(self.s, 'h1', PAULA, 'Paula Vance', 'Still working on it - I need the invoices first.')
+        ws.record(self.s, self.tid, 'sid1', 'working', text=ws.WAKE, source='api')
+        ws.record(self.s, self.tid, 'sid1', 'turn_end', text='Paula is still on it.', source='api')
+        st = taskstate.standing(self.s, self.tid)
+        self.assertEqual((self.s.get_task(self.tid)['WaitingOn'], [(w['key'], w['answered']) for w in st['them']]), (PAULA, [(PAULA, None)]))
+        later = {'from_email': PAULA, 'from_name': 'Paula Vance', 'conversation_id': 'c2', 'subject': 'PTO file'}
+        self.assertTrue(waiton.awaits(self.s, self.s.get_task(self.tid), later), 'her next line, on any thread, is still the awaited answer')
+        self.assertIn("waiting for Paula's input", context._stands(self.s, self.s.get_task(self.tid)))      # ...what triage's open_items say
 
     def test_a_reply_from_someone_else_leaves_the_wait(self):
         out, _, _ = arrive(self.s, 'w2', GAIL, 'Gail Moreno', 'Thanks all.')
@@ -119,6 +159,16 @@ class RailTests(unittest.TestCase):
         waiton.arrived(self.s, self.tid, self.s.get_message(mid), mid)
         self.assertNotEqual(rulebook.revision(self.s, 'task', self.tid), was)
 
+    def test_a_reply_that_asked_them_reads_theirs_by_name_as_the_header_does(self):
+        """Walk 20: after a reply to a vendor that asked for demo times, the header read "waiting for Jordan's input" and the rail row "real
+        work with nobody on it" - the row read only an agent's declared wait, never the reply's own watch."""
+        tid = self.s.create_task({'Title': 'Vendor demo', 'Kind': 'todo', 'Status': 'open'}, 'o')
+        mid = mail(self.s, 'Demo next week?', who='Jordan Pike', email='jordan@vendor.example', hours=2, tid=tid, conv='c9')
+        self.s._exec("UPDATE task SET AskedWatch='reply', AskedSeenMid=?, AskedWatchAt=? WHERE TaskId=?", (mid, ago(minutes=-1), tid))   # ...the send, after their mail landed
+        self.tid = tid
+        [card] = self.rail()
+        self.assertEqual((card['lane'], card['why']), ('theirs', "waiting for Jordan's input"))
+
     def test_someone_elses_line_is_news_but_no_wake(self):
         mail(self.s, 'RE: PTO import', who='Gail Moreno', email=GAIL, hours=1, tid=self.tid, conv='c1', body='Any news?')
         card = self.rail()[0]
@@ -132,10 +182,6 @@ class CliTests(unittest.TestCase):
         self.assertIn('waiting_on', cli.STRANGER_ACTS)
         self.assertIn('--waiting-on', floor.TASKUARY_OK)
         self.assertTrue(any(p.fullmatch('/api/agent/waiting') for p in guard._STRANGER_WRITES))
-
-    def test_the_seed_names_it(self):
-        from taskuary import selfclose
-        self.assertIn('--waiting-on', selfclose.SEED_LINE)
 
 
 def test_the_cli_posts_the_wait_and_then_the_reply(monkeypatch, capsys):

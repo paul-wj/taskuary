@@ -1,12 +1,14 @@
-"""LOOKING OUT FOR THE OWNER'S JOB (lookout.py; the owner, 2026-11-02): once a week the Advisor reads the job, the window and what it said
-before, proposes at most two ideas - credit, a pain of others to fix, money left on the table, a problem developing, a person to loop in -
-and a second look holds what is generic or unsupported. What passes is the ordinary idea row. Alex Doyle's world, invented (CLAUDE.md)."""
-import json
+"""LOOKING OUT FOR THE OWNER'S JOB (lookout.py; the owner, 2026-11-02): once a day the Advisor reads the job, the window and what it said
+before, may read further with read-only tools, and proposes - credit, a pain of others to fix, money left on the table, a problem
+developing, a person to loop in. Plain code checks every quote and number against what the run read (2026-11-23); what passes is the
+ordinary idea row. Alex Doyle's world, invented (CLAUDE.md)."""
+import json, re
 from datetime import datetime, timedelta
 import pytest
 from taskuary import assistant, ideagrade, lookout
 from taskuary.store import MemoryStore
 from taskuary.testing import Factory
+import lookout_world
 
 ALEX, GAIL, PAULA, AP = 'alex@northwind.example', 'gail@northwind.example', 'paula@northwind.example', 'billing@vendor.example'
 JOB = "## The job\n- I run finance systems at Northwind: the invoice approvals, the vendor master and the month-end reports."
@@ -30,11 +32,26 @@ def world():
     return s, ids
 
 
+def quoted(user, ref):
+    "Words the run was shown of `ref`, copied from its line as a careful model would: the subject in quotes, else the line's own words."
+    for l in user.splitlines():
+        if re.search(rf'\b{ref}\b', l):
+            m = re.search(r'"([^"]{8,})"', l)
+            return m.group(1) if m else l.strip()[:30]
+    return 'nothing like this was shown'
+
+
 def brain(*answers):
-    """A scripted model: each call takes the next answer, and what it was asked is kept."""
+    """A scripted model: each call takes the next answer, and what it was asked is kept. An idea given `refs` and no quotes quotes each ref
+    from what this call was shown."""
     seen, it = [], iter(answers)
     def llm(system, user, **kw):
-        seen.append((system, user)); return json.dumps(next(it))
+        seen.append((system, user)); a = next(it)
+        if isinstance(a, dict):
+            a = {'reads': a.get('reads') or [], 'ideas': [{k: v for k, v in d.items() if k != 'refs'}
+                                                          | {'quotes': d.get('quotes') or [{'ref': r, 'quote': quoted(user, r)} for r in d.get('refs') or []],
+                                                             'counts': d.get('counts') or []} for d in a.get('ideas') or []]}
+        return json.dumps(a) if not isinstance(a, str) else a
     llm.seen = seen
     return llm
 
@@ -42,7 +59,13 @@ def brain(*answers):
 def idea(family, title, refs, **k):
     return {'family': family, 'title': title, 'evidence': k.get('evidence', 'seen four Mondays running'), 'refs': refs,
             'why': k.get('why', 'it costs real money'), 'next_step': k.get('next_step', 'Draft the per-approver list'),
-            'pitch': k.get('pitch', 'I noticed X and propose Y')}
+            'pitch': k.get('pitch', 'I noticed X and propose Y'), **({'quotes': k['quotes']} if 'quotes' in k else {}),
+            # ...a money idea states its stake; unless the test is about it, the count of what it cites (a number the run always holds)
+            **({'stake': k['stake']} if 'stake' in k else {'stake': {'expr': str(len(refs)), 'unit': 'charges', 'assume': []}} if family == 'money' else {}),
+            **({'counts': k['counts']} if 'counts' in k else {})}
+
+
+def rd(tool, **k): return {'tool': tool, 'q': None, 'sent': None, 'days': None, 'id': None, 'name': None} | k
 
 
 def test_the_pass_reads_the_job_the_window_the_people_and_what_the_owner_said_before():
@@ -51,9 +74,10 @@ def test_the_pass_reads_the_job_the_window_the_people_and_what_the_owner_said_be
     assistant.act(s, old['IdeaId'], 'dismiss', 'owner')
     llm = brain({'ideas': []})
     out = lookout.tick(s, llm, force=True)
-    assert out == {'ran': True, 'raised': [], 'held': [], 'calls': 1}, 'no idea is an answer: the check is not paid for'
+    assert out == {'ran': True, 'raised': [], 'updated': [], 'held': [], 'calls': 1, 'deep': ['source:email']}, 'no idea is an answer, in one call'
     system, user = llm.seen[0]
     assert 'credit' in system and 'communicate more' in system and 'diagnosis' in system, 'the bar is the prompt'
+    assert all(t in system for t in lookout.READS) and 'word for word' in system.lower(), 'it is told the tools it may read with, and that quotes are checked'
     assert JOB.splitlines()[1] in user
     assert '"Invoices waiting approval - week 0": 4 message(s)' in user and f"msg{ids['backlog'][0]}" in user, 'grouped, counted, citable'
     assert 'Gail Moreno: the owner wrote to them 1 time(s); from them each week, oldest first:' in user, 'the weekly pattern of who they deal with'
@@ -61,87 +85,147 @@ def test_the_pass_reads_the_job_the_window_the_people_and_what_the_owner_said_be
     assert f"task{ids['task']} closed" in user
 
 
-def test_the_check_holds_a_generic_idea_and_the_specific_one_lands_as_an_idea_row_with_its_evidence():
+def test_a_quote_not_in_what_it_read_or_a_number_it_cannot_back_drops_the_idea_and_the_good_one_lands_with_its_evidence():
+    """EVIDENCE CHECKED IN CODE (the design review, 2026-11-23): no second model. A quote must stand word for word in what the run was shown
+    of the id it cites, and each number must be in what it cites - else the idea is dropped, and why is kept for the next run."""
     s, ids = world()
     a, b = ids['dup']
-    llm = brain({'ideas': [idea('pitch', 'Communicate more with the approvers', [f"msg{ids['backlog'][0]}"]),
+    w = f"msg{ids['backlog'][0]}"
+    llm = brain({'ideas': [idea('pitch', 'Approvers sit on invoices', [w], quotes=[{'ref': w, 'quote': 'approvers ignore the queue'}]),
+                           idea('early_warning', 'The backlog will pass 3000 invoices next month', [w]),
                            idea('money', 'Vendor billing sent invoice 4471 twice - $1,200 may be paid twice', [f'msg{a}', f'msg{b}'],
-                                pitch='I caught a $1,200 double invoice before it was paid twice')]},
-                {'keep': [2], 'why': {'1': 'generic - no count, no fix'}})
+                                pitch='I caught a $1,200 double invoice before it was paid twice')]})
     out = lookout.tick(s, llm, force=True)
-    assert out['calls'] == 2 and out['held'] == ['Communicate more with the approvers'] and len(out['raised']) == 1
+    assert out['calls'] == 1 and out['held'] == ['Approvers sit on invoices', 'The backlog will pass 3000 invoices next month'] and len(out['raised']) == 1
+    held = {h['title']: h['why'] for h in json.loads(s.get_setting(lookout.HELD_KEY))}
+    assert held['Approvers sit on invoices'] == f'the words "approvers ignore the queue" are not in {w} as read'
+    assert held['The backlog will pass 3000 invoices next month'] == 'the number 3000 is not in what it cites'
     i = s.get_idea(out['raised'][0])
     act = json.loads(i['ActionJson'])
     assert i['Key'].startswith('idea:lookout-vendor-billing') and i['Kind'] == 'money' and i['Status'] == 'open'
     assert [e['ref'] for e in act['evidence']] == [f'msg{a}', f'msg{b}'] and 'Vendor billing: Invoice 4471' in act['evidence'][0]['label']
+    assert act['evidence'][0]['quote'] == quoted(llm.seen[0][1], f'msg{a}'), 'the words it rests on travel with it'
     assert 'Pitch: "I caught a $1,200 double invoice' in act['suggest'] and act['why'].startswith('seen four Mondays')
-    check_user = llm.seen[1][1]
-    assert f'msg{a}: ' in check_user and 'Invoice 4471' in check_user, 'the check reads what each idea cites'
-    held = json.loads(s.get_setting(lookout.HELD_KEY))
-    assert held[0]['title'] == 'Communicate more with the approvers' and 'generic' in held[0]['why']
     # ...and it is on the rail as the Advisor's idea, with the verbs every idea has
     from taskuary import funnel
     row = next(x for x in funnel.build(s)['items'] if x.get('idea') == i['IdeaId'])
     assert row['idea_kind'] == 'money' and row['title'] == i['Text']
 
 
+def test_an_idea_carries_the_person_and_the_thread_it_is_about_and_an_attachment_opens_as_its_mail():
+    """The owner, 2026-11-25: an idea read "Draft a reply on the existing thread asking for confirmation" and its page named neither the thread
+    nor whom it would go to. The idea keeps the newest message it cites and its sender (`on`), apart from the mail it was raised on (`mid`,
+    whose task its work joins); a cited attachment carries its message to open."""
+    s, ids = world()
+    a, b = ids['dup']
+    att = s.add_attachment({'MessageId': b, 'Name': 'invoice-4471.pdf'})
+    llm = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}'])]})
+    act = json.loads(s.get_idea(lookout.tick(s, llm, force=True)['raised'][0])['ActionJson'])
+    assert act['on'] == {'mid': b, 'who': 'Vendor billing'} and 'mid' not in act, act
+    assert lookout._evidence(s, {'refs': [f'att{att}'], 'quotes': []})[0]['link'] == f'msg{b}'
+
+
+def test_an_idea_opens_on_the_whole_prompt_its_look_was_sent_and_the_rail_carries_it_once():
+    """THE WHOLE PROMPT (the owner, 2026-11-24: "shouldn't the input show the whole thing as just the beginning and ... as any long prompt?"):
+    the idea's chat opens on what the look was actually sent - its instructions and the window, the lens it took - never its family's one line."""
+    from taskuary import funnel
+    s, ids = world()
+    a, b = ids['dup']
+    llm = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}'])]})
+    iid = lookout.tick(s, llm, force=True)['raised'][0]
+    row = next(x for x in funnel.build(s)['items'] if x.get('idea') == iid)
+    assert row['asked'] == f"{llm.seen[0][0]}\n\n{llm.seen[0][1]}" and 'The one not taken longest:' in row['asked']
+    assert 'window' not in row['action'], 'the window rides the row once, as what was asked'
+    old = s.upsert_idea({'key': 'idea:lookout-before', 'kind': 'pitch', 'text': 'Raised before the window was kept', 'action': {'type': 'lookout', 'family': 'pitch'}}, ago(days=1))
+    assert lookout.asked(json.loads(old['ActionJson'])) == lookout.SYSTEM and lookout.asked({'type': 'other'}) == ''
+
+
+def test_the_run_reads_before_it_proposes_and_a_count_it_claims_is_counted_again():
+    """ONE RUN WITH READ-ONLY TOOLS: it searches the mail - his sent mail too - reads a message whole, and only then proposes; a count it
+    states is run again by the code and must match. Nothing it may call moves anything."""
+    s, ids = world()
+    a, b = ids['dup']
+    llm = brain({'reads': [rd('search_mail', q='invoice 4471'), rd('search_mail', q='ledger sync', sent=True), rd('read_message', id=f'msg{b}'),
+                           rd('memory', q='invoice approvals'), rd('read_task', id=f"task{ids['task']}")]},
+                {'ideas': [idea('money', 'Invoice 4471 came 2 times in a week from Vendor billing', [f'msg{a}'],
+                                counts=[{'search': 'invoice 4471', 'sent': None, 'days': None, 'n': 2}]),
+                           idea('pitch', 'Invoice 4471 came 3 times', [f'msg{b}'], counts=[{'search': 'invoice 4471', 'sent': None, 'days': None, 'n': 3}])]})
+    out = lookout.tick(s, llm, force=True)
+    told = llm.seen[1][1]
+    assert 'search_mail "invoice 4471" (in and out, 30 days): 2 match' in told and 'search_mail "ledger sync" (his sent mail, 30 days): 1 match' in told
+    assert f'msg{b} ' in told and 'Invoice 4471 for $1,200' in told and 'I run finance systems at Northwind' in told and 'Fix the Payworth export' in told
+    assert out['calls'] == 2 and [s.get_idea(i)['Text'] for i in out['raised']] == ['Invoice 4471 came 2 times in a week from Vendor billing']
+    assert json.loads(s.get_setting(lookout.HELD_KEY))[0]['why'] == 'it says 3 for "invoice 4471"; the mail holds 2'
+    assert lookout.runs(s)[0]['reads'][:2] == ['search_mail invoice 4471', 'search_mail ledger sync'], 'what it read is on its run line'
+
+
 def test_an_invented_id_a_personal_thread_or_a_turned_down_family_is_never_raised():
     s, ids = world()
-    llm = brain({'ideas': [idea('money', 'A charge nobody can find', ['msg987654'])]})
-    assert lookout.tick(s, llm, force=True)['raised'] == [] and len(llm.seen) == 1, 'an id the window never showed rests on nothing'
+    llm = brain({'ideas': [idea('money', 'A charge nobody can find', ['msg987654'], quotes=[{'ref': 'msg987654', 'quote': 'a charge of some kind'}])]})
+    assert lookout.tick(s, llm, force=True)['raised'] == [] and len(llm.seen) == 1, 'an id the run never read rests on nothing'
     # No more ideas like this on a credit idea: credit is not asked for again, and one the model offers anyway is dropped
     c = s.upsert_idea({'key': 'idea:lookout-credit-1', 'kind': 'credit', 'text': 'Show the export fix', 'action': {'type': 'lookout'}}, ago(days=8))
     assistant.act(s, c['IdeaId'], 'dismiss_kind', 'owner')
     assert 'credit' not in lookout.families(s)
-    user, shown = lookout.window(s)
+    user, seen, _ = lookout.window(s)
     assert 'the owner turned down or does not use: credit' in user
-    assert lookout._clean(s, idea('credit', 'You fixed the export', [f"task{ids['task']}"]), shown, lookout.families(s)) is None
-    assert lookout._clean(s, idea('pitch', 'Fix the export', [f"task{ids['task']}"]), shown, lookout.families(s))['refs'] == [f"task{ids['task']}"]
+    t = f"task{ids['task']}"
+    q = [{'ref': t, 'quote': 'Fix the Payworth export'}]
+    assert lookout.verify(s, idea('credit', 'You fixed the export', [t], quotes=q), seen, {}, lookout.families(s)) == (None, 'not a family it may raise now')
+    assert lookout.verify(s, idea('pitch', 'Fix the export', [t], quotes=q), seen, {}, lookout.families(s))[0]['refs'] == [t]
+    # ...and a thread under a personal workstream is never read, so never cited
+    from taskuary import workstreams
+    workstreams.save(s, [{'name': 'Personal', 'personal': True}], 'test')
+    s._exec('UPDATE message SET Workstream=? WHERE MessageId=?', ('personal', ids['dup'][0]))
+    assert f"msg{ids['dup'][0]}" not in lookout.window(s)[1]
+    assert lookout.read(s, rd('read_message', id=f"msg{ids['dup'][0]}"), {}, {}).endswith('personal - not read')
+    assert lookout.count(s, 'invoice 4471') and all(m['MessageId'] != ids['dup'][0] for m in lookout.count(s, 'invoice 4471'))
 
 
-def test_what_the_owner_and_the_check_turned_down_comes_back_as_evidence():
+def test_what_the_owner_turned_down_and_what_the_code_held_comes_back_as_evidence_never_as_citable():
     s, ids = world()
-    llm = brain({'ideas': [idea('early_warning', 'Gail went quiet', [f"msg{ids['mine']}"])]}, {'keep': [], 'why': {'1': 'one message, no pattern'}})
+    llm = brain({'ideas': [idea('early_warning', 'Gail went quiet', [f"msg{ids['mine']}"], quotes=[{'ref': 'msg424242', 'quote': 'nothing of the sort'}])]})
     lookout.tick(s, llm, force=True)
     i = s.upsert_idea({'key': 'idea:lookout-x', 'kind': 'money', 'text': 'Cancel the unused Trainly seats', 'action': {'type': 'lookout'}}, ago(days=1))
     assistant.act(s, i['IdeaId'], 'dismiss_kind', 'owner')
-    user, _ = lookout.window(s)
+    user, seen, _ = lookout.window(s)
     assert '[money] Cancel the unused Trainly seats - the owner: turned it down - no more ideas like this' in user
-    assert '[early_warning] Gail went quiet - held by the check: one message, no pattern' in user
+    assert '[early_warning] Gail went quiet - held back: it cites msg424242, which the run never read' in user
+    assert 'msg424242' not in seen, 'an id named only in what was held is no evidence'
 
 
-def test_the_cost_is_two_calls_a_day_capped_at_three_and_never_more_than_four_ideas_waiting():
+def test_a_run_is_a_few_turns_at_most_three_raised_and_never_more_than_six_ideas_waiting():
     s, ids = world()
     a, b = ids['dup']
-    llm = brain({'ideas': [idea('money', f'Idea {n}', [f'msg{a}']) for n in range(9)]}, {'keep': [1, 2, 3, 4, 5]})
+    w, g, t = f"msg{ids['backlog'][0]}", f"msg{ids['mine']}", f"task{ids['task']}"
+    llm = brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}']), idea('pitch', 'The approval backlog never drains', [w]),
+                           idea('reminder', 'Gail is owed an answer on the ledger sync', [g]), idea('credit', 'The export fix saved the close', [t]),
+                           idea('new_idea', 'A weekly check on the approval queue', [w]), idea('leverage', 'Loop Paula into the ledger sync', [g])]})
     out = lookout.tick(s, llm)
-    assert out['calls'] == 2 and len(out['raised']) == lookout.MAX_IDEAS == 4, 'at most four proposed, checked in one call'
-    assert lookout.due(s) is False and lookout.tick(s, brain())['ran'] is False, 'four waiting: no pass, no call'
-    for r in lookout.open_ideas(s): s.set_idea_status(r['IdeaId'], 'done', 'owner')
-    assert lookout.due(s) is False, 'and a day between passes'
+    assert out['calls'] == 1 and len(out['raised']) == lookout.MAX_RAISE == 3, 'three land'
+    assert len(out['held']) == lookout.MAX_IDEAS - 3, 'five read at most; past three they are held as enough for now'
+    assert lookout.due(s) is False, 'a pass just ran'
     s.set_setting(lookout.LAST_KEY, ago(days=2), 't'); s.set_setting(lookout.TRIED_KEY, ago(days=2), 't')
+    for n in range(3): s.upsert_idea({'key': f'{lookout.KEY}more-{n}', 'kind': 'money', 'text': f'More {n}', 'action': {'type': 'lookout'}}, ago(hours=1))
+    assert lookout.why_not(s) == '6 ideas already wait on the rail (at most 6)' and lookout.tick(s, brain())['ran'] is False, 'six waiting: no pass, no call'
+    for r in lookout.open_ideas(s): s.set_idea_status(r['IdeaId'], 'done', 'owner')
     assert lookout.due(s) is True
-    # a check whose answer is not an object raises nothing - ask_json re-asks it once (llm.json_of), the third and last call
-    odd = brain({'ideas': [idea('pitch', 'Fix the export again', [f'msg{b}'])]}, 'not an object')
-    out = lookout.tick(s, odd, force=True)
-    assert out['raised'] == [] and out['calls'] == lookout.CALLS == 3 and out['held'] == ['Fix the export again']
-    # ...and a brain that never answers in JSON is asked three times at most, whatever ask_json would try next
+    # a model that keeps reading is told its last turn is its last: STEPS turns, then its ideas or nothing
+    reader = brain(*[{'reads': [rd('search_mail', q='invoice')]}] * lookout.STEPS)
+    out = lookout.tick(s, reader, force=True)
+    assert out['calls'] == lookout.STEPS and 'This is your last turn' in reader.seen[-1][1] and out['raised'] == []
+    # ...and a brain that never answers in JSON is asked twice, then the pass waits
     calls = []
     def prose(system, user, **k): calls.append(1); return 'I would rather chat'
     out = lookout.tick(s, prose, force=True)
-    assert len(calls) == out['calls'] == 2 and out['raised'] == [], 'the re-ask, then the pass waits a day'
-    s2, ids2 = world()
-    def babble(system, user, **k):
-        calls.append(1)
-        return json.dumps({'ideas': [idea('money', 'Invoice 4471 twice', [f"msg{ids2['dup'][0]}"])]}) if len(calls) == 2 else 'prose'
-    calls.clear(); out = lookout.tick(s2, babble, force=True)
-    assert len(calls) == out['calls'] == 3 and out['raised'] == [] and out['held'] == ['Invoice 4471 twice'], 'the check would be a fourth call: held'
+    assert len(calls) == out['calls'] == 2 and out['raised'] == [], 'the re-ask, then the pass waits'
+    assert lookout.CALLS >= lookout.STEPS
 
 
 def test_a_model_that_did_not_answer_is_tried_again_within_hours_not_a_day():
     s, _ = world()
     out = lookout.tick(s, lambda system, user, **k: 'I cannot help with that')
-    assert out == {'ran': True, 'raised': [], 'held': [], 'calls': 2}, 'asked, and re-asked once for the JSON'
+    assert out == {'ran': True, 'raised': [], 'held': [], 'calls': 2, 'deep': ['source:email']}, 'asked, and re-asked once for the JSON'
     assert not s.get_setting(lookout.LAST_KEY) and s.get_setting(lookout.TRIED_KEY) and lookout.due(s) is False
     s.set_setting(lookout.TRIED_KEY, ago(hours=7), 't')
     assert lookout.due(s) is True
@@ -151,7 +235,7 @@ def test_each_family_is_held_to_the_advisors_eighty_percent_bar_and_send_to_agen
     assert set(lookout.FAMILIES) == set(ideagrade.LOOKOUT) <= set(ideagrade.MODEL_KINDS)
     s, ids = world()
     a, _b = ids['dup']
-    llm = brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}'], pitch='I caught a double invoice')]}, {'keep': [1]})
+    llm = brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}'], pitch='I caught a double invoice')]})
     iid = lookout.tick(s, llm, force=True)['raised'][0]
     briefs = []
     from taskuary import ingest
@@ -170,25 +254,32 @@ def test_an_idea_lands_under_the_advisor_never_in_fyi_and_says_its_family(canoni
     a, b = ids['dup']
     if canonical:
         n = ago(); s.reconcile_processing_membership(fixed_now=n); s.activate_processing_reads(fixed_now=n, live_state=[])
-    llm = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}'], pitch='I caught a double invoice')]}, {'keep': [1]})
+    llm = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}'], pitch='I caught a double invoice')]})
     iid = lookout.tick(s, llm, force=True)['raised'][0]
     if canonical: s.reconcile_processing_membership(fixed_now=ago())
     funnel.invalidate()
     row = next(x for x in funnel.pile(s, force=True, quiet=True)['items'] if x.get('idea') == iid)
     assert (row['kind'], lanes.level_of(row)) == ('idea', 'ideas'), row
     assert {f: lanes.idea_word(f) for f in lookout.FAMILIES} == {'credit': 'credit', 'pitch': 'pain → fix', 'money': 'money left on the table',
-                                                              'early_warning': 'early warning', 'leverage': 'leverage'}
+                                                              'early_warning': 'early warning', 'leverage': 'leverage', 'reminder': 'slipped through',
+                                                              'connection': 'joined up', 'new_idea': 'new idea'}
     assert all(lanes.idea_section(f) == 'ideas' for f in lookout.FAMILIES)
     assert json.loads(s.get_idea(iid)['ActionJson'])['suggest'].endswith('\nPitch: "I caught a double invoice"')
+    # ...and its chat on the Agent tab opens with the prompt that created it (test_an_idea_opens_on_the_whole_prompt_its_look_was_sent...)
+    if canonical: assert row['asked'].startswith(lookout.SYSTEM)
 
 
-def test_a_daily_pass_never_says_yesterdays_idea_again_the_check_reads_what_was_raised():
+def test_a_daily_pass_never_says_yesterdays_idea_again_whatever_its_words():
+    """IDENTITY IS ITS SUBJECTS AND ITS FAMILY (the design review, 2026-11-23): the same subjects in the same family, reworded, is the same
+    idea - held as said, the run reading it under BEFORE - with nothing new to update it with."""
     s, ids = world()
     a, _b = ids['dup']
-    lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}'])]}, {'keep': [1]}), force=True)
-    llm = brain({'ideas': [idea('money', 'Payworth charged invoice 4471 two times', [f'msg{a}'])]}, {'keep': [], 'why': {'1': 'already raised'}})
+    first = lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}'])]}), force=True)['raised'][0]
+    llm = brain({'ideas': [idea('money', 'Payworth charged invoice 4471 two times', [f'msg{a}'])]})
     out = lookout.tick(s, llm, force=True)
-    assert out['raised'] == [] and 'ALREADY RAISED' in llm.seen[1][1] and 'Invoice 4471 billed twice' in llm.seen[1][1], 'the check sees it'
+    assert out['raised'] == [] and out['updated'] == [] and '[money] Invoice 4471 billed twice - the owner: not answered yet' in llm.seen[0][1]
+    assert json.loads(s.get_setting(lookout.HELD_KEY))[0]['why'] == 'said before as "Invoice 4471 billed twice" - nothing new since'
+    assert s.get_idea(first)['Text'] == 'Invoice 4471 billed twice'
     assert lookout.EVERY_DAYS == 1, 'once a day (the owner, 2026-11-03)'
 
 
@@ -216,11 +307,11 @@ def test_the_pass_runs_on_the_advisors_own_clock_never_inside_a_report_run(monke
 def test_the_server_clock_runs_it_off_the_reports_lock_at_most_every_fifteen_minutes(monkeypatch):
     import threading
     from taskuary import demo, server
-    from taskuary import brainroute, learn
+    from taskuary import brainroute, learning
     done, calls, reflected, held = threading.Event(), [], [], [False]
     monkeypatch.setattr(assistant, 'clock', lambda store: (calls.append(1), done.set()))
     # ...and what the verdicts taught is consolidated on the same clock: an app left open all week reflected only at its next start
-    monkeypatch.setattr(learn, 'reflect_if_due', lambda store: reflected.append(1))
+    monkeypatch.setattr(learning, 'reflect_if_due', lambda store: reflected.append(1))
     monkeypatch.setattr(brainroute, 'auto_held', lambda store: held[0])
     monkeypatch.setattr(demo, 'enabled', lambda: False)
     monkeypatch.setattr(server, '_ADVISOR_AT', [0.0])
@@ -260,11 +351,10 @@ def test_asking_the_assistant_starts_a_pass_now_and_says_how_many_ideas_it_raise
     a, b = ids['dup']
     s.set_setting(lookout.LAST_KEY, ago(hours=1), 't')                  # it ran an hour ago: the day is not up, the owner's ask still runs it
     llm = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}']),
-                           idea('pitch', 'Communicate more with the approvers', [f"msg{ids['backlog'][0]}"])]},
-                {'keep': [1], 'why': {'2': 'generic'}})
+                           idea('pitch', 'Approvers clear 90 invoices a day', [f"msg{ids['backlog'][0]}"])]})
     now, later = asked(s, monkeypatch, llm)
     assert now.startswith('Started a pass for ideas for your job'), now
-    assert later == 'The pass for ideas for your job raised 1 idea, 1 held back by the second look - under Advisor.', later
+    assert later == 'The pass for ideas for your job raised 1 idea, 1 held back - its evidence did not hold or it was said before - under Advisor.', later
     assert [r['Key'] for r in lookout.open_ideas(s)] == ['idea:lookout-vendor-billing-sent-invoice-4471-twice'], 'an ordinary Advisor idea row'
 
 
@@ -291,8 +381,9 @@ def test_four_ideas_the_owner_read_leave_room_for_the_next_days_pass():
     def rail():
         s.reconcile_processing_membership(fixed_now=ago()); funnel.invalidate()
         return [x for x in funnel.pile(s, force=True, quiet=True)['items'] if x.get('kind') == 'idea']
-    for t in ('Invoice 4471 billed twice', 'Trainly seats unused for 60 days', 'Payworth late fee on the 14th', 'Spendly renewal at a higher tier'):
-        lookout.tick(s, brain({'ideas': [idea('money', t, [f'msg{a}', f'msg{b}'])]}, {'keep': [1]}), force=True)
+    for f, t in (('money', 'Invoice 4471 billed twice'), ('pitch', 'Vendor billing sends every invoice twice'),
+                 ('early_warning', 'Invoice 4471 will be paid twice on the next run'), ('connection', 'The double invoice and the export fix are one bug')):
+        lookout.tick(s, brain({'ideas': [idea(f, t, [f'msg{a}', f'msg{b}'])]}), force=True)
     assert len(rail()) == 4 and len(lookout.waiting(s)) == 4 and lookout.tick(s, brain(), force=True)['ran'] is False, 'four on the rail: no pass'
     first = rail()[0]
     s.set_idea_status(first['idea'], 'snoozed', 'owner'); s._exec('UPDATE idea SET SnoozeUntil=? WHERE IdeaId=?', (ago(days=-2), first['idea']))
@@ -300,20 +391,21 @@ def test_four_ideas_the_owner_read_leave_room_for_the_next_days_pass():
     assert rail() == [] and len(lookout.open_ideas(s)) == 4, 'read: off the rail, still open'
     assert [i['IdeaId'] for i in lookout.waiting(s)] == [first['idea']], 'the one put away till Saturday still waits'
     s.set_setting(lookout.LAST_KEY, ago(days=2), 't'); s.set_setting(lookout.TRIED_KEY, ago(days=2), 't')
+    Factory(s).message(from_email=GAIL, from_name='Gail Moreno', subject='Ledger sync', body='Any news?', sent_at=ago(hours=1))     # the day's mail
     assert lookout.due(s) is True
-    out = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing charged $900 twice in October', [f'msg{a}', f'msg{b}'])]}, {'keep': [1]}))
-    assert len(out['raised']) == 1 and [x['title'] for x in rail()] == ['Vendor billing charged $900 twice in October']
+    out = lookout.tick(s, brain({'ideas': [idea('leverage', 'Vendor billing would fix the double invoices for one ask', [f'msg{a}', f'msg{b}'])]}))
+    assert len(out['raised']) == 1 and [x['title'] for x in rail()] == ['Vendor billing would fix the double invoices for one ask']
 
 
 def test_a_family_under_the_bar_still_raises_one_idea_a_day():
     s, ids = world()
     a, b = ids['dup']
     for n in range(10): s.upsert_idea({'key': f'{lookout.KEY}old-{n}', 'kind': 'money', 'text': f'Old {n}', 'action': {'type': 'lookout'}}, ago(days=3))
-    s._exec("UPDATE idea SET Status='done', DecidedBy='sweep'")
+    s._exec("UPDATE idea SET Status='dismissed', DecidedBy='owner'")                    # ten he turned down: walking past would teach nothing
     s.set_setting(ideagrade.SINCE_KEY, ago(days=20), 't')
     assert 'money' in ideagrade.quiet_kinds(s) and 'money' in lookout.families(s), 'quiet, and still asked for'
-    out = lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}']), idea('money', 'Trainly seats unused', [f'msg{b}'])]},
-                                {'keep': [1, 2]}), force=True)
+    out = lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}']),
+                                           idea('money', 'The approval backlog costs late fees', [f"msg{ids['backlog'][0]}"])]}), force=True)
     assert [s.get_idea(i)['Text'] for i in out['raised']] == ['Invoice 4471 billed twice'], 'one a day'
     assert 'money' not in lookout.families(s), 'its one raised: not asked for again today'
 
@@ -332,31 +424,391 @@ def test_the_days_pass_runs_from_the_morning_not_a_day_after_the_last(monkeypatc
     assert lookout.due(s) is False, 'ran today: not again'
 
 
-def test_a_theme_the_check_held_is_never_held_again_as_already_raised_and_the_check_sees_the_counts():
-    """The owner's live Advisor, 2026-11-14..18: 15 ideas proposed, 14 held. Ten were held as "already raised in substance" - raised by
-    nobody: the check's own earlier hold was listed to it as raised, so a theme held once was held every morning after. The rest were held as
-    "the cited lines do not support the count" - the proposal read counted subject groups, the check single messages. Invented world."""
+def test_what_the_code_held_is_never_said_to_be_raised_and_a_held_theme_lands_once_its_evidence_holds():
+    """The owner's live Advisor, 2026-11-14..18: a theme held once was held as "already raised" every morning after. What the code held
+    reaches the next run as held, with why - never as raised - and the same theme lands when its evidence holds."""
     s, ids = world()
     a, b = ids['dup']
-    first = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}'])]}, {'keep': [], 'why': {'1': 'not sure'}})
+    first = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 3 times', [f'msg{a}', f'msg{b}'])]})
     assert lookout.tick(s, first, force=True)['raised'] == []
-    w = ids['backlog'][0]
-    again = brain({'ideas': [idea('pitch', 'The approval backlog has grown four Mondays running', [f'msg{w}'])]}, {'keep': [1]})
-    assert len(lookout.tick(s, again, force=True)['raised']) == 1
-    told = again.seen[1][1]
-    assert 'Vendor billing sent invoice 4471 twice' not in told, 'what the check held never reached the owner: no "already raised"'
-    assert 'counted, as the proposal saw it:' in told and 'Invoices waiting approval' in told, 'the check reads the count the idea rests on'
-    assert 'held by the check' in lookout.window(s)[0], '...while the proposing call still learns from what was held'
+    user = lookout.window(s)[0]
+    assert '[money] Vendor billing sent invoice 4471 3 times - held back: the number 3 is not in what it cites' in user
+    assert '- the owner:' not in user.split('Vendor billing sent invoice 4471 3 times')[1].split(chr(10))[0], 'held, never raised'
+    again = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 2 times in a week', [f'msg{a}', f'msg{b}'])]})
+    assert len(lookout.tick(s, again, force=True)['raised']) == 1, 'two cited: the number is its own'
+    assert '[money] Vendor billing sent invoice 4471 2 times in a week - the owner: not answered yet' in lookout.window(s)[0]
 
 
-def test_a_newer_idea_on_a_theme_replaces_the_one_raised_before():
-    """The owner, 2026-11-18: "when you run the next advisor it replaces it or does not say the same thing twice". A theme raised before
-    passes again only with new evidence, and then it stands in the earlier one's place - one idea on it, the newest, unread."""
+def test_new_evidence_updates_the_idea_in_place_and_a_new_angle_is_a_new_idea():
+    """The owner, 2026-11-18: "when you run the next advisor it replaces it or does not say the same thing twice". The same subjects in the
+    same family with new evidence update the one idea in place - one row, never said twice; the same subjects in another family are a new
+    angle and a new idea; and one he put down is never raised again, new evidence or not."""
     s, ids = world()
     a, b = ids['dup']
-    old = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}'])]}, {'keep': [1]}), force=True)['raised'][0]
-    new = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing has now billed invoice 4471 three times', [f'msg{a}', f'msg{b}'])]},
-                                {'keep': [1], 'replaces': {'1': 'Vendor billing sent invoice 4471 twice'}}), force=True)['raised']
-    assert len(new) == 1 and s.get_idea(old)['Status'] == 'done' and s.get_idea(new[0])['Status'] == 'open'
-    assert [i['Text'] for i in lookout.open_ideas(s)] == ['Vendor billing has now billed invoice 4471 three times']
+    old = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}'])]}), force=True)['raised'][0]
+    out = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing billed invoice 4471 again five days ago', [f'msg{a}', f'msg{b}'])]}), force=True)
+    assert out['raised'] == [] and out['updated'] == [old] and s.get_idea(old)['Text'] == 'Vendor billing billed invoice 4471 again five days ago'
+    act = json.loads(s.get_idea(old)['ActionJson'])
+    assert [e['ref'] for e in act['evidence']] == [f'msg{a}', f'msg{b}'] and len(lookout.open_ideas(s)) == 1
+    angle = lookout.tick(s, brain({'ideas': [idea('pitch', 'Vendor billing double-bills: ask them to fix their export', [f'msg{a}', f'msg{b}'])]}), force=True)
+    assert len(angle['raised']) == 1 and len(lookout.open_ideas(s)) == 2, 'another family on the same subjects is a new angle'
+    s.set_idea_status(old, 'done', 'owner')
+    Factory(s).message(from_email=AP, from_name='Vendor billing', subject='Invoice 4471', body='Invoice 4471 for $1,200', sent_at=ago(days=1))
+    again = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 a third time', [f'msg{a}', f'msg{b}'])]}), force=True)
+    assert again['raised'] == again['updated'] == [] and s.get_idea(old)['Status'] == 'done', 'handled: not said again'
 
+
+# ── THE OWNER, 2026-11-23: 2-3 GOOD IDEAS A DAY, ROTATING THROUGH THE SYSTEMS, NEVER THE SAME THING TWICE ─────────────────────────────────
+def busy_week():
+    """Alex's week, invented: two expense tools billing for the same job, an ask of his Gail never answered, and the nightly ledger
+    export failing the same way four nights running."""
+    s = MemoryStore()
+    s.set_setting('owner_email', ALEX, 'test'); s.save_doc('job', JOB, 'test')
+    f, ids = Factory(s), {}
+    ids['subs'] = [f.message(from_email='billing@spendly.example', from_name='Spendly', source_name='Outlook', subject='Your Spendly receipt',
+                             body='Spendly Team plan, 40 seats, $1,600 / month', sent_at=ago(days=9)),
+                   f.message(from_email='billing@vendor.example', from_name='Payworth', source_name='Outlook', subject='Payworth Expenses renewal',
+                             body='Payworth Expenses, 40 seats, $1,450 / month, renews on the 1st', sent_at=ago(days=6))]
+    ids['ask_in'] = f.message(from_email=GAIL, from_name='Gail Moreno', source_name='Outlook', subject='Q4 accruals', conversation_id='q4',
+                              body='Can we close Q4 accruals this week?', sent_at=ago(days=8))
+    ids['ask'] = f.message(direction='out', status='context', source_name='Outlook', subject='Re: Q4 accruals', conversation_id='q4',
+                           body='Gail, can you send me the accrual list by Friday?', RecipientsJson=json.dumps({'to': [GAIL]}), sent_at=ago(days=6))
+    s.put_sent_verdict(ids['ask'], 'q4', True, False, 'the accrual list', None, 'test')
+    ids['fail'] = [f.message(from_email='jobs@northwind.example', from_name='Ledger jobs', source_name='Ledger monitor', channel='report',
+                             subject='Nightly ledger export failed', body='HTTP 403: the service account password expired', sent_at=ago(days=d, hours=3))
+                   for d in (4, 3, 2, 1)]
+    return s, ids
+
+
+def test_a_quiet_look_asks_nothing_and_says_why_and_a_new_day_or_new_mail_always_runs(monkeypatch):
+    s, ids = busy_week()
+    noon = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(lookout, '_now', lambda: noon)
+    at = lambda **k: (noon - timedelta(**k)).strftime('%Y-%m-%d %H:%M:%S')
+    s.set_setting(lookout.LAST_KEY, at(hours=4), 't'); s.set_setting(lookout.TRIED_KEY, at(hours=4), 't')
+    s.set_setting(lookout.STAMP_KEY, str(lookout.stamp(s)), 't')
+    assert lookout.why_not(s, look=True).startswith('the last pass started at 08:00'), 'a pass four hours ago'
+    s.set_setting(lookout.TRIED_KEY, at(hours=7), 't'); s.set_setting(lookout.LAST_KEY, at(hours=7), 't')
+    never = brain()                                                          # any call would fail: nothing may be asked
+    out = lookout.tick(s, never, wait=True)
+    assert out['ran'] is False and out['skipped'] == 'ran at ' + at(hours=7)[:16] + ' and nothing new has arrived since' and not never.seen
+    assert json.loads(s.get_setting(lookout.SKIP_KEY))['why'] == out['skipped'], 'the skip is kept with its reason'
+    Factory(s).message(from_email=GAIL, from_name='Gail Moreno', subject='Re: Q4 accruals', body='Attached', sent_at=at(hours=1))
+    assert lookout.due(s, look=True) is True and lookout.due(s) is False, 'new mail: the next look runs it; the clock waits for tomorrow'
+    # ...and a day later with nothing moved at all it runs anyway: unchanged facts never block a new day
+    s.set_setting(lookout.STAMP_KEY, str(lookout.stamp(s)), 't')
+    s.set_setting(lookout.LAST_KEY, at(days=1, hours=1), 't'); s.set_setting(lookout.TRIED_KEY, at(days=1, hours=1), 't')
+    assert lookout.due(s) is True and lookout.due(s, look=True) is True
+    # a quiet day: the model finds nothing that clears the bar - nothing is raised and the check is not paid for
+    out = lookout.tick(s, brain({'ideas': []}))
+    assert out['ran'] and out['raised'] == [] and out['calls'] == 1
+
+
+def test_a_week_with_a_duplicate_subscription_an_unanswered_ask_and_a_recurring_failure_raises_three_kinds_with_their_evidence():
+    s, ids = busy_week()
+    user, shown, deep = lookout.window(s)
+    # the context: what is owed (his ask Gail never answered), the failure counted, the two tools in their own words
+    owed = user[user.index('WHAT IS OWED'):user.index('TASKS:')]
+    assert '[followup]' in owed and 'Q4 accruals' in owed and f"msg{ids['ask_in']}" in shown
+    assert set(deep) == {'source:Outlook', 'source:Ledger monitor'}, deep
+    assert '"Nightly ledger export failed": 4 message(s)' in user and 'HTTP 403: the service account password expired' in user
+    assert 'Spendly Team plan, 40 seats, $1,600 / month' in user and 'Payworth Expenses, 40 seats' in user
+    a, b = ids['subs']
+    llm = brain({'ideas': [
+        idea('money', 'Spendly and Payworth Expenses both bill 40 seats for expenses - about $1,450 a month paid twice', [f'msg{a}', f'msg{b}'],
+             evidence='Spendly receipt: 40 seats $1,600/month; Payworth renewal: 40 seats $1,450/month, renews on the 1st',
+             next_step='Draft the cancellation to Payworth before the 1st'),
+        idea('reminder', 'Gail never sent the accrual list you asked for six days ago', [f"msg{ids['ask_in']}"],
+             evidence='you asked for it by Friday; nothing came back', next_step='Draft a nudge to Gail'),
+        idea('pitch', 'The nightly ledger export failed four nights on an expired service-account password', [f"msg{ids['fail'][-1]}"],
+             evidence='4 failures in 4 nights, each HTTP 403 password expired', next_step='Move the service account to a managed secret that rotates')]})
+    out = lookout.tick(s, llm, force=True)
+    rows = [s.get_idea(i) for i in out['raised']]
+    assert [r['Kind'] for r in rows] == ['money', 'reminder', 'pitch'], 'three items, three kinds'
+    acts = [json.loads(r['ActionJson']) for r in rows]
+    assert all(a_['evidence'] and a_['next_step'] for a_ in acts), 'each carries what it rests on and the one step to press'
+    assert 'Payworth: Payworth Expenses renewal' in acts[0]['evidence'][1]['label']
+
+
+def test_five_passes_over_four_systems_give_each_a_deep_look_a_new_angle_each_return_and_no_item_twice():
+    s = MemoryStore(); s.set_setting('owner_email', ALEX, 'test')
+    f, mids = Factory(s), {}
+    for src in ('Payworth', 'Spendly', 'Trainly', 'PhishGuard'):
+        mids[src] = [f.message(from_email=f'{src.lower()}@vendor.example', from_name=src, source_name=src, channel='report',
+                               subject=f'{src} weekly', body=f'{src} numbers', sent_at=ago(days=d)) for d in (9, 5, 2)]
+    deeps, said = [], []
+    for run in range(5):
+        title = 'Payworth weekly numbers fell three weeks running' if run < 2 else 'Payworth bills for seats nobody used this month'
+        # ...it reads the message first: on a pass where Payworth is not the deep look, the window does not show it, and an id it never
+        # read is no evidence
+        ref = f"msg{mids['Payworth'][0]}"
+        llm = brain({'reads': [rd('read_message', id=ref)]}, {'ideas': [idea('early_warning' if run < 2 else 'money', title, [ref])]})
+        out = lookout.tick(s, llm, force=True)
+        deeps.append(out['deep']); said += out['raised']
+        if run == 1: assert '- [early_warning] Payworth weekly numbers fell three weeks running - the owner:' in llm.seen[0][1], 'what it said is in its context'
+    assert {a for d in deeps for a in d} == {f'source:{x}' for x in mids}, f'every system had a deep look: {deeps}'
+    assert deeps[:2] == [['source:Payworth', 'source:PhishGuard'], ['source:Spendly', 'source:Trainly']], 'the longest unlooked first, two a pass'
+    n = sum('source:Payworth' in d for d in deeps)
+    assert n >= 2 and list(lookout.coverage(s)['source:Payworth']['lens']) == list(lookout.LENSES)[:n], \
+        'each return to an area takes the angle not taken there longest'
+    assert [s.get_idea(i)['Text'] for i in said] == ['Payworth weekly numbers fell three weeks running', 'Payworth bills for seats nobody used this month'], \
+        'the same item is never raised twice; a new angle on the same system is'
+
+
+# ── LEADS FROM TASK AGENTS, THE RUN LINE, AND SAYING ONCE THAT THERE WAS NOTHING (the design review, 2026-11-23) ─────────────────────
+def test_a_lead_a_task_agent_noted_reaches_the_next_run_as_a_pointer_it_must_read_before_it_cites():
+    s, ids = world()
+    a, b = ids['dup']
+    t = Factory(s).task(title='Pay the Vendor billing invoice')
+    assert lookout.note_lead(s, t, 'Vendor billing seems to send each invoice twice', [f'msg{b}']) == {'kept': True}
+    assert lookout.note_lead(s, t, 'vendor billing seems to send each invoice  twice')['already'] is True, 'once'
+    with pytest.raises(ValueError): lookout.note_lead(s, t, 'odd')
+    user, seen, _ = lookout.window(s)
+    assert f'- from task {t} (' in user and 'Vendor billing seems to send each invoice twice (points at message ' in user
+    llm = brain({'reads': [rd('read_message', id=f'msg{b}')]}, {'ideas': [idea('money', 'Invoice 4471 came twice from Vendor billing', [f'msg{b}'])]})
+    out = lookout.tick(s, llm, force=True)
+    assert len(out['raised']) == 1 and lookout.leads(s) == [], 'read on this run: not shown again'
+    assert 'LEADS FROM' not in lookout.window(s)[0]
+
+
+def test_every_run_leaves_a_line_and_three_with_nothing_say_so_once_on_the_rail():
+    from taskuary import funnel
+    s, ids = world()
+    a, _b = ids['dup']
+    for n in range(4): lookout.tick(s, brain({'ideas': [idea('money', 'You paid 99 dollars for nothing', [f'msg{a}'])]}), force=True)
+    rs = lookout.runs(s)
+    assert len(rs) == 4 and "raised nothing; held 'You paid 99 dollars for nothing': the number 99 is not in what it cites" in lookout.run_line(rs[0])
+    assert 'looked closely at source:email (' in lookout.run_line(rs[0])
+    quiet = s._rows("SELECT * FROM idea WHERE Kind='lookout_quiet'")
+    assert len(quiet) == 1 and quiet[0]['Text'].startswith('My last 3 looks for ideas about your job found nothing worth your time'), 'said once, not on the fourth'
+    assert 'the number 99 is not in what it cites' in json.loads(quiet[0]['ActionJson'])['why'], 'it opens on the looks behind it'
+    funnel.invalidate()
+    assert any(x.get('idea') == quiet[0]['IdeaId'] for x in funnel.pile(s, force=True, quiet=True)['items']), 'on the rail'
+    assert lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}'])]}), force=True)['raised']
+    assert not s.get_setting(lookout.QUIET_KEY), 'something raised: the next quiet spell may be said again'
+    # ...and the run lines open from the app, newest first
+    from fastapi.testclient import TestClient
+    from taskuary import server
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(server, 'store', s)
+        got = TestClient(server.app).get('/api/advisor/lookout').json()
+    assert len(got['runs']) == 5 and 'raised 1' in got['runs'][0] and 'the number 99 is not in what it cites' in got['runs'][1]
+    # ...and as data for the Reports panel (AdvisorRuns.jsx): what it looked at, read, raised, held and why, and what it used
+    run = got['items'][1]
+    assert run['deep'][0][0] == 'source:email' and run['held'][0] == ['You paid 99 dollars for nothing', 'the number 99 is not in what it cites']
+    assert run['used'].startswith('about ') and f'tokens in 1 call(s) (ceiling {lookout.RUN_TOKENS:,})' in run['used']
+
+
+def test_a_task_agent_has_a_note_lead_tool_whose_door_is_its_own_and_it_reaches_the_advisor():
+    from taskuary import agenttools, guard
+    assert 'note_lead' in {t['name'] for t in agenttools.listing()} and agenttools.TOOLS['note_lead'][0] == 'own'
+    assert guard.classify(*agenttools.TOOLS['note_lead'][3])[0] == 'agent', 'an agent may call it'
+    s, ids = world()
+    t = Factory(s).task(title='Pay the Vendor billing invoice')
+    doors = {'note_lead': lambda tid, text, refs: lookout.note_lead(s, tid, text, refs)}
+    agenttools.call(s, t, 'note_lead', {'text': 'Vendor billing sent invoice 4471 twice this month', 'refs': [f"msg{ids['dup'][0]}"]}, doors)
+    assert [l['text'] for l in lookout.leads(s)] == ['Vendor billing sent invoice 4471 twice this month']
+
+
+# ── MONEY AND PAIN, SEEN AND PRICED IN CODE; A RUN WITHIN ITS BUDGET (the owner, 2026-11-23: "make sure you are not using a billion tokens
+# each time but I want it really useful and good - especially giving ideas to save money or pain points") ─────────────────────────────
+
+
+def test_a_month_with_two_expense_tools_a_price_rise_a_double_charge_and_a_weekly_sheet_by_hand_raises_money_and_pain_priced_by_code():
+    s, ids = lookout_world.busy()
+    pw, sp, ph, ag = (f"msg{ids['payworth'][-1]}", f"msg{ids['spendly'][-1]}", f"msg{ids['phish'][-1]}", f"msg{ids['aging'][0]}")
+    user, _, _ = lookout.window(s)
+    money = user[user.index('MONEY AND WHAT REPEATS'):user.index('THE DEEP LOOK')]
+    assert 'Spendly (billing@spendly.example): 2 charge(s)' in money and 'up $150 (10.3%)' in money, 'a price that rose, counted'
+    assert f"the same $380 twice in 5 days (msg{ids['phish'][0]}, {ph})" in money, 'the same charge twice, counted'
+    assert '"AP aging - this week": he sent it 8 times' in money and 'about every 7 days' in money, 'the step he repeats by hand'
+    assert '"Vendor master clean-up": 7 messages over 24 days' in money, 'the thread that drags'
+    llm = brain({'reads': [rd('spend'), rd('repeats'), rd('read_message', id=pw), rd('read_message', id=sp)]}, {'ideas': [
+        idea('money', 'Spendly and Payworth Expenses both bill 40 seats for expenses - one of them costs $17,400 a year', [pw, sp],
+             quotes=[{'ref': pw, 'quote': 'at this rate $17,400 a year'}, {'ref': sp, 'quote': 'Spendly Team plan, 40 seats'}],
+             stake={'expr': '1450 * 12', 'unit': '$ a year', 'assume': []}),
+        idea('money', 'PhishGuard charged invoice INV-2207 twice in 5 days - $380 to claim back', [ph],
+             quotes=[{'ref': ph, 'quote': 'the same $380 twice in 5 days'}], stake={'expr': '380', 'unit': '$ once', 'assume': []}),
+        idea('new_idea', 'The AP aging you build by hand went out 8 times in 8 weeks - about 6 hours a reportable job could do', [ag],
+             quotes=[{'ref': ag, 'quote': 'he sent it 8 times'}],
+             stake={'expr': '8 * 45 / 60', 'unit': 'hours over 8 weeks', 'assume': [{'n': 45, 'what': 'minutes to build one sheet'}]}),
+        idea('money', 'Spendly rose $150 a month - $1,950 a year', [sp], quotes=[{'ref': sp, 'quote': 'up $150 (10.3%)'}],
+             stake={'expr': '150 * 13', 'unit': '$ a year', 'assume': []}),
+        idea('money', 'Payworth costs $20,000 a year', [pw], quotes=[{'ref': pw, 'quote': 'at this rate $17,400 a year'}],
+             stake={'expr': '1450 * 12', 'unit': '$ a year', 'assume': []}),
+        idea('money', 'Trainly renews for $4,800', [f"msg{ids['trainly']}"], stake={'expr': '', 'unit': '', 'assume': []})]})
+    out = lookout.tick(s, llm, force=True)
+    assert [s.get_idea(i)['Kind'] for i in out['raised']] == ['money', 'money', 'new_idea'], 'two kinds of money and a pain, with numbers'
+    held = {h['title']: h['why'] for h in json.loads(s.get_setting(lookout.HELD_KEY))}
+    assert held['Spendly rose $150 a month - $1,950 a year'] == 'the number 13 in its stake is not in what it cites', 'arithmetic on a number it never read'
+    assert held['Payworth costs $20,000 a year'] == 'the number 20000 is not in what it cites', "the stake is the code's, not the title's"
+    assert held['Trainly renews for $4,800'] == 'a money idea says what it saves or costs, as arithmetic on what it read'
+    acts = [json.loads(s.get_idea(i)['ActionJson']) for i in out['raised']]
+    assert [a['stake']['line'] for a in acts] == ['$17,400 a year = 1450 * 12', '$380 once = 380',
+                                                  '6 hours over 8 weeks = 8 * 45 / 60 (45: minutes to build one sheet - an estimate)'], 'worked out in code'
+    # ...his card says the result; the formula is the working, read by the agent it is handed to (walk 17, K7)
+    assert [a['stake']['said'] for a in acts] == ['$17,400 a year', '$380 once', '6 hours over 8 weeks (45: minutes to build one sheet - an estimate)']
+    assert acts[0]['why'].endswith('What it comes to: $17,400 a year') and 'as the code worked it out: $17,400 a year = 1450 * 12' in lookout.brief(acts[0])
+    r = lookout.runs(s)[0]
+    assert r['reads'][:2] == ['spend', 'repeats'] and r['tokens']['calls'] == 2 and r['tokens']['in'] + r['tokens']['out'] <= lookout.RUN_TOKENS
+
+
+def test_a_quiet_world_raises_nothing_costs_little_and_the_next_day_with_nothing_new_asks_nothing(monkeypatch):
+    s = lookout_world.quiet()
+    out = lookout.tick(s, brain({'ideas': []}), force=True)
+    t = lookout.runs(s)[0]['tokens']
+    assert out['raised'] == [] and out['calls'] == 1 and t['in'] + t['out'] < lookout.RUN_TOKENS // 5, t
+    later = datetime.now() + timedelta(days=1, hours=2)
+    monkeypatch.setattr(lookout, '_now', lambda: later)
+    assert lookout.due(s), 'a new day is due ...'
+    never = brain()
+    out = lookout.tick(s, never)
+    assert out['skipped'].startswith('nothing new since the last pass') and not never.seen, '... and with nothing new and nothing due, nothing is asked'
+    assert lookout.due(s) is False, 'and the day is done'
+    Factory(s).message(from_email=GAIL, from_name='Gail Moreno', subject='Q4 accruals', body='Can we close this week?',
+                       sent_at=(later - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S'))
+    s.set_setting(lookout.LAST_KEY, (later - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'), 't')
+    assert lookout.tick(s, brain({'ideas': []}))['calls'] == 1, 'one new mail: the area it came to is read again'
+    monkeypatch.setattr(lookout, '_now', lambda: later + timedelta(days=lookout.REVISIT_DAYS + 1))
+    assert lookout.tick(s, brain({'ideas': []}))['calls'] == 1, 'a week on, old data gets another angle'
+
+
+def test_a_run_that_keeps_reading_never_passes_its_budget_or_its_reads():
+    s, ids = lookout_world.busy(noise=6)
+    greedy = {'reads': [rd('search_mail', q=w) for w in ('the', 'line', 'check', 'invoice')] + [rd('spend'), rd('repeats')], 'ideas': []}
+    calls, llm = [], brain(*[greedy] * 6)
+    def metered(system, user, **kw):
+        calls.append((len(system) + len(user)) // 4 + kw['max_tokens']); return llm(system, user, **kw)
+    out = lookout.tick(s, metered, force=True)
+    r = lookout.runs(s)[0]
+    assert out['ran'] and len(r['reads']) <= lookout.MAX_READS and out['calls'] <= lookout.STEPS
+    assert r['tokens']['in'] + r['tokens']['out'] <= lookout.RUN_TOKENS and sum(calls) <= lookout.RUN_TOKENS + lookout.PROPOSE_TOKENS, (r['tokens'], calls)
+    assert len(lookout.window(s)[0]) <= lookout.WINDOW_CHARS, 'a big mailbox is a summary, never the mailbox'
+    assert f'tokens in 3 call(s) (ceiling {lookout.RUN_TOKENS:,})' in lookout.run_line(r)
+
+
+def test_the_advisor_post_carries_what_the_look_raised_once_and_no_idea_of_its_own():
+    """ONE ROAD (the design review, 2026-11-23): the twice-a-day post wrote ideas of its own from a one-shot answer nothing checked. Its
+    ideas are now the look's - read before proposing, every quote, number and stake checked - and its own answer keeps what people said,
+    the loose ends and the systems."""
+    s, ids = lookout_world.busy()
+    ph = f"msg{ids['phish'][-1]}"
+    raised = lookout.tick(s, brain({'reads': [rd('spend', q='phishguard')]}, {'ideas': [idea('money', 'PhishGuard charged invoice INV-2207 twice in 5 days - $380 to claim back', [ph],
+                                                   quotes=[{'ref': ph, 'quote': 'the same $380 twice in 5 days'}],
+                                                   stake={'expr': '380', 'unit': '$ once', 'assume': []})]}), force=True)['raised']
+    seen = []
+    def post(system, user, **k):
+        if 'YOUR INSTRUCTION' not in system: return '{"verdicts": []}'
+        seen.append(system)
+        return json.dumps({'say': [{'key': 'idea:spendly-hunch', 'text': 'Spendly is probably overcharging you', 'section': 'ideas', 'mid': None},
+                                   {'key': 'idea:erin-column', 'text': 'Erin asked for the vendor column again', 'section': 'people', 'mid': None}]})
+    out = assistant.run(s, llm=post, force=True)
+    assert [l['key'] for l in out['lines']] == ['idea:erin-column', s.get_idea(raised[0])['Key']], "its own idea dropped; the look's carried"
+    assert s.get_idea(raised[0])['MessageId'] == out['message_id'] and 'What it comes to: $380 once' in s.get_message(out['message_id'])['BodyText'] \
+        and '= 380' not in s.get_message(out['message_id'])['BodyText'], 'the Advisor says the result, not its formula'
+    again = assistant.run(s, llm=post, force=True)
+    assert s.get_idea(raised[0])['Key'] not in [l['key'] for l in again.get('lines') or []], 'carried once'
+
+
+# ── ADVISOR.md: WHAT THE ADVISOR LOOKS OUT FOR IS HIS FILE (the owner, 2026-11-24) ────────────────────────────────────────────────────────
+def test_an_edited_advisor_md_line_reaches_the_look_and_the_post_and_an_empty_one_reads_the_shipped_goals():
+    s, ids = world()
+    s.save_doc('advisor', '<!-- mine -->\n# What I want\n- Watch the vendor renewals at Northwind above all.', 'owner')
+    llm = brain({'ideas': []})
+    lookout.tick(s, llm, force=True)
+    system = llm.seen[0][0]
+    assert 'Watch the vendor renewals at Northwind above all.' in system and '<!-- mine -->' not in system
+    assert 'communicate more' not in system, "the goals are his words, not the code's"
+    assert 'word for word' in system.lower() and all(t in system for t in lookout.READS), 'the evidence rules and the reads stay in code'
+    post = []
+    assistant.run(s, llm=lambda sy, u, **k: post.append(sy) or '{"say": []}', force=True)
+    assert any('Watch the vendor renewals at Northwind above all.' in p for p in post if 'YOUR INSTRUCTION' in p), 'the twice-a-day post reads it too'
+    s.save_doc('advisor', '<!-- only a comment -->\n', 'owner')
+    assert lookout.goals(s) == lookout.GOALS and 'never make one up' in lookout.goals(s), 'empty reads the shipped goals, never none'
+    assert 'advisor' in s.doc_names() and s.get_doc('advisor'), 'seeded like every owner document'
+
+
+# ── WAITING FOR THEIR REPLY, PER THREAD, WHATEVER THE TASK (the live miss, 2026-11-24) ───────────────────────────────────────────────────
+VENDOR = 'omar@vendor.example'
+
+
+def asked_thread(s, conv, *, asks=True, their_reply=False, days=7):
+    """Omar at a vendor wrote; the owner answered with a question on a task that was then closed with a reply watch on it - the shape that sat
+    a week unanswered. `asks`: his last line asked something (sentjudge's stored verdict); `their_reply`: Omar wrote again after it."""
+    f = Factory(s)
+    tid = f.task(title=f'Set up the {conv} sign-in', status='done', ClosedAt=ago(days=days), AskedVia='desktop', AskedWatch='reply',
+                 AskedWatchAt=ago(days=days))
+    f.message(tid, from_email=VENDOR, from_name='Omar Keller', subject=f'RE: {conv} SSO', body='Here is the metadata link.',
+              conversation_id=conv, sent_at=ago(days=days + 1), SenderClass='person')
+    mine = f.message(tid, status='context', direction='out', from_email=ALEX, subject=f'RE: {conv} SSO', body='Can you confirm the reply URL on your side?',
+                     conversation_id=conv, sent_at=ago(days=days), RecipientsJson=json.dumps({'to': [VENDOR]}))
+    s.put_sent_verdict(mine, conv, asks, False, '', None, 'model')
+    if their_reply: f.message(tid, from_email=VENDOR, from_name='Omar Keller', subject=f'RE: {conv} SSO', body='Confirmed.',
+                              conversation_id=conv, sent_at=ago(days=days - 2), SenderClass='person')
+    return tid, mine
+
+
+def owed_block(user): return user.split('WHAT IS OWED, EITHER WAY')[1].split('TASKS:')[0]
+
+
+def test_a_closed_task_whose_thread_ends_on_his_question_is_in_the_advisors_input_and_an_answered_one_is_not():
+    from taskuary.store import task_ref
+    s, _ = world()
+    tid, mine = asked_thread(s, 'qa1')
+    asked_thread(s, 'qa2', asks=False)                    # his last line asked nothing
+    asked_thread(s, 'qa3', their_reply=True)              # the other side wrote after it
+    user, seen, _ = lookout.window(s)
+    owed = owed_block(user)
+    line = next(l for l in owed.splitlines() if 'qa1 SSO' in l)
+    assert '[followup]' in line and 'Omar Keller' in line and 'nothing has come back in 7 days' in line and f'On {task_ref(tid)}, done.' in line, line
+    assert f'msg{mine}' in line and f'msg{mine}' in seen, 'his own line is citable, and its age backs "7 days"'
+    assert 'qa2 SSO' not in owed and 'qa3 SSO' not in owed
+    # ...and the Advisor may raise it: the quote and the 7 days check against what it was shown
+    got = lookout.tick(s, brain({'ideas': [idea('reminder', 'Omar has not answered your SSO question in 7 days - nudge him?', [f'msg{mine}'],
+                                                quotes=[{'ref': f'msg{mine}', 'quote': 'Can you confirm the reply URL on your side?'}])]}), force=True)
+    assert len(got['raised']) == 1, got
+
+
+# ── ...AND THE MAILBOX ITSELF (the owner, 2026-11-24: "look at Taskuary AND the connector itself") ──────────────────────────────────────
+def mailbox(monkeypatch, msgs):
+    """A stand-in Outlook mailbox: the one connected box, answering Graph-shaped searches from `msgs` (folder, at, from, to, subject, conv, body)."""
+    from taskuary import mailboxread
+    monkeypatch.setattr(mailboxread, 'boxes', lambda store: [(ALEX, {'Type': 'outlook', 'ConnectorId': 1})])
+    def graph(store, c, box, folder, who, subject, since, limit):
+        side = (lambda m: who in m['to']) if folder == 'sent' else (lambda m: who in m['from'])
+        return [mailboxread._hit(box, folder, m['at'], m['from'], m['to'], m['subject'], m['conv'], m['body']) for m in msgs
+                if m['folder'] == folder and (not who or side(m)) and m['at'] >= since.strftime('%Y-%m-%d %H:%M:%S')][:limit]
+    monkeypatch.setattr(mailboxread, '_graph', graph)
+
+
+def test_a_follow_up_only_in_the_mailboxs_sent_folder_is_found_and_a_reply_only_in_the_mailbox_clears_one(monkeypatch):
+    from taskuary import sentjudge
+    s, _ = world()
+    asked_thread(s, 'qa1')                                # stored, unanswered in Taskuary - but Omar answered in the mailbox
+    sent_only = {'folder': 'sent', 'at': ago(days=5), 'from': ALEX, 'to': ['ray@vendor.example'], 'subject': 'Renewal quote for 2027',
+                 'conv': 'box-only', 'body': 'Could you send the renewal quote by Friday?'}
+    mailbox(monkeypatch, [sent_only, {'folder': 'inbox', 'at': ago(days=3), 'from': VENDOR, 'to': [ALEX], 'subject': 'RE: qa1 SSO',
+                                      'conv': 'qa1', 'body': 'Confirmed on our side.'}])
+    judged = []
+    monkeypatch.setattr(sentjudge, 'judge_text', lambda store, body, subject='', to='', llm=None: judged.append(body) or {'asks_them': 'Could you' in body})
+    user, seen, _ = lookout.window(s)
+    owed = owed_block(user)
+    assert 'qa1 SSO' not in owed, 'a reply the mailbox holds clears it, though Taskuary never stored it'
+    line = next(l for l in owed.splitlines() if 'Renewal quote for 2027' in l)
+    assert 'ray@vendor.example' in line and 'in the mailbox only' in line and 'nothing has come back in 5 days' in line, line
+    assert 'mailbox' in seen and 'Could you send the renewal quote by Friday?' in seen['mailbox'], 'citable as mailbox'
+    assert judged == ['Could you send the renewal quote by Friday?'], 'only the sent mail Taskuary never stored is read for an ask'
+    # ...the reply comes into the mailbox: the mailbox-only follow-up is gone too
+    mailbox(monkeypatch, [sent_only, {'folder': 'inbox', 'at': ago(days=1), 'from': 'ray@vendor.example', 'to': [ALEX],
+                                      'subject': 'RE: Renewal quote for 2027', 'conv': 'box-only', 'body': 'Attached.'}])
+    assert 'Renewal quote for 2027' not in owed_block(lookout.window(s)[0])
+
+
+def test_the_look_may_ask_the_mailbox_itself_read_only(monkeypatch):
+    mailbox(monkeypatch, [{'folder': 'sent', 'at': ago(days=40), 'from': ALEX, 'to': [VENDOR], 'subject': 'Old contract terms', 'conv': 'c-old',
+                           'body': 'Please countersign the 2026 terms.'}])
+    s, _ = world()
+    seen, counts = {}, {}
+    text = lookout.read(s, rd('mailbox', name=VENDOR, sent=True, days=60), seen, counts)
+    assert 'Old contract terms' in text and 'cite it as mailbox' in text and 'Please countersign' in seen['mailbox']
+    assert lookout.read(s, rd('mailbox'), seen, counts).startswith('mailbox: say whose mail')

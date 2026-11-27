@@ -1,13 +1,13 @@
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import puppeteer from "puppeteer-core";
+import { dropTemp, ownTemp } from "./tempdirs.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const website = path.resolve(here, "..");
@@ -73,9 +73,16 @@ function loggedProcess(command, args, options) {
   return child;
 }
 
-async function stopProcess(child) {
+// `quit`: the app's own Quit, asked first (POST /api/quit) - a kill on Windows is TerminateProcess, so the server's shutdown never ran and
+// every agent Chrome it started ran on after a walk's stop file (walk 13: four left up). The kill stays for a server that does not go
+const QUIT_WAIT = 30000;
+async function stopProcess(child, quit = null) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const closed = new Promise((resolve) => child.once("exit", resolve));
+  if (quit) {
+    try { await quit(); await Promise.race([closed, delay(QUIT_WAIT)]); } catch { /* not answering: killed below */ }
+    if (child.exitCode !== null || child.signalCode !== null) return;
+  }
   child.kill();
   await Promise.race([closed, delay(3000)]);
   if (child.exitCode === null && child.signalCode === null) {
@@ -156,7 +163,7 @@ export async function startHarness({ fresh = false, bin = "", tour = false, clau
     throw new Error("fixture ports must be unique and must never use live Taskuary/bridge ports");
   }
 
-  const home = await mkdtemp(path.join(os.tmpdir(), "taskuary-phase0-browser-"));
+  const home = ownTemp("taskuary-phase0-browser-");      // ...gone at close, or swept by the next run when this one never got there
   const browserProfile = path.join(home, "browser-profile");
   const appData = path.join(home, "appdata");
   const localAppData = path.join(home, "localappdata");
@@ -184,8 +191,8 @@ export async function startHarness({ fresh = false, bin = "", tour = false, clau
     TASKUARY_PORT: String(backendPort),
     TASKUARY_API: fixtureApi,
     TASKUARY_TOKEN: "phase0-browser-owner-token",
-    // one dep cache per checkout, outside the node_modules junction worktrees share (vite.config.js)
-    TASKUARY_VITE_CACHE: path.join(os.tmpdir(), `taskuary-vite-${createHash("sha1").update(website).digest("hex").slice(0, 12)}`),
+    // one dep cache per checkout, outside the node_modules junction worktrees share (vite.config.js) - inside the checkout, so it goes with it
+    TASKUARY_VITE_CACHE: path.join(website, ".vite-cache"),
     APPDATA: appData,
     LOCALAPPDATA: localAppData,
     HOME: userHome,
@@ -332,17 +339,17 @@ export async function startHarness({ fresh = false, bin = "", tour = false, clau
       return page;
     };
 
+    const quit = () => fetch(`${fixtureApi}/api/quit`, { method: "POST", headers: { "X-Taskuary-Token": token } });
     const close = async () => {
       await browser?.close().catch(() => {});
       await stopProcess(frontend);
-      await stopProcess(backend);   // ...the one running now, after a restart
-      const prefix = path.join(os.tmpdir(), "taskuary-phase0-browser-");
-      if (path.resolve(home).startsWith(path.resolve(prefix))) await rm(home, { recursive: true, force: true }).catch(() => {});
+      await stopProcess(backend, quit);   // ...the one running now, after a restart
+      dropTemp(home);
     };
 
     // the server stopped and started again on the same home and port - an update, a crash - while the page stays open (stress-mixed-reload)
     const restart = async ({ down = 0 } = {}) => {
-      await stopProcess(backend);
+      await stopProcess(backend, quit);
       if (down) await delay(down);
       backend = loggedProcess(pythonExe, [path.join(here, "fixture_server.py")], { cwd: repository, env: backendEnv, stdio: ["ignore", "pipe", "pipe"] });
       await waitHttp(`${fixtureApi}/api/health`, backend, { "X-Taskuary-Token": token });
@@ -354,7 +361,7 @@ export async function startHarness({ fresh = false, bin = "", tour = false, clau
     await browser?.close().catch(() => {});
     await stopProcess(frontend);
     await stopProcess(backend);
-    await rm(home, { recursive: true, force: true }).catch(() => {});
+    dropTemp(home);
     throw error;
   }
 }
@@ -407,7 +414,7 @@ export async function clickRail(page, label) {
   // document open over its list goes Back first, then the card with that title is opened
   if (!(await page.$("#tqSettingsRail"))) {
     // a rail GROUP heading is the list's grouping in the canvas: "clicking" it is being on the list
-    if (["Operator documents", "Profiles", "Playbooks"].includes(label)) {
+    if (["Operator documents", "Profiles", "Skills"].includes(label)) {
       await page.evaluate(() => document.querySelector("[data-tq-browse-chip][aria-pressed=true]")?.click());
       await page.waitForSelector("[data-tq-browse-card]");
       return;

@@ -72,6 +72,10 @@ test("the landing card is one title, the files folded, one filled button and the
   const done = landingWords({ ...s, ask: false, push: null, answers: [], landed: { how: "deploy", sha: "3a1b9a81c0ffee", deploy: "deploy" } });
   assert.equal(done.done, "✓ Pushed and deployed");
   assert.equal(done.doneLine, "3a1b9a8 · to master and deploy");
+  // ...and pushed, with none of its own left to count, it keeps the title it asked with - never "Push master - 0 files"
+  const pushed = { ...solo, name: "northwind/ledger", ask: false, push: null, answers: [], commits: 0, changed: 0, landed: { how: "push", sha: "3a1b9a81c0ffee", commits: 1 } };
+  assert.equal(landingWords(pushed).title, "Push 1 commit to master of northwind/ledger");
+  assert.equal(landingWords({ ...pushed, landed: { how: "deploy", sha: "3a1b9a81c0ffee", deploy: "deploy" } }).title, "Push to master of northwind/ledger and deploy");
   const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
   assert.match(body, /\{filesOpen && <Box data-tq-landing-list=""/, "the file list waits behind Show the files");
   assert.match(body, /<PressedButton pressed=\{s\.landed\.how\} label=\{w\.done\} \/>/, "the press it took stays drawn");
@@ -90,7 +94,7 @@ test("the push card has no Not now; a passed one is the same card with its butto
   const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
   assert.doesNotMatch(body, /landing\/hold|data-tq-land-hold|Not now|s\.held/);
   assert.match(body, /data-tq-act-state=\{s\.passed \? "passed" : s\.ask \? "waiting"/);
-  assert.match(body, /return \(<MovedPast on=\{s\.passed\}>\n\s+<Box data-tq-landing=""/);
+  assert.match(body, /return \(<MovedPast on=\{s\.passed\}>\n\s+<Frame data-tq-landing=""/);      // ...in the chat, the one frame (Artifact)
   assert.doesNotMatch(body, /w\.passed|!s\.passed &&/);
 });
 

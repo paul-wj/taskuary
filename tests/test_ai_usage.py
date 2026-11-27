@@ -127,7 +127,7 @@ def test_the_task_endpoint_lists_every_call_with_its_totals():
     from taskuary import server
     s, tid = _usage_store()
     with mock.patch.object(server, 'store', s): got = TestClient(server.app).get(f'/api/tasks/{tid}/ai-used').json()
-    assert got['total'] == {'calls': 3, 'tokens': 97120, 'tokens_in': 93000, 'tokens_out': 4120, 'cached': None, 'seconds': 63.0}
+    assert got['total'] == {'calls': 3, 'tokens': 97120, 'tokens_in': 93000, 'tokens_out': 4120, 'cached': None, 'seconds': 63.0, 'cost': None}
     top = got['rows'][0]
     assert (top['what'], top['tier'], top['model'], top['tokens'], top['seconds'], top['run']) == ('general work', 'normal', 'claude-sonnet-4-5', 94000, 60.0, True)
 
@@ -154,58 +154,16 @@ def test_the_dataset_keeps_a_run_whole_and_rolls_the_one_calls_up_per_day():
     assert (one['calls'], one['tokens'], one['tier'], one['task_id']) == (2, 3120, 'quick', None)
 
 
-def test_the_built_in_dashboard_draws_the_ai_tiles_and_an_old_copy_gets_them_once():
+def test_the_built_in_dashboard_draws_what_the_ai_used_with_its_tokens_in_the_top_row():
+    # the owner, 2026-11-07: "I don't see the token count?" - and 2026-11-24, "spend is cost, not tokens": the dollars lead, the tokens under them
     s, _ = _usage_store()
     assert dashboards.validate(dashboards.GLANCE, s) == (True, '')
     data = dashboards.collect(s, dashboards.GLANCE)
     assert not dashboards.problems(dashboards.GLANCE, data)
-    assert dict(dashboards.headline(dashboards.GLANCE, data))['Tokens per agent run'] == '94.0K'
-    # an install seeded before 2026-11-06: its saved copy has no AI source
-    old = {**dashboards.GLANCE, 'sources': [x for x in dashboards.GLANCE['sources'] if x['key'] != 'ai'],
-           'components': [c for c in dashboards.GLANCE['components'] if c.get('source') != 'ai']}
-    row = next(r for r in s.list_sources(active_only=False) if r['Address'] == dashboards.GLANCE['title'])
-    s.save_source({'SourceId': row['SourceId'], 'ConfigJson': json.dumps(old)}, 'owner')
-    assert dashboards.migrate_ai_tiles(s) == 1 and dashboards.migrate_ai_tiles(s) == 0
-    got = dashboards.cfg_of(s.get_source(row['SourceId']))
-    assert [c['title'] for c in got['components'][-5:]] == [c['title'] for c in dashboards.AI_TILES] and dashboards.validate(got, s)[0]
-
-
-def _glance_row(s, spec):
-    row = next(r for r in s.list_sources(active_only=False) if r['Address'] == dashboards.GLANCE['title'])
-    s.save_source({'SourceId': row['SourceId'], 'ConfigJson': json.dumps(spec)}, 'owner')
-    return lambda: dashboards.cfg_of(s.get_source(row['SourceId']))
-
-
-def test_the_token_total_is_in_the_top_row_and_a_copy_with_the_ai_tiles_last_moves_them_up_once():
-    # the owner, 2026-11-07: "I don't see the token count?" - the AI tiles were the last five, below the fold
-    top = dashboards.GLANCE['components'][:4]
-    assert dashboards.AI_TOKENS in top and all(c['kind'] == 'stat' for c in top)
-    assert dict(dashboards.headline(dashboards.GLANCE, dashboards.collect(_usage_store()[0], dashboards.GLANCE)))['AI tokens'] == '97.1K'
-    # an unedited copy saved 2026-11-06 (the AI tiles last, the calls bar two wide, the source renamed) becomes today's layout, once
-    plain = [c for c in dashboards.GLANCE['components'] if c['source'] != 'ai']
-    old = {**dashboards.GLANCE, 'sources': [{**x, 'key': 'ai_used'} if x['key'] == 'ai' else x for x in dashboards.GLANCE['sources']],
-           'components': [*plain, *({**c, 'source': 'ai_used', **({'w': 2} if c['kind'] == 'bar' else {})} for c in dashboards.AI_TILES)]}
-    s, _ = _usage_store(); got = _glance_row(s, old)
-    assert dashboards.migrate_ai_tiles_up(s) == 1
-    assert got()['components'] == [{**c, 'source': 'ai_used'} if c['source'] == 'ai' else c for c in dashboards.GLANCE['components']]
-    assert dashboards.validate(got(), s)[0]
-    # ...and once only: the owner who puts them back at the end keeps them there
-    _glance_row(s, old)
-    assert dashboards.migrate_ai_tiles_up(s) == 0 and got()['components'] == old['components']
-    # an edited copy keeps its own tiles and order: the total after its first three numbers, the AI tiles after the rest of them
-    t = {c['title']: c for c in plain}
-    order = ['Came in', 'New tasks', 'Open now', 'Median reply time', 'Closed this week', 'Agent time per session', 'How far it got',
-             'What came in, by channel', 'Agent sessions, and how they ended', 'Open work by kind', 'Who writes most', 'Waiting longest on you']
-    mine = {**old, 'components': [*(t[x] for x in order[:6]), {'kind': 'stat', 'title': 'Mine', 'source': 'mail', 'agg': 'count'},
-                                  *(t[x] for x in order[6:]), *old['components'][-5:]]}
-    assert dashboards.validate(mine, s)[0]
-    titles = [c['title'] for c in dashboards.ai_tiles_up(mine)['components']]
-    assert titles[:4] == ['Came in', 'New tasks', 'Open now', 'AI tokens']
-    assert titles[4:8] == ['Median reply time', 'Closed this week', 'Agent time per session', 'Mine']
-    assert titles[8:13] == [c['title'] for c in dashboards.AI_TILES] and titles[13] == 'How far it got'
-    # ...and a copy whose AI tiles the owner already moved, or today's own, is left as it is
-    moved = {**old, 'components': [*old['components'][-5:], *plain]}
-    assert dashboards.ai_tiles_up(moved) is moved and dashboards.ai_tiles_up(dashboards.GLANCE) is dashboards.GLANCE
+    week = dashboards.GLANCE['components'][0]
+    assert week['kind'] == 'kpis' and [x['title'] for x in week['items']] == ['Came in', 'Became work', 'Done', 'Waiting on you', 'AI spend']
+    # a Claude Code run is on her plan: no dollars, its tokens said as hers on the plan
+    assert dashboards._panel(dashboards.GLANCE, data, week, 7)[-1] == '- AI spend: - (97.1K tokens, 97.1K on your plan)'
 
 
 def test_retention_keeps_what_was_used_for_ninety_days_and_the_reason_for_thirty():
@@ -255,7 +213,7 @@ def _triage_system(learned='Alex cares about the rota.', who='erin@northwind.exa
     seen = []
     def brain(system, user, **kw): seen.append(system); return '{"intent": "fyi", "why": "x"}'
     classify_intent({'from_email': who, 'subject': 's', 'body': 'b'}, llm=brain, notes=[f'{who}: rota changes are tasks'], learned=learned,
-                    playbooks='- rota: when a rota changes', workflows='- invoices: when an invoice arrives', soul='Alex runs operations.')
+                    skills='- rota: when a rota changes', workflows='- invoices: when an invoice arrives', soul='Alex runs operations.')
     return seen[0]
 
 
@@ -268,6 +226,40 @@ def test_triage_is_the_cached_context_then_the_new_mail_and_a_learned_line_rebil
     assert c.blocks[:2] == a.blocks[:2] and c.blocks[2] != a.blocks[2], 'a learned line: only the memory block changes'
     assert 'rota changes are tasks' in a.rest and 'rota changes are tasks' not in ''.join(a.blocks)
     assert sum(map(len, a.blocks)) > 20 * len(a.rest), 'nearly all of it is cached'
+
+
+def _common(a: str, b: str) -> int: return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+
+
+def _triage_wire(system=None, **kw):
+    "What the OpenAI wire carries for one triage call, in its order: the schema (the head of the prompt there), the system, the mail."
+    from taskuary.triage import classify_intent
+    seen = []
+    def brain(system, user, **k): seen.append((system, user, k.get('want'))); return '{"intent": "fyi", "why": "x", "title": "t"}'
+    brain.takes_want = True
+    classify_intent(llm=brain, system=system, soul='Alex runs operations.', learned='Alex cares about the rota.', **kw)
+    sy, us, want = seen[0]
+    return json.dumps(want), sy, us
+
+
+def test_a_reply_on_a_thread_and_a_chat_line_share_the_plain_mails_cached_prefix():
+    """The OpenAI wire reads the answer's schema first, then the system: a schema that grew same_as / new_job / relationship on a thread's
+    reply made the whole cached guide a new prompt for it and for the mail after (the owner's week: 29% of triage read from the cache)."""
+    plain = _triage_wire(msg={'from_email': 'erin@northwind.example', 'subject': 'Payworth invoice', 'body': 'Can you approve it by Friday?'})
+    task = {'tid': 7, 'ref': 'TQ-0007', 'title': 'Month-end close is short'}
+    reply = _triage_wire(msg={'from_email': 'marcus@northwind.example', 'subject': 'Re: Month-end close', 'body': 'Found part of it.'},
+                         thread={'thread_task': {**task, 'watching': True}, 'open_work': [task], 'exchange': ['[#3] Marcus: it is short']})
+    chat = _triage_wire(msg={'from_name': 'Ruth Bennett', 'subject': '', 'body': 'also the export failed at 2am'},
+                        candidates=[{'id': 4, 'who': 'Ruth Bennett', 'when': '09:00', 'text': 'did the import finish?', 'task_id': 7}],
+                        thread={'room_tasks': [task], 'filed_notices': [{'mid': 9, 'subject': 'Import report'}]})
+    wires = ['\n'.join(w) for w in (plain, reply, chat, plain)]
+    assert plain[0] == reply[0] == chat[0], 'one schema for every mail'
+    for a, b in zip(wires, wires[1:]): assert _common(a, b) >= 0.8 * max(len(a), len(b)), 'the next mail reads the guide from the cache'
+    # ...and a guide that does not explain a key the reply carries is told it in the reply's own part, never in the cached blocks
+    doc = 'Judge the mail. ' * 400 + 'Answer JSON with "intent", "why" and "title".'
+    a = _triage_wire(system=doc, msg={'from_email': 'erin@northwind.example', 'subject': 's', 'body': 'b'})[1]
+    b = _triage_wire(system=doc, msg={'from_email': 'marcus@northwind.example', 'subject': 's', 'body': 'b'}, thread={'exchange': ['[#3] x']})[1]
+    assert a.blocks == b.blocks and 'THE PAYLOAD ALSO CARRIES' in b.rest
 
 
 def test_each_card_type_carries_the_cache_the_way_its_provider_takes_it_and_a_refused_marker_is_dropped_once():
@@ -294,6 +286,27 @@ def test_each_card_type_carries_the_cache_the_way_its_provider_takes_it_and_a_re
         brain = llm.make_llm('hipaa_ai', {**gw, 'model': 'flash-x', 'cache': 'explicit'}, 'k')
         assert brain(system, 'the mail') == '{}' and brain(system, 'the next mail') == '{}'
     assert kinds == ['list', 'str', 'str'], 'asked again without the marker, and never marked again on this card'
+
+
+def test_an_openai_card_routes_a_shared_head_to_one_cache_kept_a_day_and_a_model_that_refuses_it_is_asked_without():
+    "A mail an hour after the last outlived OpenAI's in-memory cache; the calls that share a head name it, and it is kept 24h."
+    ok, bodies = {'choices': [{'message': {'content': '{}'}}], 'usage': {'prompt_tokens': 9, 'completion_tokens': 1}}, []
+    refused = _post({'error': {'message': "Unsupported parameter: 'prompt_cache_retention' is not supported with this model."}}, 400)
+    answers = iter([_post(ok), _post(ok), _post(ok), refused, _post(ok), _post(ok)])
+    def post(url, json=None, **kw): bodies.append(dict(json)); return next(answers)
+    llm._NO_CACHE_KW.clear()
+    with mock.patch('taskuary.llm.requests.post', side_effect=post):
+        brain = llm.make_llm('openai', {'model': 'gpt-5.4'}, 'k')
+        brain(llm.stable('guide ' * 1000, rest='mail one'), 'one'); brain(llm.stable('guide ' * 1000, rest='mail two'), 'two'); brain('short', 'x')
+        old = llm.make_llm('openai', {'model': 'gpt-4o-mini'}, 'k')
+        old('guide ' * 1000, 'one'); old('guide ' * 1000, 'two')
+    a, b, small, no, again, after = bodies
+    assert a['prompt_cache_key'] == b['prompt_cache_key'] and a['prompt_cache_retention'] == '24h', 'one key for one head'
+    assert 'prompt_cache_key' not in small and 'prompt_cache_key' in no
+    assert 'prompt_cache_key' not in again and 'prompt_cache_retention' not in after, 'asked again without, and never sent them again'
+    with mock.patch('taskuary.llm.requests.post', return_value=_post(ok)) as p:
+        llm.make_llm('openrouter', {}, 'k')('guide ' * 1000, 'one')
+    assert 'prompt_cache_key' not in p.call_args.kwargs['json'], 'only the card that takes them'
 
 
 def test_the_settings_page_reads_what_the_ai_did_today_and_the_ceiling():
@@ -519,3 +532,111 @@ def test_a_quota_refusal_is_the_providers_quota_in_plain_words_and_the_card_rest
     assert brainroute.spent(s, pick) == str(e.value), 'it rests: the next call says the same line at once, and a backup takes it'
     with mock.patch.object(llm, 'post_retrying') as post, pytest.raises(llm.BudgetSpent): brain('sys', 'again')
     post.assert_not_called()
+
+
+# ── what the AI spent, per day and for whom (the owner, 2026-11-24) ─────────────────────────────────────────────────────────────
+def _spend_store():
+    """A week of invented AI use, in dollars: triage every day but one and the Advisor and the Assistant on two, said by what the gateway
+    reported; agent runs on two tasks (one worked twice, the other Claude Code on a plan); a draft at the model's list price; a report's own
+    triage; a memory pass on a model with no price; and one call eight days ago, outside the week. Two tasks done, one dropped."""
+    from datetime import datetime, timedelta
+    s = MemoryStore()
+    api = f"connector:{s.get_connector_by_type('anthropic')['ConnectorId']}"
+    day = lambda n: (datetime.now() - timedelta(days=n)).strftime('%Y-%m-%d 10:00:00')
+    t = [s.create_task({'Title': f'Ask {i}', 'Status': 'open', 'Kind': 'general'}, 'owner') for i in range(3)]
+    rows = [(n, 'triage', 'triage.classify', None, 1000, 0, api, 0.01, 'claude-haiku-4-5') for n in (0, 1, 2, 4, 5, 6)] + [
+        (1, 'advisor', 'advisor.run', None, 3000, 0, api, 0.30, 'claude-sonnet-4-5'), (3, 'advisor', 'advisor.lookout', None, 2000, 0, api, 0.20, 'claude-sonnet-4-5'),
+        (0, 'assistant', None, None, 4000, 0, api, 0.40, 'claude-sonnet-4-5'), (2, 'assistant', None, None, 6000, 0, api, 0.60, 'claude-sonnet-4-5'),
+        (1, 'general', None, t[0], 50000, 1, api, 2.0, 'claude-sonnet-4-5'), (4, 'general', None, t[0], 30000, 1, api, 1.0, 'claude-sonnet-4-5'),
+        (2, 'coding', None, t[1], 20000, 1, 'cli:claude', None, 'claude-sonnet-4-5'),
+        (5, 'draft', 'draft.reply', t[2], 1500, 0, api, None, 'claude-sonnet-4-5'), (3, 'triage', 'reports.judge', None, 700, 0, api, 0.007, 'claude-haiku-4-5'),
+        (6, 'memory', 'memory.learn', None, 300, 0, api, None, 'a-model-nobody-prices'), (8, 'triage', 'triage.classify', None, 99000, 0, api, 9.0, 'claude-haiku-4-5')]
+    for n, job, caller, tid, tok, run, pick, usd, model in rows:
+        s.add_brain_route({'At': day(n), 'Job': job, 'Caller': caller, 'TaskId': tid, 'Pick': pick, 'Tier': 'light', 'Rule': 'x', 'Outcome': 'ok',
+                           'Ran': model, 'TokensIn': tok, 'TokensOut': 0, 'Ms': 1000, 'Calls': 1, 'Cost': usd, **({'Sid': f'run-{n}-{tid}'} if run else {})})
+    for tid, st, n in ((t[0], 'done', 1), (t[1], 'done', 1), (t[2], 'dropped', 3)):
+        s._exec('UPDATE task SET Status=?, ClosedAt=? WHERE TaskId=?', (st, day(n), tid))
+    return s, t, day
+
+
+def test_every_call_lands_on_who_it_was_for_by_its_asker_else_its_job():
+    assert [aiusage.who(j, c) for j, c in (('triage', 'triage.classify'), ('triage', 'reports.judge'), ('judge', 'sent.judge'), ('advisor', None),
+                                           ('general', 'advisor.idea'), ('assistant', ''), ('coding', None), ('draft', 'draft.reply'),
+                                           ('memory', 'memory.learn'), (None, None))] == \
+        ['Triage', 'Other', 'Triage', 'Advisor', 'Advisor', 'Assistant', 'Tasks', 'Tasks', 'Other', 'Triage']
+
+
+def test_the_built_in_dashboard_says_the_weeks_spend_per_day_for_whom_per_task_and_what_got_done():
+    s, t, day = _spend_store()
+    spec = dashboards.GLANCE
+    assert dashboards.validate(spec, s) == (True, '')
+    data = dashboards.collect(s, spec)
+    assert not dashboards.problems(spec, data)
+    # a tile, or one number of a strip or one measure of the day-by-day chart, by its title
+    panel = lambda title: dashboards._panel(spec, data, next(x for c in spec['components'] for x in [c, *dashboards.parts(c)] if x.get('title') == title), 7)
+    # the week's dollars for each, in the owner's order - the call eight days ago is not in them; the draft at its list price (1,500 x $3/M)
+    assert panel('AI spend by who')[1:] == ['Triage: $0.06', 'Advisor: $0.50', 'Tasks: $3.00', 'Assistant: $1', 'Other: $0.01']
+    # ...per day, in the one chart: the dollars each day, the call eight days ago not among them
+    spend = next(x for x in panel('Day by day') if x.startswith('- AI spend: '))[len('- AI spend: '):]
+    days = dict(x.rsplit(' ', 1) for x in spend.split(', '))
+    assert len(days) == 7 and days[day(3)[:10]] == '$0.21' and days[day(1)[:10]] == '$2.31'
+    # the total, and under it its tokens: the plan's said apart, and the one with no price
+    assert panel('AI spend') == ['AI spend: $4.57 (123.5K tokens, 20.0K on your plan, 300 with no price)']
+    # one task's agent work, on average: $2 + $1 on one task; the other ran on a plan, so it has no dollars to average
+    assert panel('Cost per task') == ['Cost per task: $3 (50.0K tokens)']
+    # ...and what got done: two tasks done, and per day the done apart from the dropped
+    assert panel('Done') == ['Done: 2']
+    assert next(x for x in panel('Day by day') if x.startswith('- Work done: ')) == f'- Work done: {day(3)[:10]} 1, {day(1)[:10]} 2'
+
+
+def test_a_calls_cost_is_what_the_provider_said_else_its_list_price_else_none_and_a_plan_is_no_cost():
+    s = MemoryStore()
+    cid = lambda t: f"connector:{s.get_connector_by_type(t)['ConnectorId']}"
+    row = lambda **kw: {'Pick': cid('anthropic'), 'Ran': 'claude-sonnet-4-5', 'TokensIn': 1_000_000, 'Cached': 400_000, 'TokensOut': 100_000, **kw}
+    # 600K new at $3, 400K read from the cache at $0.30, 100K out at $15 - LiteLLM's list price
+    assert aiusage.cost(s, row()) == (pytest.approx(1.8 + 0.12 + 1.5), 'priced')
+    assert aiusage.cost(s, row(Cost=0.42)) == (0.42, 'reported'), "what the provider said beats a list price"
+    assert aiusage.cost(s, row(Ran='anthropic/claude-sonnet-4-5@high'))[1] == 'priced', "a gateway's prefix and an effort are not the model"
+    assert aiusage.cost(s, row(Ran='a-model-nobody-prices')) == (None, 'unknown'), "never a guessed price"
+    assert aiusage.cost(s, row(Pick='cli:claude')) == (None, 'plan')
+    assert aiusage.cost(s, row(Pick=cid('chatgpt'))) == (None, 'plan')
+    assert aiusage.cost(s, row(Pick=cid('ollama'))) == (None, 'local')
+    assert aiusage.price_of('claude-haiku-4-5') == [1.0, 5.0, 0.1] and aiusage.price_of('') is None
+
+
+def test_the_gateways_own_cost_lands_on_the_route():
+    # the HIPAA AI card is a LiteLLM gateway: it says what each answer cost in a header, and that is what is kept
+    s = MemoryStore(); rid = _route(s)
+    body = {'model': 'gemini-4-hydrogen', 'choices': [{'message': {'content': 'ok'}}], 'usage': {'prompt_tokens': 500, 'completion_tokens': 60}}
+    r = _post(body); r.headers = {'x-litellm-response-cost': '0.00123'}
+    with mock.patch('taskuary.llm.requests.post', return_value=r):
+        brain = aiusage.metered(s, rid, llm.make_llm('hipaa_ai', {'base_url': 'https://ai.northwind.example/v1'}, 'key-test'))
+        assert brain('s', 'u') == 'ok' and brain('s', 'again') == 'ok'
+    assert _row(s, rid)['Cost'] == pytest.approx(0.00246)
+    # ...and OpenRouter in the usage itself
+    r = _post({**body, 'usage': {**body['usage'], 'cost': 0.5}}); rid = _route(s)
+    with mock.patch('taskuary.llm.requests.post', return_value=r):
+        assert aiusage.metered(s, rid, llm.make_llm('openrouter', {}, 'k'))('s', 'u') == 'ok'
+    assert _row(s, rid)['Cost'] == 0.5
+
+
+def test_per_averages_each_values_own_number_and_leaves_the_blank_out():
+    rows = [{'t': 1, 'v': 10}, {'t': 1, 'v': 30}, {'t': 2, 'v': 20}, {'t': None, 'v': 999}, {'t': '', 'v': 999}]
+    assert dashboards.aggregate(rows, 'sum', 'v', 't') == 30 and dashboards.aggregate(rows, 'count', None, 't') == 1.5
+    assert dashboards.aggregate([], 'sum', 'v', 't') is None
+    assert dashboards.validate({'title': 'x', 'sources': [{'key': 'a', 'type': 'taskuary_data', 'dataset': 'tasks'}],
+                                'components': [{'kind': 'stat', 'source': 'a', 'per': 3}]})[0] is False
+
+
+def test_an_unedited_built_in_becomes_todays_and_an_edited_one_keeps_its_own():
+    s, _, _ = _spend_store()
+    was = dashboards.GLANCE['components'][2:]
+    row = next(r for r in s.list_sources(active_only=False) if r['Address'] == dashboards.GLANCE['title'])
+    cfg = lambda: dashboards.cfg_of(s.get_source(row['SourceId']))
+    s.save_source({'SourceId': row['SourceId'], 'ConfigJson': json.dumps({**dashboards.GLANCE, 'components': was, 'daily_at': '06:30'})}, 'owner')
+    with mock.patch.object(dashboards, 'GLANCE_WAS', (dashboards.glance_print(was),)):
+        assert dashboards.migrate_glance(s) == 1 and dashboards.migrate_glance(s) == 0
+        assert cfg()['components'] == dashboards.GLANCE['components'] and cfg()['daily_at'] == '06:30'
+        mine = [*was[:3], {'kind': 'stat', 'title': 'Mine', 'source': 'mail', 'agg': 'count'}]
+        s.save_source({'SourceId': row['SourceId'], 'ConfigJson': json.dumps({**dashboards.GLANCE, 'components': mine})}, 'owner')
+        assert dashboards.migrate_glance(s) == 0 and cfg()['components'] == mine

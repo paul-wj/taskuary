@@ -43,7 +43,7 @@ def test_a_good_spec_validates():
     ({'title': ''}, 'no title'),
     ({'sources': []}, 'no source'),
     ({'components': []}, 'shows nothing'),
-    ({'components': [{'kind': 'pie', 'title': 'Pie', 'source': 'tasks'}]}, 'not a preset'),
+    ({'components': [{'kind': 'gauge', 'title': 'Gauge', 'source': 'tasks'}]}, 'not a preset'),
     ({'components': [{'kind': 'bar', 'title': 'B', 'source': 'nowhere', 'x': 'kind'}]}, 'not one of the sources'),
     ({'components': [{'kind': 'bar', 'title': 'B', 'source': 'tasks'}]}, 'needs x'),
     ({'components': [{'kind': 'stat', 'title': 'S', 'source': 'tasks', 'agg': 'sum'}]}, 'adds up'),
@@ -253,7 +253,9 @@ def test_the_template_validates_reads_only_taskuary_data_and_fits_one_screen():
     assert dashboards.validate(spec, MemoryStore()) == (True, '')
     assert {x['type'] for x in spec['sources']} == {'taskuary_data'}
     assert len(spec['components']) <= dashboards.MAX_COMPONENTS
-    assert [c['kind'] for c in spec['components'][:4]] == ['stat'] * 4      # the numbers first
+    # ONE STORY (the owner, 2026-11-25): the week's numbers first, then every day in one chart, the flow beside what waits, then the cost
+    assert [c['kind'] for c in spec['components']] == ['kpis', 'trend', 'bar', 'list', 'pie', 'kpis']
+    assert len({c['title'] for c in spec['components']}) == 6 and not any(c.get('title') == 'Who writes most' for c in spec['components'])
 
 
 def test_the_template_runs_deterministically_over_the_apps_own_rows():
@@ -267,11 +269,25 @@ def test_the_template_runs_deterministically_over_the_apps_own_rows():
     assert {k: r['outcome'] for k, r in runs.items()} == {'s1': 'finished', 's2': 'failed', 's3': 'working'}
     assert runs['s1']['minutes'] == 30 and runs['s3']['minutes'] is None
     tiles = dict(dashboards.headline(dashboards.GLANCE, one))
-    assert tiles == {'Came in': '4', 'New tasks': '2', 'Open now': '1', 'Median reply time': '3 h', 'Agent time per session': '45 min',
-                     'AI tokens': '-', 'Tokens per agent run': '-', 'Minutes per agent run': '-'}      # no AI ran in this store
-    closed = next(c for c in dashboards.GLANCE['components'] if c['kind'] == 'progress')
-    week = dashboards.in_range(src['closed']['rows'], 'closed', dashboards.span(closed, 90))
-    assert dashboards.span(closed, 90) == 7 and dashboards.aggregate(dashboards.where(week, closed['where'])) == 1
+    assert tiles == {'Came in': '4', 'Became work': '2', 'Waiting on you': '1', 'Your reply': '3 h', 'Agent session': '45 min',
+                     'AI spend': '-', 'Cost per task': '-', 'Done': '1'}      # no AI ran in this store
+
+
+def test_waiting_on_you_is_the_rails_fact_never_every_open_task():
+    """Walk 20: "Waiting on you 10" counted tasks that waited on Erin, on a vendor and on an agent at work. The tile and the list read whose move
+    it is from taskstate.standing - the one fact the rail and the header say."""
+    from unittest import mock
+    from taskuary import taskstate
+    from taskuary.testing import Factory
+    s = MemoryStore(); f = Factory(s)
+    mine, erins, working = f.task('Approve the Trainly quote'), f.task('Spendly numbers from Erin'), f.task('Draft the budget memo')
+    said = {mine: 'you', erins: 'them', working: 'agent'}
+    with mock.patch.object(taskstate, 'standing', lambda st, tid, key=None: {'waits_on': said.get(tid)}):
+        data = dashboards.collect(s, dashboards.GLANCE)
+        tiles = dict(dashboards.headline(dashboards.GLANCE, data))
+    assert tiles['Waiting on you'] == '1', tiles
+    rows = dashboards.tile_rows(dashboards.GLANCE, data, next(c for c in dashboards.GLANCE['components'] if c['kind'] == 'list'), 7)
+    assert [r['title'] for r in rows] == ['Approve the Trainly quote'], rows
 
 
 def test_a_components_own_range_and_the_median_are_checked():
@@ -303,8 +319,8 @@ def test_the_built_in_one_is_an_ordinary_dashboard_edited_and_kept_like_any_othe
     s = MemoryStore()
     row = next(r for r in s.list_sources(active_only=False) if r['Address'] == dashboards.GLANCE['title'])
     cfg = json.loads(row['ConfigJson'])
-    goal = next(c for c in cfg['components'] if c['kind'] == 'progress'); goal['target'] = 20
-    cfg['components'] = [c for c in cfg['components'] if c['title'] != 'Who writes most']
+    goal = next(c for c in cfg['components'] if c['kind'] == 'list'); goal['limit'] = 3
+    cfg['components'] = [c for c in cfg['components'] if c['title'] != 'AI spend by who']
     post = lambda c, spec: c.post('/api/sources', json={'SourceId': row['SourceId'], 'Channel': 'report', 'Address': spec['title'],
                                                         'ConfigJson': json.dumps(spec), 'Active': True})
     with mock.patch.object(server, 'store', s):
@@ -312,8 +328,8 @@ def test_the_built_in_one_is_an_ordinary_dashboard_edited_and_kept_like_any_othe
         assert post(c, cfg).status_code == 200
         assert post(c, {**cfg, 'components': [{**goal, 'source': 'gone'}]}).status_code == 422     # ...the check any dashboard's save runs
         got = c.get(f"/api/dashboards/{row['SourceId']}").json()['config']
-    assert next(x for x in got['components'] if x['kind'] == 'progress')['target'] == 20
-    assert 'Who writes most' not in [x['title'] for x in got['components']]
+    assert next(x for x in got['components'] if x['kind'] == 'list')['limit'] == 3
+    assert 'AI spend by who' not in [x['title'] for x in got['components']]
     s._heal_seeded_report_owner()                                       # the heal that runs on start leaves an edited one alone
     assert json.loads(s.get_source(row['SourceId'])['ConfigJson'])['components'] == got['components']
 
@@ -513,7 +529,7 @@ def test_the_describer_says_a_tile_plainly_from_its_config_alone():
 
 def test_every_saved_tile_has_a_sentence_and_the_built_in_ones_keep_their_hand_written_words():
     assert all(c['said'] for c in dashboards.GLANCE['components'])
-    old = {**dashboards.GLANCE, 'components': [{k: v for k, v in c.items() if k != 'said'} | ({'source': 'ai_used'} if c['source'] == 'ai' else {})
+    old = {**dashboards.GLANCE, 'components': [{k: v for k, v in c.items() if k != 'said'} | ({'source': 'ai_used'} if c.get('source') == 'ai' else {})
                                               for c in dashboards.GLANCE['components']] + [{'kind': 'stat', 'title': 'Mine', 'source': 'mail'}]}
     got = dashboards.with_said(old)['components']
     assert [c['said'] for c in got[:-1]] == [c['said'] for c in dashboards.GLANCE['components']]

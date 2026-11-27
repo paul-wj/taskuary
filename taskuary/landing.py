@@ -83,6 +83,10 @@ def record(store, tid: int) -> dict:
 
 
 def _save(store, tid: int, r: dict): store.set_setting(f'{KEY}:{int(tid)}', json.dumps(r), 'system')
+def keep_then(store, tid: int, then: str):
+    "The agent's own step after his press on the landing question it just raised (card.raising) - '' for none."
+    if (r := record(store, tid)).get('proposal'):
+        r['proposal'] = {**{k: v for k, v in r['proposal'].items() if k != 'then'}, **({'then': then} if then else {})}; _save(store, tid, r)
 
 
 def mark_start(store, tid: int, cwd: str) -> dict | None:
@@ -324,7 +328,10 @@ def state(store, tid: int, full: bool = False) -> dict | None:
     ahead = int(_git(cwd, 'rev-list', '--count', f'{base}..{br}') or 0) if mine else 0
     out = {'task': task_ref(tid), 'cwd': cwd, 'repo': _repo(cwd), 'base': base, 'branch': br if mine else base, 'own': mine, 'ahead': ahead,
            'shared': not mine, 'commits': ahead if mine else len(o['commits']),
-           'at': _stamp(int(_git(cwd, 'log', '-1', '--format=%ct', br) or 0)) if mine else o['at'],
+           # ...WHERE IT STANDS IN THE CHAT: when its newest change came in - and once pushed on the shared base, where none of its own is
+           # left to date it by, when it landed (the card gallery, 2026-11-25: the Push card had no place from its press on and was gone
+           # from the chat - a line under the turn said what the card should have)
+           'at': _stamp(int(_git(cwd, 'log', '-1', '--format=%ct', br) or 0)) if mine else o['at'] or (r.get('landed') or {}).get('at', ''),
            'files': files, 'changed': len(files), 'plus': sum(f['plus'] for f in files), 'minus': sum(f['minus'] for f in files),
            'landed': r.get('landed'), 'proposal': r.get('proposal')}
     out['name'] = out['repo'] or os.path.basename(os.path.normpath(cwd))      # ...the card names the repository it pushes to
@@ -344,6 +351,8 @@ def state(store, tid: int, full: bool = False) -> dict | None:
     # ...and a passed one keeps its answers: the page draws it as the card it was, its buttons greyed (the owner, 2026-11-18) - a press still
     # needs `ask` (land), so nothing it names can go
     hows = (OWN_HOW if mine else PUSH_HOW[:1 + bool((out['push'] or {}).get('deploy'))]) if out['ask'] or out['passed'] else ()
+    # ...and no Open a PR where its origin is no GitHub repository: a button whose press could only fail (the re-walk on Codex, 2026-11-25)
+    if not out['repo']: hows = tuple(k for k in hows if k != 'pr')
     out['answers'] = [{'how': k, 'label': HOW[k]} for k in hows]
     out['line'] = said(out)
     if full: out['diff'] = (_git(cwd, 'diff', _fork(cwd, base, br, start), br) if mine else _own_diff(cwd, o))[:DIFF_CAP]
@@ -419,6 +428,7 @@ def _repo(cwd) -> str:
     return shellgate.repo_of(cwd)
 
 
+NO_GITHUB = "this checkout's origin is not a GitHub repository"          # ...one sentence for the raise (propose) and the press (_pr)
 def propose(store, tid: int, how: str, why: str = '', actor: str = 'agent', deploy: str = '') -> dict:
     """The agent's own read of how its work should land: the close-out's question shows it marked. It lands nothing. On the shared base
     that is a push - `deploy` names the branch a push to deploys (the card's Push & deploy)."""
@@ -447,6 +457,12 @@ def propose(store, tid: int, how: str, why: str = '', actor: str = 'agent', depl
                                  'ask him in one question for the folder of his checkout this work belongs in'))
     if not s['ask']: raise ValueError(s['line'])
     if how == 'discard' and not s['own']: raise ValueError('discard is only for a branch of your own')
+    # ...AND A PULL REQUEST NO PRESS COULD OPEN IS NEVER RAISED (the re-walk on Codex, 2026-11-25: the checkout's origin pushed to a local folder;
+    # the Open a PR card stood, and his press failed with what was known when it was raised) - the press's own refusal (_pr), said now
+    if how == 'pr' and s['own'] and not s['repo']:
+        from .agenttools import refusal
+        raise ValueError(refusal(NO_GITHUB, "point the checkout's origin at its GitHub repository (git remote set-url origin <url>) and ask again; "
+                                            'where you do not know it, ask him for it in one question'))
     if how not in {a['how'] for a in s['answers']}: raise ValueError(f"how is one of: {', '.join(a['how'] for a in s['answers'])} here - {s['line']}")
     r = record(store, tid)
     # ...and asked again while it still stands (a press refused, a better why) it keeps its place in the line of cards (cardqueue): recorded
@@ -499,7 +515,7 @@ def from_proposal(store, tid: int, p: dict) -> dict | None:
 # AN AGENT'S OWN `git push` IS THE CARD'S QUESTION TOO (the agent walk, 2026-11-09). Told to call propose_land, a coding agent ran
 # `git add ... && git commit ... && git push` in its shell instead, and the owner got "THE AGENT ASKS - It wants to run ..." with Allow once /
 # Reject - the line cut mid-word, the push not on it - beside a card built to ask it with one Push. A plain push of the task's own work from
-# its own checkout is that card's question, on every road a shell step is held by (shellgate.check, acpgate.decide). What the button is
+# its own checkout is that card's question, on every road a shell step is held by (shellgate.check, gate.tool_call). What the button is
 # not - forced, tags, a delete, another remote or checkout, a push inside another shell's string - is held the way any other step is.
 _PUSH_OPTS = frozenset('-u --set-upstream -q --quiet -v --verbose --progress --porcelain'.split())
 _TO_NOWHERE = re.compile(r'\s\d?>{1,2}\s*(?:&\d|/dev/null|\$null|nul)(?=\s|$|[;&|)])', re.I)     # `2>&1`, `>/dev/null`: no part of what is pushed
@@ -572,8 +588,7 @@ def push_asked(store, tid: int, cmd: str, cwd: str = '', about: str = '') -> tup
             propose(store, tid, how, about, deploy=deploy)
     except ValueError: return None
     return True, (f"{shellgate.HELD}: this push is the owner's {button} button on the task now, not a shell step - {state(store, tid)['line']} Nothing "
-                  "is pushed until they press it, and Taskuary tells you when it went. Do not push another way. The button is the ask: say in "
-                  "one line what waits on it - never ask in words. End your turn now, or go on with work that does not need it.")
+                  "is pushed until they press it. " + __import__("taskuary.selfclose", fromlist=["CARD_TAIL"]).CARD_TAIL)
 
 
 
@@ -786,8 +801,15 @@ def _landed(store, tid, how, said_, actor, at_sha='', **extra) -> dict:
     # (the owner, 2026-11-09: "when you hit approve the agent continues and says what it did and what the next steps are")
     if how not in PUSH_HOW:
         from .browsergate import NEXT
-        _hand_back(store, tid, f"{said_} The owner pressed {HOW[how]} on your branch. {NEXT}")
+        _went(store, tid, f"{said_} The owner pressed {HOW[how]} on your branch. {NEXT}")
     return {'ok': True, 'how': how, 'says': said_, **extra}
+
+
+def _went(store, tid, text):
+    "What his press landed, to the agent: woken only where its proposal named a step of its own after it (card.carries_on), else said in its next turn."
+    from . import card, events
+    if card.carries_on(record(store, tid).get('proposal')): return _hand_back(store, tid, text)     # at work or at rest (general.approved)
+    events.note(store, int(tid), text)
 
 
 def _push(store, tid, s, how, actor) -> dict:
@@ -813,31 +835,27 @@ def _push(store, tid, s, how, actor) -> dict:
     ci._save_push(store, tid, {'repo': s['repo'], 'branch': base, 'from': base, 'sha': tip, 'commits': p['ahead'], 'state': 'pushed',
                                'url': f"https://github.com/{s['repo']}/commit/{tip}" if s['repo'] else '', 'checks': None, 'checked_at': None}, actor)
     said_ = f"Pushed {plural(p['ahead'], 'commit')} to origin/{base} ({tip[:7]})" + (f" and deployed it to {p['deploy']}." if went == 'deploy' else '.') + refused
-    out = _landed(store, tid, went, said_, actor, tip, **({'deploy': p['deploy']} if went == 'deploy' else {}))
-    # ...the press was the go-ahead the agent waits on: its next turn checks it and finishes
-    _hand_back(store, tid, f"{said_} The owner pressed {HOW[how]} on your proposal. " + (
-        "Check it is live, then finish." if went == 'deploy' else
-        f"Do what the refusal needs, then deploy {tip[:7]} to {p['deploy']} with your own `git push` - it is held for the owner's press - or say in a line why you cannot."
-        if refused else "Finish the task."))
+    # ...with how many went: once pushed none of its own is left to count, and the card it stays as says what it pushed (landing.js landingTitle)
+    out = _landed(store, tid, went, said_, actor, tip, commits=p['ahead'], **({'deploy': p['deploy']} if went == 'deploy' else {}))
+    # ...a deploy refused is handed back; what went wakes it only where it named a step of its own after the press (_went)
+    (_hand_back if refused else _went)(store, tid, f"{said_} The owner pressed {HOW[how]} on your proposal." + (
+        f" Do what the refusal needs, then deploy {tip[:7]} to {p['deploy']} with your own `git push` - it is held for the owner's press - or say in a line why you cannot."
+        if refused else ''))
     return out
 
 
 def _pr(store, tid, s, actor) -> dict:
     """Open a PR: the branch pushed and a draft pull request opened through the GitHub card. Reached only by the owner's answer - their
     press is the push's press (an agent's propose_land only marks the question)."""
-    from . import ci, github
+    from . import ci
     cwd, base, br, repo = s['cwd'], s['base'], s['branch'], s['repo']
-    if not repo: raise Refused("this checkout's origin is not a GitHub repository - push it and open the pull request by hand")
+    if not repo: raise Refused(f'{NO_GITHUB} - push it and open the pull request by hand')
     # ...GITHUB'S NO IS THE LANDING'S NO (stress round, 2026-11-18): its own error passed land()'s handler - no line kept, the agent never told
-    try: c = ci._conn(store, repo)
+    try: ci._conn(store, repo)
     except RuntimeError as e: raise Refused(f'{e} - nothing was pushed') from e
-    rc, out, err = _push_as_agent(cwd, 'push', '-u', 'origin', br)
-    if rc: raise Refused(f"the push of {br} was refused: {ci.TOKEN_URL.sub('https://', (err or out))[:300]} - no pull request opened")
     t = store.get_task(tid) or {}
-    body = f"Opened by Taskuary for {task_ref(tid)}.\n\n{(t.get('Summary') or '')[:1500]}"
-    try: pr = github.open_pr(c['Secret'], repo, br, base, f"[{task_ref(tid)}] {t.get('Title') or 'work'}"[:120], body)
-    except Exception as e: raise Refused(f"{br} was pushed, but no pull request was opened: {str(e)[:300]}") from e
-    pr['repo'], pr['checks'], pr['checked_at'] = repo, None, None
-    ci._save_pr(store, tid, pr, actor)
+    plan = {'cwd': cwd, 'repo': repo, 'branch': br, 'base': base, 'title': f"[{task_ref(tid)}] {t.get('Title') or 'work'}"[:120]}
+    try: pr = ci.push_and_open(store, tid, plan, f"Opened by Taskuary for {task_ref(tid)}.\n\n{(t.get('Summary') or '')[:1500]}", actor)      # ...the one road
+    except RuntimeError as e: raise Refused(str(e)) from e
     return _landed(store, tid, 'pr', f"Pushed {br} and opened pull request #{pr['number']} into {base}: {pr.get('url')}", actor,
                    sha(cwd, br), pr=pr['number'], url=pr.get('url'))

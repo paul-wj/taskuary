@@ -110,6 +110,24 @@ class RecallTests(unittest.TestCase):
         with fake_embed.reads(PORTAL, calls): context.build(s, tid); context.for_prompt(s, tid)
         self.assertEqual(len(calls), 1)                                               # ...made once per task, every turn reuses it
 
+    def test_a_task_closed_between_two_picks_adds_a_line_at_the_end_so_the_next_pick_reads_the_rest_from_the_cache(self):
+        """The pick's lists are the head of its prompt (textsim.pick). Newest first, the close between two tasks' picks put a line at the
+        top of the closed tasks and renumbered every one under it - each pick a new prompt (8% of a week's 'rank' tokens cached)."""
+        s, tid, old = _known_world()
+        for i in range(30): _closed(s, f'Vendor statement {i} reconciled', 'ray@northwind.example', 'Matched.', days=30 - i)
+        calls = []
+        with fake_embed.reads(PORTAL, calls): context.recall(s, tid)
+        new = _closed(s, 'Trainly seats added for the new starter', 'gail@northwind.example', 'Added.', days=0)
+        context._recalled.clear()
+        with fake_embed.reads(PORTAL, calls): context.recall(s, tid)
+        a, b = (c.rpartition('\n\nTHE TASK:\n')[0] for c in calls)
+        common = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), len(a))
+        self.assertGreaterEqual(common, 0.95 * len(a))
+        self.assertTrue(b.endswith('Trainly seats added for the new starter'), 'the new close is the last line')
+        with mock.patch.object(context, 'DONE_POOL', 10): pool = context.past_pool(s)
+        self.assertEqual([d['TaskId'] for d in pool][-2:], [pool[-2]['TaskId'], new])
+        self.assertEqual(len(pool), 10, 'the newest ten, from the day the tenth closed')
+
     def test_the_general_agent_reads_it_too_and_never_the_best_voted_notes_on_other_things(self):
         from taskuary import general
         s, tid, old = _known_world()
@@ -196,7 +214,6 @@ class FileTests(unittest.TestCase):
             self.assertIn(want, text)
         seed = terminal.seed_text(s, tid, None, 'northwind/Census', 'C:/src/Census')
         self.assertIn(f'CONTEXT FILE: {path}', seed)
-        self.assertIn('and in the context file', seed)
         # in PARAGRAPHS on the command line - a blank line between blocks, none inside one (2026-09-30: "(0 lines hidden)")
         self.assertIn('\n\n', seed); self.assertNotIn('\n', seed.replace('\n\n', ''))
 
@@ -208,14 +225,14 @@ class FileTests(unittest.TestCase):
         s.set_setting('agent_context_file', '0', 't')
         self.assertIsNone(context.write(s, tid))
         seed = terminal.seed_text(s, tid)
-        self.assertNotIn('CONTEXT FILE', seed); self.assertIn('everything known about it is above. ', seed)
+        self.assertNotIn('CONTEXT FILE', seed)
 
 
 class NewestFirstTests(unittest.TestCase):
     """A reopened coding task's context file kept the thread's FIRST mails and cut the ones after them - the very ones it was
     reopened for - while the resume seed said "3 new messages, read them in this file" (the owner, 2026-10-14)."""
     def test_a_long_thread_keeps_what_came_after_the_last_run_and_marks_it(self):
-        s = MemoryStore()
+        s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't')     # ...his colleagues: a stranger's held line is in no file
         tid = s.create_task({'Title': 'Budget tab still missing', 'Kind': 'coding'}, 't')
         def mail(n, sent, reached):
             mid = s.add_message({'TaskId': tid, 'ExternalId': f'b{n}', 'ConversationId': 'cb', 'Channel': 'email', 'Subject': 'Budget tab',
@@ -332,6 +349,7 @@ class TwoMattersOnOneTaskTests(unittest.TestCase):
                 'body': body, 'sent_at': f'2026-11-09 1{n}:00:00', 'to': [ALEX], 'cc': []}
 
     def test_a_one_to_one_line_joined_because_triage_was_unsure_says_so(self):
+        self.s.remember_trust('whatsapp', 'erin@wa.example', 'you vouched for them')       # ...someone he trusts: a held line is in no file
         a, b = self.come([self.chat(1, 'the portal is down, it says 502'), self.chat(2, 'btw did payroll go out for Marcus?')],
                          [{'relationship': 'new', 'title': 'Portal is down'}, {'relationship': 'uncertain', 'title': 'Did payroll go out for Marcus'}])
         self.assertEqual((b['status'], b['task_id']), ('attached', a['task_id']), 'the widest door: unsure joins in a one-to-one chat')
@@ -339,10 +357,9 @@ class TwoMattersOnOneTaskTests(unittest.TestCase):
         self.assertEqual([(r['mid'], r['title'], r['joined'], r['doubt']) for r in rows],
                          [(a['message_id'], 'Portal is down', False, False), (b['message_id'], 'Did payroll go out for Marcus', True, True)])
         text = context.build(self.s, a['task_id'], general=True)
-        self.assertIn('2 messages from 1 thread or chat, 1 of them joined with nothing sure it continues the task', text)
-        self.assertIn(f"[m{b['message_id']}] Erin Blake", text)
-        self.assertIn('triage called it "Did payroll go out for Marcus" · joined this task: unsure whether it continues', text)
-        self.assertIn('triage called it "Portal is down" · opened this task', text)
+        # ...each message is listed for the agent to tell apart by what it says - never triage's reading of it (the review, 2026-11-23)
+        self.assertIn(f"[m{a['message_id']}] Erin Blake", text); self.assertIn(f"[m{b['message_id']}] Erin Blake", text)
+        for said in ('triage', 'joined', 'unsure', 'Did payroll go out for Marcus', 'Portal is down'): self.assertNotIn(said, context.came_in(self.s, a['task_id']))
 
     def test_two_threads_on_one_task_are_told_apart(self):
         a, b = self.come([self.mailed(1, 'Please approve PO-5512.', 'PO-5512', 'c-po'),
@@ -350,9 +367,9 @@ class TwoMattersOnOneTaskTests(unittest.TestCase):
                          [{'title': 'Approve PO-5512'}, {'title': 'Trainly renewal quote', 'same_as': 1}])
         self.assertEqual((b['status'], b['task_id']), ('routed', a['task_id']))
         text = context.came_in(self.s, a['task_id'])
-        self.assertIn('2 messages from 2 threads or chats - each line ends', text)
+        self.assertIn('2 messages from 2 threads or chats.', text)
         self.assertIn(f"[m{b['message_id']}] Gail Moreno · 2026-11-09 12:00:00 · email · \"Trainly renewal\"", text)
-        self.assertRegex(text, r'triage called it "Trainly renewal quote" · joined this task: triage: .*the same as TQ-0001, joined to it')
+        self.assertNotIn('triage', text); self.assertNotIn('joined', text)
         # ...and the coding read's thread names each message by the same id
         self.assertIn(f"· email · m{b['message_id']}\n", context.build(self.s, a['task_id']))
 
@@ -363,4 +380,4 @@ class TwoMattersOnOneTaskTests(unittest.TestCase):
         self.assertEqual((b['status'], b['task_id']), ('attached', a['task_id']), 'its own thread: joined unless triage says new_job')
         text = context.came_in(self.s, a['task_id'])
         self.assertIn('2 messages from 2 threads or chats', text)
-        self.assertIn('triage called it "Set up a laptop for the new starter" · joined this task: attached: same conversation thread', text)
+        self.assertIn('"Laptop for the new starter"', text); self.assertNotIn('triage', text); self.assertNotIn('attached:', text)

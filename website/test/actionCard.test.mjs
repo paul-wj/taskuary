@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { actionFor, cardOf, changed, fieldsOf, isCardReview, stateOf, textKey, valuesOf, wordsOf } from "../src/actionCard.js";
+import { POST_PICTURE, actionFor, cardOf, changed, faceOf, fieldsOf, hasBox, headOf, isCardReview, pressable, shownOf, stateOf, textKey, valuesOf, wordsOf } from "../src/actionCard.js";
 import { turnFiles } from "../src/taskOutputs.js";
 
 const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
@@ -27,6 +27,15 @@ test("the card's fields map from the declaration: values from the proposal, else
   assert.deepEqual(fieldsOf(act, POST, undefined).filter((x) => x.editable), []);       // an older turn's card is read-only, live unsaid included
   assert.equal(textKey(actionFor("jira_comment")), "body");
   assert.equal(textKey(act), "text");
+});
+
+// THE CARD COUNTS AS ITS NETWORK DOES (the owner's live task, 2026-11-25: an X post X would take read "314 of 280 characters", its Post greyed)
+test("a post's words count against its network's limit as that network counts them: a link on X is 23", async () => {
+  const { lengthOf } = await import("../src/actionCard.js");
+  const box = (t) => actionFor(t).fields.find((f) => f.key === "text"), link = `https://news.example/${"a".repeat(90)}`;
+  assert.equal(lengthOf(box("x_post"), `Did you buy? ${link}`), 13 + 23);
+  assert.equal(lengthOf(box("linkedin_post"), `Did you buy? ${link}`), 13 + link.length);   // ...where the network counts every letter
+  assert.ok(lengthOf(box("x_post"), `${"w".repeat(240)} ${link}`) <= box("x_post").max);
 });
 
 test("the press's words follow the pick: Post to LinkedIn, or Save as draft", () => {
@@ -54,15 +63,17 @@ test("waiting is live only on the newest turn; done keeps its words and link; an
   assert.equal(stateOf(row("rejected"), true).said, "Not posted · dismissed");
 });
 
-// WHAT A TURN MADE, IN THE TURN: placed by `after` or named in its words, each thing once, whatever its kind - less the post's own picture
-test("a turn's files: placed or named, newest of a family, the helper script too, the post's picture skipped", () => {
-  const row = (path, after, at) => ({ id: `output:${path}`, name: path, path, kind: "output", after, at, content_type: path.endsWith(".png") ? "image/png" : "text/csv" });
+// WHAT A TURN HANDS OVER, IN THE TURN: named in its words, each thing once, whatever its kind - less the post's own picture; one it only made
+// stays in the task's files (the owner's live task, 2026-11-25: "not a bunch of artifacts")
+test("a turn's files: the ones it names, newest of a family, the helper script too, the post's picture skipped", () => {
+  const row = (path, by, at) => ({ id: `output:${path}`, name: path, path, kind: "output", by, at, content_type: path.endsWith(".png") ? "image/png" : "text/csv" });
   const listed = [row("chart.png", "m2", "2026-11-05 10:02:00"), row("prices v2.csv", "m2", "2026-11-05 10:03:00"), row("prices v1.csv", "m2", "2026-11-05 10:01:00"),
     row("fetch.py", "m2", "2026-11-05 10:00:00"), row("gas.png", "m2", "2026-11-05 10:04:00"), row("older.csv", "m1", "2026-11-05 09:00:00")];
-  const got = turnFiles({ listed, id: "m2", tid: 5, skip: ["gas.png"] }).map((f) => f.path).sort();
-  assert.deepEqual(got, ["chart.png", "fetch.py", "prices v2.csv"]);
+  assert.deepEqual(turnFiles({ listed, id: "m2", tid: 5, skip: ["gas.png"] }), []);                 // ...made, never named: none
+  const words = "Done: chart.png, prices v2.csv, fetch.py and gas.png.";
+  assert.deepEqual(turnFiles({ listed, id: "m2", tid: 5, words, skip: ["gas.png"] }).map((f) => f.path).sort(), ["chart.png", "fetch.py", "prices v2.csv"]);
   // ...and a file another turn made is drawn there, never again under an answer that only names it (the walk, 2026-11-18)
-  assert.deepEqual(turnFiles({ listed, id: "m1", tid: 5, words: "See `/x/scratch/outputs/TQ-0005/chart.png`" }).map((f) => f.path).sort(), ["older.csv"]);
+  assert.deepEqual(turnFiles({ listed, id: "m1", tid: 5, words: "See `/x/scratch/outputs/TQ-0005/chart.png`" }), []);
 });
 
 
@@ -103,6 +114,44 @@ test("a post card's avatar is the account's initials by profileAvatar's rule, ne
   const { initialsOf } = await import("../src/profileAvatar.js");
   assert.equal(initialsOf("X (Twitter)"), "X");
   assert.equal(initialsOf("Northwind Social"), "NS");
-  const ac = readFileSync(new URL("../src/ActionCard.jsx", import.meta.url), "utf8");
-  assert.match(ac, /const initials = \(s\) => \(String\(s \|\| ""\)\.trim\(\) \? initialsOf\(s\) : "in"\);/);
+  assert.equal(faceOf({ as: "Northwind Social", network: "LinkedIn" }), "NS");
+});
+
+// walk 7, 2026-11-23: a Reddit post card wore LinkedIn's "in"
+test("a post card's face is its own network's, never another's", () => {
+  assert.equal(faceOf({ network: "Reddit", as: "" }), "R");
+  assert.equal(faceOf({ network: "X (Twitter)" }), "X");
+  assert.equal(faceOf({ network: "LinkedIn", as: "Alex Doyle" }), "AD");
+});
+
+test("a post's title and content warning are his to change while it waits, and go with the press; where it goes and its link stay", () => {
+  const act = actionFor("reddit_post"), P = { action: "run_tool", type: "reddit_post", subreddit: "strollers", title: "Strollers then and now", text: "A short history.", flair: "History" };
+  assert.deepEqual(fieldsOf(act, P, true).filter((x) => x.editable).map((x) => x.key), ["title", "text", "flair"]);
+  assert.deepEqual(changed(act, P, { ...valuesOf(act, P), title: "Strollers, then and now", flair: "" }), { title: "Strollers, then and now", flair: "" });
+  assert.deepEqual(fieldsOf(act, P, false).filter((x) => x.editable), [], "gone or past, it reads what went");
+  const m = actionFor("mastodon_post");
+  assert.deepEqual(changed(m, { type: "mastodon_post", text: "Hi" }, { ...valuesOf(m, { text: "Hi" }), spoiler: "spoilers ahead" }), { spoiler: "spoilers ahead" });
+});
+
+// A POST'S PICTURE AT ITS FEED SIZE (the owner, 2026-11-23: "the size it would look like on LinkedIn, the same size as the text"): a 220px-tall
+// thumbnail at the card's left stood beside its words; it is the words' width, its own shape, the feed's ratio held until it loads
+test("a post's picture is as wide as its words, at its own shape, with its room held before it loads", () => {
+  assert.equal(POST_PICTURE.width, "calc(100% - 24px)");          // the words' column: the card's 12px each side
+  assert.equal(POST_PICTURE.mx, 1.5);
+  assert.equal(POST_PICTURE.height, "auto");
+  assert.match(POST_PICTURE.aspectRatio, /^auto /, "its own ratio once loaded, the feed's before");
+  assert.ok(POST_PICTURE.borderRadius);
+  for (const t of ["linkedin_post", "bluesky_post", "mastodon_post"]) assert.equal(actionFor(t)?.kind, "post", `${t} is a post card - it draws the same picture`);
+});
+
+// A WRITE ON HIS BOOKS IS SAID IN PLAIN WORDS (the card gallery, 2026-11-25: "Write quickbooks bill on QuickBooks Online", "amount: 200" and
+// "vendor: Payworth (id 58)" in one box): its title from its declared head, money as money, each thing by name with its id, no box of words
+test("a declared write reads as labelled lines under a plain title", () => {
+  const act = actionFor("quickbooks_bill"), p = { vendor: "Payworth", vendor_id: "58", amount: 200, account: "Software subscriptions", account_id: "7" };
+  assert.equal(headOf(act, p), "Bill for Payworth - $200.00 on QuickBooks");
+  assert.deepEqual(act.fields.filter((f) => shownOf(f, p)).map((f) => [f.label, shownOf(f, p)]),
+    [["Vendor", "Payworth (id 58)"], ["Amount", "$200.00"], ["Account", "Software subscriptions (id 7)"]]);
+  assert.equal(shownOf(act.fields[1], { amount: "1,200.5" }), "$1,200.50");
+  assert.ok(!hasBox(act) && pressable(act, p, "", {}), "no words of its own: its press is lit by its lines");
+  assert.ok(hasBox(actionFor("jira_comment")) && !pressable(actionFor("jira_comment"), {}, "", {}));
 });

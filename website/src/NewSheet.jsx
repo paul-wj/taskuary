@@ -39,17 +39,18 @@ const NO_AI_LINE = "No AI is connected, so an agent can't run this yet - connect
 const NO_AI_PLAN = "No AI is connected to plan the steps - connect one, or choose Track it and add the steps yourself.";
 import { connectorNamed } from "./connectorCatalog.js";
 import { openAppLink } from "./appLinks.js";
-import { NEW_PB, askPlaybook } from "./playbookOpen.js";
+import { NEW_PB, askSkill } from "./skillOpen.js";
 import { place } from "./words.js";
 import { label as btn } from "./buttons.js";
 import { aiFor, capabilities, useCapabilities } from "./capabilities.js";
 import { PromptBox } from "./AgentSummary.jsx";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { madeRow } from "./funnelPile.js";
+import SwitchAi from "./SwitchAi.jsx";
 
 // what the card IS, as its title: New's own box asks, and a card the Assistant wrote from it says what it made of the words
 const TITLE = { chat: "What do you need?", agent: "An agent's job", workflow: "A routine", report: "A report", dashboard: "A dashboard",
-  playbook: "A playbook", send: "A message", meeting: "A meeting", goal: "A goal", note: "A note" };
+  skill: "A skill", send: "A message", meeting: "A meeting", goal: "A goal", note: "A note" };
 
 const Label = ({ children }) => (
   <Typography sx={{ ...mono, fontSize: 9.5, fontWeight: 600, letterSpacing: ".11em",
@@ -155,7 +156,7 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
     if (bus?.current || onWords) { clearTimeout(timer.current); timer.current = setTimeout(() => { bus?.current?.(next); onWords?.(next); }, 200); }
   };
   // ...and a picture pasted or dropped into it goes with the words (a note to self keeps words only)
-  const withPics = pics && !["note", "playbook", "chat"].includes(kind);     // ...New playbook and the chat hand-off take words only
+  const withPics = pics && !["note", "skill", "chat"].includes(kind);     // ...New skill and the chat hand-off take words only
   return (
     <>
     <TextField fullWidth multiline minRows={kind === "note" ? 2 : 3} value={value} autoFocus
@@ -163,13 +164,13 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
       // ...named for the Assistant by the label over it (pageView.labelOf): it read as its placeholder - "chase the Payworth AP replacement" -
       // a box the model could not tell held the job's own words (the audit of New, 2026-11-02)
       inputProps={{ "data-tq-field": "about", "data-tq-label": label }}
-      placeholder={kind === "goal" ? t("the nightly census lands in the new ledger for all three sites, and the old portal's export is switched off")
-        : kind === "send" ? t("the census numbers he asked for, plus why Site 7 moved")
-        : kind === "agent" ? (how === "general" ? t("why did Site 3's census move four points in July?")
-          : t("work out why the nightly export drops the last facility"))
-        : kind === "playbook" ? t("when someone asks for their leave balance, gather it from payroll and draft the reply for my review")
-        : kind === "chat" ? t("what's still open with Payworth, and which of it comes first?")
-        : t("chase the Payworth AP replacement")}
+      placeholder={kind === "goal" ? "the nightly census lands in the new ledger for all three sites, and the old portal's export is switched off"
+        : kind === "send" ? "the census numbers he asked for, plus why Site 7 moved"
+        : kind === "agent" ? (how === "general" ? "why did Site 3's census move four points in July?"
+          : "work out why the nightly export drops the last facility")
+        : kind === "skill" ? "when someone asks for their leave balance, gather it from payroll and draft the reply for my review"
+        : kind === "chat" ? "what's still open with Payworth, and which of it comes first?"
+        : "chase the Payworth AP replacement"}
       // SAID, NOT TYPED (the owner, 2026-09-30: "can't ... use voice notes to write this prompt?"): the composer's own mic,
       // its words appended where the typing would go
       InputProps={{ endAdornment: (
@@ -212,11 +213,15 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   const [mode, setMode] = useState("draft");
   const pics = usePromptImages({ files: true });          // ...a pasted, dropped or picked file of any kind, as every box takes (2026-11-16)
   // agent
-  // NOTHING TO PICK (the owner, TQ-1397: "you ask the agent what you need and it should do it ... never, ever be stuck on a repo thing"): no
-  // agent, AI, model or repository picker - Settings names the AI, and a live session opens in its task's own folder and picks its repository
-  // itself (repochoice.block). A list that never loaded held a tester's Start for five minutes
-  const { agents, kinds, agentsRead, codingReady, devMode } = useAgents();
-  const [role, setRole] = useState("");     // a general agent: which profile (researcher, analyst...)
+  // NOTHING THAT MUST BE PICKED (the owner, TQ-1397: "you ask the agent what you need and it should do it ... never, ever be stuck on a repo
+  // thing"): no agent or repository picker - a live session opens in its task's own folder and picks its repository itself (repochoice.block).
+  // ...BUT THE AI IS HIS TO CHOOSE (the owner, 2026-11-24: "in New I asked for a certain model astra, the agent did not start with it? ... we
+  // already have the component ... on top of each task"): the task header's own chooser (SwitchAi), on Auto - what routing picks - until he
+  // picks another, and its agent starts on exactly that AI and model. A list not read yet never holds the Send: Auto is always a start
+  const { agentsRead, codingReady, devMode, generalBrains, generalRuns } = useAgents();
+  const [ai, setAi] = useState({ pick: "", model: "" }), aiRef = useRef(ai);
+  aiRef.current = ai;
+  const aiAsk = { generalBrains, current: ai.pick, model: ai.model, auto: generalRuns || {} };
   // "terminal" = a CLI on a keyboard, "general" = a general agent with no repository. Held here rather
   // than inferred from the words: a question landing in a terminal by ACCIDENT is exactly what
   // newTask.planTask exists to stop, and it will not guess for us.
@@ -241,9 +246,6 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   const [deskOn, setDeskOn] = useState(false);
   const [desk, setDesk] = useState(false);
   useEffect(() => { if (open) api.get("/api/desktop").then(({ data }) => setDeskOn(!!data?.active)).catch(() => setDeskOn(false)); }, [open]);
-  // a new general task has no profile to keep, so the first general role is chosen rather than "the profile it has"
-  const roles = agents.filter((a) => !["coding", "cli"].includes(String(kinds[a] || "").toLowerCase()));
-  useEffect(() => { if (!role && roles.length) setRole(roles.includes("researcher") ? "researcher" : roles[0]); }, [roles, role]);
   useEffect(() => {
     if (!open) return;
     api.get("/api/send-targets").then(({ data }) => {
@@ -318,18 +320,15 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         const again = filed.current?.about === about && filed.current.how === how ? filed.current : null;
         const data = again || (await api.post("/api/tasks", { Title: about.slice(0, 300), Summary: about, Files: pics.paths,
           Kind: plan.kind, Tags: withDesktop(plan.tags, deskOn && desk) })).data;
-        if (!again) {
-          filed.current = { ...data, about, how };
-          // it skipped triage, so nothing gave it a checklist: read the words behind the answer (server._read_hand_task)
-          api.post(`/api/tasks/${data.taskId}/read-ask`).catch(() => null);
-        }
+        // HIS ASK IS NOT READ FOR HIM (2026-11-23): no summary, no to-dos written off his words - its agent reads them
+        if (!again) filed.current = { ...data, about, how };
         let out;
         try {
           // WHAT THE ANSWER SAID, not what the button hoped. A task with no checkout comes back
           // `needs_repo` with started: false, and this announced "is on it in a live session" over
           // the top of it (the owner, 2026-09-22: "hit the new button with coding agent but it did
           // not start"). One reading of a dispatch answer, the same one every other surface uses.
-          ({ data: out } = await api.post(`/api/tasks/${data.taskId}/dispatch`, general ? { kind: "general", agent: role || null } : {}));
+          ({ data: out } = await api.post(`/api/tasks/${data.taskId}/dispatch`, general ? { kind: "general", pick: aiRef.current.pick || null, model: aiRef.current.model || null } : {}));
         } catch (e) {
           // ...and the line says the task is there: "nothing started" over a task already filed sent the owner to press again
           throw { display: { key: "{ref} is filed but did not start - {reason}. Press {verb} to try it again.", values: { ref: data.ref, reason: String(e?.response?.data?.detail || "").replace(/\.$/, ""), verb: btn(how === "general" ? "regular_agent" : "coding_agent") } } };
@@ -342,13 +341,13 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // concierge.handoff_task), its task opens with its agent at work. They went through the Assistant's model, which picked a form - "send
         // me this every Monday" with a CSV landed on an empty SQL report, his words and file gone. What the work is is the agent's to do
         setSentLine(about); setText("");          // ...his words move from the box to his line; a start that fails puts them back
-        const { data } = await api.post("/api/start", { text: about, images: pics.paths || [] })
+        const { data } = await api.post("/api/start", { text: about, images: pics.paths || [], ...aiRef.current })
           .catch((e) => { setText(about); throw e; }).finally(() => setSentLine(""));
         setText(""); pics.clear(); setOk(`${data.ref} — ${data.joined ? "already that work: its agent was told." : "an agent is on it."}`);
         onDone?.(); openIt(data.taskId);
-      } else if (kind === "playbook") {
-        // the one road to a playbook is the shelf's New playbook: this press is its Set up with AI, made there once with these words
-        askPlaybook(about, true); onClose?.(); openAppLink(`report=${NEW_PB}`);
+      } else if (kind === "skill") {
+        // the one road to a skill is the shelf's New skill: this press is its Set up with AI, made there once with these words
+        askSkill(about, true); onClose?.(); openAppLink(`report=${NEW_PB}`);
       } else if (kind === "goal") {
         // PLAN IT WITH NO AI SAYS SO (owner-approved, 2026-10-21): it promised "planning the steps; they land in a moment" and none came
         if (plan && !aiFor(await capabilities(), "assistant")) {
@@ -370,19 +369,19 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
       }
     } catch (e) { setErr(e?.display || (e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "That did not go through" })); }
     if (!(inline && opened)) setBusy(false);
-  }, [kind, channel, to, emailTo, cc, mode, how, role, when, by, who, plan, noAi, noPlanner, onDone, onOpenTask, onClose, pics, line, inline]);
+  }, [kind, channel, to, emailTo, cc, mode, how, when, by, who, plan, noAi, noPlanner, onDone, onOpenTask, onClose, pics, line, inline]);
 
   // ...and no live session without a coding tool the owner chose (owner-approved, 2026-10-21): Send to coding agent stays disabled
   const noCodingTool = kind === "agent" && how === "terminal" && (!agentsRead || !codingReady);
   const canGo = hasWords({ agentBox, words, field: hasAbout }) && !noCodingTool && (kind !== "send" || (channel && (channel === "email" ? emailTo.length : to.trim())));
   // a hand-off is the one Send to agent / Send to coding agent (buttons.json); the others are this form's own words
-  const verb = kind === "send" ? (mode === "task" ? btn("regular_agent") : t("Draft it"))
-    : kind === "agent" ? btn(how === "general" ? "regular_agent" : "coding_agent") : kind === "goal" ? (plan ? t("Plan it") : t("Track it"))
-    : kind === "playbook" ? t("Set up with AI") : kind === "chat" ? t("Go") : t("Note it");
+  const verb = kind === "send" ? (mode === "task" ? btn("regular_agent") : "Draft it")
+    : kind === "agent" ? btn(how === "general" ? "regular_agent" : "coding_agent") : kind === "goal" ? (plan ? "Plan it" : "Track it")
+    : kind === "skill" ? "Set up with AI" : kind === "chat" ? "Go" : "Note it";
 
   const aboutLabel = kind === "goal" ? "What does done look like" : kind === "send" ? "What's this about"
     : kind === "agent" ? (how === "general" ? "What should it find out or write" : "What should it do")
-    : kind === "playbook" ? "What should this playbook do" : kind === "chat" ? "What do you need" : "What do you want to remember";
+    : kind === "skill" ? "What should this skill do" : kind === "chat" ? "What do you need" : "What do you want to remember";
 
   // the card: a bordered block in the conversation's width, Esc closes it, nothing floats over the page
   const Shell = inline ? Box : Dialog;
@@ -400,7 +399,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
 
       {/* NEW IS ONE BOX (the owner, TQ-1397: "we could have new as you just ask ... you ask the agent what you need and it should do it"): no
           tabs. The words go to the Assistant, which makes them what they are - an agent's job it starts, a routine, a report, a dashboard,
-          a playbook, a message, a meeting, a goal or a note (concierge._new) - and that card comes up in the chat with only its own fields */}
+          a skill, a message, a meeting, a goal or a note (concierge._new) - and that card comes up in the chat with only its own fields */}
       <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 2.5 }}>
         {kind === "send" && (
           <>
@@ -472,9 +471,10 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           {kind !== "chat" && <Label>{t(aboutLabel)}</Label>}{/* ...New's own box: its title already asks it */}
           {/* ...THE CHAT'S OWN BOX (AgentSummary.PromptBox): paperclip, words, mic, Send - typing and Send make the task, start its agent and open
               its chat. With no AI connected it says so, with the way to connect one */}
-          <PromptBox text={words} setText={setText} pics={pics} busy={busy} onSend={submit} label={t(aboutLabel)} title={verb} autoFocus
-            placeholder={t(kind === "chat" ? "build me a website · a report on overdue invoices every Monday · draft a reply to Erin" : "why did Site 3's census move four points in July?")}
-            sendOff={noAi} />
+          <PromptBox text={words} setText={setText} pics={pics} busy={busy} onSend={submit} label={aboutLabel} title={verb} autoFocus
+            placeholder={kind === "chat" ? "build a website · an overdue-invoices report · reply to Erin" : "why did Site 3's census move four points in July?"}
+            sendOff={noAi} extra={!noAi && !!generalBrains.length && <SwitchAi ask={aiAsk} title="The AI this job starts on - pick another AI or model"
+              onPick={({ pick, model }) => setAi({ pick, model })} />} />
           {!!sentLine && <Box data-tq-new-sent="" sx={{ mt: 1.25 }}>
             {/* ...as the chat draws his line - its own bubble, in the chat's one column (walk 8, 2026-11-20: outside the chat the message grid's 66 px
                 gutter took it, and his ask stood one word wide down the page) */}
@@ -492,9 +492,9 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
               {t("Shorthand is fine — this is what you are telling the drafter, not what they read.")}
             </Typography>
           )}
-          {kind === "playbook" && (
+          {kind === "skill" && (
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-              {t("It opens under Reports → Playbooks, where Taskuary drafts the steps with you — Approve there saves it.")}
+              It opens under Reports → Skills, where Taskuary drafts the steps with you — Approve there saves it.
             </Typography>
           )}
         </Box>}
@@ -560,9 +560,9 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
 
       {/* ...NO CANCEL BESIDE THE × (the design walk, 2026-11-20: two ways to close one card) - the × at its top and Esc close it */}
       {!REPEATS.includes(kind) && kind !== "meeting" && !agentBox && <ButtonBar>
-        {/* ...a playbook's Set up with AI opens the build in the chat: a door, out of the Assistant's view (the owner, 2026-11-02) */}
+        {/* ...a skill's Set up with AI opens the build in the chat: a door, out of the Assistant's view (the owner, 2026-11-02) */}
         <Button size="small" variant="contained" disableElevation disabled={!canGo || busy} onClick={submit}
-          {...(kind === "playbook" ? { "data-tq-view-skip": "" } : {})}
+          {...(kind === "skill" ? { "data-tq-view-skip": "" } : {})}
           startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}>{busy ? "Working…" : verb}</Button>
       </ButtonBar>}
     </Shell>

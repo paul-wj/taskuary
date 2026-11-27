@@ -4,7 +4,7 @@ here reads and decides itself which one the owner's threads are about (assistant
 matcher over each card's `match` names decided that until 2026-10-11 and is gone: "Federal Holiday - Monday
 October 12th" was a thread about Monday.com. The catalogue used to live only in the page's JavaScript, where
 the server could not read a word of it (2026-09-18)."""
-import json
+import json, re
 from functools import lru_cache
 from pathlib import Path
 
@@ -36,6 +36,43 @@ def own_groups() -> tuple:
 def by_type(t: str) -> dict | None: return next((c for c in cards() if c['type'] == t), None)
 
 
+# A CARD'S SECRET CONFIG FIELDS, DECLARED ONCE: each card's `secret_config` here, and a keyed API read's `write_only` (apireads.json).
+# They are sealed in the column (store.py through vault.py) and never sent back to the browser (guard.masked_config) - by what the card
+# declares, never by a key's name. An app password kept in ConfigJson beside a sealed Secret sat there as text until 2026-11-24.
+@lru_cache(maxsize=1)
+def secret_config() -> dict:
+    from .apireads import write_only
+    out = {c['type']: tuple(c['secret_config']) for c in cards() if c.get('secret_config')}
+    for t, ks in write_only().items(): out[t] = tuple(dict.fromkeys((*out.get(t, ()), *ks)))
+    return out
+def secret_keys(t) -> tuple: return secret_config().get(t, ())
+
+# ...AND A SECRET IT DOES NOT DECLARE IS ONE BY ITS SHAPE (red team #3): an MCP card's headers.Authorization, a local server's env.API_KEY,
+# a dsn, a webhook address sat in ConfigJson as text and went to an agent's GET /api/connectors. A credential's field name (camelCase,
+# dashes and all), everything in a headers or env map, and an address carrying a password are secret wherever they sit.
+_NAMES = frozenset({'secret', 'password', 'passwd', 'passphrase', 'token', 'cookie', 'cookies', 'authorization', 'dsn', 'conn_str',
+                    'connection_string', 'credential', 'credentials', 'webhook', 'webhook_url', 'apikey', 'bearer'})
+_ENDS = ('_secret', '_password', '_passwd', '_passphrase', '_token', '_key', '_cookie', '_dsn', '_credentials', '_conn_str', '_webhook_url')
+_MAPS = frozenset({'headers', 'http_headers', 'extra_headers', 'env', 'environment', 'env_vars'})
+_USERINFO = re.compile(r'^[a-z][\w+.-]*://[^/@\s:]*:[^/@\s]+@', re.I)
+
+def _snake(k) -> str: return re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', str(k)).lower().replace('-', '_')
+def secret_name(k) -> bool: return (n := _snake(k)) in _NAMES or n.endswith(_ENDS)
+
+def map_secrets(x, f, declared=(), within=False, top=True):
+    """`x` (a card's config) with each secret string in it passed through `f`; a None from `f` drops it. Secret: a key the card declares
+    (top level), a key named as a credential, all of a headers/env map or a credential's own object, and an address with a password in it."""
+    if isinstance(x, list): return [w for o in x if (w := map_secrets(o, f, declared, within, False)) is not None or o is None]
+    if isinstance(x, str): return f(x) if x and (within or _USERINFO.match(x)) else x
+    if not isinstance(x, dict): return x
+    out = {}
+    for k, v in x.items():
+        s = within or (top and k in declared) or secret_name(k)
+        w = map_secrets(v, f, declared, s or (isinstance(v, dict) and _snake(k) in _MAPS), False)
+        if w is not None or v is None: out[k] = w
+    return out
+
+
 # A CARD NOT SIGNED IN SAYS SO IN PLAIN WORDS, WITH THE WAY TO IT (design round 6, D8: a post failed "save the app's Client ID and Client Secret
 # ... or paste a token from the developer portal's OAuth token generator" - setup words, and nothing to press). One line for every connector
 def not_signed_in(t: str) -> str:
@@ -62,6 +99,9 @@ def signed_in(c: dict, srcs=()) -> bool:
                 or keyless(c.get('Type')) or any(s.get('Active') and s.get('ConnectorId') == c.get('ConnectorId') for s in srcs or ()))
 
 
+def set_up(c: dict, srcs=()) -> bool: return signed_in({**(c or {}), 'Active': 1}, srcs)     # ...holds what it needs, switched on or off
+
+
 def lapsed(err) -> bool:
     """The system refused the sign-in the card holds: the lapse lines this app writes (msauth, googlecal and chatgptauth's "sign-in has
     lapsed", imapmail.GOOGLE_REFUSED, teamsweb.SIGNED_OUT) and OAuth's own refusal code. Gmail's raw "invalid_grant" missed the page's
@@ -70,7 +110,17 @@ def lapsed(err) -> bool:
     from .teamsweb import SIGNED_OUT
     s = str(err or '')
     return any(m in s for m in ('sign-in has lapsed', 'invalid_grant', GOOGLE_REFUSED, SIGNED_OUT))
-def signed_out(c: dict) -> bool: return bool((c or {}).get('Active') and lapsed(c.get('LastError')))
+def signed_out(c: dict) -> bool:
+    """...and a key or token the system answered 401 to (say._status reads the code): a revoked GitHub token read "last test failed" on
+    its card (2026-11-25). Not on a card whose own sign-in renews itself - its renewal says "lapsed" when it fails, and a 401 over a
+    renewed sign-in is the service's trouble (a Microsoft outage, 2026-11-12)."""
+    if not (c or {}).get('Active'): return False
+    from .say import _status
+    err = c.get('LastError')
+    try: cfg = json.loads(c.get('ConfigJson') or '{}') or {}
+    except (TypeError, ValueError): cfg = {}
+    renews = isinstance(cfg, dict) and (cfg.get('auth') == 'user' or bool(cfg.get('google_refresh_token')))
+    return lapsed(err) or bool(err and not renews and _status(RuntimeError(err)) == 401)
 
 
 LINES = {'connected': 'Connected', 'not_signed_in': 'Not signed in', 'signed_out': 'Needs sign-in',
@@ -103,14 +153,63 @@ def connected_count(store, cli_connections: dict) -> int:
 
 # WHAT THE OWNER PRESSES, PER CONNECTOR (the catalogue's `actions`, the owner 2026-11-05): the fields an act's card shows, which the owner
 # may change before the press, which the agent may name, and the per-connection defaults. One card draws them all (ActionCard.jsx).
+def site_card(host) -> dict | None:
+    "The card whose own site `host` is on (its `hosts`, by the host's end: www.linkedin.com is linkedin.com's) - None for a site no card names."
+    h = str(host or '').lower().rstrip('.')
+    return next((c for c in cards() for d in c.get('hosts') or [] if h == d or h.endswith('.' + d)), None)
 def actions(t: str) -> list: return list((by_type(t) or {}).get('actions') or [])
 def action_for(tool: str) -> dict | None:
     "The declared act a run_tool on `tool` is, with the card it belongs to - None for a tool no card sets up for a press."
     return next(({**a, 'card': c['type']} for c in cards() for a in c.get('actions') or [] if a.get('tool') == tool), None) if tool else None
 def field(act: dict, key: str) -> dict | None: return next((f for f in (act or {}).get('fields') or [] if f['key'] == key), None)
+# A FIELD IS GIVEN BY THE NAME THAT SAYS WHAT IT TAKES (walk 25, 2026-11-26: a LinkedIn post carries a picture or a video, and the field its
+# agent was told to put the video in was `image`): `as` is that name - what an agent is told and gives - and `key` what the card keeps. The
+# key itself is taken as before
+def given(f: dict) -> str: return f.get('as') or f['key']
+def keyed(act: dict, p: dict) -> dict:
+    "`p` with each field given by its `as` name kept under its key - one given by the key stands."
+    names = {f['as']: f['key'] for f in (act or {}).get('fields') or [] if f.get('as')}
+    return {**{k: v for k, v in p.items() if k not in names}, **{names[k]: v for k, v in p.items() if k in names and names[k] not in p}}
 def text_key(act: dict) -> str | None:
     "The act's words the owner edits in its box (a post's `text`, a tracker comment's `body`)."
     return next((f['key'] for f in (act or {}).get('fields') or [] if f['type'] == 'text' and f.get('edit')), None)
+# A POST'S LENGTH AS ITS NETWORK COUNTS IT (the owner's live task, 2026-11-25): X counts a link as 23 characters whatever its length, so a post
+# of 249 read "314 of 280" on its card and its press would have refused it. A field's `max` is its network's limit; `link_counts`, where it
+# declares one, what each link counts for. The card's counter (actionCard.lengthOf) reads the same two
+LINK = re.compile(r'https?://\S+')
+def length(f: dict, text) -> int:
+    "How long `text` is against field `f`'s `max`: its characters, each link as `link_counts` where the field declares it."
+    t = str(text or '')
+    return len(LINK.sub(lambda m: 'x' * int(f['link_counts']), t) if (f or {}).get('link_counts') else t)
+def too_long(act: dict, p: dict, sig: str = '') -> str:
+    """'' when every limited field of `p` is within its network's limit, else what to shorten, with the limit and its count. `sig`: the
+    owner's saved post signature (signatures.post) - where the words end with it, how much of the count is his and what is left for the rest."""
+    for f in (act or {}).get('fields') or []:
+        if f.get('max') and (n := length(f, t := (p or {}).get(f['key']))) > int(f['max']):
+            who = (by_type(act.get('card')) or {}).get('title') or act.get('card') or 'This network'
+            link = f", a link counting {f['link_counts']}" if f.get('link_counts') else ''
+            said = f"{who} allows {f['max']} characters in a {str(f.get('label') or f['key']).lower()}{link}; this one is {n}"
+            if not (sig and str(t).rstrip().endswith(sig)): return f'{said} - shorten it'
+            left = int(f['max']) - (own := length(f, sig)) - 2            # ...the blank line between the words and it
+            if left < 1: return f"{said}, and the owner's saved post signature alone is {own} - it does not fit on {who} until he shortens it in Settings"
+            return f"{said}, {own} of them the owner's saved post signature, which Taskuary puts under every post - shorten the words above it to {left} or fewer"
+    return ''
+# A FIELD AS ITS CARD SAYS IT (the card gallery, 2026-11-25: a QuickBooks bill read "Write quickbooks bill on QuickBooks Online", "amount: 200" and
+# "vendor: Payworth (id 58)" in one box): money in its unit ("$200.00"), a thing the system runs on an id by its name with the id beside it,
+# else as given - and the act's title in plain words from its declared `head`. The page reads the same two (actionCard.shownOf / headOf)
+def shown(f: dict, p: dict, ids: bool = True) -> str:
+    v = (p or {}).get(f['key'])
+    if v is None or v == '': return ''
+    if f.get('type') == 'money':
+        u = str(f.get('unit') or '')
+        try: return f"{u}{float(str(v).replace(',', '').replace(u, '') if u else str(v).replace(',', '')):,.2f}"
+        except ValueError: return str(v)
+    i = (p or {}).get(f.get('id') or '')
+    return f'{v} (id {i})' if ids and i not in (None, '') else str(v)
+def head(act: dict, p: dict) -> str:
+    "An act's card title in plain words ('Bill for Payworth - $200.00 on QuickBooks'), from its `head`; '' where it declares none."
+    fs = {f['key']: f for f in (act or {}).get('fields') or []}
+    return re.sub(r'\{(\w+)\}', lambda m: shown(fs.get(m[1]) or {'key': m[1]}, p, False), str((act or {}).get('head') or ''))
 def choice_ok(f: dict, v) -> bool: return f.get('type') != 'choice' or str(v) in {str(c['value']) for c in f.get('choices') or []}
 
 
@@ -125,8 +224,9 @@ def with_defaults(p: dict, conf: dict) -> dict:
 
 
 def owner_edits(p: dict, fields: dict) -> dict:
-    """The owner's changes on the card, at the press: only the fields its act declares editable (never the tool, the connection or a path),
-    a choice only among its own values. Anything else is refused, not dropped - the owner pressed for what the card said."""
+    """The owner's changes on the card, at the press: only the fields its act declares editable (never the tool, the connection or a path) -
+    a choice only among its own values, a line of words (a title, labels) as he left it. Anything else is refused, not dropped - the owner
+    pressed for what the card said."""
     act = action_for((p or {}).get('type'))
     if not fields: return p
     if not act: raise ValueError('this step has no card to change it on')
@@ -135,5 +235,7 @@ def owner_edits(p: dict, fields: dict) -> dict:
         f = field(act, k)
         if not (f and f.get('edit')) or f['type'] in ('text', 'image', 'files', 'people'): raise ValueError(f'{k} cannot be changed on this card')
         if not choice_ok(f, v): raise ValueError(f'{v!r} is not one of the choices for {f["label"]}')
+        # ...an emptied line goes empty only where the act may go without it: an issue with no title is no issue
+        if f['type'] == 'line' and not (v := str(v or '').strip()) and not f.get('optional'): raise ValueError(f'{f["label"]} cannot be empty')
         out[k] = v
     return out

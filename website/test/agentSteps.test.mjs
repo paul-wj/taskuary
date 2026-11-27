@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { describeCall, isWork, stepsOf } from "../src/agentSteps.js";
+import { eventsOf } from "../src/chatStream.js";
 
 test("a heredoc written into a file reads as that file written, never 'Read <<EOF, and N more' (stress test 2026-11-02)", () => {
   const said = (command) => describeCall("Bash", { command }).summary;
@@ -66,11 +67,13 @@ test("an API connector's own web searches read exactly like a CLI's", () => {
   for (const b of APIS) assert.deepEqual(work(b).map((s) => s.summary), WORK.slice(4), b);
 });
 
-test("the agent's prose comes through as its own words, once, and the answer is not repeated above itself", () => {
-  const claude = stepsOf(trace("claude"), { answer: ANSWER, keepStart: false });
-  assert.deepEqual(claude.filter((s) => s.kind === "said").map((s) => s.summary), [SAY]);
+// ...WHERE IT SAID THEM (the owner, 2026-11-23: words stay where they were said): the answer it streamed is its last row, and the filed answer's
+// repeat of it is the server's to leave out (chatlog.read `tail`, tests/test_chatlog.py) - never taken out of the stream here
+test("the agent's prose comes through as its own words, once each, in the order it said them", () => {
+  const claude = stepsOf(trace("claude"), { keepStart: false });
+  assert.deepEqual(claude.filter((s) => s.kind === "said").map((s) => s.summary), [SAY, ANSWER]);
   assert.equal(claude[0].kind, "said");                                   // in the order it happened: it said, then it worked
-  for (const b of CLIS) assert.ok(!mainView(stepsOf(trace(b), { answer: ANSWER })).includes("last month's figure"), b);
+  assert.equal(claude.at(-1).summary, ANSWER, "its answer last, where it said it");
 });
 
 test("no raw script, token header, env name, JSON dump or key list reaches the main view", () => {
@@ -91,11 +94,12 @@ test("...and the raw call stays one disclosure away, for debugging", () => {
 
 test("no step is drawn twice: a structured backend's echo lines are not a second copy", () => {
   for (const b of CLIS) {
-    const steps = stepsOf(trace(b), { answer: ANSWER, keepStart: false });
+    const steps = stepsOf(trace(b), { keepStart: false });
     const seen = steps.map((s) => s.summary);
     assert.equal(new Set(seen).size, seen.length, `${b}: ${seen.join(" | ")}`);
     // ...and one line of its own words before the work, on every road: ACP traced none until its chunks were joined (2026-11-06)
-    assert.equal(steps.length, WORK.length + 1, `${b}: ${seen.join(" | ")}`);
+    assert.equal(steps.filter(isWork).length, WORK.length, `${b}: ${seen.join(" | ")}`);
+    assert.equal(steps[0].summary, SAY, `${b}: ${seen.join(" | ")}`);
   }
   // the echo lines are really there in the claude trace - they used to land in "Agent progress"
   assert.ok(trace("claude").some((e) => e.type === "live" && String(e.detail).startsWith("→ Bash:")));
@@ -178,16 +182,6 @@ test("a look whose non-zero exit is its answer reads 'found none'; a look that b
   assert.equal(st("Bash", "grep -r invoice-4471 docs", "Exit code 2\ngrep: docs: Permission denied"), "error");
 });
 
-test("a turn whose answer carries its reply draft is not shown twice - the stream had the draft taken out, the filed answer keeps it", () => {
-  const report = "My recommendation is to send Erin alone.\n\n**Worth going.** The tax changes land in January.";
-  const after = "If you'd rather send both of them, tell me and I'll rewrite the reply.";
-  const draft = "Hi Erin,\n\nYes, I think we should go.\n\nThanks,\nAlex Doyle";
-  const streamed = [{ type: "progress", name: "text", detail: `${report}\n\n\n\n${after}` }];
-  assert.deepEqual(stepsOf(streamed, { answer: `${report}\n\n${draft}\n\n${after}`, keepStart: false }).filter((s) => s.kind === "said"), []);
-  // ...while words the answer does not say stay the agent's own
-  assert.equal(stepsOf(streamed, { answer: `${report}\n\n${draft}`, keepStart: false }).filter((s) => s.kind === "said").length, 1);
-});
-
 test("a quick answer's raw object is never the agent's words, whichever line of the trace carries it", () => {
   // the owner's pane, 2026-11-03: a CLI's readable `live` line was the object itself, cut at 300 characters, drawn under Taskuary
   const raw = JSON.stringify({ report: "Gail Moreno asks what it costs.", draft: "Tell Gail the first month is free.", question: null }).slice(0, 60);
@@ -213,7 +207,6 @@ test("each ACP tool kind reads as one plain step, the way the same act reads fro
   const steps = stepsOf(trace("kinds_acp"), { keepStart: false });
   const said = steps.map((s) => [s.kind, s.summary, s.status]);
   assert.deepEqual(said, [
-    ["thought", "The ledger keeps the totals in store.py; I should read it before changing the budget.", "done"],
     ["plan", "Updated its plan (2 steps)", "done"],
     ["read", "Read store.py", "done"],
     ["edit", "Edited budget.py", "done"],
@@ -276,6 +269,14 @@ test("a step says what it did: a seeded file by what is in it, a view by its tit
   assert.equal(said("mcp__taskuary__propose_email", { command: "erin@northwind.example", file_path: "erin@northwind.example" }), "Drafted an email");
   assert.equal(said("taskuary__propose_email", JSON.stringify({ to: "erin@northwind.example", subject: "Run sheet" })), "Drafted an email");
   assert.equal(said("write_file", JSON.stringify({ path: "/work/run-sheet.md", content: "see n @path" })), "Wrote run-sheet.md");
+  // ...a post by its network's own card title
+  assert.equal(said("mcp__taskuary__propose_post", { network: "linkedin", text: "We shipped." }), "Drafted a post for LinkedIn");
+  assert.equal(said("propose_post", JSON.stringify({ network: "x", text: "We shipped." })), "Drafted a post for X");
+  // ...the one review tool reads as what its kind is
+  assert.equal(said("mcp__taskuary__propose", { kind: "post", network: "reddit", text: "We shipped." }), "Drafted a post for Reddit");
+  assert.equal(said("propose", JSON.stringify({ kind: "email", to: "erin@northwind.example" })), "Drafted an email");
+  assert.equal(said("mcp__taskuary__propose", { kind: "reply", text: "Hi" }), "Drafted a reply");
+  assert.equal(said("mcp__taskuary__propose", { kind: "act", action: "comment_issue" }), "Asked for your yes");
 });
 
 // A TICK IS NEVER NARRATED (the owner, 2026-11-18): the working line read "Ticking a to-do" - the checklist shows it ticked, and its call, by
@@ -321,8 +322,8 @@ test("a wordless shell call says what it did, never a bare program, a number for
     "Looking into the history of the ledger totals.");
   assert.equal(said("taskuary --board"), "Read what earlier agents left on the wall");
   // ...a command with no words of its own is itself, cut at its width
-  assert.equal(said("git -c safe.directory=C:/work/ledger -C ledger fetch --no-tags origin master"), "Ran git -c safe.directory=C:/work/ledger -C ledger fetch --no-tags origin master");
-  assert.equal(said("git -C .wt-ledger -c safe.directory=C:/work/ledger push origin feat:refs/heads/deploy"), "Ran git -C .wt-ledger -c safe.directory=C:/work/ledger push origin feat:refs/heads/…");
+  assert.equal(said("git -c safe.directory=C:/work/ledger -C ledger fetch --no-tags origin master"), "Ran git -c safe.directory=ledger -C ledger fetch --no-tags origin master");
+  assert.equal(said("git -C .wt-ledger -c safe.directory=C:/work/ledger push origin feat:refs/heads/deploy"), "Ran git -C .wt-ledger -c safe.directory=ledger push origin feat:refs/heads/deploy");
   // ...a line count is no file
   assert.equal(said("Get-Content ledger/totals.py -TotalCount 290"), "Read totals.py");
   assert.equal(said("Get-Content ledger/totals.py -TotalCount 290\nGet-Content ledger/sql/notes.sql -TotalCount 60"), "Read totals.py and notes.sql");
@@ -331,7 +332,7 @@ test("a wordless shell call says what it did, never a bare program, a number for
   // ...a script handed to python, by a PowerShell here-string or a heredoc, is a script it ran - its lines are not commands
   assert.equal(said("@'\nfrom pathlib import Path\nimport json\nprint(1)\n'@ | python -", "PowerShell"), "Ran a Python script (3 lines)");
   assert.equal(said("python - <<'EOF'\nimport json\nprint(1)\nEOF"), "Ran a Python script (2 lines)");
-  assert.equal(said("..\\venv\\Scripts\\python.exe -u -m scripts.ledger.import_totals 'C:\\work\\totals.xlsx' --apply"), "Ran ..\\venv\\Scripts\\python.exe -u -m scripts.ledger.import_totals 'C:\\work\\totals.x…");
+  assert.equal(said("..\\venv\\Scripts\\python.exe -u -m scripts.ledger.import_totals 'C:\\work\\totals.xlsx' --apply"), "Ran ..\\venv\\Scripts\\python.exe -u -m scripts.ledger.import_totals 'totals.xlsx' --a…");
   assert.equal(said("python -u tools/check_totals.py --all"), "Ran python -u tools/check_totals.py --all");
   for (const c of ["git -c a=b -C x status", "python -u x.py", "git --no-pager log -5"]) assert.doesNotMatch(said(c), /^Ran (git|python)$/);
   // ...an ACP call named only by its title is the agent's own words; a helper it started, by its name
@@ -341,17 +342,33 @@ test("a wordless shell call says what it did, never a bare program, a number for
   assert.equal(describeCall("other", { title: "Start subagent history_probe", agentPath: "/root/history_probe" }).summary, "Handed part of the work to a helper: history probe");
 });
 
-test("each thought is its own row: a message of two reasoning headers never reads as one sentence", () => {
+// THE OWNER, 2026-11-23: "it has to say what is actually going on" - a turn's rows read "Opening X home", "Locating account menu", "Awaiting final
+// approval" in italics with a bulb among what it did: the model's reasoning headers, drawn as steps. A thought is never a row; what it did is
+test("a model's reasoning is never a step row, finished or still being written - what it did and said is", () => {
   const steps = stepsOf([
-    { type: "progress", name: "thinking", detail: "\n\n**Reviewing the vendor mapping snapshots**\n\n**Planning the history roll-up**" },
+    { type: "progress", name: "thinking", detail: "\n\n**Opening the portal home**\n\n**Locating account menu**" },
     { type: "tool_call", name: "Read", detail: { tool_call_id: "r", args: { file_path: "/x/notes.md" } } },
-    { type: "live", name: "thinking", detail: "**Preparing the schema**\n\n**Writing the plan**" },
-  ]);
-  assert.deepEqual(steps.map((s) => [s.kind, s.summary]), [["thought", "Reviewing the vendor mapping snapshots"], ["thought", "Planning the history roll-up"],
-    ["read", "Read notes.md"], ["thought", "Preparing the schema"], ["thought", "Writing the plan"]]);
-  // ...and the live thought, updated, replaces its own rows, never stacks them
-  const again = stepsOf([{ type: "live", name: "thinking", detail: "**A**" }, { type: "live", name: "thinking", detail: "**A**\n\n**B**" }]);
-  assert.deepEqual(again.map((s) => s.summary), ["A", "B"]);
+    { type: "progress", name: "reasoning", detail: "**Checking Taskuary state**" },
+    { type: "progress", name: "text", detail: "I'll check whether the post went up." },
+    { type: "live", name: "thinking", detail: "**Awaiting final approval**" },
+  ], { keepStart: false });
+  assert.deepEqual(steps.map((s) => [s.kind, s.summary]), [["read", "Read notes.md"], ["said", "I'll check whether the post went up."]]);
+  // ...and a log's thought step, the server's or an older one kept, reads as nothing on the chat's road (chatStream.eventsOf)
+  assert.deepEqual(eventsOf([{ k: "thought", text: "Locating account menu" }], false), []);
+});
+
+// ...AND A BROWSER STEP SAYS WHAT IT ACTED ON (the owner, 2026-11-23: "Clicked on the page, and 1 more", "Looked at the page"): the words the gate
+// wrote where it read the page ride on the step (`did`, browsergate.did) and are its row, whatever the command's text reads as here
+test("a browser step's row is what the gate saw it do - the control by the page's name, the page an open landed on", () => {
+  const step = (id, command, did, status = "completed") => ({ k: "tool", id, name: "Bash", args: { command }, status, did });
+  const rows = stepsOf(eventsOf([step("a", "agent-browser open https://x.example/alexdoyle", 'Opened "Alex Doyle (@alexdoyle) / X" on x.example'),
+    step("b", "agent-browser snapshot -i", "Looked at the page on x.example"),
+    step("c", "agent-browser click @e9 && agent-browser press Enter", 'Clicked the "Account menu" button on x.example, then pressed Enter on x.example'),
+    step("d", "agent-browser press Enter", "Tried to press Enter on x.example", "failed")], false), { keepStart: false });
+  assert.deepEqual(rows.map((s) => [s.summary, s.status]), [['Opened "Alex Doyle (@alexdoyle) / X" on x.example', "done"], ["Looked at the page on x.example", "done"],
+    ['Clicked the "Account menu" button on x.example, then pressed Enter on x.example', "done"], ["Tried to press Enter on x.example", "error"]]);
+  // ...and one the gate said nothing of (a log kept before it did) still reads off its command
+  assert.equal(stepsOf(eventsOf([step("e", "agent-browser snapshot -i")], false))[0].summary, "Looked at the page");
 });
 
 // WHAT HE SEES (design round 4, 2026-11-19, three walks): a failed command's PATH dump stood as a red note under its step; Taskuary's own tool
@@ -483,10 +500,12 @@ test("a merged row of repeated tries keeps the server's why of the newest that f
 test("a refused write the agent then made is one row, and the fold's line counts and names the rows it opens on", async () => {
   const { eventsOf, turnParts, foldLine } = await import("../src/chatStream.js");
   const err = "```\n<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>\n```";
-  const steps = [{ k: "tool", id: "a1", name: "Write", args: { file_path: "C:/work/totals.py", content: "x = 1\n" }, status: "failed", output: err },
+  // ...each write's diff as the server's row carries it (conversation.acp_of_trace said it as the call's own diff)
+  const W = { file: "C:/work/totals.py", edit: { whole: true, parts: [{ old: "", new: "x = 1\n" }] } };
+  const steps = [{ k: "tool", id: "a1", name: "Write", args: { file_path: "C:/work/totals.py" }, ...W, status: "failed", output: err },
     { k: "error", name: "Write", text: err },
     { k: "tool", id: "a2", name: "Read", args: { file_path: "C:/work/totals.py" }, status: "completed" },
-    { k: "tool", id: "a3", name: "Write", args: { file_path: "C:/work/totals.py", content: "x = 1\n" }, status: "completed" }];
+    { k: "tool", id: "a3", name: "Write", args: { file_path: "C:/work/totals.py" }, ...W, status: "completed" }];
   const parts = turnParts(eventsOf(steps, false));
   const notes = parts.flatMap((p) => (p.type === "work" ? p.steps : [])).filter((s) => s.kind === "error" || /tool_use_error/.test(s.summary));
   assert.deepEqual(notes, [], "the agent's error is no line of his");
@@ -497,6 +516,32 @@ test("a refused write the agent then made is one row, and the fold's line counts
   assert.equal(foldLine(shown), "2 steps - read totals.py, wrote totals.py (+1 −0)");
   const ws = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
   assert.match(ws, /p\.steps\.filter\(\(st\) => !\(chat && st\.status === "recovered"\)\)/, "the chat folds a try made good");
+});
+
+// WALK 21 (S11): "1 step - could not show you 'Monthly Vendor Spend (Jan–Oct 2026)'" stood over the chart the agent's next show drew, titled
+// a little differently. A view that failed and was then drawn is made good, as a write is: the chart is the turn's outcome
+test("a show that failed and then drew a view under another title is made good", async () => {
+  const { turnParts } = await import("../src/chatStream.js");
+  const { MARK } = await import("../src/viewSpec.js");
+  const view = (title) => ({ title, root: "c", elements: { c: { type: "chart", props: { kind: "line", points: [{ label: "Jan", value: 1 }, { label: "Feb", value: 2 }] } } } });
+  const call = (id, args) => ({ type: "tool_call", name: "mcp__taskuary__show", detail: { tool_call_id: id, args } });
+  const done = (id, result, is_error = false) => ({ type: "tool_result", name: id, detail: { tool_call_id: id, result, is_error } });
+  const parts = turnParts([call("v1", view("Monthly Vendor Spend")), done("v1", "elements.c.props.data must be rows", true),
+    call("v2", view("Total Monthly Vendor Spend")), done("v2", `Shown in the owner's chat. ${MARK}${JSON.stringify(view("Total Monthly Vendor Spend"))}`)]);
+  assert.equal(parts.filter((p) => p.type === "view").length, 1, "the chart is drawn");
+  assert.deepEqual(parts.flatMap((p) => (p.type === "work" ? p.steps : [])).map((s) => s.status), ["recovered"]);
+});
+
+// WALK 18 (Codex): a turn whose one step was a PowerShell line read "1 step - ran $p = '..\..\..\attachments\…'; Add-Type -Assem…" on its fold -
+// the command quoted as the turn's summary. The row keeps its command; the fold's line counts it, as it counts two
+test("a fold's line counts a command row and never quotes its code", async () => {
+  const { eventsOf, turnParts, foldLine } = await import("../src/chatStream.js");
+  const run = (id, command, title) => ({ k: "tool", id, name: "Bash", ...(title ? { title, tool_kind: "execute" } : {}), args: { command }, status: "completed" });
+  const one = turnParts(eventsOf([run("c1", ["powershell.exe", "-Command", "$p = '..\\attachments\\3\\spend.xlsx'; Add-Type -AssemblyName System.IO.Compression"])], false));
+  assert.equal(foldLine(one), "1 step - ran 1 command");
+  assert.match(one.flatMap((p) => (p.type === "work" ? p.steps : []))[0].summary, /^Ran \$p = /, "the row itself still shows the command");
+  const titled = turnParts(eventsOf([run("c2", "Get-Command taskuary | Select-Object Source", "Get-Command taskuary | Select-Object Source")], false));
+  assert.equal(foldLine(titled), "1 step - ran 1 command");
 });
 
 test("the agent's own words for a shell line are its step - never a reading of a script cut short for the chat (walk 8, 2026-11-20)", () => {
@@ -511,8 +556,8 @@ test("the agent's own words for a shell line are its step - never a reading of a
 
 // THE WALK, 2026-11-21 (Claude over ACP): "5 steps - ran 3 commands, showed you 'show', showed you 'mcp__taskuary__show'" - the adapter's title
 // for a call is the tool's own name, and read as the view's title, so a failed bare `show` and the one that worked never folded together;
-// "searched your mail for , searched your documents"; and its working notes between calls stood in the chat as its answer
-test("a step line is plain words: no tool name as a title, no empty query, and words on the way to a call fold into the work", async () => {
+// "searched your mail for , searched your documents". Its words between calls stay where it said them (the owner, 2026-11-23)
+test("a step line is plain words: no tool name as a title, no empty query, and words stay where they were said", async () => {
   const { turnParts, foldLine } = await import("../src/chatStream.js");
   assert.equal(describeCall("mcp__taskuary__show", { title: "mcp__taskuary__show", files: ["C:/out/TQ-0002/forecast.png"] }).summary, "Showed you forecast.png");
   assert.equal(describeCall("show", { title: "show" }).summary, "Laid it out for you");
@@ -529,23 +574,110 @@ test("a step line is plain words: no tool name as a title, no empty query, and w
     said("Good. Now the reply with both files attached."),
     call("r1", "mcp__taskuary__propose_reply", { text: "Hi Gail" }), done("r1", "{}"),
     said("The forecast is ready and the reply to Gail waits for your Send.")];
-  const parts = turnParts(trace, { answer: "The forecast is ready and the reply to Gail waits for your Send." });
-  assert.deepEqual(parts.filter((p) => p.type === "said"), [], "no working note stands as an answer");
+  const parts = turnParts(trace);
+  assert.deepEqual(parts.map((p) => p.type), ["work", "said", "work", "said", "work", "said"], "filed as it was at work: every word where it was said");
+  assert.deepEqual(turnParts(trace, { live: true }).map((p) => p.id), parts.map((p) => p.id), "the same parts, live and filed");
   const steps = parts.flatMap((p) => (p.type === "work" ? p.steps : []));
-  assert.deepEqual(steps.filter((s) => s.kind === "thought").map((s) => s.summary),
-    ["Python 3.10 exists under the user path; check libraries.", "Good. Now the reply with both files attached."]);
   assert.equal(steps.find((s) => s.tool === "show").status, "recovered", "the failed try is the same step as the one that worked");
   assert.doesNotMatch(foldLine(parts), /show'|mcp__|for ,|for $/);
   assert.match(foldLine(parts), /^\d+ steps - searched your mail/);
-  // ...a turn still at work keeps every word where it stands
-  assert.equal(turnParts(trace.slice(0, 7), { live: true }).filter((p) => p.type === "said").length, 1);
 });
 
-test("an answer that names a made file is drawn once, whether its words named the file by path or by name (the HIPAA walk, 2026-11-21)", () => {
-  const path = "C:\\Users\\alex\\AppData\\Local\\Temp\\home\\scratch\\outputs\\TQ-0003\\Wellness_Flyer.pdf";
-  const trace = [{ type: "tool_call", name: "exec", detail: { tool_call_id: "c1", args: { command: "make flyer" } } },
-    { type: "tool_result", name: "c1", detail: { tool_call_id: "c1", result: "ok" } },
-    { type: "progress", name: "text", detail: `Created the one-page flyer at \`${path}\` and showed it in the chat.` }];
-  const steps = stepsOf(trace, { answer: "Created the one-page flyer at `Wellness_Flyer.pdf` and showed it in the chat." });
-  assert.equal(steps.filter((s) => s.kind === "said").length, 0);
+test("a step's line is written from what it gave back: a refused show never reads 'Showed you' (HIPAA walk 6)", () => {
+  const steps = stepsOf([
+    { type: "tool_call", name: "mcp__taskuary__show", detail: { tool_call_id: "v", args: { title: "Print Run Cost Comparison", root: "t", elements: { t: { type: "table" } } } } },
+    { type: "tool_result", name: "v", detail: { result: "elements.type must be an object", is_error: true } },
+    { type: "tool_call", name: "mcp__taskuary__reply_not_needed", detail: { tool_call_id: "n", args: { why: "answered" } } },
+    { type: "tool_result", name: "n", detail: { result: '{"ok": false, "why": "not marked: no reply is waiting"}' } },
+    { type: "tool_call", name: "mcp__taskuary__show", detail: { tool_call_id: "w", args: { title: "Run sheet", root: "t", elements: { t: { type: "table" } } } } },
+    { type: "tool_result", name: "w", detail: { result: "shown" } },
+  ]);
+  assert.deepEqual(steps.map((s) => [s.status, s.summary]), [["error", "Could not show you 'Print Run Cost Comparison'"],
+    ["error", "Could not mark the reply as not needed"], ["done", "Showed you 'Run sheet'"]]);
+});
+
+// A COMMAND AT WORK IS THE ROW IT WILL BE (the owner, 2026-11-23: "on everything mode on agent it flashes black for the commands then closes
+// quickly"): its output stood open in a dark block under its row while it ran and went as it ended - every quick command a flash. It waits
+// behind the row's own disclosure all its life: one <details>, shut until he opens it, so its ending opens, shuts and swaps nothing
+test("a running command's output waits behind its row, and its ending never opens, shuts or swaps that row", async () => {
+  const { build } = await import("esbuild"), resolveDir = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+  const out = await build({ stdin: { resolveDir, loader: "jsx", contents: `
+    import React from "react"; import { renderToStaticMarkup } from "react-dom/server.browser"; import { StepRow } from "./src/AgentStepRows.jsx";
+    export const html = (step) => renderToStaticMarkup(<StepRow step={step} />);` }, loader: { ".css": "empty" },
+    // ...the answer's markdown (md.jsx) and MUI's styled spinner and marks need a page's document; a row's shape needs neither
+    plugins: [{ name: "stubs", setup: (b) => {
+      b.onResolve({ filter: /\/md\.jsx$|^@mui\// }, (a) => ({ path: a.path, namespace: "stub" }));
+      b.onLoad({ filter: /.*/, namespace: "stub" }, (a) => ({ loader: "js", contents: a.path.endsWith("md.jsx") ? "export const Md = () => null;"
+        : `import React from "react"; const I = () => React.createElement("i"); export default I; export const CircularProgress = I;`, resolveDir })); } }],
+    bundle: true, write: false, format: "esm", jsx: "automatic", platform: "browser", logLevel: "silent", define: { "process.env.NODE_ENV": '"production"' } });
+  const { html } = await import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].text).toString("base64")}`);
+  const call = { type: "tool_call", name: "Bash", detail: { tool_call_id: "c1", args: { command: "pytest -q" } } };
+  const lines = Array.from({ length: 12 }, (_, i) => `test_${i} PASSED`).join("\n");
+  const row = (events) => stepsOf(events).find((s) => s.id === "c1");
+  const fresh = row([call]), working = row([{ ...call, detail: { ...call.detail, output: lines } }]);
+  const ended = row([call, { type: "tool_result", name: "c1", detail: { tool_call_id: "c1", result: lines } }]);
+  assert.deepEqual([fresh.status, working.status, ended.status], ["running", "running", "done"]);
+  // ...the markup's shape, its words, classes and the spinner's own spans aside: a row, and its output inside it
+  const shape = (h) => h.replace(/>[^<]*</g, "><").replace(/ (class|style|role|aria-[a-z]+|viewBox|data-tq-step-tail)="[^"]*"/g, "")
+    .replace(/<summary>[\s\S]*<\/summary>/, "<summary></summary>");
+  for (const [h, was] of [[html(fresh), "fresh"], [html(working), "working"], [html(ended), "ended"]]) {
+    assert.match(h, /^<details class="tq-aui-step tq-aui-step-run [^"]*"><summary>/, `${was}: one disclosure row`);
+    assert.doesNotMatch(h, /<details[^>]*\bopen\b/, `${was}: shut until he opens it`);
+    assert.equal(shape(h), "<details><summary></summary><pre></pre></details>", `${was}: its output inside the row, nothing beside it`);
+  }
+  assert.match(html(working), /<pre data-tq-step-tail="">[^<]*test_11 PASSED<\/pre>/, "opened, a running row shows its newest output");
+  assert.doesNotMatch(html(working), /test_3 PASSED/, "its newest lines, as a terminal shows them");
+  assert.match(html(ended), /test_0 PASSED[\s\S]*test_11 PASSED/, "ended, the whole of it");
+});
+
+// A STEP ROW IS NO BUILDER WORDS (walk 11): a Codex call titled by its own command read "agent-browser click '@e79'", a base64 page script,
+// and a PowerShell line with the whole local path in it
+test("a browser call reads by what it did, a command names its files by name, and an encoded blob is no part of the row", async () => {
+  const { turnParts } = await import("../src/chatStream.js");
+  const rows = (steps) => turnParts(eventsOf(steps, false)).flatMap((p) => p.steps || []);
+  const blob = "QXJyYXkuZnJvbShkb2N1bWVudC5xdWVyeVNlbGVjdG9yQWxsKCdhJykp";
+  const path = "$vendorFile = 'C:\\Users\\alex\\AppData\\Local\\Temp\\walk\\vendor-spend-2026.csv'";
+  const [click, ev, ps] = rows([
+    { id: "s:x:c1", k: "tool", name: "Bash", title: "agent-browser click '@e79'", tool_kind: "execute", args: { command: "agent-browser click '@e79'" }, status: "completed" },
+    { id: "s:x:c2", k: "tool", name: "Bash", title: `agent-browser eval -b ${blob}`, tool_kind: "execute", args: { command: `agent-browser eval -b ${blob}` }, status: "completed" },
+    { id: "s:x:c3", k: "tool", name: "Bash", title: path, tool_kind: "execute", args: { command: path }, status: "completed" }]);
+  assert.equal(click.summary, "Clicked on the page");
+  assert.equal(ev.summary, "Ran a script on the page");
+  assert.equal(ps.summary, "Ran $vendorFile = 'vendor-spend-2026.csv'");
+  // ...and a Codex script titled by its own text reads by what it is (walk 16: rows read "$reply = @' Hi Erin ...", "@' from reportlab ...")
+  const [here, py, said] = rows([
+    { id: "s:x:c4", k: "tool", name: "Bash", title: "$reply = @' Hi Erin, thanks '@ taskuary --reply $reply", tool_kind: "execute", args: { command: "$reply = @'\nHi Erin,\nthanks\n'@\ntaskuary --reply $reply" }, status: "completed" },
+    { id: "s:x:c5", k: "tool", name: "Bash", title: "@' from reportlab.lib import colors print(1) '@ | python -", tool_kind: "execute", args: { command: "@'\nfrom reportlab.lib import colors\nprint(1)\n'@ | python -" }, status: "completed" },
+    { id: "s:x:c6", k: "tool", name: "Bash", title: "taskuary --reply-not-needed 'She already answered'", tool_kind: "execute", args: { command: "taskuary --reply-not-needed 'She already answered'" }, status: "completed" }]);
+  assert.deepEqual([here.summary, py.summary, said.summary], ["Drafted the reply", "Ran a Python script (2 lines)", "Said no reply is needed"]);
+  for (const r of [here, py, said]) assert.doesNotMatch(r.summary, /@'|taskuary --/);
+  assert.equal(describeCall("Bash", { command: `node -e ${blob}` }).summary, "Ran node -e …");
+  assert.equal(describeCall("Bash", { command: "curl https://shop.example/home/plans" }).summary, "Read shop.example/home/plans", "an address is no local path");
+});
+
+test("a withdrawn question reads as taken back, never as asked (walk 19, S7)", () => {
+  assert.equal(describeCall("mcp__taskuary__ask_owner", { withdraw: true }).summary, "Took back its question");
+  assert.equal(describeCall("mcp__taskuary__ask_owner", { question: "Does 2 pm work?" }).summary, "Asked you a question");
+});
+
+// WALK 25 (2026-11-26): "skills come from two worlds and the agent names either, or none" - one AI named its own tool's skills beside his, the
+// other two read his "website" skill and never said so, and the turn's one line read "4 steps - read 3 files, ..." with the skill counted as a
+// file. Which skill a turn used is drawn from its own call, on every road the same: a row of its own, named, first on the turn's line
+test("the skill a turn read is named on its row and leads the turn's one line, whichever AI ran it", async () => {
+  const { turnParts, foldLine } = await import("../src/chatStream.js");
+  const call = (id, name, args) => ({ type: "tool_call", name, detail: { tool_call_id: id, args } }), done = (id) => ({ type: "tool_result", name: id, detail: { tool_call_id: id, result: "ok" } });
+  const work = (skill) => [call("m1", "mcp__taskuary__search_messages", { words: "bakery" }), done("m1"),
+    call("r1", "Read", { file_path: "C:/work/menu.md" }), done("r1"), call("r2", "Read", { file_path: "C:/work/hours.md" }), done("r2"),
+    call("w1", "WebSearch", { query: "bakery sites" }), done("w1"), skill, done("k1")];
+  for (const name of ["mcp__taskuary__skills", "skills", "taskuary__skills"]) {          // ...as a CLI, an API road and Codex each name the one tool
+    const parts = turnParts(work(call("k1", name, { name: "website" })));
+    const row = parts.flatMap((p) => p.steps || []).find((s) => /skill/.test(s.summary));
+    assert.equal(row.summary, "Read your skill 'website'", name); assert.equal(row.kind, "skill", "never counted as a file read");
+    assert.match(foldLine(parts), /^5 steps - read your skill 'website', /, name);
+    assert.doesNotMatch(foldLine(parts), /read 3 files/, "the skill is no file");
+  }
+  // ...the list alone names no skill: it chose none
+  const listed = turnParts(work(call("k1", "mcp__taskuary__skills", {})));
+  assert.doesNotMatch(foldLine(listed), /^5 steps - read your skill/);
+  assert.equal(describeCall("mcp__taskuary__skills", {}).summary, "Read your skills");
 });

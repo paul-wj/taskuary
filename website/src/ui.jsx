@@ -17,6 +17,7 @@ import { Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, Dialo
 import { ButtonBar } from "./ButtonBar.jsx";
 import SearchIcon from "@mui/icons-material/Search";
 import api from "./api";
+import { SETUP_CHANGED } from "./wrote.js";
 import { browserRecogniser, dictate, dictationError, inAppWindow, micFix } from "./dictation.js";
 import { chooseVoice, voiceChoice, micRoute } from "./voiceChoice.js";
 import { onLive, touches } from "./live.js";
@@ -64,6 +65,7 @@ export { agentAssignee, assignedAgent, assigneeLabel } from "./agentIdentity.js"
 import { ROLES, ACTION_COLORS, TAGS, ASSISTANT, ALERT, BORDER, CATPPUCCIN, TASK_STATUS_COLORS, mono, DIM, FAINT, INK, PANEL, ACCENT2, PANEL2, label } from "./theme.jsx";
 import { MESSAGE, shownAgent } from "./kinds.js";
 import { codingChoice, codingChoices } from "./brainOptions.js";
+import { devSeen, rememberDev } from "./devSeen.js";
 // a waiting note the Assistant passed on keeps the owner's words and its own version apart (waitroom.SEP): the owner's are what is shown
 export const ownWords = (note) => String(note || "").split("\x1f")[0].trim();
 const message = (source, values = {}) => ({ source, values });
@@ -627,9 +629,10 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
     }
     if (viaBuiltin) return keys();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // one voice, mono at 32 kbps: speech needs no more, and the browser's default (~128 kbps) was four times the bytes to upload
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
       const type = window.MediaRecorder?.isTypeSupported?.("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
-      const mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+      const mr = new MediaRecorder(stream, { audioBitsPerSecond: 32000, ...(type ? { mimeType: type } : {}) });
       const chunks = [], meter = levelMeter(stream);
       mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
       mr.onstop = async () => {
@@ -651,6 +654,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
   const stop = () => { rec?.stop(); if (!viaBrowser) setRec(null); };   // the browser's dictation reports back itself
   const title = translateDescriptor(err) || (!voice ? ""
     : rec ? "Stop and transcribe"
+    : busy ? `Transcribing with ${voice.label || voice.provider}…`
     : route === "connector" ? `Dictate (${voice.label || voice.provider})`
     : viaBrowser ? `Dictate — your browser's own recogniser. A voice AI (${placeName("voice")}) is more accurate and reads voice notes.`
     : viaBuiltin ? `Dictate — ${builtin.label} (Win+H): its bar types into the box; press again, or its own stop, to end`
@@ -779,40 +783,33 @@ const agentsOf = (data) => ({
   devMode: data.developer_mode ?? false,      // ...and off until the server says so: no coding UI flashes while settings load (audit 2026-11-05)
   agents: (data.data || []).map((a) => a.Name),
   models: data.models || {},
-  // what each worker is FOR. A coding dialog asks which CLI; the five general profiles -
-  // researcher, analyst, coordinator, marketer, trader - answer a question it never asked.
+  // which row is the coding agent's - found by its kind (codingAgent)
   kinds: Object.fromEntries((data.data || []).map((a) => [a.Name, a.Kind])),
-  // profile name -> the CLI it actually runs (the coding profile is usually claude) - the Board
-  // tints a working card by the BRAND, and the name alone doesn't say which one it is
-  cmds: Object.fromEntries(Object.entries(data.config || {}).map(([k, v]) => [k, (v || {}).cmd || k])),
-  // ...and WHICH BRAIN each role runs on. A role no longer says which CLI runs it - every
-  // coding task's role is the one coding profile - so the card asks this instead (the owner, 2026-09-16).
+  // ...and WHICH BRAIN each row runs on - every coding task's is the one coding agent (the owner, 2026-09-16).
   brains: data.brains || {}, brainList: data.brain_list || [], brainModels: data.brain_models || {},
   // the brains a NON-coding hand-off may choose: one per installed CLI, then the API connectors
-  generalBrains: data.general_brains || [],
+  generalBrains: data.general_brains || [], generalRuns: data.general_runs || null,      // ...and what Auto starts one on (New's chooser)
   // ...and every AI a CODING task can run on - each CLI and each active AI card - with what a start naming none runs (resolve_brain)
   codingOptions: data.coding_options || [], codingPick: data.coding_pick || "",
 });
 // agentsRead: [] read is "no AI connected"; [] not yet read is nothing yet. codingReady: a coding agent can start (agents.coding_ready)
-const AGENTS_UNREAD = { agents: [], models: {}, cmds: {}, kinds: {}, brains: {}, brainList: [], brainModels: {}, generalBrains: [], codingOptions: [], codingPick: "", agentsRead: false, codingReady: false, devMode: false };
+const AGENTS_UNREAD = { agents: [], models: {}, kinds: {}, brains: {}, brainList: [], brainModels: {}, generalBrains: [], generalRuns: null, codingOptions: [], codingPick: "", agentsRead: false, codingReady: false, devMode: false };
+// ...and Developer mode as this browser last read it, from the first frame (devSeen.js): the Board tab stood out of the top bar on every load
+// and came in a beat later
 export const useAgents = () => {
-  const [v, setV] = useState(() => agentsLast || AGENTS_UNREAD);
+  const [v, setV] = useState(() => agentsLast || { ...AGENTS_UNREAD, devMode: devSeen() });
   useEffect(() => {
     let on = true;
-    api.get("/api/agents").then(({ data }) => { agentsLast = agentsOf(data); if (on) setV(agentsLast); }).catch(() => {});
-    return () => { on = false; };
+    const read = () => api.get("/api/agents").then(({ data }) => { agentsLast = agentsOf(data); rememberDev(agentsLast.devMode); if (on) setV(agentsLast); }).catch(() => {});
+    read(); window.addEventListener(SETUP_CHANGED, read);      // ...and again when an AI card or setting moves (wrote.movesSetup)
+    return () => { on = false; window.removeEventListener(SETUP_CHANGED, read); };
   }, []);
   return v;
 };
-// THE CODING PROFILE IS FOUND BY ITS KIND, never by a name: the owner may rename it, or have none - and then blank, so
-// the server (which resolves the same way) chooses rather than this page naming one that is not there.
-export const codingProfile = (agents = [], kinds = {}) => agents.find((a) => String(kinds[a] || "").toLowerCase() === "coding") || "";
+// THE CODING AGENT IS FOUND BY ITS KIND, never by a name - and blank when there is none, so the server (which resolves the same way)
+// chooses rather than this page naming one that is not there. A coding picker asks only which CLI runs it (the owner, 2026-09-14).
+export const codingAgent = (agents = [], kinds = {}) => agents.find((a) => String(kinds[a] || "").toLowerCase() === "coding") || "";
 
-// CODING IS THE PROFILE. A coding profile is not a worker to choose between - it is one job that any CLI
-// can run, and the question a
-// repository dialog asks is which CLI runs it (the owner, 2026-09-14: "for coding there is no need
-// to choose profile. That's for general. Coding is the profile for coding sessions"). So in coding
-// mode the menu says the CLI, and the five general profiles are not offered at all.
 // One row of model choices, wherever they are asked for. `info.models` carries the CLI's own
 // [{id,label}] - Claude Code's catalog, codex's models_cache - so the menu reads the way that CLI's
 // own /model does; `choices` is the flat id list older payloads still send.
@@ -851,28 +848,16 @@ export const brainNote = (b, browser) => [b?.signed_out ? "not signed in" : "",
   browser ? (b?.browser === false ? "can't use the browser" : "") : ""]
   .filter(Boolean).map((t) => ` · ${t}`).join("");
 
-export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, size = 30, kinds = {},
+export const AgentPicker = ({ models, model, onModel, size = 30,
                              coding = false, brains = [], brain = "", onBrain, brainModels = {},
-                             generalBrains = [], brainsRead = false, codingReady = true, pick = "", onPick, has = "", browser = false }) => {
-  useLocale();
-  // A coding picker chooses the BRAIN - which CLI runs the work. It always did in spirit ("chooses
-  // the executable, not one of several instruction profiles backed by it") but it named a profile
-  // to say so; the role is the coding profile for every coding task now, so that list would be one entry
-  // repeated (the 2026-09-16 spec). General work picks a ROLE **and** a brain: two questions, and
-  // a hand-off is allowed to answer both (the owner, 2026-09-18).
-  const roles = Object.keys(kinds).length
-    ? agents.filter((a) => !["coding", "cli"].includes(String(kinds[a] || "").toLowerCase())) : agents;
-  // A BRAIN THAT IS GONE IS STILL WHAT THIS TASK NAMES. `brains` is the installed list now, so a
-  // value outside it used to select brains[0] silently - the picker showed a CLI nobody chose.
-  const list = roles;
+                             generalBrains = [], brainsRead = false, codingReady = true, pick = "", onPick, browser = false }) => {
+  // A coding picker chooses the BRAIN - which CLI or AI card runs the work; a hand-off chooses the brain and its model (2026-09-16).
   // A CODING TASK RUNS ON A CLI OR AN AI CARD (brainOptions.codingChoices): every one is listed, and blank shows what will run. A card
   // reaches the start as `pick`, so a picker whose caller sends none (onPick) offers the CLIs alone.
   const { codingOptions, codingPick } = useAgents();
   const code = codingChoices({ options: (codingOptions || []).filter((o) => onPick || o.kind === "cli"), brains, brain, pick, codingPick });
-  const value = agent;
-  // A HAND-OFF LEAVES THE PROFILE IT HAS: blank, and no picker asks (below).
   const handOff = !coding && !!onPick;
-  const selected = coding ? code.value : handOff ? value : (list.includes(value) ? value : (list[0] || value));
+  const selected = coding ? code.value : "";
   const onCard = coding && String(selected).startsWith("connector:");
   const card = onCard ? generalBrains.find((b) => b.pick === selected) || {} : {};
   const info = (coding ? (onCard ? { models: card.models, default: card.model } : brainModels[String(selected).slice(4)]) : models[selected]) || {};
@@ -882,9 +867,6 @@ export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, si
   if (coding && brainsRead && !codingReady) return <NoCodingTool />;
   return (
     <>
-      {/* A HAND-OFF NAMES NO PROFILE (the owner, 2026-10-29: "the agent should just say Taskuary but the profile inherits from it" - a
-          reservation was being made by "researcher", and "assistant" is no profile they ever made). It runs the profile the task has
-          (triage's role, else the assistant's own), behind the scenes; the profiles themselves are kept in Docs -> Profiles. */}
       {/* ...each picker named for the Assistant (pageView.labelOf reads aria-label): unnamed, New's and the task's pickers were never on
           the view it was sent, and "use Claude Code for it" had nothing to pick (the audit of New, 2026-11-02) */}
       {coding && <Select size="small" value={selected || ""} inputProps={{ "aria-label": t("Coding tool") }} data-tq-coding-brain=""
@@ -895,11 +877,6 @@ export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, si
             {o.label}{o.kind === "cli" && brainModels[o.key] && brainModels[o.key].installed === false ? t(" · not installed") : ""}
           </MenuItem>
         ))}
-      </Select>}
-      {!coding && !handOff && <Select size="small" value={selected || ""} inputProps={{ "aria-label": "Profile" }}
-        onChange={(e) => onAgent(e.target.value)}
-        sx={{ fontSize: 12.5, height: size, bgcolor: "var(--tq-panel, #fff)", minWidth: 120 }}>
-        {list.map((a) => <MenuItem key={a} value={a} sx={{ fontSize: 12.5 }}>{a}</MenuItem>)}
       </Select>}
       {handOff && (
         <Select size="small" displayEmpty value={pick || ""} inputProps={{ "aria-label": t("Brain") }} onChange={(e) => { onPick(e.target.value); onModel(""); }}
@@ -1770,7 +1747,9 @@ export const DraftField = ({ value, onChange, sx, inputProps, marks = [], ...res
     sx={{ ...sx, "& textarea": { ...(sx?.["& textarea"] || {}), resize: "vertical" } }} />;
   const text = String(value ?? "");
   const pieces = [];
-  marks.reduce((at, [a, b], i) => { pieces.push(text.slice(at, a), <mark key={i} data-tq-blank="">{text.slice(a, b)}</mark>); return b; }, 0);
+  // ...a mark's kind (textDiff.changeMarks): "add" lights words a change brings, "del" a thin tick where words it takes out stood; none is a blank
+  marks.reduce((at, [a, b, k], i) => { pieces.push(text.slice(at, a), k === "del" ? <span key={i} data-tq-removed-at="" />
+    : <mark key={i} {...(k === "add" ? { "data-tq-added": "" } : { "data-tq-blank": "" })}>{text.slice(a, b)}</mark>); return b; }, 0);
   if (marked) pieces.push(text.slice(marks.at(-1)[1]), "​");
   return (
     <Box ref={wrap} sx={{ position: "relative" }}>
@@ -1778,7 +1757,10 @@ export const DraftField = ({ value, onChange, sx, inputProps, marks = [], ...res
       {box && <Box aria-hidden sx={{ position: "absolute", top: box.top, left: box.left, width: box.width, height: box.height, overflow: "hidden", pointerEvents: "none" }}>
         <Box sx={{ font: box.font, lineHeight: box.lineHeight, letterSpacing: box.letterSpacing, padding: box.padding, boxSizing: "border-box",
           whiteSpace: "pre-wrap", overflowWrap: "break-word", color: "transparent", transform: `translateY(${-top}px)`,
-          "& mark": { color: "transparent", bgcolor: "rgba(232, 168, 56, 0.38)", borderRadius: "2px", boxShadow: "0 1px 0 #c98a1e" } }}>
+          "& mark": { color: "transparent", bgcolor: "rgba(232, 168, 56, 0.38)", borderRadius: "2px", boxShadow: "0 1px 0 #c98a1e" },
+          "& mark[data-tq-added]": { bgcolor: "var(--tq-added, rgba(111, 158, 110, 0.28))", boxShadow: "none" },
+          "& [data-tq-removed-at]": { position: "relative", "&::before": { content: '""', position: "absolute", left: "-1px", top: "0.15em", height: "1.1em",
+            borderLeft: "2px solid var(--tq-removed, #b4495a)" } } }}>
           {pieces}</Box>
       </Box>}
     </Box>

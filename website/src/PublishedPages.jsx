@@ -14,15 +14,17 @@ import { label as btn } from "./buttons.js";
 import { copyText } from "./CopyCorner.jsx";
 import { Md } from "./md.jsx";
 import { useOverlay } from "./overlays.js";
-import { csvRows, fitSvg, lockDown } from "./shownPages.js";
-import { deliverables } from "./taskOutputs.js";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { csvRows, fitSvg, outsideLink, SANDBOX, shut } from "./shownPages.js";
+import { deliverables, MEDIA_H, mediaFit } from "./taskOutputs.js";
 import "./publishedPages.css";
+import Artifact from "./Artifact.jsx";
+import { PictureDialog } from "./PictureView.jsx";
 
 // sandboxed WITHOUT allow-same-origin: the page's scripts run (charts, tabs) but in an opaque origin -
-// no Taskuary token, no cookies, no reach into this window
-export const SANDBOX = "allow-scripts allow-popups allow-popups-to-escape-sandbox";
+// no Taskuary token, no cookies, no reach into this window (shownPages.SANDBOX) - and inside a frame that lets it navigate nowhere (shut)
+export { SANDBOX };
 // a published page is not a run of the session: AgentReport numbers only its own session results
 export const isPublished = (a) => !!a?.external_url;
 const type = (p) => p?.content_type || "";
@@ -116,21 +118,21 @@ function DocPreview({ page }) {
 }
 
 // the browser's own player, fed from the file's address (attUrl: the token rides in its query, as a picture's does); a codec it cannot
-// play (an HEVC .mov) says so and points at Download, never a blank box
+// play (an HEVC .mov) says so and points at Download, never a blank box. A video at its own shape (mediaFit): an upright one is upright, never
+// a 16:9 frame the card's width with the clip letterboxed in it; one whose shape is not known takes its own as it reads it
 function MediaPlayer({ page }) {
   const [err, setErr] = useState(false), V = isVideo(page) ? "video" : "audio";
   if (err) return <div className="tq-published-note" data-tq-media-error="">This {V === "video" ? "video" : "sound"} can't play here - Download it to open it in your player.</div>;
   return (
     <div className="tq-published-media" data-tq-media={V}>
       <V controls preload="metadata" src={attUrl(page)} onError={() => setErr(true)} title={page.name}
-        style={V === "video" ? { display: "block", width: "100%", maxHeight: "70vh", aspectRatio: "16 / 9", background: "#000" } : { display: "block", width: "100%" }} />
+        style={V === "video" ? { display: "block", background: "#000", ...(mediaFit(page)?.media || { maxWidth: "100%", maxHeight: MEDIA_H }) } : { display: "block", width: "100%" }} />
     </div>
   );
 }
 
 export function Preview({ page }) {
-  useLocale();
-  const [body, setBody] = useState(null), [err, setErr] = useState("");
+  const [body, setBody] = useState(null), [err, setErr] = useState(""), [big, setBig] = useState(false);
   const sheet = page.preview === "sheet", pdf = isPdf(page), doc = page.preview === "document";
   const picture = isPicture(page) || pdf, text = isText(page);
   // ...and a file of a kind with no preview (a zip, a .pptx) says so: read as text it drew its raw bytes over the chat
@@ -157,8 +159,12 @@ export function Preview({ page }) {
   if (media) return <MediaPlayer key={page.url} page={page} />;
   if (err) return <div className="tq-published-note">{translateDescriptor(err)}</div>;
   if (body == null) return <div className="tq-published-note"><CircularProgress size={12} /></div>;
-  if (pdf) return <iframe className="tq-published-frame" title={page.name} src={body} />;
-  if (picture) return <div className="tq-published-picture"><img src={body} alt={page.name} /></div>;
+  // ...THE PAGE ITSELF, fitted to the frame's width - never the viewer's page list beside it (the owner, 2026-11-23: "show the full pdf not with
+  // the side bar"); its toolbar stays for zoom, print and download
+  if (pdf) return <iframe className="tq-published-frame" title={page.name} src={`${body}#navpanes=0&view=FitH`} />;
+  // ...and a press on it opens it larger, to zoom (PictureView)
+  if (picture) return <div className="tq-published-picture"><img src={body} alt={page.name} onClick={() => setBig(true)} data-tq-zoomable=""
+    style={{ cursor: "zoom-in", ...mediaFit(page)?.media }} /><PictureDialog file={big ? page : null} onClose={() => setBig(false)} /></div>;
   if (text) return <pre className="tq-published-text">{body.length > 200000 ? `${body.slice(0, 200000)}\n…` : body}</pre>;
   if (page.preview === "table" || /csv/.test(type(page))) {
     const [head, ...rows] = csvRows(body);
@@ -170,14 +176,29 @@ export function Preview({ page }) {
     );
   }
   return isHtml(page)
-    ? <iframe className="tq-published-frame" title={page.name} sandbox={SANDBOX} srcDoc={lockDown(isImage(page) ? fitSvg(body) : body)} />
+    ? <PageFrame title={page.name} html={shut(isImage(page) ? fitSvg(body) : body)} />
     : <div className="tq-published-md"><Md text={body} /></div>;
+}
+
+// ...its links open in the owner's browser as any outside link does: the page asks (shownPages.outsideLink), the app opens it
+function PageFrame({ title, html }) {
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    const on = (e) => { const u = outsideLink(e, ref.current?.contentWindow); if (u) window.open(u, "_blank", "noopener,noreferrer"); };
+    window.addEventListener("message", on);
+    return () => window.removeEventListener("message", on);
+  }, []);
+  return <iframe ref={ref} className="tq-published-frame" title={title} sandbox={SANDBOX} srcDoc={html} />;
 }
 
 // A FILE OPENED WHERE IT IS NAMED (the owner, 2026-11-05: "i need to be able to click on this and a pop up will show the file ... without having
 // to hit download then look at it and then come back"): its name in the agent's words opens it over the chat - the card's own Preview, and
-// Download beside it for when it is wanted after all. Esc or the cross closes it, back where the owner was reading
-export function FileDialog({ file, onClose }) {
+// Download beside it for when it is wanted after all. Esc or the cross closes it, back where the owner was reading. A picture opens in the one
+// viewer that zooms (PictureView), stepping through `files` - the card's other pictures
+const asPicture = (f) => isPicture(f) || !!f?.is_image;
+export const FileDialog = ({ file, files = null, onClose }) => asPicture(file)
+  ? <PictureDialog file={file} files={files?.filter(asPicture)} onClose={onClose} /> : <FileBox file={file} onClose={onClose} />;
+function FileBox({ file, onClose }) {
   useLocale();
   const [error, save, saved, saving] = useSave();
   useOverlay(!!file, onClose, { typeThrough: true });
@@ -187,9 +208,9 @@ export function FileDialog({ file, onClose }) {
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, py: 1, fontSize: 15 }}>
         <b style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</b>
         {!file.missing && <Button size="small" disabled={saving} onClick={() => save(file)} data-tq-download="">{t("Download")}</Button>}
-        <IconButton size="small" aria-label="Close" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
+        <IconButton size="small" aria-label={t("Close")} onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
       </DialogTitle>
-      {(saving || error || saved) && <div role="status" className="tq-published-note">{t(saving ? "Downloading…" : error || saved)}</div>}
+      {(saving || error || saved) && <div role="status" className="tq-published-note">{saving ? t("Downloading…") : error || saved}</div>}
       <DialogContent dividers sx={{ p: 0, minHeight: 240 }}>
         {file.missing ? <div className="tq-published-note">It is not in this task's files any more.</div> : <Preview page={file} />}
       </DialogContent>
@@ -203,7 +224,7 @@ export function FileView({ file: f, onClose }) {
   const [err, save, saved] = useSave();
   return (
     <div className="tq-published tq-file-view" data-tq-file-view={f.name || ""}>
-      <div className="tq-published-page" data-tq-pdf={isPdf(f) ? "" : undefined}>
+      <Artifact className="tq-published-page" data-tq-pdf={isPdf(f) ? "" : undefined}>
         <div className="tq-published-row">
           <span className="tq-published-name tq-published-file"><b>{f.name}</b><span>{label(f)}{f.size ? ` · ${sizeOf(f.size)}` : ""}</span></span>
           {isText(f) && <CopyFile f={f} />}
@@ -213,7 +234,7 @@ export function FileView({ file: f, onClose }) {
         {err && <div className="tq-published-note" data-tq-file-error="">{err}</div>}
         {saved && <div className="tq-published-note" data-tq-file-saved="">{saved}</div>}
         <Preview page={f} />
-      </div>
+      </Artifact>
     </div>
   );
 }
@@ -224,7 +245,7 @@ function OutputFile({ file: p, open, onToggle, verb = "" }) {
   useLocale();
   const can = !!p.preview && !p.missing, [err, save, saved] = useSave();
   return (
-    <div className="tq-published-page" data-tq-output={p.path} data-tq-pdf={isPdf(p) ? "" : undefined}>
+    <Artifact className="tq-published-page" data-tq-output={p.path} data-tq-pdf={isPdf(p) ? "" : undefined} style={mediaFit(p)?.box}>
       <div className="tq-published-row">
         {/* ...its name opens it too, as a page's does: a PDF clicked by its name was read nowhere */}
         <button type="button" className={`tq-published-name${can ? "" : " tq-published-file"}`} disabled={!can} onClick={onToggle}
@@ -242,7 +263,7 @@ function OutputFile({ file: p, open, onToggle, verb = "" }) {
       {err && <div className="tq-published-note" data-tq-file-error="">{err}</div>}
       {saved && <div className="tq-published-note" data-tq-file-saved="">{saved}</div>}
       {open && can && <Preview page={p} />}
-    </div>
+    </Artifact>
   );
 }
 
@@ -295,7 +316,7 @@ function PageRow({ p, open, onToggle, verb }) {
   useLocale();
   const [err, save, saved] = useSave();
   return (
-    <div className="tq-published-page" data-tq-pdf={isPdf(p) ? "" : undefined}>
+    <Artifact className="tq-published-page" data-tq-pdf={isPdf(p) ? "" : undefined} style={mediaFit(p)?.box}>
       <div className="tq-published-row">
         <button type="button" className="tq-published-name" disabled={!p.url} onClick={onToggle}
           title={t(p.url ? (open ? "Hide it" : "Show it here") : "No copy was kept - open it on claude.ai")}>
@@ -316,6 +337,6 @@ function PageRow({ p, open, onToggle, verb }) {
       {err && <div className="tq-published-note" data-tq-file-error="">{err}</div>}
       {saved && <div className="tq-published-note" data-tq-file-saved="">{saved}</div>}
       {open && p.url && <Preview page={p} />}
-    </div>
+    </Artifact>
   );
 }

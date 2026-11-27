@@ -282,7 +282,7 @@ test("Jira Data Center connects read-only through the real card: Test, autosave,
     new URL(response.url()).pathname === "/api/ingest/poll" && response.request().method() === "POST");
   assert.ok(await pressButton(page, "[data-tq-sync-now] button"), "Sync now is pressable once the card's autosave has landed");
   assert.ok((await started).ok(), "Sync now accepted the poll before leaving the card");
-  // Setup hides the rail. Return to Timeline and expand FYI; the demo deliberately files unfamiliar issues.
+  // Setup hides the rail. Return to Timeline and expand FYI; the fixture's connector is in Timeline-only mode.
   await page.goto(harness.ui, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(async () => {
     const r = await fetch("/api/feed", { headers: { "X-Taskuary-Token": "phase0-browser-owner-token" } });
@@ -301,11 +301,18 @@ test("Jira Data Center connects read-only through the real card: Test, autosave,
   assert.ok(searches.every((r) => r.api_version === 2), "every search page was v2");
   assert.deepEqual(w.writes, [], "the poll wrote nothing upstream");
   assert.ok(!w.reads.some((r) => r.path.startsWith("/secure/attachment/")), "sync never downloads attachment bytes");
-  await page.$$eval('[role="option"]', (rows) => rows.find((row) => row.textContent.includes("NW-01 Synthetic Jira update")).click());
-  await page.waitForSelector(".tq-item-msg-h");
-  await page.$$eval(".tq-item-msg-h", (rows) => {
-    const row = rows.find((b) => b.closest(".tq-item-msg").textContent.includes("NW-01 Synthetic Jira update")) || rows[0];
-    if (row.getAttribute("aria-expanded") !== "true") row.click();
+  const issueRow = await page.waitForFunction(() => [...document.querySelectorAll('[role="option"]:not([aria-disabled="true"])')]
+    .find((row) => row.textContent.includes("NW-01 Synthetic Jira update")), { timeout: 12000 });
+  await issueRow.asElement().click();
+  try {
+    await page.waitForSelector(".tq-item-msg-h, [data-tq-jira-detail]", { timeout: 12000 });
+  } catch (e) {
+    const surface = await page.evaluate(() => [...document.querySelectorAll('[data-tq-item-sections], [data-tq-browse], [role="alert"]')].map((node) => node.innerText.slice(0, 200)));
+    assert.fail(`Jira details did not open: ${JSON.stringify({ surface, errors })} (${e.message})`);
+  }
+  if (!await page.$("[data-tq-jira-detail]")) await page.$$eval(".tq-item-msg-h", (rows) => {
+    const row = rows.find((b) => b.closest(".tq-item-msg").textContent.includes("NW-01 Synthetic Jira update"));
+    if (row?.getAttribute("aria-expanded") !== "true") row?.click();
   });
   await page.waitForFunction(() => {
     const panel = document.querySelector("[data-tq-jira-detail]");
@@ -350,8 +357,9 @@ test("Jira Data Center connects read-only through the real card: Test, autosave,
   assert.equal(w.reads.filter((r) => r.path.endsWith("export.log")).length, 1, "the retry fetches the attachment once");
 
   await page.$eval('[data-tq-jira-detail] button[aria-label="Enlarge export.png"]', (b) => b.click());
-  await page.waitForSelector('[data-tq-file-dialog="export.png"] [data-tq-download]', { visible: true });
-  await page.click('[data-tq-file-dialog="export.png"] [data-tq-download]');
+  const pictureDownload = '[data-tq-picture-viewer]:has(img[alt="export.png"]) [data-tq-download]';
+  await page.waitForSelector(pictureDownload, { visible: true });
+  await page.click(pictureDownload);
   assert.equal((await savedFile("export.png")).subarray(1, 4).toString(), "PNG");
 
   assert.deepEqual(errors, [], "no page errors");

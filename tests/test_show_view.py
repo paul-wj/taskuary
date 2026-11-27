@@ -40,12 +40,12 @@ class TheCheck(unittest.TestCase):
         bad(one('iframe', {'src': 'https://vendor.example'}), r"type 'iframe' is not one of table, stats")
         bad(one('text', {'text': 'hi', 'color': 'red'}), 'props has color - a text takes text')
         bad(one('text', {}), 'props needs text')
-        bad(one('chart', {'kind': 'pie', 'points': [{'label': 'x', 'value': 1}]}), 'must be one of bar, line')
+        bad(one('chart', {'kind': 'radar', 'points': [{'label': 'x', 'value': 1}]}), 'must be one of bar, line, area, pie')
         bad(one('chart', {'points': [{'label': 'x', 'value': '1'}]}), r'points\[0\]\.value must be a number')
         bad(one('table', {'columns': ['a'], 'rows': [[1, 2]]}), 'at most 1 cells')
         bad(one('table', {'columns': ['a'], 'rows': [{'b': 1}]}), 'not among the columns')
         bad(one('button', {'label': 'Pay', 'verb': 'pay_now'}), r"'pay_now' is no button on the task page - one of .*close")
-        bad(one('button', {'label': 'Go'}), 'one of verb')
+        bad(one('button', {'label': 'Go'}), r'one of props.verb')
         bad(one('button', {'label': 'Go', 'open': 'https://vendor.example'}), 'app page link')
         bad(one('button', {'label': 'Go', 'open': '#setup'}), 'app page link')
         bad(one('text', {'text': 'x'}, children=['a']), 'contains itself')
@@ -75,6 +75,53 @@ class TheCheck(unittest.TestCase):
         self.assertIn("Shown in the owner's chat", head)
         self.assertNotIn('\n', out)                   # a CLI's trace joins a result's lines: one line keeps the JSON whole
         self.assertEqual(json.loads(spec), viewspec.check(SPEC))
+
+
+class WhoCanMakeWhichTimes(unittest.TestCase):
+    "availability: the agent gives who and their ranges - the counts and the best slot are the page's (availability.js); a view's id names it"
+    TEAM = [{'name': 'Erin Blake', 'ranges': [{'day': '2026-12-01', 'from': '14:00', 'to': '16:00'}]},
+            {'name': 'Ray Colton', 'ranges': [{'day': '2026-12-02', 'from': '10:00', 'to': '12:00'}, {'day': '2026-12-01', 'from': ' 15:00', 'to': '16:00'}]},
+            {'name': 'Paula Vance', 'ranges': []}, {'name': 'Omar Keller'}]
+
+    def test_it_passes_as_given_no_reply_and_none_kept_apart(self):
+        v = viewspec.check({**one('availability', {'title': 'Product ideas session', 'minutes': 60, 'people': self.TEAM}), 'id': 'times'})
+        ps = v['elements']['a']['props']['people']
+        self.assertEqual(ps[0], self.TEAM[0])
+        self.assertEqual(ps[1]['ranges'][1], {'day': '2026-12-01', 'from': '15:00', 'to': '16:00'})
+        self.assertEqual((ps[2], ps[3]), ({'name': 'Paula Vance', 'ranges': []}, {'name': 'Omar Keller'}))      # none of the times; no reply yet
+        self.assertEqual(v['id'], 'times')
+        self.assertIn('"id":"times"', viewspec.shown({**one('availability', {'people': self.TEAM}), 'id': 'times'}))     # ...and it rides the answer
+
+    def test_what_it_cannot_draw_is_refused_saying_what_to_fix(self):
+        bad = lambda people, says, **more: self.assertRaisesRegex(ValueError, says, viewspec.check, one('availability', {'people': people, **more}))
+        at = lambda **r: [{'name': 'Erin Blake', 'ranges': [{'day': '2026-12-01', 'from': '14:00', 'to': '16:00', **r}]}]
+        bad([], 'needs people')
+        bad(at(to='13:00'), r'ranges\[0\]\.from must be before its to')
+        bad(at(**{'from': '2pm'}), r'ranges\[0\]\.from must be a time on a 24-hour clock, like 09:30 or 14:00')
+        bad(at(count=4), r'has count - it takes day, from, to')                    # a count is never the agent's to give
+        bad([{'name': 'Erin Blake', 'fits': True}], 'has fits - it takes name, ranges')
+        bad([{'name': 'Erin Blake'}, {'name': 'Erin Blake'}], 'listed twice')
+        bad([{'name': 'Erin Blake', 'ranges': 'Tuesday afternoon'}], 'must be a list of')
+        bad([{'name': f'Person {i}'} for i in range(13)], 'at most 12')
+        bad([{'name': 'Erin Blake', 'ranges': [{'day': f'2026-12-0{d}', 'from': '09:00', 'to': '10:00'} for d in range(1, 9)]}], 'spans 8 days - at most 7')
+        bad(self.TEAM, 'minutes .* must be 15 to 480', minutes=5)
+        bad(self.TEAM, 'props has best - a availability takes people, minutes', best='Tue 3pm')        # the best slot is worked out, never taken
+        self.assertRaisesRegex(ValueError, 'id must be a short name', viewspec.check, {**one('availability', {'people': self.TEAM}), 'id': 'the times!'})
+
+    def test_a_view_he_can_answer_keeps_an_id_of_its_own(self):
+        "The same choice shown twice is two questions: the agent's name for a view never stands in for the id his answer is kept under."
+        ask = {**one('choice', {'label': 'Which day?', 'options': ['Tue', 'Wed']}), 'id': 'times'}
+        a, b = (json.loads(viewspec.shown(ask).split(viewspec.MARK)[1])['id'] for _ in range(2))
+        self.assertNotEqual(a, b); self.assertNotIn('times', (a, b))
+
+    def test_the_tool_takes_it_and_its_guide_says_what_it_draws(self):
+        from taskuary import guides
+        schema = agenttools.TOOLS['show'][2]['properties']
+        self.assertIn('availability', schema['elements']['additionalProperties']['properties']['type']['enum'])
+        self.assertEqual(schema['elements']['additionalProperties']['properties']['props']['properties']['people']['items']['required'], ['name'])
+        self.assertIn('id', schema)
+        viewspec.check(json.loads(guides.AVAILABILITY))            # the guide's own example is a spec that passes
+        self.assertIn('availability {people', guides.SHOW_TYPES)
 
 
 class TheNewBlocks(unittest.TestCase):
@@ -131,7 +178,7 @@ class TheTool(unittest.TestCase):
     def test_it_is_listed_as_a_read_and_invites_use(self):     # 2026-11-09: once in 50 scenarios, with "never required" in it
         cls, desc, schema, _ = agenttools.TOOLS['show']
         self.assertEqual(cls, 'read')
-        self.assertIn('Use it freely', desc); self.assertIn('never sends, pays or closes', desc)
+        self.assertIn('never sends, pays or closes', desc)
         self.assertEqual(schema['required'], [])            # a view, or `files`, or both (2026-11-09)
         self.assertIn('files', schema['properties'])
 
@@ -144,7 +191,7 @@ class TheTool(unittest.TestCase):
 
     def test_it_reads_nothing_of_the_owners_so_a_strangers_task_may_show_one(self):
         theirs = self.s.create_task({'Title': 'Look at this', 'Status': 'open', 'OriginBase': 'stranger'}, 'triage')
-        text, err = tool(theirs, 'show', **one('text', {'text': 'What the sender asked, in three lines.'}))
+        text, err = tool(theirs, 'show', **one('list', {'items': ['What the sender asked', 'By when', 'For whom']}))
         self.assertFalse(err, text)
         _, err = tool(theirs, 'search_messages', words='renewal')
         self.assertTrue(err)
@@ -170,18 +217,40 @@ class TheTool(unittest.TestCase):
         kept = session_artifacts.confined(art['Path'])
         self.assertTrue(kept and kept.read_bytes().startswith(PNG))     # its own copy, kept after the scratch folder is cleared
         # ...and with a view in the same call, the view's mark is last, so the chat reads its spec whole (viewSpec.specIn)
-        text, err = tool(self.tid, 'show', files=[str(d / 'dark.png')], **one('text', {'text': 'Two palettes.'}))
+        text, err = tool(self.tid, 'show', files=[str(d / 'dark.png')], **one('stats', {'items': [{'label': 'Palettes', 'value': 2}]}))
         self.assertFalse(err, text)
         self.assertLess(text.index(agenttools.FILES_MARK), text.index(viewspec.MARK))
-        self.assertEqual(json.loads(text.split(viewspec.MARK)[1])['elements']['a']['type'], 'text')
+        self.assertEqual(json.loads(text.split(viewspec.MARK)[1])['elements']['a']['type'], 'stats')
         # ...and the general chat's payload places the copy under an answer, as a file it chose to show
         self.assertTrue(any(p['kind'] == 'shown' and p['name'] == 'dark.png' for p in server._assistant_payload(self.tid)['published']))
+
+    def test_a_picture_shown_with_a_view_of_only_its_words_is_the_picture_alone(self):
+        """His live app, 2026-11-25 ("really dumb visual that provides nothing"): a Codex agent showed the picture it drew together with a
+        view titled for it holding nothing but its alt text. The picture stands; a view of only words is no view - nothing drawn, nothing
+        kept, the agent told why - and a view refused beside files never takes the files down with it."""
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp(dir=tempfile.gettempdir())); (d / 'gate.png').write_bytes(PNG + b'fake')
+        words = {'title': 'Install illustration', 'root': 'g', 'elements': {'g': {'type': 'grid', 'props': {}, 'children': ['alt', 'n']},
+                 'alt': {'type': 'text', 'props': {'text': '**Alt text**\n\nA robot waits outside a locked server room.'}},
+                 'n': {'type': 'note', 'props': {'text': 'For Erin Blake to look over.'}}}}
+        text, err = tool(self.tid, 'show', files=[str(d / 'gate.png')], **words)
+        self.assertFalse(err, text)
+        self.assertNotIn(viewspec.MARK, text)
+        self.assertIn('The view was not drawn - a view of only words', text)
+        self.assertLess(text.index('not drawn'), text.index(agenttools.FILES_MARK))          # ...ahead of the rows the chat reads to their "]"
+        self.assertEqual(json.loads(text.split(agenttools.FILES_MARK)[1])[0]['name'], 'gate.png')
+        self.assertFalse([a for a in self.s.list_task_artifacts(self.tid) if a.get('Kind') == 'view'])
+        text, err = tool(self.tid, 'show', files=[str(d / 'gate.png')], **one('marquee', {}))         # a bad view: the picture still stands
+        self.assertFalse(err, text); self.assertIn("type 'marquee' is not one of", text)
+        self.assertEqual(json.loads(text.split(agenttools.FILES_MARK)[1])[0]['name'], 'gate.png')
+        text, err = tool(self.tid, 'show', **words)                                          # ...and alone, it is refused with why
+        self.assertTrue(err); self.assertIn('a view of only words shows nothing your answer does not', text)
 
     # A DRAWN VIEW IS KEPT WITH THE TASK (2026-11-10): the CLI's log was its only copy - cleaned up, the table was gone from the chat
     def test_a_view_shown_in_a_turn_is_drawn_from_the_task_once_its_session_log_is_gone_and_never_twice(self):
         import tempfile
         from pathlib import Path
-        from fastapi.testclient import TestClient
         from taskuary import sessionrecord
         text, err = tool(self.tid, 'show', **SPEC)
         self.assertFalse(err, text)
@@ -190,17 +259,14 @@ class TheTool(unittest.TestCase):
         self.s.add_transcript(self.tid, 'pty-1', 'the pane, as it ended', agent='coding', ext_id='a-log-cleaned-up', brain='claude')
         drawn = lambda ss: [x for s in ss for x in s.get('steps') or [] if viewspec.MARK in str(x.get('output') or '')]
         with mock.patch.object(sessionrecord, '_home', lambda: Path(tempfile.mkdtemp())):     # no CLI log anywhere
-            chat = TestClient(server.app).get(f'/api/tasks/{self.tid}/coding-chat').json()['data']['sessions']
             rec = sessionrecord.record(self.s, self.tid)['sessions']
-            for ss in (chat, rec):
+            for ss in (rec,):
                 (step,) = drawn(ss)
                 self.assertEqual((step['k'], step['name']), ('tool', 'show'))
                 self.assertEqual(json.loads(step['output'].split(viewspec.MARK)[1])['title'], 'Northwind renewals')
             # ...and while the session's own record still carries it, that copy is the one drawn
             sessionrecord._saved_path(self.tid, 'pty-1').write_text(json.dumps({'steps': [
                 {'k': 'tool', 'name': 'mcp__taskuary__show', 'text': '', 'output': text}, {'k': 'said', 'text': 'Three are due.'}]}), encoding='utf-8')
-            chat = TestClient(server.app).get(f'/api/tasks/{self.tid}/coding-chat').json()['data']['sessions']
-            self.assertEqual([x['name'] for x in drawn(chat)], ['mcp__taskuary__show'])
             self.assertEqual([x['name'] for x in drawn(sessionrecord.record(self.s, self.tid)['sessions'])], ['mcp__taskuary__show'])
 
     def test_a_turn_whose_show_step_kept_only_its_title_draws_the_view_the_task_kept(self):
@@ -238,11 +304,10 @@ if __name__ == '__main__': unittest.main()
 # WHAT IT MAKES FOR HIM TO LOOK AT, IT SHOWS (the owner, 2026-11-15: he asked for a query to review, the agent saved it as a file and said
 # only that it was ready - the ruling: the agent decides what to show, code draws it). One sentence, the same on every road, and a file
 # that is plain text can be shown whatever its name - by its bytes
-def test_every_road_is_told_in_one_sentence_to_show_what_it_makes():
+def test_every_show_tool_carries_the_one_sentence_on_showing_what_it_makes():
     from taskuary import apiagent, selfclose
     assert selfclose.SHOW_WHAT in agenttools.TOOLS['show'][1], 'the tool a CLI session is handed'
-    # ...and, where a tool is listed by one line (the owner, 2026-11-15), in the few words every session is told about its tools
-    assert selfclose.SHOW_WHAT in apiagent.FULL['show'] and selfclose.SHOW_WHAT in apiagent.TOOLS_BRIEF, 'the tool an API brain is handed'
+    assert selfclose.SHOW_WHAT in apiagent.FULL['show'], 'the tool an API brain is handed'
     assert selfclose.SHOW_WHAT in agenttools.rpc({'id': 1, 'method': 'initialize'}, None)['result']['instructions'], 'what a CLI session is told'
     assert selfclose.SHOW_WHAT in selfclose.SHOW_LINE, 'the line a chat with no tool reads'
 
@@ -263,10 +328,6 @@ def test_a_query_saved_as_a_file_is_shown_as_text_by_its_bytes():
     except ValueError as e: assert 'cannot be shown' in str(e)
 
 
-def test_the_tool_says_not_to_repeat_the_view_in_words():
-    from taskuary import agenttools
-    assert 'never the same table or list again in text' in agenttools.TOOLS['show'][1]
-
 
 def test_the_tools_one_example_is_a_good_spec_with_a_grid_tiles_a_chart_a_table_and_a_checklist():
     # ...read through the guide tool now (guides.py, 2026-11-09): the tool's description names it, and stays short
@@ -274,40 +335,6 @@ def test_the_tools_one_example_is_a_good_spec_with_a_grid_tiles_a_chart_a_table_
     v = viewspec.check(json.loads(agenttools.SHOW_EXAMPLE))
     assert sorted({e['type'] for e in v['elements'].values()}) == ['chart', 'checklist', 'grid', 'stats', 'table']
     assert len(v['elements']['kpi']['props']['items']) == 3
-
-
-def test_the_answer_is_the_answer_never_a_line_of_what_did_not_happen():
-    """The owner, 2026-11-16: "tell me what to do and i will do it" was answered "No changes were made to Azure permissions, resources, or the
-    implementation this turn" - and on the real CLI a plain question closed "I didn't change anything. I couldn't open the context file...".
-    The verify rule told every turn to say what it checked, "or that you could not": it says how an effect was checked, and what did not
-    happen only where it changes the answer - in the template, the line a pre-template copy hears, and an edited copy that read as shipped."""
-    import tempfile
-    from pathlib import Path
-    from taskuary import store as store_mod
-    from taskuary.store import SQLiteStore
-    agent = (Path(agenttools.__file__).parent / 'templates' / 'agent.md').read_text(encoding='utf-8')
-    assert store_mod._VERIFY_NOW in agent and 'or that you could not' not in agent
-    assert 'Answer what was asked' in agenttools.VERIFY_RULE and 'could not check it' not in agenttools.VERIFY_RULE
-    path = Path(tempfile.mkdtemp()) / 'taskuary.db'
-    s = SQLiteStore(str(path)); s.save_doc('agent', 'MINE.\r\n' + store_mod._VERIFY_WAS.replace('\n', '\r\n') + 'last.', 'owner')
-    s.cx.execute("DELETE FROM setting WHERE Name='agent_answers_the_ask'"); s.cx.commit()
-    a = SQLiteStore(str(path)).get_doc('agent')
-    assert store_mod._VERIFY_NOW.replace('\n', '\r\n') in a and 'or that you could not' not in a and a.startswith('MINE.') and a.endswith('last.')
-
-
-def test_every_worker_is_told_to_show_files_through_the_tool_and_never_claim_an_unchecked_effect():
-    # 2026-11-09: a coding agent "opened" screenshots in an image viewer nobody could see and said they were on the owner's screen
-    from taskuary import brief, selfclose, terminal
-    rules = terminal.with_fence_rule(brief.rules(MemoryStore(), 'agent', terminal.AGENT_CHARS))      # the coding road's cut, the template's copy
-    for said in ('call the `show` tool with its path in `files`', 'Never open a viewer, a browser or an app on the computer',
-                 'unless the show tool returned it', 'Claim an effect'):
-        assert said in rules, said
-    old = terminal.with_fence_rule('Honest reporting: say what you did.')        # an owner's AGENT.md from before it hears both too
-    assert agenttools.SHOW_RULE in old and agenttools.VERIFY_RULE in old
-    assert rules.count('unless the show tool returned it') == 1                  # ...and the template's own copy is not said twice
-    assert "show's `files`" in selfclose.SHOW_LINE      # ...the screen and the viewer are AGENT.md's to say (above), once
-    desc = agenttools.TOOLS['show'][1]
-    assert '`files`' in desc and 'never open a viewer' in desc and 'unless this tool said it was shown' in desc
 
 
 def test_the_agent_is_told_what_its_tools_do_and_a_sheet_it_made_is_in_front_of_him():
@@ -325,7 +352,6 @@ def test_the_agent_is_told_what_its_tools_do_and_a_sheet_it_made_is_in_front_of_
     try: viewspec.shown({'elements': {'c': {'type': 'bar', 'props': {'data': [1]}}}}); raise AssertionError('refused')
     except ValueError as e: assert 'A view that passes: ' in str(e) and viewspec.check(json.loads(str(e).split('A view that passes: ')[1]))
     assert '`item` is its id' in agenttools.TOOLS['tick'][1] and '`item`' in agenttools.SHORT['tick'] and 'tick' in agenttools.ALWAYS_LOAD
-    assert 'call each by the name your session lists it under that server' in agenttools.TOOLS_LINE
     s = MemoryStore(); tid = s.create_task({'Title': 'Q4 spend forecast', 'Kind': 'general'}, 'owner')
     out = outputs.folder(tid); out.mkdir(parents=True, exist_ok=True)
     wb = Workbook(); ws = wb.active; ws.append(['Vendor', 'Q3', 'Q4']); ws.append(['Payworth', 1200, '=B2*1.1']); wb.save(out / 'forecast.xlsx')
@@ -363,3 +389,159 @@ def test_a_sheet_previews_its_numbers_as_their_cells_format_them():
     ws.append(['Travel', '=B2/10', 0.1234]); ws['B3'].number_format = '$#,##0.00'; ws['C3'].number_format = '0.0%'
     p = Path(tempfile.mkdtemp()) / 'budget.xlsx'; wb.save(p)
     assert outputs.sheet(p)['rows'][1:] == [['Payroll', '$147,210', '-63%'], ['Travel', '$14,721.00', '12.3%']]
+
+
+def test_a_path_without_its_root_is_read_in_the_tasks_own_folders():
+    """WALK 9 (2026-11-23): show refused "outputs/TQ-0014/sample-invoice.pdf" and a bare "crm-10-seat-pricing.pdf" as outside the outputs folder
+    they were in, while the same turn's end_turn said it showed them. A relative path is the task's own: its outputs folder, then the scratch."""
+    from taskuary import outputs
+    from taskuary.store import task_ref
+    s = MemoryStore(); tid = s.create_task({'Title': 'Sample invoice', 'Kind': 'general'}, 'owner')
+    out = outputs.folder(tid); out.mkdir(parents=True, exist_ok=True)
+    (out / 'sample-invoice.png').write_bytes(b'\x89PNG\r\n\x1a\n' + b'\0' * 32)
+    for name in ('sample-invoice.png', f'outputs/{task_ref(tid)}/sample-invoice.png'):
+        said = agenttools.show_files(s, tid, [name])
+        assert 'only a file in' not in said and 'no such file' not in said, (name, said)
+    try: agenttools.show_files(s, tid, ['../../../../../../etc/hosts']); raise AssertionError('a path climbing out is never read')
+    except ValueError as e: assert 'only a file in' in str(e) or 'no such file' in str(e), e
+
+
+def test_a_file_shown_comes_back_as_what_it_reads():
+    """Walk 9 (45, 46): the agent wrote its sheet and its PDF through a shell that ate every "$558" as a variable - the files read "Starter ,400"
+    while the chat said "$1,400" - and nothing read the file back. What a shown file reads is in show's answer: a broken deliverable is a fact
+    the agent sees, on any brain and any shell."""
+    from openpyxl import Workbook
+    from taskuary import outputs
+    s = MemoryStore(); tid = s.create_task({'Title': 'Three CRM tools, 10 seats', 'Kind': 'general'}, 'owner')
+    out = outputs.folder(tid); out.mkdir(parents=True, exist_ok=True)
+    wb = Workbook(); ws = wb.active; ws.append(['Plan', 'Price']); ws.append(['Starter', ',400']); wb.save(out / 'crm-pricing.xlsx')
+    (out / 'notes.txt').write_text('Professional - - ,000 ,800', encoding='utf-8')
+    said = agenttools.show_files(s, tid, [str(out / 'crm-pricing.xlsx'), str(out / 'notes.txt')])
+    assert 'Starter' in said and ',400' in said and 'Professional - - ,000 ,800' in said, said
+
+
+
+def deck(path, *slides):
+    "A .pptx of `slides`, each one line of text - the zip of XML a deck is."
+    import zipfile
+    with zipfile.ZipFile(path, 'w') as z:
+        for i, t in enumerate(slides, 1):
+            z.writestr(f'ppt/slides/slide{i}.xml', '<p:sld xmlns:p="p" xmlns:a="a"><a:p><a:r><a:t>' + t + '</a:t></a:r></a:p></p:sld>')
+
+
+def test_a_deck_that_cannot_be_drawn_is_still_read_back():
+    """Walk 10, 2026-11-23: after "update everything" the deck still said "212 headcount" on slide 2, and show answered only ".pptx cannot be
+    shown" - nothing read it back, and it went to the board. Every file show is handed is read back, drawn or not."""
+    from taskuary import outputs
+    s = MemoryStore(); tid = s.create_task({'Title': 'Q3 board pack', 'Kind': 'general'}, 'owner')
+    out = outputs.folder(tid); out.mkdir(parents=True, exist_ok=True)
+    deck(out / 'board-deck.pptx', 'Q3 board pack', 'Strong operating margin at 18.9% with 212 headcount')
+    said = agenttools.show_files(s, tid, [str(out / 'board-deck.pptx')])
+    assert agenttools.SHOWN_SAY in said and '212 headcount' in said, said
+
+
+# ── WHAT-IF AND ANSWERS (the owner, 2026-11-24, after json-render's state and actions): controls move a value of the view's state on his
+# screen alone, values worked out from it are checked here and evaluated on the page; his pick on a choice reaches the agent once
+WHAT_IF = {'title': 'Payworth seats', 'state': {'seats': 40}, 'root': 'g', 'elements': {
+    'g': {'type': 'grid', 'props': {'cols': 1}, 'children': ['s', 'k', 't', 'go']},
+    's': {'type': 'slider', 'props': {'label': 'Seats', 'value': {'$bindState': '/seats'}, 'min': 5, 'max': 200, 'step': 5}},
+    'k': {'type': 'stats', 'props': {'items': [{'label': 'Per month', 'format': 'currency', 'value': {'$expr': 'seats * 12'}}]}},
+    't': {'type': 'table', 'props': {'rows': [{'Plan': 'Basic', 'Per seat': 12, 'Total': {'$expr': 'per_seat * seats'}}]}},
+    'go': {'type': 'button', 'props': {'label': 'Go with this'}, 'on': {'press': {'action': 'answer', 'params': {'text': '{seats} seats'}}}}}}
+
+
+class TheWhatIf(unittest.TestCase):
+    def test_controls_and_worked_out_values_pass_and_say_what_is_wrong(self):
+        v = viewspec.check(WHAT_IF)
+        self.assertEqual(v['state'], {'seats': 40})
+        self.assertEqual(v['elements']['s']['props']['value'], 'seats')
+        self.assertEqual(v['elements']['t']['props']['columns'], ['Plan', 'Per seat', 'Total'])      # records stand as they came
+        self.assertEqual(viewspec.check(v), v)
+        # ...a control's value with no state behind it starts where its control does
+        self.assertEqual(viewspec.check(one('toggle', {'label': 'Yearly', 'value': 'annual'}))['state'], {'annual': False})
+        bad = lambda spec, says: self.assertRaisesRegex(ValueError, says, viewspec.check, spec)
+        tile = lambda src: {**WHAT_IF, 'elements': {**WHAT_IF['elements'], 'k': {'type': 'stats', 'props': {'items': [{'label': 'x', 'value': {'$expr': src}}]}}}}
+        bad(tile('seat * 12'), "reads seat, which the view has no value for - its state has seats")
+        bad(tile('seats *'), 'it ends too soon')
+        bad(tile('__import__("os")'), r"__import__\(\) is not one of min, max")
+        bad({**WHAT_IF, 'elements': {**WHAT_IF['elements'], 'go': {'type': 'button', 'props': {'label': 'Pay'}, 'on': {'press': {'action': 'pay'}}}}},
+            "must be answer .* or setState")
+        bad(one('slider', {'label': 'x', 'value': 'n', 'min': 5, 'max': 5}), 'min must be under max')
+
+    def test_only_a_view_he_can_answer_has_an_id_of_its_own(self):
+        # ...and the spec is the answer's last thing: the chat reads it from the mark to the end, and words after it left a choice undrawn
+        said = lambda spec: json.loads(viewspec.shown(spec).partition(viewspec.MARK)[2])
+        self.assertIn('His pick comes to you', viewspec.shown(WHAT_IF).partition(viewspec.MARK)[0])
+        self.assertNotIn('id', said(SPEC))
+        a, b = said(WHAT_IF), said(WHAT_IF)
+        self.assertNotEqual(a['id'], b['id'])                # ...the same choice shown twice is two questions
+
+
+class TheAnswer(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.s = MemoryStore()
+        self.p = mock.patch.object(server, 'store', self.s); self.p.start()
+        self.tid = self.s.create_task({'Title': 'Renew Payworth', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner'}, 'owner')
+        self.c = TestClient(server.app, base_url='http://127.0.0.1', headers={'X-Taskuary-Token': server.cfg['server'].get('token') or ''})
+
+    def tearDown(self): self.p.stop()
+
+    def test_his_pick_reaches_the_agent_once_as_his_press(self):
+        from taskuary import events, general
+        told = []
+        with mock.patch.object(general, 'to_agent', lambda *a, **k: told.append((a, k)) or 'told'):
+            r = self.c.post(f'/api/tasks/{self.tid}/view-answer', json={'view': 'v1', 'el': 'c', 'pick': 'Pro - $540/mo', 'asked': 'Which plan?'})
+            self.assertEqual(r.status_code, 200, r.text); self.assertEqual(r.json()['told'], 'told')
+            # ...pressed twice - a double click, a second tab - it is still one answer, and the second says the first
+            again = self.c.post(f'/api/tasks/{self.tid}/view-answer', json={'view': 'v1', 'el': 'c', 'pick': 'Basic - $200/mo'})
+        self.assertEqual(again.status_code, 409); self.assertIn('Pro - $540/mo', again.json()['detail'])
+        self.assertEqual(len(told), 1); self.assertEqual(told[0][1]['frm'], 'taskuary')
+        said, _ = events.take(self.s, self.tid)
+        self.assertEqual(said.count('Pro - $540/mo'), 1, said); self.assertIn('Which plan?', said)
+        self.assertEqual(self.c.get(f'/api/tasks/{self.tid}/view-answers').json(), {'v1': {'c': 'Pro - $540/mo'}})
+        # ...and no chat line besides: the view he pressed shows it (general.press_lines)
+        self.assertFalse([m for m in general.press_lines(self.s, self.tid) if 'Pro' in m['content'][0]['text']])
+
+
+def test_files_handed_over_stand_in_the_order_they_were_handed():
+    """The card gallery, 2026-11-25: "three versions - pick one" stood newest first - the third version led the group, and a board pack led
+    with its clip. The files of one hand-over stand in the order the agent handed them, whatever was written last."""
+    import os, shutil
+    from taskuary import outputs
+    s = MemoryStore(); tid = s.create_task({'Title': 'Three versions of the banner', 'Kind': 'general'}, 'owner')
+    out = outputs.folder(tid)
+    for d in (out, outputs.turns_folder(tid)): shutil.rmtree(d, ignore_errors=True)      # ...another test's task of the same number
+    out.mkdir(parents=True, exist_ok=True)
+    names = ['banner-one.md', 'banner-two.md', 'banner-three.md']
+    for i, n in enumerate(names): (out / n).write_text(f'# version {i + 1}\n', encoding='utf-8'); os.utime(out / n, (1_700_000_000 + i, 1_700_000_000 + i))
+    try:
+        agenttools.show_files(s, tid, [str(out / n) for n in names])
+        listed = [{**r, 'handed': True} for r in outputs.listing(tid)]
+        assert [r['name'] for r in listed] == names[::-1], 'the folder lists newest first'
+        assert [r['name'] for r in outputs.as_handed(listed, outputs.handed(tid))] == names
+        agenttools.show_files(s, tid, [str(out / names[0])])                       # ...shown again, it keeps its place
+        assert outputs.handed(tid) == names
+    finally: shutil.rmtree(out, ignore_errors=True); shutil.rmtree(outputs.turns_folder(tid), ignore_errors=True)
+
+
+def test_each_show_call_is_a_hand_over_of_its_own():
+    """The card gallery, 2026-11-25: a chart and its workbook, each shown by a call of its own in one turn, stood as one artifact "2 files".
+    One call is one hand-over: the files of a call share its number, the next call's have the next, and the page draws each as its own."""
+    import shutil
+    from taskuary import outputs
+    s = MemoryStore(); tid = s.create_task({'Title': 'A chart and its numbers', 'Kind': 'general'}, 'owner')
+    out = outputs.folder(tid)
+    for d in (out, outputs.turns_folder(tid)): shutil.rmtree(d, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+    for n in ('chart.md', 'numbers.md', 'notes.md'): (out / n).write_text(f'# {n}\n', encoding='utf-8')
+    try:
+        agenttools.show_files(s, tid, [str(out / 'chart.md')])
+        agenttools.show_files(s, tid, [str(out / 'numbers.md'), str(out / 'notes.md')])
+        assert outputs.calls(tid) == [['chart.md'], ['numbers.md', 'notes.md']]
+        by = outputs.call_of(tid)
+        assert by['chart.md'] != by['numbers.md'] and by['numbers.md'] == by['notes.md']
+        # ...and a list kept before calls were is one hand-over, as it was drawn
+        (outputs.turns_folder(tid) / 'handed.json').write_text('["chart.md", "numbers.md"]', encoding='utf-8')
+        assert outputs.calls(tid) == [['chart.md', 'numbers.md']] and outputs.handed(tid) == ['chart.md', 'numbers.md']
+    finally: shutil.rmtree(out, ignore_errors=True); shutil.rmtree(outputs.turns_folder(tid), ignore_errors=True)

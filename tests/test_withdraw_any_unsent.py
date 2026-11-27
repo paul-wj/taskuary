@@ -71,8 +71,9 @@ def test_an_agent_with_no_shell_takes_back_an_email_by_its_marker():
     s = MemoryStore(); tid = own_task(s, 'general')
     paula = slots.draft(s, tid, 'Hi Paula - the table.', to='paula@northwind.example', subject='The tools table')['review_id']
     gail = slots.draft(s, tid, 'Hi Gail - the table.', to='gail@northwind.example', subject='The tools table')['review_id']
-    brief = general.latest_block(s, tid)
-    assert f'rv{paula}, the email to paula@northwind.example' in brief and 'which=' in brief
+    from taskuary import events
+    brief = events.take(s, tid)[0]          # ...each card its own event, by its id - the id its marker names
+    assert f'Card rv{paula} (the email to paula@northwind.example)' in brief and 'which=' in general.marker_lines(s, tid, False, False)
     text, found = selfclose.withdraw_markers(f'Done.\n[[TASKUARY-WITHDRAW which=rv{paula}: sent to Gail instead]]\n'
                                              '[[TASKUARY-WITHDRAW which="gail@northwind.example": Gail is away]]\n[[TASKUARY-WITHDRAW: no reply]]')
     assert text == 'Done.' and found == [(f'rv{paula}', 'sent to Gail instead'), ('gail@northwind.example', 'Gail is away'), ('', 'no reply')]
@@ -84,12 +85,12 @@ def test_an_agent_with_no_shell_takes_back_an_email_by_its_marker():
     assert waiting(s, tid) == [('slot', gail)]
 
 
-def test_a_playbook_the_agent_proposed_is_its_own_to_take_back_and_the_ledgers_is_not():
+def test_a_skill_the_agent_proposed_is_its_own_to_take_back_and_the_ledgers_is_not():
     s = MemoryStore(); tid = own_task(s, 'general')
-    mine = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the agent proposes a playbook',
-                         'DraftText': json.dumps({'action': 'write_playbook', 'slug': 'w-9', 'text': '# Send our W-9'})})
+    mine = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the agent proposes a skill',
+                         'DraftText': json.dumps({'action': 'save_skill', 'slug': 'w-9', 'text': '# Send our W-9'})})
     s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'what the ledger counted',
-                  'DraftText': json.dumps({'action': 'amend_playbook', 'slug': 'w-9', 'block': 'Counted: 3 of 4 sent as drafted', 'text': '# Send our W-9'})})
+                  'DraftText': json.dumps({'action': 'save_skill', 'slug': 'w-9', 'block': 'Counted: 3 of 4 sent as drafted', 'text': '# Send our W-9'})})
     assert [r['rid'] for r in verdicts.unsent(s, tid)] == [mine]
     assert verdicts.withdraw(s, tid, 'the owner said the steps are wrong', 'assistant', which=str(mine))['ok']
     assert s.get_review(mine)['Status'] == 'closed_unsent'
@@ -103,9 +104,11 @@ def test_a_reply_nobody_has_written_is_nothing_set_up():
     mid = s.add_message({'TaskId': tid, 'ExternalId': 'e1', 'ConversationId': 'c1', 'Channel': 'email', 'FromName': 'Erin Blake',
                          'FromEmail': 'erin@northwind.example', 'Subject': 'Tuesday', 'BodyText': 'Free Tuesday?', 'Status': 'routed'})
     rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'DraftText': ''})
-    assert verdicts.unsent(s, tid) == [] and 'ALSO SET UP' not in general.turn_facts(s, tid)
+    from taskuary import events
+    assert verdicts.unsent(s, tid) == [] and f'Card rv{rid} ' not in events.take(s, tid)[0]
     s.update_review_draft(rid, 'Yes, Tuesday works.', None)
     assert [x['rid'] for x in verdicts.unsent(s, tid)] == [rid]
+    assert f'Card rv{rid} (the reply to erin@northwind.example (Erin Blake)): up for his press: "Yes, Tuesday works."' in events.take(s, tid)[0]
 
 
 def test_an_email_waiting_is_told_to_the_agent_with_its_words():
@@ -116,4 +119,5 @@ def test_an_email_waiting_is_told_to_the_agent_with_its_words():
     with mock.patch.object(server, 'store', s):
         call(tid, 'propose_email', to='paula@northwind.example', subject='October report', text='Hi Paula, here is the October report.')
     s.add_comment(tid, 'owner', general.USER_TYPE, 'make it shorter')
-    assert 'the email to paula@northwind.example: "Hi Paula, here is the October report."' in general.turn_facts(s, tid)
+    from taskuary import events
+    assert '(the email to paula@northwind.example): up for his press: "Hi Paula, here is the October report."' in events.take(s, tid, fresh=True)[0]

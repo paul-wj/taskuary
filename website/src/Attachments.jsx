@@ -33,12 +33,12 @@ const kindOf = (a) => a.link ? t(LINK_KIND.find(([k]) => String(a.kind || "").to
 // a mail whose body points at a picture it does not carry ([image: ...], cid:) - worth a "look for attachments" offer
 export const mentionsPicture = (body) => /\[(image|cid|inline image)|cid:/i.test(String(body || ""));
 
-// `asFiles`: the images the page already draws itself (a report's chart, drawn live from its rows - ReportRows) are chips, not pictures
+// `skip`: what the item already draws itself (a report's chart, drawn live from its rows - madeTask.reportView `owns`): never drawn again
 // `bare`: { remote } when the message has no words of its own (mailLinks.bareLine) - a picture-only mail. Its pictures are the message, so
 // a small inline one is drawn, not chipped as a signature's logo; and the panel says what it is, never a blank
-export const Attachments = ({ messageId, canFetch, dense, original, asFiles = null, bare = null }) => {
+export const Attachments = ({ messageId, canFetch, dense, original, skip = null, bare = null }) => {
   useLocale();
-  const [items, setItems] = useState(null);
+  const [got, setItems] = useState(null), items = got && skip ? got.filter((a) => !skip(a)) : got;
   const [big, setBig] = useState(null), [open, setOpen] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -70,7 +70,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
       {err ? err.detail || t(err.key) : t("look for attachments on this mail")}
     </Typography>
   ) : null}</>;
-  const drawn = (a) => drawable(a, !!bare) && !asFiles?.(a);
+  const drawn = (a) => drawable(a, !!bare);
   const imgs = items.filter(drawn);
   const clips = items.filter((a) => !drawn(a) && playable(a));
   const files = items.filter((a) => !drawn(a) && !playable(a));
@@ -143,8 +143,8 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
         {open && files.some((a) => a.id === open.id) && <FileView key={open.id} file={open} onClose={() => setOpen(null)} />}
         </Box>
       )}
-      {/* full size, on top of everything - a screenshot of a spreadsheet is unreadable inline - in the one file dialog (FileDialog) */}
-      <FileDialog file={big} onClose={() => setBig(null)} />
+      {/* full size, on top of everything - a screenshot of a spreadsheet is unreadable inline - in the one file dialog (FileDialog), the mail's other pictures a step away */}
+      <FileDialog file={big} files={imgs} onClose={() => setBig(null)} />
     </Box>
   );
 };

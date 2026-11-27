@@ -41,7 +41,15 @@ def at_domain(store, domain: str) -> list:
 
 
 def written_to(store) -> dict:
-    """{address: (times, last sent)} over the To and Cc of the owner's own sent mail - one scan per new message."""
+    """{address: (times, last sent)} over the To and Cc of the owner's own sent mail - one scan per new message - and of the mail Taskuary
+    sent for him (ledger.mailed), known before the provider's copy is ever read back in."""
+    from . import ledger
+    out = dict(_mailbox_sent(store))
+    for a, (n, last) in ledger.mailed(store).items(): out[a] = (out.get(a, (0, ''))[0] + n, max(last, out.get(a, (0, ''))[1]))
+    return out
+
+
+def _mailbox_sent(store) -> dict:
     # kept ON the store, rescanned only when mail arrives. Keyed by id(store) it outlived its store: a closed store's id
     # came back for the next one, whose own recipients were then never read (CI, 2026-10-05)
     with store.lock: newest = store.cx.execute('SELECT MAX(MessageId) FROM message').fetchone()[0]
@@ -61,19 +69,14 @@ def written_to(store) -> dict:
     return seen
 
 
-_ADDR = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
+from .ledger import ADDR as _ADDR
 def owner_lines(store, tid=None) -> list:
     """(address, the line it stands in) for every email address in the owner's OWN words - his memory (LEARNED.md: "Your people") and, on a
     task, what he typed on it. An address he gave is no guess (round 3, 2026-11-22: Paula's address was in his memory, and the agent was told
-    it guessed it and asked him for it)."""
-    texts = [str(store.get_doc('learned') or '')]
-    if tid:
-        from .general import USER_TYPE, WAITING_TYPE, is_brief
-        t = store.get_task(int(tid)) or {}
-        if t.get('OriginBase') == 'owner': texts.append(str(t.get('Summary') or ''))
-        texts += [str(c.get('Body') or '') for c in store.list_comments(int(tid), internal=True)
-                  if c.get('ActorType') in (USER_TYPE, WAITING_TYPE) and not is_brief(c)]
-    return [(m.group(0).lower(), line) for x in texts for line in x.splitlines() for m in _ADDR.finditer(line)]
+    it guessed it and asked him for it). The lines he typed are the record's (ledger.given: on task `tid`, else on ANY task - walk 9,
+    2026-11-23: he gave Paula's address answering one task, and the next task's agent found "nobody matches 'Paula'" and asked him again)."""
+    from . import ledger
+    return [(m.group(0).lower(), line) for line in str(store.get_doc('learned') or '').splitlines() for m in _ADDR.finditer(line)] + ledger.given(store, tid)
 def said_by_owner(store, tid=None) -> set: return {a for a, _ in owner_lines(store, tid)}
 
 
@@ -108,4 +111,51 @@ def resolve(store, name: str) -> dict:
             for a_, (n, last) in written_to(store).items():
                 if _whole([w], a_): add(some, a_, n, last)
         found = rank(some)
+    # ...AND THE ORG CHART AND DIRECTORY, the same answer the meeting's invitees were found by (calwrite.people_of - one road for who a person is)
+    if not found:
+        from . import peoplesearch
+        try: hit = next(iter(peoplesearch.search(store, name[:120], 'email').get('data') or []), None)
+        except Exception: hit = None
+        # ...a person by every word of their name; a hit by company or domain is someone AT it, a guess the draft marks (slots.address_for)
+        if hit and '@' in str(hit.get('to')) and set(words) <= set(_words(hit.get('name'))): return {'address': str(hit['to']).lower()}
     return {'candidates': found[:5]} if found else {}
+
+
+def keys(store, name: str = '', address: str = '') -> set:
+    """THE ONE ANSWER TO WHO SOMEONE IS, as keys to compare (walk 6, CLI F9: Paula wrote by chat with a name and no address, so "to:
+    paula@northwind.example" found "nobody called that on this task", and Gail was listed twice - by name off her chat, by address off her
+    mail). Their address (as given, inside "Name <address>", or the one whole name finds - resolve) and their name, lowercased. Two shapes
+    of one person share a key; set() for nobody."""
+    raw, a = ' '.join(str(name or '').split()), str(address or '').strip().lower()
+    if not a and (m := _ADDR.search(raw)): a, raw = m.group(0).lower(), raw.replace(m.group(0), '').strip(' <>"')
+    if not a and raw: a = str(resolve(store, raw).get('address') or '').lower()
+    return {k for k in (raw.lower(), a) if k}
+
+
+def tasks_of(store, address: str, skip=None, limit: int = 12) -> list:
+    """A PERSON'S TASKS WITH THE OWNER (the owner, 2026-11-24: an agent on one of Gail's asks could not see her other three): every task with
+    a message from them or to them, open and closed, newest message first - [{ref, title, asked, stands, closed, last}]: `asked` the subject
+    they asked it under, `stands` where it stands in the words every reader reads (taskstate.said), `closed` the day it closed or '', `last`
+    its newest message's date. `skip`: a task id left out (the one asking) - whose agent is shown its own profile's tasks (workstreams.sees)."""
+    from . import memory, taskstate, workstreams
+    from .store import task_ref
+    a = str(address or '').strip().lower()
+    if '@' not in a: return []
+    ms = store._rows("SELECT TaskId, Subject, SentAt, FromEmail, RecipientsJson FROM message WHERE TaskId IS NOT NULL "
+                     "AND (lower(IFNULL(FromEmail,''))=? OR lower(IFNULL(RecipientsJson,'')) LIKE ?) ORDER BY SentAt", (a, f'%{a}%'))
+    on = {}
+    for m in ms:
+        if m['TaskId'] == skip or a not in memory.people_of(m): continue
+        o = on.setdefault(m['TaskId'], {'asked': ''})
+        if not o['asked'] and str(m.get('FromEmail') or '').lower() == a: o['asked'] = str(m.get('Subject') or '')
+    # ...the newest `limit` by their last message first, so where each stands is read for those alone
+    last = lambda tid: str((store._one('SELECT MAX(SentAt) At FROM message WHERE TaskId=?', (tid,)) or {}).get('At') or '')[:10]
+    out = []
+    for tid, at in sorted(((tid, last(tid)) for tid in on), key=lambda o: o[1], reverse=True)[:limit]:
+        if not (t := store.get_task(tid)) or not workstreams.sees(store, skip, tid): continue
+        shut = t.get('Status') in ('done', 'dropped')
+        try: stands = '' if shut else taskstate.said(taskstate.standing(store, tid))
+        except Exception: stands = t.get('Status') or ''
+        out.append({'ref': task_ref(tid), 'title': t.get('Title') or '', 'asked': on[tid]['asked'], 'stands': stands, 'last': at,
+                    'closed': str(t.get('ClosedAt') or t.get('UpdatedAt') or '')[:10] if shut else ''})
+    return out

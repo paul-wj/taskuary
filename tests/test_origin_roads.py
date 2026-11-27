@@ -134,7 +134,10 @@ def test_a_headless_run_trims_its_env_only_when_the_profile_says_so(monkeypatch)
     monkeypatch.setenv('GH_TOKEN', 'y'); monkeypatch.setenv('ANTHROPIC_API_KEY', 'z')
     strict = agents.spawn_env({'strict_env': True}, {'TASKUARY_TASK': '7'})
     assert 'GH_TOKEN' not in strict and strict['ANTHROPIC_API_KEY'] == 'z' and strict['TASKUARY_TASK'] == '7'
-    assert agents.spawn_env({}, {'A': '1'}) == agents.child_env({**os.environ, 'A': '1'})
+    # ...an owner's run keeps the process's environment less the owner's own secrets (agents.ambient): a runner's PGPASSWORD is one
+    monkeypatch.setenv('PGPASSWORD', 'x')
+    mine = agents.spawn_env({}, {'A': '1'})
+    assert mine == agents.child_env({**agents.ambient(os.environ), 'A': '1'}) and 'PGPASSWORD' not in mine and mine['GH_TOKEN'] == 'y'
 
 
 # ── headless and general ─────────────────────────────────────────────────────────────────────────────────────────
@@ -159,7 +162,9 @@ def test_an_owner_s_headless_run_is_unchanged():
     a = mine['args']
     from taskuary.clis import preset_args
     assert [x for i, x in enumerate(a) if x not in TOOLBOX and not (i and a[i - 1] in TOOLBOX)] == (base.get('args') or preset_args('claude'))
-    assert {k: v for k, v in mine.items() if k != 'args'} == {k: v for k, v in base.items() if k != 'args'}
+    assert {k: v for k, v in mine.items() if k not in ('args', 'cwd')} == {k: v for k, v in base.items() if k not in ('args', 'cwd')}
+    from taskuary import outputs
+    assert mine['cwd'] == str(outputs.work_folder(t))     # ...and it works in its task's own folder, never the shared scratch
 
 def test_a_stranger_s_headless_run_on_a_cli_with_neither_mode_is_refused():
     s = _store('copilot'); t = _stranger(s)

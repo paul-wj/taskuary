@@ -20,7 +20,7 @@ def llm_says(intent='task', **extra):
 def mail(**kw):
     base = {'external_id': 'x1', 'channel': 'email', 'subject': 'pilot plan', 'body': 'Can you draft a pilot plan for the new box?',
             'from_email': 'erin@northwind.example', 'from_name': 'Erin Blake', 'conversation_id': 'AAQk-pilot',
-            'sent_at': '2026-10-27 18:00', 'source_name': 'alex@northwind.example'}
+            'sent_at': '2026-10-27 18:00', 'source_name': 'alex@northwind.example', 'auth': 'pass'}
     return {**base, **kw}
 
 
@@ -31,11 +31,17 @@ def store(**settings):
     return s
 
 
-def ingested(s, m, intent='task', wrote=True):
+def arrived(s, m, intent='task', wrote=True):
+    "-> (what ingest answered, what it set going: each (fn, *args))"
     with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch.object(senders, 'wrote_to', return_value=wrote), \
          mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
         out = ingest_message(s, m, llm=llm_says(intent))
-    return out, [getattr(c[0][0], '__name__', '') for c in spawn.call_args_list]
+    return out, [c[0] for c in spawn.call_args_list]
+
+
+def ingested(s, m, intent='task', wrote=True):
+    out, set_going = arrived(s, m, intent, wrote)
+    return out, [getattr(c[0], '__name__', '') for c in set_going]
 
 
 def finished_task(s):
@@ -102,6 +108,43 @@ class CarryOnTests(unittest.TestCase):
         _out, spawned = ingested(s, mail(**{**AGAIN, 'body': 'Did you get my last note?'}), intent='reply_only')
         self.assertNotIn('_continue_general', spawned)
         self.assertEqual(spawned, ['_replan_general'])
+
+    def test_the_answer_the_task_waits_on_reaches_its_agent_whatever_triage_read(self):
+        """Walk 18 (L1): the agent asked Gail for the vendor split and waited on her; her holding reply with the quote's picture "woke" the
+        task, but triage read it fyi, nothing passed it on, and the chip read "agent done" - the picture was read only when the next mail came
+        6 minutes later. The answer it waits on goes to its agent as it arrives; until a turn runs it never reads "agent done"."""
+        from taskuary import taskstate, waiton
+        s = store()
+        out, _ = ingested(s, mail())
+        tid = out['task_id']; general.OPENING.discard(tid)
+        s.add_comment(tid, 'owner', general.USER_TYPE, 'Can you draft a pilot plan for the new box?')
+        s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Asked Gail for the vendor split; waiting on her.')
+        waiton.declare(s, tid, 'gail@northwind.example', 'agent')
+        s._exec("UPDATE task SET WaitingSince='2026-01-01 09:00:00' WHERE TaskId=?", (tid,))       # ...asked a while before she answers
+        gail = dict(external_id='x3', from_email='gail@northwind.example', from_name='Gail Moreno', sent_at='2026-10-28 10:00',
+                    body='Still working on the split - the quote is in the picture.')
+        out, spawned = ingested(s, mail(**gail), intent='fyi')
+        self.assertEqual((out['task_id'], spawned), (tid, ['_continue_general']))
+        self.assertTrue(any('answered what it waits on' in c['Body'] for c in s.list_comments(tid)))
+        general.OPENING.discard(tid)
+        self.assertEqual(taskstate.standing(s, tid)['waits_on'], 'agent')
+        self.assertEqual(taskstate.state(s, s.get_task(tid)), 'queued', 'its agent owes the next move: never "agent done"')
+
+    def test_the_answer_to_a_mail_he_started_reaches_an_agent_though_none_ever_worked_it(self):
+        """Walk 21 (S2): the Assistant drafted his mail asking Erin for the vendor spend, he pressed Send, and the task waited on her. Her answer
+        with the CSV landed and sat 45 minutes under "waiting to start" - the task was a reply task no agent had ever worked, so the wait woke it
+        and nothing ran. The answer it waits on is work for an agent, the first one on it where none has been."""
+        from taskuary import waiton
+        s = store()
+        tid = s.create_task({'Title': 'Monthly vendor spend', 'Kind': 'reply', 'Status': 'open', 'Source': 'outbox'}, 'owner')
+        s.add_message({'TaskId': tid, 'ExternalId': 'out1', 'Channel': 'email', 'ConversationId': 'AAQk-spend', 'Subject': 'Monthly vendor spend',
+                       'FromName': 'Alex Doyle', 'FromEmail': 'alex@northwind.example', 'Direction': 'out', 'BodyText': 'Erin, can you send the spend?',
+                       'Status': 'routed'})
+        waiton.declare(s, tid, 'erin@northwind.example', 'assistant')
+        erin = dict(external_id='x4', conversation_id='AAQk-spend', subject='RE: Monthly vendor spend', body='Here it is - 212 of 250 seats in use.')
+        out, spawned = ingested(s, mail(**erin), intent='fyi')
+        self.assertEqual((out['task_id'], spawned), (tid, ['_auto_general']))
+        general.OPENING.discard(tid)
 
     def test_never_over_a_live_session(self):
         s = store(); tid = finished_task(s)
@@ -341,6 +384,47 @@ class PassInTests(unittest.TestCase):
             ingested(s, mail(**AGAIN)); ingest._pass_general(s, tid, mail(**AGAIN))
         send.assert_not_called()
         self.assertFalse([a for a in s._rows('SELECT * FROM audit WHERE EntityId=?', (str(tid),)) if 'sent' in a['Action']])
+
+
+# THE OWNER, 2026-11-26: a colleague sent a picture with no words on a finished task's thread - read alone it was nothing to do, and was
+# filed onto the task. 46 s later their words came, the task reopened, and its agent was typed the words alone; the rail showed the task
+# and, beside it, an FYI row for the picture. The channel saves a message's files once ingest has answered, as every poller does
+PICTURE = dict(external_id='x2', body='(no text - see the attachment)', sent_at='2026-10-28 12:25:44')
+WORDS = dict(external_id='x3', body='The calendar roll-up did not work - see the picture.', sent_at='2026-10-28 12:26:30')
+
+
+def picture_then_words(s):
+    "-> (the picture's message id, what the words set going)"
+    pic, set_going = arrived(s, mail(**PICTURE), 'fyi')
+    assert (pic['status'], set_going) == ('filed', []), (pic, set_going)
+    s.add_attachment({'MessageId': pic['message_id'], 'Name': 'shot.png', 'ContentType': 'image/png', 'Path': '/files/shot.png'})
+    return pic['message_id'], arrived(s, mail(**WORDS))[1]
+
+
+class FiledLineJoinsTheWorkTests(unittest.TestCase):
+    def test_a_live_coding_agent_is_typed_the_picture_filed_before_the_words_then_the_words(self):
+        s = store(); tid = finished_task(s); s.update_task(tid, {'Kind': 'coding'}, 't')
+        with mock.patch.dict(terminal.SESSIONS, {'p1': Live(tid)}, clear=True):
+            _pic, set_going = picture_then_words(s)
+            self.assertEqual([c[0].__name__ for c in set_going], ['_pass_coding', '_pass_coding'])
+            with mock.patch.object(terminal, 'queue_codex', return_value=False), mock.patch.object(terminal, 'type_into', side_effect=lambda t, x, done=None: done(True)) as typed:
+                for fn, *args in set_going: fn(*args)
+        first, second = [c[0][1] for c in typed.call_args_list]
+        self.assertIn('/files/shot.png', first); self.assertNotIn('roll-up', first)        # the picture, by its path on this machine
+        self.assertIn('The calendar roll-up did not work', second)
+
+    def test_the_picture_is_the_tasks_own_line_and_no_fyi_row_beside_the_task(self):
+        from datetime import datetime
+        from taskuary import processing_unread as pu
+        s = store(); tid = finished_task(s); s.set_setting(pu.FILED_SINCE, '2026-01-01 00:00:00', 't')
+        news = lambda: [(c['tid'], c['mid']) for c in pu.filed_news(s, datetime.now())]
+        pic, _ = arrived(s, mail(**PICTURE), 'fyi')
+        self.assertEqual(news(), [(tid, pic['message_id'])])                 # news on a task that stays closed: its own row, until work comes
+        self.assertEqual(s.get_task(tid)['Status'], 'done')
+        arrived(s, mail(**WORDS))
+        self.assertEqual(news(), [])                                          # ...one row for one thing: the task's
+        m = s.get_message(pic['message_id'])
+        self.assertEqual((m['TaskId'], m['Status'], s.get_task(tid)['Status']), (tid, 'routed', 'open'))      # moved onto the work, never deleted
 
 
 if __name__ == '__main__': unittest.main()

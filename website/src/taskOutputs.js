@@ -4,6 +4,8 @@
 // a bare path into THIS task's folder - becomes a file the owner can preview and download, through /api/task-outputs. A path into
 // anywhere else is left as plain text: never a link, never served.
 
+import { deliveryFiles } from "./replyDelivery.js";
+
 const CITE = /:{1,2}codex-file-citation\{([^}]*)\}/g;
 const LINK = /\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 const STOP = "[^\\s`'\"<>()\\[\\]]";
@@ -39,7 +41,7 @@ export function parseOutput(raw, link = false) {
 export const outputOf = (raw, tid) => { const o = parseOutput(raw); return o && tid != null && o.tid === Number(tid) ? o.rel : null; };
 
 const PREVIEW = { xlsx: "sheet", xlsm: "sheet", csv: "table", pdf: "pdf", png: "picture", jpg: "picture", jpeg: "picture", gif: "picture",
-  webp: "picture", md: "text", txt: "text", json: "text", log: "text", tsv: "text", svg: "page", html: "page", htm: "page", docx: "document",
+  webp: "picture", md: "text", txt: "text", json: "text", log: "text", tsv: "text", svg: "page", html: "page", htm: "page", docx: "document", pptx: "document",
   mp4: "video", m4v: "video", webm: "video", mov: "video", mp3: "audio", wav: "audio", m4a: "audio", ogg: "audio" };
 const TYPES = { csv: "text/csv", md: "text/markdown", txt: "text/plain", json: "application/json", log: "text/plain", tsv: "text/plain",
   pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
@@ -53,18 +55,22 @@ const ext = (name) => (/\.([a-z0-9]+)$/i.exec(name || "")?.[1] || "").toLowerCas
 // key file - is null and stays plain text: the agent's `show` tool copies a file from its own scratch onto the task instead
 const IMAGE = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 const WHOLE = /^(?:file:\/+)?(?:[A-Za-z]:[\\/]|\\\\|\/)\S/;
+// ...WHICHEVER WAY ITS ADDRESS WAS WRITTEN: a markdown link carries `C:\...` as `C:%5C...` (walk 21: the link was plain words)
+const unescaped = (s) => { try { return /%[0-9a-f]{2}/i.test(s) ? decodeURIComponent(s) : s; } catch { return s; } };
 export const localFile = (raw, tid) => {
-  const s = String(raw || "").trim();
+  const s = unescaped(String(raw || "").trim());
   if (!WHOLE.test(s) || /[\n\x60]/.test(s)) return null;
   const rel = outputOf(s, tid);
   return rel ? { rel, name: baseName(rel), url: outputUrl(tid, rel), image: IMAGE.has(ext(rel)) } : null;
 };
-// ...and one named bare in the words is put in a code span, for that span to be drawn as the file (outside code spans only)
+// ...and one named bare in the words is put in a code span, for that span to be drawn as the file (outside code spans and a link's own
+// address - `[x](<C:/...>)` is a link already, md.jsx's A)
 const LOCAL = new RegExp(`(?:file:/+)?(?:[A-Za-z]:[\\\\/]|/)${STOP}*?[\\\\/]scratch[\\\\/]outputs[\\\\/]TQ-\\d+[\\\\/]${STOP}+`, "gi");
-export const codeLocalPaths = (text, tid) => outsideCode(String(text ?? ""), (bit) => bit.replace(LOCAL, (all) => {
+const LINKED = /(\]\(<[^>\n]*>\)|\]\([^)\s]*\))/;
+export const codeLocalPaths = (text, tid) => outsideCode(String(text ?? ""), (bit) => bit.split(LINKED).map((x, i) => i % 2 ? x : x.replace(LOCAL, (all) => {
   const tail = /[.,;:!?*_]+$/.exec(all)?.[0] || "", path = all.slice(0, all.length - tail.length);
   return localFile(path, tid) ? `\x60${path}\x60${tail}` : all;
-}));
+})).join(""));
 
 // the row the page draws for a file an answer named: the server's own row when the task's listing has it (outputs.row), else one
 // built from the name, marked `missing` once the listing is known and the file is not in it
@@ -156,14 +162,16 @@ export function shownOnce(cited, shown) {
 }
 
 // A FILE IS IN THE TURN THAT MADE IT, OR NOT IN THE CHAT (the owner, 2026-11-13: nothing is pinned at the chat's foot): one the server named no
-// turn of this list for (`after`) goes to the turn at work when it was written - begun by then, not ended more than a second before - as the
-// work card goes to its turn (landing.landingTurn). One no turn was at work for keeps `after` null: no turn draws it, and it stays in the
+// turn of this list for (`by`) goes to the turn at work when it was written - begun by then, not ended more than a second before - as the
+// work card goes to its turn (landing.landingTurn). One no turn was at work for keeps `by` null: no turn owns it, and it stays in the
 // task's files (Email someone, the task's folder), never a row under the conversation
 const secs = (s) => (typeof s === "number" ? s : +new Date(String(s || "").replace(" ", "T")) / 1000);
 export const placeMade = (listed, turns) => {
   const ts = (turns || []).map((t) => ({ key: t.answer || t.id, from: t.started ?? secs(t.at), to: t.ended })), keys = new Set(ts.map((t) => t.key));
   const madeIn = (at) => { const s = secs(at); return Number.isFinite(s) ? ts.filter((t) => t.from <= s + 1 && (t.to == null || t.to + 1 >= s)).at(-1)?.key ?? null : null; };
-  return (listed || []).map((r) => (keys.has(r.after) ? r : { ...r, after: madeIn(r.at || r.created_at) }));
+  // ...and one handed over (`after`, outputs.hand) is in the turn its maker is, placed the same way
+  const place = (r, k) => (keys.has(r[k]) ? {} : { [k]: madeIn(r.at || r.created_at) });
+  return (listed || []).map((r) => ({ ...r, ...place(r, "by"), ...(r.handed ? place(r, "after") : {}) }));
 };
 
 // ONE OF EACH THING IT MADE (the owner, 2026-10-28: "it looks like it created a million attachments. Agents should not create lists of
@@ -197,24 +205,62 @@ export const forTurn = (listed, versions, id) => {
   return [...out, ...[...mine.values()].filter((v) => !out.includes(v))];
 };
 
-// WHAT A TURN MADE, IN THE TURN (the owner, 2026-11-05: "the post and images are as artifacts separate not inline???"): the files placed on this
-// answer by when they were made (the server's `after`, as a shown page's) and the ones its words or its summary name - each thing once, the
-// newest of a family, whatever its kind - less `skip` (a post's own picture, drawn on the post). A FILE ANOTHER TURN MADE IS DRAWN THERE, never
-// again under every answer that names it (the walk, 2026-11-18: the posts file stood whole under three turns that only spoke of it)
+// WHAT A TURN HANDS OVER, IN THE TURN (the owner, 2026-11-05: "the post and images are as artifacts separate not inline???"): the files its words
+// or its summary name - each thing once, the newest of a family, whatever its kind - less `skip` (what a card carries: `carried`). A FILE IT ONLY
+// MADE IS NOT DRAWN (the owner's live task, 2026-11-25: "it should work through what it needs and action cards, not a bunch of artifacts"): a
+// script's charts and a drafts file stood beside the cards that carried them - what it made is in the task's files; what it handed over with
+// `show` (`after`, outputs.hand) is drawn here, several as one artifact. A FILE ANOTHER TURN MADE IS DRAWN THERE, never under every answer that
+// names it (the walk, 2026-11-18): `by`
 export const turnFiles = ({ listed = [], id, words = "", did = "", tid, skip = [] } = {}) => {
-  const no = new Set((skip || []).map(baseName)), by = new Map();
-  for (const r of (listed || []).filter((x) => x?.after != null && x.after === id)) by.set(r.path, r);
-  for (const rel of outputRefs(`${words || ""}\n${did || ""}`, tid, listed).files) {
+  const no = new Set([...(skip || [])].map(baseName)), by = new Map();
+  for (const r of (listed || []).filter((x) => x?.after != null && x.after === id)) by.set(r.path, r);      // ...what it handed over (show)
+  // ...named by its path, or by its name alone in a code span (`tools.md`) - in the listing's order
+  const said = `${words || ""}\n${did || ""}`, refs = outputRefs(said, tid, listed).files;
+  const named = new Set([...refs, ...(listed || []).filter((r) => r?.path && said.includes(`\`${baseName(r.path)}\``)).map((r) => r.path)]);
+  for (const rel of [...(listed || []).map((r) => r?.path).filter((p) => named.has(p)), ...refs]) {
     const r = by.has(rel) ? null : outputRow(tid, rel, listed);
-    if (r && (r.after == null || r.after === id)) by.set(rel, r);
+    if (r && (r.by == null || r.by === id)) by.set(rel, r);
   }
+  // ...a named file's earlier versions this turn made ride on it, as its history
+  const fams = new Set([...by.values()].map((r) => family(r.name || r.path)));
+  for (const r of listed || []) if (r?.by === id && fams.has(family(r.name || r.path)) && !by.has(r.path)) by.set(r.path, r);
   return deliverables([...by.values()].filter((r) => !no.has(baseName(r.path || r.name)) && !r.missing)).made;
 };
 
-// A PICTURE AT ITS OWN SHAPE (the owner, 2026-11-18: "images should be able to render however the agent wants it or make sense to show"): its
-// pixels, read by the server off the file (outputs.pixels), reserve its room before it loads - as wide as it is, never wider than the chat, its
-// height following, a very tall one fitted inside the window. null where they are not known: that one keeps the fixed room (publishedPages.css)
-export const pictureFit = (f) => {
-  const [w, h] = Array.isArray(f?.dims) ? f.dims : [];
-  return w > 0 && h > 0 ? { width: `min(100%, ${w}px)`, height: "auto", aspectRatio: `${w} / ${h}`, maxHeight: "80vh" } : null;
+// ...AND WHAT ONE CALL HANDED IS ONE ARTIFACT: a turn's files by the `show` call that handed each (`call`, outputs.call_of), in the order they
+// stand; the ones its words only name are one group, as they were
+export const fileGroups = (files) => {
+  const by = new Map();
+  for (const f of files || []) { const k = f.handed ? f.call ?? -1 : "named"; by.set(k, [...(by.get(k) || []), f]); }
+  return [...by.values()];
 };
+
+// ONE THING, ONE PLACE (the owner, 2026-11-23: "images that are connected to text don't make it 2 artifacts but one"): a file an item the chat
+// sets down carries - a post's picture, an email's attachments - is drawn in that item only, never again as a file or a shown page of a turn.
+// The names the chat's cards own (`rows`: their review rows); turnFiles' `skip` and the shown pages read it. A file only words name stays a file
+export const carried = (rows) => new Set((rows || []).flatMap((r) => [r?.post?.image, ...deliveryFiles(r).map((f) => f.path || f.name)])
+  .filter(Boolean).map(baseName));
+
+// A PICTURE OR A VIDEO AT ITS OWN SHAPE (the owner, 2026-11-18: "images should be able to render however the agent wants it"; 2026-11-23: an
+// upright video stood in a 16:9 frame the chat's whole width): its pixels, read by the server off the file (outputs.pixels), reserve its room
+// before it loads. `media`: as wide as it is, never wider than its card, never taller than MEDIA_H - its height follows its own ratio. `box`: the
+// card around it hugs it, in the turn's reading column (--tq-turn-item, appTheme.css), and keeps room for its name and Download.
+// null where they are not known: that one keeps the fixed room (publishedPages.css)
+export const MEDIA_H = "min(60vh, 560px)";   // ...the window's height, and never a whole tall monitor's
+export const mediaFit = (f) => {
+  const [w, h] = Array.isArray(f?.dims) ? f.dims : [];
+  if (!(w > 0 && h > 0)) return null;
+  const own = `min(${w}px, calc(${MEDIA_H} * ${w} / ${h}))`;
+  return { media: { width: `min(100%, ${own})`, height: "auto", aspectRatio: `${w} / ${h}` },
+    box: { width: `min(100%, var(--tq-turn-item), max(260px, ${own}))` } };
+};
+
+// WHAT A FILE IS, IN ONE WORD, AND WHAT A TURN'S FILES ARE TOGETHER (the owner, 2026-11-24: "it put in 9 files as cards? it should combine them"):
+// one word per kind, read off its name; the group's label a plain count - "9 workbooks" where all are one kind, "3 files" where they are not
+const KIND = { sheet: "workbook", table: "table", pdf: "PDF", picture: "picture", text: "text file", page: "page", document: "document", video: "video", audio: "recording" };
+export const fileKind = (f) => KIND[PREVIEW[ext(f?.name || f?.path)] || f?.preview] || "file";
+export const filesLabel = (files) => {
+  const fs = files || [], ks = new Set(fs.map(fileKind)), k = ks.size === 1 ? [...ks][0] : "file";
+  return `${fs.length} ${fs.length === 1 ? k : `${k}s`}`;
+};
+export const sizeWords = (b) => !(b >= 0) ? "" : b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`;

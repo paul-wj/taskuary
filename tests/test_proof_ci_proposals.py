@@ -391,13 +391,15 @@ class CiLoopTests(unittest.TestCase):
         self.assertEqual(s.get_settings()['ci_watch'], 'off')
         self.assertEqual(ci.poll(s), 0)
 
-    def test_pr_needs_the_push_switch(self):
+    def test_his_press_opens_the_pr_whatever_the_agents_switch_says(self):
+        # the owner, 2026-11-25: a PR card refused because 'Agents may push / deploy' was off left him nothing to press. The switch says
+        # whether an agent goes without asking; his press is the asking answered
         s = MemoryStore()
         cid = s.get_connector_by_type('github')['ConnectorId']
         s.save_connector({'ConnectorId': cid, 'Secret': 'x', 'Active': 1}, 't')
         tid = s.create_task({'Title': 't', 'Kind': 'coding', 'Status': 'open'}, 't')
         with self.assertRaises(RuntimeError) as e: ci.open_for_task(s, tid)
-        self.assertIn('pushing is off', str(e.exception))
+        self.assertNotIn('pushing is off', str(e.exception))                 # ...it goes on to read the branch, never refused by the switch
 
 
 class FakeSession:
@@ -474,11 +476,11 @@ class DirectPushTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as e: ci.push_direct(s, tid)
         self.assertIn('never force-pushes', str(e.exception))
 
-    def test_push_still_needs_the_switch(self):
+    def test_his_push_goes_with_the_agents_switch_off(self):
         s, tid = self._armed()
         s.set_setting('agent_push_enabled', '0', 't')
-        with self.assertRaises(RuntimeError) as e: ci.push_direct(s, tid)
-        self.assertIn('pushing is off', str(e.exception))
+        try: ci.push_direct(s, tid)
+        except RuntimeError as e: self.assertNotIn('pushing is off', str(e))
 
     def test_land_follows_the_setting(self):
         s, tid = self._armed()
@@ -513,55 +515,88 @@ class ProposalTests(unittest.TestCase):
         ps = proposals.parse(text)
         self.assertEqual([p['action'] for p in ps], ['open_pr'])
         s = MemoryStore()
-        ok, why = proposals.validate(s, ps[0])
-        self.assertFalse(ok); self.assertIn('is off on the GitHub card', why)      # push is off by default
-        s.set_setting('agent_push_enabled', '1', 't')
-        self.assertTrue(proposals.validate(s, ps[0])[0])
+        self.assertTrue(proposals.validate(s, ps[0])[0])           # ...a card for his press with the agents' push switch off (its default)
 
-    def test_a_refusal_names_the_switch_that_refused_and_links_to_it(self):
+    def test_a_refusal_names_the_switch_and_says_it_is_his_choice(self):
         # a walk, 2026-11-18: "open_pr is not permitted - the owner has that switch off" named no switch, and the agent told the owner to "turn
-        # on pull requests under Policies" - a page of mail rules with no such switch. The switch is the GitHub card's own, read where the
-        # card keeps it (store.github_permissions), and the refusal names it with the link that opens it
+        # on pull requests under Policies" - a page of mail rules with no such switch. The refusal names the switch, as his choice
+        s = MemoryStore(); s.set_setting('playbooks_enabled', '0', 'owner')
+        p = {'action': 'save_skill', 'slug': 'refunds', 'text': '# Refunds\nwhen: a customer asks for a refund\nsteps: check the order, then refund it'}
+        ok, why = proposals.validate(s, p)
+        self.assertFalse(ok); self.assertIn('"Use skills" is off', why)
+        self.assertIn("the owner's choice", why); self.assertIn('go on without it', why); self.assertNotIn('turns it on', why)
+        s.set_setting('playbooks_enabled', '1', 'owner')
+        self.assertTrue(proposals.validate(s, p)[0])
+
+    def test_a_switch_no_card_may_turn_says_to_ask_for_the_act(self):
+        # "agent_push_enabled is not a switch a proposal may touch" was the whole answer: refused, and nothing to ask with instead
+        for c in ({'name': 'agent_push_enabled', 'value': True}, {'connector': 'github', 'name': 'agents_push', 'value': True}):
+            with self.subTest(c):
+                ok, why = proposals.validate(MemoryStore(), {'action': 'settings', 'changes': [c]})
+                self.assertFalse(ok); self.assertIn('propose the act itself', why)
+
+    def test_a_github_comment_card_stands_with_the_cards_switches_off(self):
+        # the owner, 2026-11-25: a card refused by a switch left the agent saying in words it could not. 'Reply to issue/PR authors' is off as it
+        # ships - his press on the comment card is the say-so
         s = MemoryStore()
-        cid = s.save_connector({'Type': 'github', 'Name': 'GitHub', 'Active': 1, 'ConfigJson': json.dumps({'agents_push': False})}, 'owner')
-        ok, why = proposals.validate(s, {'action': 'open_pr', 'why': 'tests pass'})
-        self.assertFalse(ok); self.assertIn('"Agents may push / deploy" is off', why); self.assertIn('(#connector=github)', why)
-        self.assertNotIn('Polic', why)
-        s.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps({'agents_push': True})}, 'owner')
-        self.assertTrue(proposals.validate(s, {'action': 'open_pr', 'why': 'tests pass'})[0])     # ...the card's switch is the one that counts
+        s.save_connector({'Type': 'github', 'Name': 'GitHub', 'Active': 1, 'ConfigJson': json.dumps({'reply_comments': False})}, 'owner')
+        self.assertTrue(proposals.validate(s, {'action': 'comment_issue', 'body': 'fixed'})[0])
+        self.assertTrue(proposals.validate(s, {'action': 'close_issue'})[0])
 
     def test_collect_queues_a_review_and_records_refusals(self):
         s = MemoryStore(); s.set_setting('agent_push_enabled', '1', 't')
         tid = s.create_task({'Title': 't', 'Kind': 'coding', 'Status': 'open'}, 't')
-        made = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr", "why": "ready"}\n'
-                                         'TASKUARY-PROPOSE {"action": "comment_issue", "body": "hi"}')
+        with mock.patch.object(ci, 'pr_why', return_value=''):
+            made = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr", "why": "ready"}\n'
+                                             'TASKUARY-PROPOSE {"action": "comment_issue", "body": "hi"}')
         self.assertEqual([m['action'] for m in made], ['open_pr'])   # replies switch is off
         rv = s.get_review(made[0]['reviewId'])
         self.assertEqual((rv['Kind'], rv['Status']), ('action', 'pending'))
         self.assertIn('DRAFT pull request', rv['Reason'])
         self.assertTrue(any('PROPOSAL REFUSED' in c['Body'] for c in s.list_comments(tid)))
 
+    def test_a_pull_request_card_says_what_it_opens_and_opens_what_it_said(self):
+        """The card gallery, 2026-11-25: a PR card showed the agent's body alone - no title, repository or branch - and the press then opened it
+        under the task's own title and summary, the agent's words dropped. Its card carries what the press reads (ci.pr_plan), and the press
+        opens it with the words the card showed."""
+        from taskuary import github, terminal
+        s = armed(MemoryStore()); tid = s.create_task({'Title': 'Fix the ledger rounding', 'Kind': 'coding', 'Status': 'open', 'Tags': 'repo:northwind/ledger'}, 't')
+        ses = mock.Mock(cwd='C:/work/ledger')
+        from taskuary import landing
+        with mock.patch.object(terminal, 'session_for', return_value=ses), mock.patch.object(ci, 'branch_for', return_value='fix-rounding'), \
+             mock.patch.object(ci, 'base_of', return_value='master'), mock.patch.object(ci, 'pr_why', return_value=''), \
+             mock.patch.object(landing, '_push_as_agent', return_value=(0, '', '')):
+            rid = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr", "title": "Keep cents in totals", "body": "Rounds to two places."}')[0]['reviewId']
+            pr = json.loads(s.get_review(rid)['DraftText'])['pr']
+            self.assertEqual((pr['repo'], pr['branch'], pr['base']), ('northwind/ledger', 'fix-rounding', 'master'))
+            self.assertTrue(pr['title'].endswith('] Keep cents in totals'), pr['title'])
+            with mock.patch.object(ci, '_conn', return_value={'Secret': 'tok'}), \
+                 mock.patch.object(github, 'open_pr', return_value={'number': 9, 'url': 'u'}) as op:
+                verdicts.decide(s, s.get_review(rid), 'approve')
+        (_tok, repo, head, base, title, body), _ = op.call_args
+        self.assertEqual((repo, head, base, title), ('northwind/ledger', 'fix-rounding', 'master', pr['title']))
+        self.assertIn('Rounds to two places.', body)
+
     def test_approving_runs_it_and_rejecting_does_not(self):
         s = armed(MemoryStore()); tid = s.create_task({'Title': 't', 'Kind': 'coding', 'Status': 'open'}, 't')
-        rid = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr"}')[0]['reviewId']
+        with mock.patch.object(ci, 'pr_why', return_value=''): rid = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr"}')[0]['reviewId']
         with mock.patch.object(ci, 'open_for_task', return_value={'number': 9, 'url': 'u'}) as op:
             out = verdicts.decide(s, s.get_review(rid), 'approve')
         op.assert_called_once()
         self.assertEqual((out['status'], out['result']['pr']), ('approved', 9))
-        rid2 = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr"}')[0]['reviewId']
+        with mock.patch.object(ci, 'pr_why', return_value=''): rid2 = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr"}')[0]['reviewId']
         with mock.patch.object(ci, 'open_for_task') as op2:
             verdicts.decide(s, s.get_review(rid2), 'reject')
         op2.assert_not_called()
         self.assertEqual(s.get_review(rid2)['Status'], 'rejected')
 
-    def test_permission_revoked_between_propose_and_approve(self):
+    def test_his_approve_opens_the_pr_though_the_agents_switch_went_off(self):
         s = armed(MemoryStore()); tid = s.create_task({'Title': 't', 'Kind': 'coding', 'Status': 'open'}, 't')
-        rid = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr"}')[0]['reviewId']
-        s.set_setting('agent_push_enabled', '0', 't')                # owner changed their mind
-        with mock.patch.object(ci, 'open_for_task') as op:
-            out = verdicts.decide(s, s.get_review(rid), 'approve')
-        op.assert_not_called()
-        self.assertFalse(out['ok']); self.assertIn('refused at execution', out['send_error'])
+        with mock.patch.object(ci, 'pr_why', return_value=''): rid = proposals.collect(s, tid, 'TASKUARY-PROPOSE {"action": "open_pr"}')[0]['reviewId']
+        s.set_setting('agent_push_enabled', '0', 't')                # ...the agents may not go alone; his press is not theirs
+        with mock.patch.object(ci, 'open_for_task', return_value={'number': 7, 'url': 'https://github.com/northwind/ledger/pull/7'}) as op:
+            verdicts.decide(s, s.get_review(rid), 'approve')
+        op.assert_called_once()
 
 
 if __name__ == '__main__':

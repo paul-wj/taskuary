@@ -31,7 +31,7 @@ def set_check(store, tid: int, when, what, actor: str = 'agent') -> dict:
     """Schedule it - `when` read as Remind me reads a day ('tomorrow 9am', 'in 2 days', '2026-11-12', 'in 3 hours'). A new one replaces the
     one waiting. Raises ValueError, said to the agent, for a time it cannot read, one gone, no `what`, or a closed task."""
     from . import remind
-    from .redact import scrub
+    from .redact import secrets as scrub
     t = store.get_task(int(tid))
     if not t: raise ValueError('no such task')
     if t.get('Status') in CLOSED: raise ValueError('this task is closed - a check-back would wake nobody')
@@ -41,8 +41,8 @@ def set_check(store, tid: int, when, what, actor: str = 'agent') -> dict:
     at = remind.parse(when)
     if not at: raise ValueError('say when to check back - "tomorrow 9am", "in 2 days", "2026-11-12"')
     # THE SAME ONE SET AGAIN IS ALREADY SET (a recorded walk, 2026-11-17): the turn set it, its summary set it, and the wake after Send spent a
-    # turn setting it a third time - three lines on the task for one wait. Nothing changes and nothing is said; the audit row stays, so the turn
-    # that re-set it still reads as on the clock (hooks.checks_back), and the agent is told it stands (general.latest_block says so every turn)
+    # turn setting it a third time - three lines on the task for one wait. Nothing changes and nothing is said; the audit row stays, the task is still
+    # on the clock (hooks.checks_back), and the agent is told it stands (its events say so once)
     if (str(t.get('CheckBackAt') or ''), t.get('CheckBackWhat') or '') == (at, w):
         store.audit('task', int(tid), 'check_back', actor, detail={'at': at, 'what': w, 'same': True})
         return {'ok': True, 'at': at, 'when': remind.when(at), 'what': w, 'already': 'this check-back was already set - nothing changed; go on'}
@@ -120,6 +120,10 @@ def due(store, now: datetime = None, spawn=None) -> int:
             store.update_task(tid, {'CheckBackAt': '', 'CheckBackWhat': ''}, 'assistant'); continue
         if not general.session_for(tid) and not general.idled(tid, store) and not ingest.has_room(store): continue
         if brainroute.auto_held(store): continue           # past the day's ceiling for what nobody asked for: due again tomorrow
+        # ...AND NEVER WHILE A CARD OF THE TASK WAITS FOR HIS PRESS (the owner, 2026-11-26: nothing of the agent's comes after a card until he has
+        # approved or denied it): due again at the next tick, and spoken once nothing waits
+        from . import cardqueue
+        if not cardqueue.row_over(store, tid): continue
         store.update_task(tid, {'CheckBackAt': '', 'CheckBackWhat': ''}, 'assistant')        # cleared first: it speaks once
         # ...A TASK MARKED DONE SINCE COMES BACK FOR IT (the owner, 2026-11-20): through the one reopen, on the rail with the turn that checks
         if t.get('Status') == 'done': general.reopen(store, tid, 'router', 'check_back', {'what': t.get('CheckBackWhat') or ''})

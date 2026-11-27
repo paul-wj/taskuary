@@ -100,13 +100,11 @@ class TheDoorsAreShutTests(unittest.TestCase):
     def test_no_tool_runs_against_anything(self):
         with on():
             self.assertTrue(demo.refuse('POST', '/api/tools/run'))
-            self.assertTrue(demo.refuse('POST', '/api/agents/coding/test'))
 
     def test_no_cli_starts_on_the_machine_this_is_hosted_on(self):
         with on():
             self.assertTrue(demo.refuse('POST', '/api/terminals'))
             self.assertTrue(demo.refuse('DELETE', '/api/terminals/abc'))
-            self.assertTrue(demo.refuse('PUT', '/api/agents/coding'))
 
     def test_nothing_is_fetched_or_received(self):
         with on():
@@ -461,10 +459,10 @@ class TheWorldTests(unittest.TestCase):
             for _ in range(500):
                 if not r.busy: break
                 time.sleep(0.01)
-            chat = codingchat.chat(s, tid)
-            kinds = [u['sessionUpdate'] for u in chat['sessions'][-1]['updates']]
+            kinds = [u['sessionUpdate'] for u in codingchat.sessions(s, tid)[-1]['updates']]
             self.assertIn('tool_call', kinds); self.assertIn('agent_message_chunk', kinds)
-            self.assertEqual((chat['asking'] or {}).get('text'), demo.TRANSCRIPT[-1][0])
+            from taskuary import chatlog
+            self.assertEqual((chatlog.serve(s, tid)['asking'] or {}).get('text'), demo.TRANSCRIPT[-1][0])
             r.close()
 
     def test_a_replay_says_when_it_moves(self):
@@ -620,8 +618,12 @@ class TheDemoOpensOnItsTourTests(unittest.TestCase):
             if got and said and said[0] < got[0]: late.append((t['Title'], got[0], said[0]))
         self.assertEqual(late, [])
 
-    def test_the_first_view_opens_on_an_agents_finished_work_never_the_greeting(self):
+    def test_the_first_view_opens_on_the_built_in_dashboard_else_an_agents_finished_work_never_the_greeting(self):
+        from taskuary.dashboards import GLANCE
         s, _ = self.seeded()
+        glance = next(x for x in s.list_sources() if x.get('Channel') == 'report' and x.get('Address') == GLANCE['title'])
+        with on(): self.assertEqual(demo.opens(s), {'report': glance['SourceId']})
+        s._exec('UPDATE source SET Active=0 WHERE SourceId=?', (glance['SourceId'],))      # ...and without it, the agent's finished post
         post = next(t for t in s.list_tasks() if t['Title'] == demo.SHOWCASE)
         with on(): self.assertEqual(demo.opens(s), {'tid': post['TaskId']})
         with on(), mock.patch.dict(os.environ, {demo.OPENS_ENV: '0'}): self.assertIsNone(demo.opens(s))
@@ -675,7 +677,6 @@ class TheGeneralAgentsDayTests(unittest.TestCase):
         from taskuary import general
         s, tids = self.seeded()
         tid = next(t for n, t in tids.items() if 'Trainly' in n)
-        self.assertTrue(general.owner_answered_last(s, tid))
         self.assertIn('recommend closing', general.shown_history(s, tid)[-1]['summary']['did'])
 
 
@@ -837,9 +838,13 @@ class DemoDashboardTests(unittest.TestCase):
         # they ran before the agents' day and the tour were seeded: the rail read "Open now 12" beside nineteen open tasks (the walk, 2026-11-15)
         from taskuary import dashboards
         s = MemoryStore(); demo.seed(s)
-        n = sum(r['state'] == 'open' for r in dashboards._tasks(s, 90))
+        rs = dashboards._tasks(s, 90); n,mine = sum(r['state'] == 'open' for r in rs),sum(r['waits_on'] == 'you' for r in rs)
         heads = [m['Subject'] for m in s._rows("SELECT Subject FROM message WHERE Channel='report' AND Status NOT IN ('skipped','expired') ORDER BY MessageId")]
-        self.assertTrue(any(h.startswith('Taskuary at a glance') and f'Open now {n}' in h for h in heads), (n, heads))
+        # ...the built-in's headline is what came in, what became work and what got done; what waits on her is in its body
+        bodies = [m['BodyText'] for m in s._rows("SELECT BodyText FROM message WHERE Channel='report' AND Status NOT IN ('skipped','expired') AND Subject LIKE 'Taskuary at a glance%'")]
+        # ...what waits on her is whose move the rail says it is (taskstate.standing), not every open task
+        self.assertTrue(mine and any(f'Waiting on you: {mine}' in b for b in bodies), (mine, n))
+        self.assertTrue(any(h.startswith('Taskuary at a glance — Came in ') for h in heads), heads)
         self.assertTrue(any(h.startswith('Northwind desk') and f'Open tasks {n}' in h for h in heads), (n, heads))
         # ...and nothing made after the dashboards changed its number: the walks and the static demo know the morning's messages by them
         self.assertEqual(s.get_message(45)['TaskId'], next(t['TaskId'] for t in s.list_tasks() if 'LinkedIn' in (t.get('Title') or '')))
@@ -886,3 +891,64 @@ class DemoSealedTests(unittest.TestCase):
             with mock.patch.object(requests.sessions.Session.request, 'real', side_effect=lambda *a, **k: 'local'):
                 self.assertEqual(requests.sessions.Session().request('GET', 'http://127.0.0.1:7803/api/health'), 'local')
         finally: requests.sessions.Session.request = before
+
+
+class TheSceneATeamFindsATimeTests(unittest.TestCase):
+    """TASKUARY_DEMO_SCENE=availability (the owner, 2026-11-26): one thread, a reply at a time, the agent's one view of who can make which times
+    kept up to date, then the invite - each through the road a real one takes, so the chat it leaves is one a real task could have."""
+    ENV = {demo.FLAG: '1', demo.SCENE_ENV: 'availability', demo.SCENE_PACE: '0.65'}     # ...a second between replies: a mail's stamp is no finer
+
+    def test_it_is_off_unless_asked_for(self):
+        from taskuary.testing import Factory
+        s = MemoryStore()
+        with on():
+            self.assertIsNone(demo.seed_scene(s, Factory(s)))
+            self.assertEqual(s.list_tasks(), [])
+        with mock.patch.dict(os.environ, self.ENV):                    # ...and on another task's line it starts nothing
+            other = s.create_task({'Title': 'Plan the team lunch', 'Kind': 'general', 'Status': 'open', 'Source': 'assistant'}, 'owner')
+            self.assertFalse(demo.scene_opened(s, other))
+
+    def test_it_starts_by_itself_each_reply_updates_the_one_view_and_it_ends_on_the_invite(self):
+        import json
+        from taskuary import calwrite, conversation, server, viewspec
+        from taskuary.testing import Factory
+        with mock.patch.dict(os.environ, self.ENV):
+            s = MemoryStore(); s.set_setting('owner_email', demo.OWNER_EMAIL, 'demo')                  # ...her colleagues are no strangers (seed)
+            tid = demo.seed_scene(s, Factory(s))
+            self.assertEqual([x['who'] for x in conversation.items(s, tid)['items']], [demo.SCENE[0][0]])      # the page has the thread open: its first mail
+            self.assertTrue(demo.scene_opened(s, tid))                                           # nobody prompts it: opened, the agent starts on the mail
+            # ...read once it is at rest: its last words filed, its card put in the log by the log's own worker (chatlog.advance_soon)
+            def at_rest():
+                with s.lock: card = s.cx.execute("SELECT 1 FROM chatlog WHERE TaskId=? AND Kind='card'", (tid,)).fetchone()
+                return card and any('ready for your press' in (c.get('Body') or '') for c in s.list_comments(tid, internal=True))
+            for _ in range(600):
+                if at_rest(): break
+                time.sleep(.05)
+            got = conversation.items(s, tid)
+            self.assertFalse(demo.scene_opened(s, tid))                                         # played once
+        xs = got['items']
+        self.assertEqual([x['kind'] for x in xs][:2], ['arrival', 'turn'])                      # the mail, and the turn it began - no line of his
+        self.assertEqual([x['who'] for x in xs if x['kind'] == 'arrival'], [who for who, *_ in demo.SCENE])
+        shows = [st for x in xs if x['kind'] == 'turn' for st in x.get('steps') or [] if st.get('name') == 'mcp__taskuary__show']
+        specs = [json.loads(st['output'].split(viewspec.MARK)[1]) for st in shows]
+        self.assertEqual(len(specs), len(demo.SCENE))
+        for n, spec in enumerate(specs, 1):
+            self.assertEqual(spec, viewspec.check(demo.scene_view(n)))                          # ...the server's own checked spec, as a real call's
+            self.assertEqual(spec['id'], 'times')                                               # one view: the chat draws the newest in full, under the newest reply
+            people = spec['elements']['a']['props']['people']
+            self.assertEqual(sum('ranges' in p for p in people), n + 1)                         # him, and whoever has written so far
+            self.assertFalse(any(k not in ('name', 'ranges') for p in people for k in p))       # no count, no best slot: the page works them out
+        self.assertEqual(conversation.flow_breaks(got), [])
+        # ...it ends on the invite for the hour the view's last state makes its best, as a card - and nothing went
+        last = [x for x in xs if x['kind'] == 'turn'][-1]
+        self.assertIn('ready for your press', last['text'])
+        self.assertEqual([(c['what'], c['status']) for c in last['cards']], [('outbound', 'pending')])
+        rv = [r for r in s.list_reviews(status='pending') if r.get('TaskId') == tid]
+        self.assertEqual(len(rv), 1)
+        env, (day, a, b) = calwrite.env_of(rv[0]), demo.SCENE_SLOT
+        self.assertEqual((env['act'], len(env['to'])), ('schedule', len(demo.SCENE)))
+        self.assertEqual((env['start'], env['end']), (f'{demo._scene_days()[day]} {a}', f'{demo._scene_days()[day]} {b}'))
+        self.assertFalse(rv[0].get('DeliveryState'))
+        # ...and only invented people, at reserved addresses, on days still ahead
+        self.assertTrue(all(m['FromEmail'].endswith('@northwind.example') for m in s.list_messages(tid)))
+        self.assertTrue(all(d.weekday() in (1, 2, 3) and d > __import__('datetime').date.today() for d in demo._scene_days()))

@@ -277,11 +277,12 @@ class OneRoundTripTests(unittest.TestCase):
             assert set(x.get('required') or ()) <= set(x.get('properties') or {}), (name, x)
             assert not {'additionalProperties', '$schema', 'default', 'title'} & set(x), (name, x)
             for k, v in x.items(): [walk(s, name) for s in v.values()] if k == 'properties' else walk(v, name)
-        assert {'propose_email', 'propose', 'sign_form'} <= {t['function']['name'] for t in tools}
+        assert {'propose', 'sign_form'} <= {t['function']['name'] for t in tools}
         for t in tools:
             assert t['function']['parameters']['type'] == 'object'; walk(t['function']['parameters'], t['function']['name'])
         # ...the server still holds a call to what one card needs: the schema the model reads is not the check
-        with self.assertRaisesRegex(ValueError, 'not given'): agenttools.fit('propose_email', {'subject': 'Q3'})
+        with self.assertRaisesRegex(ValueError, 'not given'): agenttools.fit('read_message', {})
+        with self.assertRaisesRegex(ValueError, '`kind` was not given'): agenttools.call(MemoryStore(), 1, 'propose', {'subject': 'Q3'}, {})
 
     def test_tools_are_offered_as_the_work_needs_them_and_a_loaded_one_is_added_at_the_end(self):
         """The owner's rule, "model sees all, tools progressive" (2026-11-10: "the ai limits as much as possible to use ai"): every schema rode
@@ -293,9 +294,10 @@ class OneRoundTripTests(unittest.TestCase):
         whole = len(json.dumps(apiagent.tools_for(1, 'p', True, post=post) + list(apiagent.DEFERRED[(1, 'p')].values())))
         core = apiagent.tools_for(1, 'p', True, post=post)
         names = [t['function']['name'] for t in core]
-        assert {'search_messages', 'read_message', 'propose_reply', 'propose_email', 'show', 'file_write'} <= set(names) and 'calendar' not in names
+        assert {'search_messages', 'read_message', 'propose', 'show', 'draw_image', 'file_write'} <= set(names) and 'calendar' not in names
         assert names[-1] == 'find_tools' and len(json.dumps(core)) < whole * 0.5
-        TOOL_CHARS = 4_000                # what every call carries before a word of the job: was ~15,000 (23 tools at ~650 characters)
+        # ...and ask_owner's several questions asked as one card (the owner, 2026-11-26) are a field of its own, +~230
+        TOOL_CHARS = 7_300                # what every call carries before a word of the job: was ~15,000 (23 tools at ~650 characters); end_turn and ask_owner ride in it since the prompt's protocols became tools, and every act that raises a card since walk 10 (2026-11-23)
         assert len(json.dumps(core, separators=(',', ':'))) < TOOL_CHARS
         said = apiagent.find(1, 'p', list(core), 'meeting calendar')
         assert 'set_up_meeting:' in said and 'calendar:' in said, 'found by words, each with its whole instructions'
@@ -454,12 +456,10 @@ class TheSessionTests(unittest.TestCase):
         seen = []
         class Brain:
             def chat(self, msgs, tools, max_tokens, **kw): seen.append(msgs[0]['content']); return {'content': 'Read them.'}
-        self._turn(Brain(), toolbox=('search_messages', 'tick'))
-        self.assertIn(general._SEARCHED[1], seen[0]); self.assertNotIn('NO SEARCH OF ITS OWN', seen[0])
-        self.assertEqual(general.for_toolbox(f'a\n\n{selfclose.TICK_CHAT_LINE}', ('tick',)), f'a\n\n{selfclose.TICK_TOOL_LINE}')
-        self.assertEqual(general.for_toolbox(general.SEARCHED_LINE, ('show',)), general.SEARCHED_LINE)      # ...and without them, as before
+        self._turn(Brain(), toolbox=('search_messages', 'tick', 'propose'))
+        self.assertNotIn("NONE OF TASKUARY'S TOOLS", seen[0]); self.assertNotIn(selfclose.SUMMARY_OPEN, seen[0])
         seen.clear(); self._turn(Brain())
-        self.assertIn('NO SEARCH OF ITS OWN', seen[0])
+        self.assertIn("NONE OF TASKUARY'S TOOLS", seen[0])         # ...a card without them writes its acts as marks
 
     def test_a_sign_in_the_looped_agent_asks_for_goes_to_the_vault_road(self):
         # the agent never types a password: its marker raises signin.needs, which fills a saved vault login or asks the owner to
@@ -483,7 +483,7 @@ class TheSessionTests(unittest.TestCase):
             session.send_prompt('and which is the oldest?', echo=False)
             self.assertEqual([m['role'] for m in heard[1]], ['system', 'user', 'assistant', 'user'])
             self.assertEqual(heard[1][1], heard[0][1], 'the task, said in full once')
-            self.assertIn('the August period', heard[1][1]['content']); self.assertNotIn('the August period', heard[1][3]['content'])
+            self.assertIn('scheduling portal', heard[1][1]['content']); self.assertNotIn('scheduling portal', heard[1][3]['content'])
             self.assertIn('and which is the oldest?', heard[1][3]['content'])
             # ...and turned down on a later first call (too long for the model now), it is said again whole - once, on a fresh one
             class Full(Brain):
@@ -492,7 +492,7 @@ class TheSessionTests(unittest.TestCase):
                     return super().chat(msgs, *a, **kw)
             with mock.patch.object(llm_mod, 'build_llm', return_value=Full()): session.send_prompt('go on', echo=False)
         self.assertEqual([m['role'] for m in heard[2]], ['system', 'user'])
-        self.assertIn('the August period', heard[2][1]['content']); self.assertIn('and which is the oldest?', heard[2][1]['content'])
+        self.assertIn('scheduling portal', heard[2][1]['content']); self.assertIn('and which is the oldest?', heard[2][1]['content'])
         self.assertEqual([m['role'] for m in session.card_msgs], ['user', 'assistant'])
         # ...and with nothing answering at all, what it had is still its own - with the line it was just told
         class Down(Brain):
@@ -507,7 +507,7 @@ class TheSessionTests(unittest.TestCase):
     def test_a_kept_conversation_s_system_never_changes_and_what_changed_leads_the_next_turn(self):
         """A provider's prompt cache serves a prompt only up to its first changed byte: "the owner answered this themselves" landed in the
         system, and everything after it - the conversation kept too - was paid for again on the next turn (the owner, 2026-11-14: "every agent
-        turn should not refresh the entire cache"). The system is the first turn's, byte for byte; the new line leads the turn, once."""
+        turn should not refresh the entire cache"). The system is the first turn's, byte for byte; his own reply is the next turn's event, once."""
         from taskuary import general, llm as llm_mod, selfclose
         heard = []
         class Brain:
@@ -528,9 +528,9 @@ class TheSessionTests(unittest.TestCase):
             session.send_prompt('and the October one?', echo=False)
         (a, _), (b, said), (c, again) = heard
         self.assertEqual(a, b); self.assertEqual(b, c)
-        self.assertNotIn(selfclose.OWNER_ANSWERED_LINE, b)
-        self.assertIn(selfclose.OWNER_ANSWERED_LINE, said); self.assertTrue(said.startswith(general.UPDATED))
-        self.assertNotIn(selfclose.OWNER_ANSWERED_LINE, again, 'said once')
+        self.assertNotIn('Sent it.', b)
+        self.assertIn("The owner's own message on the thread", said); self.assertIn('Sent it.', said)
+        self.assertNotIn('Sent it.', again, 'said once')
 
     def test_a_model_that_refuses_its_tools_fails_the_turn_in_the_providers_words(self):
         """The gateway walk, 2026-11-19: the gateway turned the tools down (400) and the turn was asked again with none - the agent then told him
@@ -551,11 +551,11 @@ class TheSessionTests(unittest.TestCase):
         seen = []
         class Brain:
             def chat(self, msgs, tools, max_tokens, **kw): seen.append((msgs[0]['content'], [t['function']['name'] for t in tools])); return {'content': 'ok'}
-        self._turn(Brain(), toolbox=('search_messages', 'propose_reply', 'show'))
+        self._turn(Brain(), toolbox=('search_messages', 'propose', 'show'))
         system, names = seen[0]
         self.assertIn(apiagent.TOOLS_BRIEF, system)
         self.assertEqual(names.count('show'), 1, "the server's show, never a second")
-        self.assertTrue({'search_messages', 'propose_reply', 'browser_open'} <= set(names))
+        self.assertTrue({'search_messages', 'propose', 'browser_open'} <= set(names))
 
     def test_a_card_with_tools_is_told_the_owners_systems_and_mailboxes_as_a_cli_is(self):
         # design round 2, 2026-11-18: one prompt for every road - a CLI with hands is told the owner's connections and the mailboxes it sends
@@ -575,8 +575,8 @@ class TheSessionTests(unittest.TestCase):
         seen = []
         class Brain:
             def chat(self, msgs, tools, max_tokens, **kw): seen.append(msgs[0]['content']); return {'content': 'ok'}
-        self._turn(Brain(), toolbox=('search_messages', 'propose_email', 'show'))
-        self.assertIn('propose_reply / propose_email', seen[0]); self.assertNotIn(selfclose.DRAFT_OPEN, seen[0])
+        self._turn(Brain(), toolbox=('search_messages', 'propose', 'show'))
+        self.assertNotIn(selfclose.DRAFT_OPEN, seen[0])
 
     def test_no_browser_but_a_toolbox_still_loops_and_says_set_the_browser_up(self):
         seen = []
@@ -704,9 +704,10 @@ class TheSessionTests(unittest.TestCase):
         self.assertEqual(turn['text'], 'The posts are drafted.')
         self.assertGreaterEqual(turn['started'], last_try - 0.05)
 
-    def test_a_failed_turn_leaves_a_draft_that_is_still_good_live(self):
-        """The API walk, 2026-11-19: Paula's reply was drafted; he asked for a PDF too, the AI failed, and the draft's Send stood greyed for 43
-        minutes while turn after turn failed. A card is set aside as its agent hears the input; a turn the AI never answered read past nothing."""
+    def test_a_failed_turn_brings_no_card_back_by_itself_and_says_it_is_trying_again(self):
+        """The owner, 2026-11-26: "Nothing comes back automatically." Paula's reply was drafted; he asked for a PDF too and the AI failed: the
+        draft his line greyed stays greyed where it stood (the 11-19 walk's re-raise is gone with every other), the turn is queued again, and
+        the agent that answers then keeps the draft if it still stands."""
         from taskuary import general, proposals
         class Down:
             def chat(self, *a, **kw): raise llm.NoAnswer('hipaa_ai: the model ran out of room before answering, even with 8000 tokens (finish_reason length)')
@@ -719,8 +720,9 @@ class TheSessionTests(unittest.TestCase):
         with self._patched(Down()):
             try: self._down_session(s, tid).send_prompt('make it a one-page PDF too', echo=False)
             except Exception: pass
-        self.assertEqual(s.get_review(rid)['Status'], 'pending')
-        self.assertNotIn(rid, proposals.written_past(s, tid))
+        from taskuary import cardqueue
+        self.assertTrue(proposals.passed(s.get_review(rid))); self.assertIsNone(cardqueue.again_of(s, rid))
+        self.assertTrue(proposals.comes_back(s, s.get_review(rid)), 'and it is still its agent\'s to keep, once one answers')
         self.assertIn('The AI stopped before it answered - trying again at', [c['Body'] for c in s.list_comments(tid)][-1])
 
     def test_a_card_that_takes_no_tools_is_offered_only_the_ways_that_are_here(self):
@@ -756,7 +758,8 @@ class TheSessionTests(unittest.TestCase):
         self.assertIn(f"TODAY: {datetime.now().strftime('%A %d %B %Y')}", seen[0])
         self.assertIn('Ray Colton <ray@northwind.example>', seen[0])
         self.assertIn('An AI CLI - a shell, files and a browser on this computer - can be installed from', seen[0])
-        self.assertIn('is a routine Taskuary runs', seen[0])
+        # ...and no hint at a tool or a setting it was not asked about (walk 9, 2026-11-23: a routine and Developer mode on every task)
+        self.assertNotIn('save_routine', seen[0]); self.assertNotIn('Developer mode', seen[0])
 
 
 class TheToolboxTests(unittest.TestCase):
@@ -782,7 +785,7 @@ class TheToolboxTests(unittest.TestCase):
             apiagent.taskuary_tools(7, 'r', post=post)
             reads = apiagent.READS[(7, 'r')]
             self.assertTrue({'my_task', 'read_message', 'search_messages', 'person'} <= reads)
-            self.assertFalse(reads & {'run_system', 'tick', 'propose_reply', 'todos'}, 'an outside system, or anything that moves, runs every time')
+            self.assertFalse(reads & {'run_system', 'tick', 'propose', 'todos'}, 'an outside system, or anything that moves, runs every time')
         finally: apiagent.forget(7, 'r')
         self.assertNotIn((7, 'r'), apiagent.READS)
 
@@ -827,8 +830,8 @@ class TheHandsTests(unittest.TestCase):
     def run_(self, tool, **a): return apiagent.run_tool(self.s, self.tid, 'sid-h', tool, a)
 
     def test_a_general_task_works_in_the_folder_a_general_cli_does(self):
-        from taskuary import config
-        self.assertEqual(Path(apiagent.workdir(self.s, self.tid)), config.home() / 'scratch')
+        from taskuary import outputs
+        self.assertEqual(Path(apiagent.workdir(self.s, self.tid)), outputs.work_folder(self.tid))      # ...its own (walk 9)
 
     def test_a_coding_task_works_in_its_checkout(self):
         tid = self.s.create_task({'Title': 'Fix the build', 'Summary': 'go', 'Kind': 'coding', 'Status': 'open'}, 'owner')
@@ -921,7 +924,7 @@ class TheHandsTests(unittest.TestCase):
         class Done:
             pid, returncode = 4242, 0
             def communicate(self, timeout=None): return b'3 files', b''
-        with mock.patch('taskuary.hooks.command_gate', return_value={}) as gate, mock.patch('taskuary.spawn.popen', return_value=Done()) as ran:
+        with mock.patch('taskuary.gate.check', return_value={}) as gate, mock.patch('taskuary.spawn.popen', return_value=Done()) as ran:
             said = self.run_('run_command', command='git status', why='see what changed')
         self.assertIn('exit 0', said); self.assertIn('3 files', said)
         self.assertEqual(gate.call_args.args[3], 'git status')
@@ -933,17 +936,11 @@ class TheHandsTests(unittest.TestCase):
             pid, returncode = 4242, None
             def communicate(self, timeout=None): raise subprocess.TimeoutExpired('build', timeout)
         stop = threading.Event(); stop.set()
-        with mock.patch('taskuary.hooks.command_gate', return_value={}), mock.patch('taskuary.spawn.popen', return_value=Building()), \
+        with mock.patch('taskuary.gate.check', return_value={}), mock.patch('taskuary.spawn.popen', return_value=Building()), \
              mock.patch.dict(apiagent.STOPS, {(self.tid, 'sid-h'): stop}), mock.patch.object(apiagent, '_kill') as killed:
             with self.assertRaisesRegex(RuntimeError, 'stopped'): self.run_('run_command', command='npm run build', why='build it')
         killed.assert_called_once()
 
-    def test_a_step_that_waits_for_approve_is_asked_for_by_calling_it(self):
-        "Told only that a push waits for the owner's Approve, a model wrote that it needed approval and never called: no button on the task."
-        from taskuary import apiagent
-        said = apiagent.FULL['run_command']                     # its whole words, as find_tools answers
-        for text in (said, apiagent.TOOLS_BRIEF):
-            self.assertIn("waits for the owner's Approve", text); self.assertIn(apiagent.ASK_BY_CALLING, text)
 
     def test_a_command_the_cli_would_hold_is_held_by_the_same_gate_and_never_run(self):
         with mock.patch('taskuary.spawn.popen') as ran:
@@ -957,7 +954,7 @@ class TheHandsTests(unittest.TestCase):
         from taskuary import hooks
         payload = {'tool_name': 'Bash', 'tool_input': {'command': 'git push'}, 'cwd': ''}
         class T: store, task_id, sid, cwd = self.s, self.tid, 'sid-c', ''
-        with mock.patch.object(hooks, '_pane', return_value=T()), mock.patch.object(hooks, 'command_gate', return_value={'x': 1}) as gate:
+        with mock.patch.object(hooks, '_pane', return_value=T()), mock.patch('taskuary.gate.check', return_value={'x': 1}) as gate:
             self.assertEqual(hooks.browser(payload), {'x': 1})
         gate.assert_called_once()
 
@@ -1130,7 +1127,6 @@ class EveryCardTests(unittest.TestCase):
         "The tools a turn is offered and the gate its commands pass never ask which card runs it."
         import inspect
         self.assertNotIn('brain', inspect.signature(apiagent.tools_for).parameters)
-        self.assertIn('hooks.command_gate', inspect.getsource(apiagent._hands))
 
 
 class CodingOnACardTests(unittest.TestCase):
@@ -1227,10 +1223,8 @@ class CodingOnACardTests(unittest.TestCase):
     def test_it_is_told_this_is_coding_and_where_it_works_as_its_cli_is(self):
         import tempfile
         self.s.add_comment(self.tid, 'owner', self.g.USER_TYPE, 'fix it')
-        self.assertIn(self.g.GENERAL_WHO, self.g._prompt(self.s, self.tid)[0])          # ...general work still is
         self.g.ON_CARD.add(self.tid)
         system, user = self.g._prompt(self.s, self.tid)
-        self.assertIn(self.g.CODING_WHO, system)
         self.assertNotIn('non-coding', system); self.assertNotIn('Do not turn this into a coding task', system)
         self.assertIn('REPOSITORIES - no checkout is chosen for this task yet', user)      # nothing placed it: the ones to pick from
         repo = tempfile.mkdtemp()
@@ -1478,3 +1472,25 @@ def test_a_search_engine_page_read_as_the_fallback_is_its_results_never_its_menu
     out = apiagent._results_only(page)
     assert out.startswith('PAGE https://html.search.example') and 'Argentina' not in out and 'Past Year' not in out
     assert out.split('\n')[1] == 'Northwind Paper Supply' and 'paper.example/prices' in out
+
+
+def test_a_connected_system_is_found_by_its_own_name_on_every_road():
+    """Walk 23, 2026-11-25 (the HIPAA road): asked for a QuickBooks bill with QuickBooks connected, the agent searched its tools for
+    "quickbooks", "bill" and "accounting", found none - the words searched were the tools', and a system is reached through run_system -
+    browsed for the site, and told him twice "no QuickBooks or accounting tool is connected here". find_tools reads the two tools that reach
+    his systems by what list_systems answers too: on the API agent's road and on a CLI's, the same search."""
+    from taskuary import agenttools, docsync
+    SYSTEMS = 'YOUR SYSTEMS - QuickBooks Online (connector_id 4; tools: quickbooks_bill - create a bill, quickbooks_vendors)'
+    def post(url, json=None, headers=None, timeout=None):
+        r = mock.Mock(status_code=200); r.json.return_value = agenttools.rpc(json, lambda n, a: f'{n} answered', ()); return r
+    s = MemoryStore(); tid = s.create_task({'Title': 'A bill for Payworth', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    core = apiagent.tools_for(tid, 'q', False, post=post)
+    assert not {'list_systems', 'run_system'} & {t['function']['name'] for t in core}, 'offered as the work needs them'
+    with mock.patch.object(docsync, 'agent_systems', return_value=SYSTEMS):
+        for asked in ('quickbooks', 'create a bill'):
+            tools = list(core)
+            said = apiagent.find(tid, 'q', tools, asked, s)
+            assert 'run_system' in said and 'run_system' in {t['function']['name'] for t in tools}, f'{asked}: {said}'      # ...found, and loaded for the turn
+            assert 'run_system' in agenttools.call(s, tid, 'find_tools', {'query': asked}, {}), f"{asked}: a CLI's find_tools finds it too"
+    with mock.patch.object(docsync, 'agent_systems', return_value=''):
+        assert 'run_system' not in apiagent.find(tid, 'q', list(core), 'quickbooks', s), 'nothing connected by that name: no tool is named for it'

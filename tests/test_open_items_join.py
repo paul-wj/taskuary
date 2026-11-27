@@ -11,6 +11,7 @@ from taskuary.store import MemoryStore
 from tests import fake_embed
 
 ALEX, GAIL, PORTAL, ONBOARD = 'alex@northwind.example', 'gail@northwind.example', 'support@vendor.example', 'welcome@payworth.example'
+ERIN = 'erin@northwind.example'
 
 
 def brain(seen, topic):
@@ -55,6 +56,52 @@ class OpenItemsJoinTests(unittest.TestCase):
         self.assertTrue(any(f'(tid {self.tid})' in l for l in json.loads(seen[-1]).get('open_items') or []))
         self.assertNotEqual(r['task_id'], self.tid)
         self.assertEqual(len(self.s.list_tasks()), 2)
+
+
+class WhatItWaitsOnTests(unittest.TestCase):
+    """Walk 16: a task's sent reply asked Erin whether the growth was more users or a price change; her answer came on a NEW thread and was
+    filed as a notice with nothing to do - triage was shown the task's title and first ask, never that it waited on her answer."""
+    def setUp(self):
+        cm = fake_embed.no_embedder(); cm.__enter__(); self.addCleanup(cm.__exit__, None, None, None)
+        self.s = MemoryStore(); self.s.set_setting('owner_email', ALEX, 't')
+        self.tid = arrive(self.s, brain([], 'nothing'), 'v', 'thread-S', ERIN, 'Erin Blake', [ALEX], 'Q4 vendor spend',
+                          'Here is the Q4 vendor spend sheet. Spendly is up 40% on last quarter.')['task_id']
+
+    def test_an_answer_on_a_new_thread_is_shown_the_task_that_waits_on_it(self):
+        from taskuary import asks
+        asks._start_watch(self.s, self.tid, self.s.list_messages(self.tid)[0])     # the reply he sent asked her something
+        seen = []
+        r = arrive(self.s, reader(seen, "waiting for erin's input: erin blake's answer"), 'w', 'thread-N', ERIN, 'Erin Blake', [ALEX], 'Spendly',
+                   'More users - we added the sales team in October. The price did not change.')
+        said = [txt for t, txt in shown(json.loads(seen[-1])) if t == self.tid]
+        self.assertTrue(said and "waiting for erin's input: erin blake's answer" in said[0].lower() and 'Q4 vendor spend' in said[0], said)
+        self.assertEqual(r['task_id'], self.tid, 'her answer reaches the task that asked')
+
+    def test_the_agents_question_and_a_named_wait_are_on_its_line_and_go_when_answered(self):
+        from taskuary import waiton, workerstate as ws
+        ws.record(self.s, self.tid, 'g1', 'turn_end', text='One thing first.', source='api')
+        ws.record(self.s, self.tid, 'g1', 'input_needed', text='Is 25 seats or 250 the right count?', source='api')
+        waiton.declare(self.s, self.tid, 'gail@northwind.example')
+        line = next(l for l in context.open_items(self.s) if f'(tid {self.tid})' in l)
+        self.assertIn("waiting for your input: the agent's question: Is 25 seats or 250 the right count?", line)
+        self.assertIn("also waiting for Gail's input", line)
+
+
+    def test_the_agent_working_it_is_on_its_line(self):
+        """Walk 25 (2026-11-26): a colleague's chat line about a printer's typo joined the owner's OWN website task, which its agent was
+        working - the same business's name stood in both. Triage was shown that task as one line with nothing about an agent on it, where a
+        task the message touches says so (agent_on_it): what tells a follow-up to that very work from a different ask."""
+        from taskuary import general
+        s = MemoryStore()
+        mine = s.create_task({'Title': 'Harbor Bakery website', 'Summary': 'Build me a simple website for Harbor Bakery', 'Kind': 'general',
+                              'Source': 'manual', 'OriginBase': 'owner'}, 'owner')
+        quiet = s.create_task({'Title': 'Renew the parking permit', 'Summary': 'Renew it before March'}, 'owner')
+        general.OPENING.add(mine)
+        try: lines = {int(re.search(r'\(tid (\d+)\)', l)[1]): l for l in context.open_items(s)}
+        finally: general.OPENING.discard(mine)
+        self.assertIn('an agent is on it: working', lines[mine]); self.assertIn('| yours |', lines[mine])
+        self.assertNotIn('an agent is on it', lines[quiet])
+        self.assertNotIn('an agent is on it', next(l for l in context.open_items(s) if f'(tid {mine})' in l), 'gone with the agent')
 
 
 class OpenItemsBoundTests(unittest.TestCase):

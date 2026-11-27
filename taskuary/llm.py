@@ -10,7 +10,7 @@ triage.classify_intent expects. Which brain is the owner's choice (setting `tria
                         same brain that works the tasks, no second API key to buy
 
 Cloud keys are cheap and instant per message; a CLI run is slower and heavier but keeps
-everything on one model (and one bill). Configure it in Settings -> How mail is sorted.
+everything on one model (and one bill). Choose it in Settings -> Which AI does what.
 """
 import base64, contextvars, hashlib, json, mimetypes, re, requests
 from contextlib import contextmanager
@@ -200,6 +200,11 @@ def gateway_base(cfg: dict) -> str:
     return gateway_url((cfg or {}).get('base_url') or OPENAI_COMPATIBLE['hipaa_ai'][0])
 
 
+def compat_base(t, cfg: dict) -> str:
+    "An OPENAI_COMPATIBLE card's address: the gateway's for hipaa_ai (gateway_base), else its own base_url over the provider's."
+    return gateway_base(cfg) if t == 'hipaa_ai' else ((cfg or {}).get('base_url') or OPENAI_COMPATIBLE[t][0]).rstrip('/')
+
+
 def gateway_problem(cfg: dict, key: str) -> str:
     """'' when the gateway answers this access code on its model list, else the one thing to fix, in the owner's words:
     no address, an address that does not answer, an address that is not the gateway, or a code the gateway turned away.
@@ -310,6 +315,23 @@ ROOM = 8000
 _NO_SEARCH = set()
 _THINKS = set()            # (type, endpoint, model) whose answers were seen cut by reasoning tokens
 _SAID = {}                 # a CLI conversation's id -> the hash of the instructions it was last typed (make_cli_llm: said once)
+# ...KEPT ON DISK BESIDE THE PROMPT FILES (the review, 2026-11-23): held in this process alone, a Codex conversation picked up after a restart
+# was typed its whole system (~2.6k on a bare install, the owner block and all) above his Continue or a press told back - one it already held
+def said_to(sid: str) -> str:
+    "The hash of the instructions conversation `sid` was last typed, '' for none."
+    if not sid: return ''
+    if sid not in _SAID:
+        from . import config
+        try: _SAID[sid] = (config.home() / 'prompts' / 'said' / hashlib.sha1(str(sid).encode()).hexdigest()[:20]).read_text(encoding='utf-8').strip()
+        except OSError: return ''
+    return _SAID[sid]
+def say_to(sid: str, said: str) -> None:
+    if not sid or _SAID.get(sid) == said: return
+    _SAID[sid] = said
+    from . import config
+    d = config.home() / 'prompts' / 'said'
+    try: d.mkdir(parents=True, exist_ok=True); (d / hashlib.sha1(str(sid).encode()).hexdigest()[:20]).write_text(said, encoding='utf-8')
+    except OSError as e: __import__('loguru').logger.debug(f'what conversation {sid} was told is not kept on disk - {e}')
 def cut_by_thinking(j: dict) -> bool:
     "A 'length' finish whose budget went mostly to reasoning: the visible words are a stub, not the answer the cap allowed."
     ch, u = (j.get('choices') or [{}])[0], j.get('usage') or {}
@@ -379,12 +401,12 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     main `model` stays reserved for the coding sessions. One brain, two gears: the classifier
     reads one email; it does not need the model that rewrites your codebase."""
     from . import agents as hub_agents
-    row = hub_agents.agent_row(store, agent_name)
+    row = hub_agents.agent_row(store, agent_name, model)         # ...a card's harness lists the model picked for this run (harness.row)
     if not row: return None
     prof = {k: v for k, v in json.loads(row.get('Config') or '{}').items() if k not in ('cwd', 'cwd_map')}
     # A ROLE'S ROW THAT NAMES NO CLI (synced before any brain was chosen) runs on the brain chosen for it, else on a ready one - it
     # used to run `claude` by default, on a machine where the person had only set up Codex (2026-10-21). No brain: no CLI brain.
-    if not prof.get('cmd'): prof = {**prof, **hub_agents.brain_command(store, agent_name)}      # the role's own brain first
+    if not prof.get('cmd'): prof = {**prof, **hub_agents.brain_command(store)}
     prof = hub_agents.with_cmd(prof, store)            # ...else the one resolver's; NoAI when nothing is connected
     # a CONVERSATION that stays open between turns (clipool) - the Assistant's chat, a general agent's task
     if keep: prof['keep_alive'] = keep
@@ -407,8 +429,10 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     elif not no_hands and cli_tools:
         # An owner-requested setup walkthrough needs the CLI's browser tool, but it still has no
         # business in a checkout. Keep its capable process in Taskuary's scratch directory.
-        from . import config
-        scratch = config.home() / 'scratch'; scratch.mkdir(exist_ok=True); prof['cwd'] = str(scratch)
+        # ...and a task's in a folder of its own (outputs.work_folder): the shared scratch listed every task's files to every agent
+        from . import config, outputs
+        scratch = outputs.work_folder(int(task_id)) if str(task_id or '').isdigit() else config.home() / 'scratch'
+        scratch.mkdir(parents=True, exist_ok=True); prof['cwd'] = str(scratch)
     else:
         # The classifier reads untrusted text with every tool off. A report is different: it may
         # safely read files and the web, but never gets command, edit, write, or connector tools.
@@ -458,7 +482,7 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     else: prof['acp_ok'] = False         # a run with every tool off has nothing to permit, whatever a saved profile says
     # AN AGENT'S CHAT ON A CLI WHOSE READS NO COMMAND LINE CAN KEEP (clis.confines - codex: even its read-only sandbox reads the whole disk,
     # and its only way to act alone is the bypass) works on the held road, its look and its hands alike (the owner, 2026-11-16: Codex quick
-    # work listed his Documents folder without asking): over ACP every read outside the task asks and every gated act holds (acpgate), and
+    # work listed his Documents folder without asking): over ACP every read outside the task asks and every gated act holds (gate), and
     # where that road cannot start nothing runs on the command line instead (agents.run_cli, `held_only`)
     from . import clis as clis_mod
     if task_id and keep and stranger_mode not in ('auto', 'look') and not clis_mod.confines(prof['cmd']) and clis_mod.acp_adapter(prof['cmd']):
@@ -536,13 +560,13 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         # ...A CLI WITH NO SYSTEM CHANNEL HEARS ITS INSTRUCTIONS ONCE PER CONVERSATION (the cache audit, 2026-11-14): codex and gemini had the
         # whole ~30K-character system typed above every resumed turn, ~7.5K tokens more history each turn. A changed system is said again
         sid0, said = (llm.session_id if keep else resume), hashlib.sha1(str(system).encode('utf-8')).hexdigest()
-        if system and cli != 'claude' and sid0 and _SAID.get(sid0) == said: prompt = user
+        if system and cli != 'claude' and sid0 and said_to(sid0) == said: prompt = user
         if run_prof.get('model'): aiusage.note(str(run_prof['model']).split('@')[0])
         # A KEPT conversation goes on with the session its last call was on, not the id this brain was built with: a new
         # chat's second round (a look-up, the gate's retry) went out with no id, which clipool reads as New chat - so it
         # killed the live CLI and started another, 15 s against 2.6 s warm, and the round lost the turn it was answering.
         # A chat already under way did this all along: its rounds resume one session. One-shot brains keep their own id.
-        # ...and the store and task the ACP road's permission answers read (acpgate: the send filter, a step held on THIS task)
+        # ...and the store and task the ACP road's permission answers read (gate: the send filter, a step held on THIS task)
         with run_context(store, task_id if not no_hands else None):
 
             try:
@@ -554,7 +578,7 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
                 raise
         # what the caller needs to CONTINUE this conversation instead of starting another one
         llm.session_id = sid or resume
-        if system and cli != 'claude' and llm.session_id: _SAID[llm.session_id] = said
+        if system and cli != 'claude' and llm.session_id: say_to(llm.session_id, said)
         if stranger_mode in ('auto', 'look') and sid: store.set_setting(f'stranger_sid:{task_id}', sid, 'router')   # born in the stranger's folder
         return out
     def shaped(system, user):
@@ -639,6 +663,13 @@ def effective_pick(store, pick=None) -> str:
     return str(pick).strip() or agents.default_pick(store)
 
 
+def pick_card(store, pick: str):
+    "The AI card a `connector:<id>` or `connector:<type>` pick names, else None - ONE reading for the router and every surface."
+    want = str(pick or '')[10:]
+    return next((c for c in store.list_connectors() if c['Type'] in AI_TYPES and want
+                 and (c['ConnectorId'] == int(want) if want.isdigit() else c['Type'] == want)), None)
+
+
 def brain_status(store, pick=None) -> dict:
     """What `effective_pick` names and whether it can answer: {pick, Name, Type, ready, why}. A chosen brain that
     cannot start stays the answer - with `ready` False and `why` saying so - rather than reading as set up."""
@@ -659,9 +690,7 @@ def brain_status(store, pick=None) -> dict:
         ok, cli = hub_agents.runs_here(prof), hub_agents.cli_of(prof, row['Name'])
         return {**out, 'Name': f"{row['Name']} (CLI)", 'Type': 'cli', 'ready': ok,
                 'why': '' if ok else f"{row['Name']} is chosen, but '{cli}' is not installed on this machine"}
-    want = primary[10:] if primary.startswith('connector:') else primary
-    c = next((c for c in store.list_connectors() if c['Type'] in AI_TYPES
-              and (c['ConnectorId'] == int(want) if want.isdigit() else c['Type'] == want)), None)
+    c = pick_card(store, primary if primary.startswith('connector:') else f'connector:{primary}')
     if not c: return {**out, 'why': f'{primary} is chosen, but no such AI connector exists'}
     ok = bool(c['Active'] and (c['HasSecret'] or c['Type'] == 'ollama'))
     return {**out, **c, 'ready': ok, 'why': '' if ok else f"{c['Name'] or c['Type']} is chosen, but it is switched off or has no key"}
@@ -678,13 +707,35 @@ class _Scrubbed:
     `.last_pick` DURING a call, and a resumed CLI thread is carried on exactly those.
     """
     def __init__(self, brain): object.__setattr__(self, '_brain', brain)
-    def __call__(self, system, user, *a, **kw):
-        return self._brain(system.map(redact.scrub) if isinstance(system, Stable) else redact.scrub(system), redact.scrub(user), *a, **kw)
-    def __getattr__(self, k): return getattr(object.__getattribute__(self, '_brain'), k)
+    def __call__(self, system, user, *a, **kw): return self._brain(_scrubbed(system), redact.scrub(user), *a, **kw)
+    # ...AND ITS OTHER WAYS OUT, the same: an API agent's every step (apiagent.turn's `chat` - its tool answers, a page it read, his mail),
+    # its own web search, and a CLI's instructions warmed before the first call - each went past __call__ through __getattr__ as it was.
+    # Only where the brain has one: what it can do is read off it by name (apiagent.can, concierge's warm)
+    def __getattr__(self, k):
+        f = getattr(object.__getattribute__(self, '_brain'), k)
+        if k not in _OUT or not callable(f): return f
+        def out(first, *a, **kw): return f(_OUT[k](first), *a, **kw)
+        return out
     def __setattr__(self, k, v): setattr(object.__getattribute__(self, '_brain'), k, v)
 
 
 def _scrub(brain): return _Scrubbed(brain) if brain else brain
+def _scrubbed(system): return system.map(redact.scrub) if isinstance(system, Stable) else redact.scrub(system)
+
+
+def _said(m: dict) -> dict:
+    """One chat message as it may leave, EVERY PART OF IT (the owner, 2026-11-26): its words, a tool's answer - a file the agent opened by
+    itself, a page, a command's output - each part of a list (redact.scrub_parts), and the arguments of the calls it made, which ride back
+    on every later step. The conversation Taskuary keeps is not changed: only the copy that is sent."""
+    c = m.get('content')
+    if isinstance(c, (str, list)): m = {**m, 'content': _scrubbed(c) if isinstance(c, str) else redact.scrub_parts(c)}   # ...a Stable system keeps its cache blocks
+    if m.get('tool_calls'):
+        m = {**m, 'tool_calls': [{**k, 'function': {**f, 'arguments': redact.scrub_json(f['arguments'])}}
+                                 if isinstance(f := k.get('function'), dict) and isinstance(f.get('arguments'), str) else k for k in m['tool_calls']]}
+    return m
+
+
+_OUT = {'chat': lambda msgs: [_said(m) for m in msgs], 'search': redact.scrub, 'warm': _scrubbed}
 
 
 class _Cooling:
@@ -703,6 +754,10 @@ class _Cooling:
         except Exception as e:
             if isinstance(e, BudgetSpent): brainroute.spend(self._store, self._pick, str(e), e.until)
             elif getattr(e, 'until', None): brainroute.cool(self._store, self._pick, e.until)
+            # ...and one whose address did not answer rests a few minutes too: the router hands its calls to the next ready AI meanwhile
+            elif isinstance(e, requests.ConnectionError):
+                from datetime import datetime, timedelta
+                brainroute.spend(self._store, self._pick, str(e), datetime.now() + timedelta(seconds=brainroute.UNREACHED_REST), brainroute.UNREACHED)
             raise
         brainroute.unspend(self._store, self._pick)
         brainroute.heard(self._store, self._pick, box)
@@ -821,7 +876,8 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
         for i, (candidate, brain) in enumerate(brains):
             try:
                 # A backup has no access to the primary CLI's native conversation.
-                context = fallback_user if candidate != primary and fallback_user is not None else user
+                # ...scrubbed here, as `user` was at the door (_Scrubbed): it was handed to an API backup as it came
+                context = redact.scrub_parts(fallback_user) if candidate != primary and fallback_user is not None else user
                 # ...and a schema is dropped for the brain that cannot carry one - per brain, so a
                 # CLI backup does not take the schema away from the API brain behind it
                 kw = {k: v for k, v in kwargs.items()
@@ -1092,6 +1148,22 @@ def list_models(t, cfg: dict, key: str) -> list:
     return [m for m in _list_models(t, cfg, key) if not _NOT_A_BRAIN.search(m)]
 
 
+def info_models(t, cfg: dict, key: str, has) -> list:
+    """The models an OpenAI-compatible endpoint serves whose own model list says `has(model_info)` (a LiteLLM gateway's /model/info) -
+    never read off a model's name. [] for an endpoint that keeps no such list or answers nothing."""
+    if t not in OPENAI_COMPATIBLE: return []
+    try:
+        r = requests.get(f'{compat_base(t, cfg)}/model/info', headers={'Authorization': f'Bearer {key}'} if key else {},
+                         timeout=GATEWAY_WAIT if t == 'hipaa_ai' else 15, allow_redirects=False)
+        rows = (_json(r) or {}).get('data') if r.status_code == 200 else None
+    except Exception: return []
+    return sorted({m['model_name'] for m in rows or () if isinstance(m, dict) and m.get('model_name') and has(m.get('model_info') or {})})
+
+
+def image_models(t, cfg: dict, key: str) -> list: return info_models(t, cfg, key, lambda i: i.get('mode') == 'image_generation')
+def audio_models(t, cfg: dict, key: str) -> list: return info_models(t, cfg, key, lambda i: i.get('mode') == 'chat' and i.get('supports_audio_input'))
+
+
 MODELS_TTL, _models_cache = 600, {}      # a provider's list, per connector, for ten minutes - a cache, not a setting
 
 
@@ -1108,6 +1180,8 @@ def connector_models(store, cid: int) -> dict | None:
     except ValueError: conf = {}
     try: out = {'models': list_models(c['Type'], conf, c.get('Secret') or '')}
     except Exception as e: return {'models': [], 'error': str(e)[:200]}
+    # ...and what it can DRAW with, beside what it can chat with: images.pick draws through an AI card whose list has an image model
+    if ims := image_models(c['Type'], conf, c.get('Secret') or ''): out['images'] = ims
     _models_cache[cid] = (time.time(), out)
     return out
 
@@ -1133,7 +1207,7 @@ def _list_models(t, cfg: dict, key: str) -> list:
     else:
         base = {'openai': 'https://api.openai.com/v1', 'openrouter': 'https://openrouter.ai/api/v1', 'meta': 'https://api.meta.ai/v1',
                 'ollama': 'http://127.0.0.1:11434/v1'}.get(t) or (OPENAI_COMPATIBLE.get(t) or ('',))[0]
-        base = gateway_base(cfg) if t == 'hipaa_ai' else (cfg.get('base_url') or base).rstrip('/')
+        base = compat_base(t, cfg) if t in OPENAI_COMPATIBLE else (cfg.get('base_url') or base).rstrip('/')
         if t == 'ollama' and base.endswith('11434'): base += '/v1'
         if not base: return []
         url, h, k = f'{base}/models', ({'Authorization': f'Bearer {key}'} if key else {}), 'data'
@@ -1268,6 +1342,22 @@ def blocks(system, marks: int = 4, ttl: bool = True, seconds: bool = False):
 def cached(system, marks: int = 4): return blocks(system, marks) or str(system)
 
 
+# OPENAI'S OWN TWO CACHE FIELDS (cost, 2026-11-24): its cache is a prefix on the machine a request is routed to, by a hash of the prompt's first
+# tokens - and a 30-minute clock or a mail an hour after the last outlives the in-memory cache (5-10 minutes idle). `prompt_cache_key` routes
+# the calls that share a stable head to one place, named by that head's own bytes (no caller says what job it is); `prompt_cache_retention`
+# keeps it a day. A model that refuses either (a 400 naming it) is asked again without them, and never sent them again (_NO_CACHE_KW).
+CACHE_HEAD = 2_000         # characters of the stable head the key is named by
+_NO_CACHE_KW = set()
+
+
+def cache_fields(t: str, ek: tuple, system) -> dict:
+    "The two fields for an OpenAI call whose system has a head worth caching; {} for any other card or one that refused them."
+    if t != 'openai' or ek in _NO_CACHE_KW: return {}
+    head = ''.join(getattr(system, 'blocks', None) or [str(system or '')])[:CACHE_HEAD]
+    if len(head) < CACHE_FROM: return {}
+    return {'prompt_cache_key': 'tq-' + hashlib.sha1(head.encode('utf-8', 'replace')).hexdigest()[:16], 'prompt_cache_retention': '24h'}
+
+
 def endpoint(t, cfg: dict, key: str) -> tuple:
     """(urls, headers, model) an OpenAI-shaped card is asked at - its chat completions address(es), its auth header and its model. ONE
     ANSWER for make_llm's own calls and for the CLI harness its agent runs on (harness.py), so the two never reach different hosts."""
@@ -1301,8 +1391,7 @@ def endpoint(t, cfg: dict, key: str) -> tuple:
         urls, model = [f'{base}/v1/chat/completions'], cfg['model']
         headers = {'Authorization': f'Bearer {key}'} if key else {}
     elif t in OPENAI_COMPATIBLE:
-        default_base, default_model = OPENAI_COMPATIBLE[t]
-        base = gateway_base(cfg) if t == 'hipaa_ai' else (cfg.get('base_url') or default_base).rstrip('/')
+        base, default_model = compat_base(t, cfg), OPENAI_COMPATIBLE[t][1]
         if not base: raise RuntimeError('no gateway address on its card - add the one you were sent with your access code')
         urls = [f'{base}/chat/completions']
         headers, model = {'Authorization': f'Bearer {key}'}, cfg.get('model') or default_model
@@ -1432,14 +1521,15 @@ def make_llm(t, cfg: dict, key: str):
             nonlocal last
             for url in urls:
                 for tok_param in ('max_completion_tokens', 'max_tokens'):
-                    body = {'messages': msgs, tok_param: max_tokens, **({'model': model} if model else {}),
-                            **({'response_format': fmt} if fmt else {}),
-                            **({'chat_template_kwargs': {'enable_thinking': False}} if thinking_off else {}),
-                            **({'reasoning_effort': thin or effort} if (thin or effort) and ek not in _NO_EFFORT else {})}
+                    body = {'messages': msgs, tok_param: max_tokens, **({'model': model} if model else {}), **cache_fields(t, ek, system),
+                            **({'response_format': fmt} if fmt else {}), **({'reasoning_effort': thin or effort} if (thin or effort) and ek not in _NO_EFFORT else {})}
                     # a local model may spend its first call loading weights off disk, a reasoning deployment its time on a long
                     # prompt - room to answer, and a quick give-up on an endpoint that is not there
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                     if unmarked(r, msgs): r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+                    if r.status_code in (400, 422) and 'prompt_cache' in (r.text or '') and body.pop('prompt_cache_key', None):
+                        body.pop('prompt_cache_retention', None); _NO_CACHE_KW.add(ek)
+                        r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                     # a spent budget first: it is no refused effort or format, and asking again in another shape only spends a request
                     if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
                     # ...a proxy may turn it down with a 422 of its own (the gateway in front of another provider's model)
@@ -1448,7 +1538,7 @@ def make_llm(t, cfg: dict, key: str):
                         if not _THINK_REFUSED.search(said): _no_effort(ek, said)
                         r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                     if r.status_code == 200:
-                        aiusage.openai(r.json()); heard(r)
+                        aiusage.openai(r.json(), getattr(r, 'headers', None)); heard(r)
                         ch = (r.json().get('choices') or [{}])[0]
                         said = said_text(ch.get('message') or {})
                         if cut_by_thinking(r.json()): _THINKS.add(ek); raise _Empty('length')
@@ -1518,7 +1608,7 @@ def make_llm(t, cfg: dict, key: str):
                 if r.status_code in (400, 422) and body.pop('reasoning_effort', None) and _EFFORT_REFUSED.search(r.text or ''):
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                 if r.status_code == 200:
-                    aiusage.openai(r.json()); heard(r)
+                    aiusage.openai(r.json(), getattr(r, 'headers', None)); heard(r)
                     return (r.json().get('choices') or [{}])[0].get('message') or {}
                 last = r
                 if r.status_code == 404: break
@@ -1546,7 +1636,7 @@ def make_llm(t, cfg: dict, key: str):
         r = post_retrying(urls[0], headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
         if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
         if r.status_code != 200: _NO_SEARCH.add(ek); raise refused(t, r, urls[0], model)
-        aiusage.openai(r.json())
+        aiusage.openai(r.json(), getattr(r, 'headers', None))
         m = (r.json().get('choices') or [{}])[0].get('message') or {}
         cites = list(dict.fromkeys(str((a.get('url_citation') or a).get('url') or '') for a in m.get('annotations') or [] if isinstance(a, dict)))
         said = said_text(m).strip()
@@ -1742,7 +1832,7 @@ def _responses_web(t, cfg, headers, model, system, user, images, max_tokens, eff
             _no_effort((t, url, model), r.text); r = post_retrying(url, headers, body, 180)
     except requests.RequestException as e: _log_web(t, e); return None
     if r.status_code != 200: _log_web(t, f'{r.status_code} {r.text[:200]}'); return None
-    out = r.json(); aiusage.openai(out)
+    out = r.json(); aiusage.openai(out, getattr(r, 'headers', None))
     for o in out.get('output') or []:
         if o.get('type') != 'web_search_call': continue
         act = o.get('action') or {}

@@ -18,7 +18,8 @@ const words = (t) => ({ type: "progress", name: "text", detail: t });
 
 
 test("a general agent that edits files gets its edit rows with diffs; a call that carries no diff stays a step", () => {
-  const parts = turnParts([call("w", "Write", { file_path: "portal/new.js", content: "x\ny\n" }), done("w"),
+  // ...the diff the call's own row carries (conversation.acp_of_trace: a Write's content is its diff) - the page reads no arguments for one
+  const parts = turnParts([call("w", "Write", { file_path: "portal/new.js" }, { file: "portal/new.js", edit: { whole: true, parts: [{ old: "", new: "x\ny\n" }] } }), done("w"),
     call("e", "Edit", { file_path: "portal/app.js" }), done("e")]);
   assert.deepEqual(parts.map((p) => p.type), ["edit", "work"]);
   assert.equal(parts[0].summary, "Wrote new.js (+2 −0)");
@@ -81,16 +82,18 @@ test("regression: strict arrival order - a later message draws below a step stil
   assert.deepEqual(parts.map((p) => p.type), ["said", "work", "said"]);
   assert.equal(parts[1].steps[0].status, "running");
   // ...an edit between a call and its result leaves nothing it started spinning
-  const cut = turnParts([call("t", "Bash", { command: "pytest -q" }), call("e", "Edit", { file_path: "a.py", old_string: "a", new_string: "b" }), done("e"), done("t")]);
+  const cut = turnParts([call("t", "Bash", { command: "pytest -q" }), call("e", "Edit", { file_path: "a.py" }, { file: "a.py", edit: { parts: [{ old: "a", new: "b" }] } }), done("e"), done("t")]);
   assert.deepEqual(cut.map((p) => p.type), ["work", "edit"]); assert.equal(cut[0].steps[0].status, "done");
 });
 
 
+// ...ONE ROW THE AGENT KEEPS REPLACING (chatlog: every plan update of a run is the one row s:<sid>:plan:<run>, tests/test_chatlog.py) - drawn as
+// the checklist where it first stood
 test("regression: the plan is one checklist, the newest of its turn", () => {
-  const parts = turnParts([call("p1", "update_plan", { plan: ["Read the ledger", "Fix the tax line"] }), done("p1"),
-    call("p2", "update_plan", { plan: [{ step: "Read the ledger", status: "completed" }, { step: "Fix the tax line", status: "in_progress" }] }), done("p2")]);
+  const plan = { id: "s:x:plan:1", k: "plan", items: [{ text: "Read the ledger", status: "completed" }, { text: "Fix the tax line", status: "in_progress" }] };
+  const parts = turnParts(eventsOf([plan], false));
   assert.equal(parts.filter((p) => p.type === "plan").length, 1);
-  assert.deepEqual(parts[0].items, [{ text: "Read the ledger", state: "done" }, { text: "Fix the tax line", state: "now" }]);
+  assert.deepEqual([parts[0].id, parts[0].items], ["s:x:plan:1", [{ text: "Read the ledger", state: "done" }, { text: "Fix the tax line", state: "now" }]]);
   assert.match(read("ViewSpec.jsx"), /<ul className="tq-cc-plan" data-tq-plan="" aria-label=\{label\}>/);
   assert.match(read("ViewSpec.jsx"), /PlanRow = \(\{ p, label = "The agent's plan" \}\)/);
 });

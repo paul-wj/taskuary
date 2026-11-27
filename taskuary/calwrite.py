@@ -4,6 +4,7 @@ calendar.py only READS - every reply draft sees the owner's busy times. This is 
 itself: each act is DRAFTED as a review whose envelope says what the calendar will be told (Deliver kind 'calendar'), it
 waits in the approval queue like any reply, and only the owner's Send reaches `deliver` (verdicts._send_snapshot). The
 note box is the reply box; what it holds rides along as the RSVP's comment, or the new invite's body.
+His own Accept or Decline on an invite is that draft and its Send in one press (`rsvp`): the same card, the same door.
 
 Two providers, on the cards that already read the calendar:
 - Outlook: Graph events/{id}/accept | decline | tentativelyAccept (proposedNewTime) and POST events, as the mailbox the
@@ -17,7 +18,7 @@ What an invite IS comes from the mail system, never its words (counsel.is_invite
 meetingMessageType, or the iCalendar part's METHOD and SEQUENCE. Only a request nobody has answered is the owner's move;
 an answer, an update and a cancellation stay fyi.
 """
-import base64, json, re, time
+import base64, json, re, threading, time
 from datetime import datetime, timedelta, date, timezone
 from zoneinfo import ZoneInfo
 from loguru import logger
@@ -206,22 +207,24 @@ _BUSY = {'at': 0.0, 'data': None, 'days': 0}
 BUSY_TTL = 300
 
 
-def busy(store, days: int = 14, sure: bool = False) -> list:
+def busy(store, days: int = 14, sure: bool = False, tid=None) -> list:
     """The owner's busy events from now for `days` days, every calendar the cards reach - cached like the reply's read, and read
     again when a longer window is asked for than the cache holds. The demo has no calendar behind it, so it has a scripted week
     (demo.agenda). A calendar that could not be read is never cached as an empty week; `sure` (free times are offered off it)
-    raises NoAccess with the card for it - an unread calendar offered as free time had the owner booked over his own meetings."""
-    from . import demo
+    raises NoAccess with the card for it - an unread calendar offered as free time had the owner booked over his own meetings.
+    `tid`: only the calendars the agent on that task may use (workstreams.may_use) - read fresh, the cache is every calendar's."""
+    from . import demo, workstreams
     if demo.enabled(): return demo.agenda()
     days = max(14, int(days or 14))
-    if _BUSY['data'] is not None and time.time() - _BUSY['at'] < BUSY_TTL and _BUSY['days'] >= days: return _BUSY['data']
+    if not workstreams.shown(store): tid = None                 # one profile: every calendar is its own, as before
+    if not tid and _BUSY['data'] is not None and time.time() - _BUSY['at'] < BUSY_TTL and _BUSY['days'] >= days: return _BUSY['data']
     tz = cal.tz_of(store)
-    ag = cal.agenda(store, days=days, start=datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0))
+    ag = cal.agenda(store, days=days, start=datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0), tid=tid)
     if ag.get('errors'):
         if sure: raise NoAccess(f"Your calendar could not be read, so I can't say when you're free. {ag['errors'][0]}",
                                 'Open the card', connect_fix(store)['href'])
         return ag['events']
-    _BUSY.update(at=time.time(), data=ag['events'], days=days)
+    if not tid: _BUSY.update(at=time.time(), data=ag['events'], days=days)
     return ag['events']
 
 
@@ -241,13 +244,16 @@ def clashes(store, start: str, end: str, skip: str = '', events: list = None) ->
     return out
 
 
-def clash_line(store, start: str, end: str, skip: str = '', events: list = None) -> str:
-    """'clashes with Budget review 2:00-3:00 PM' - or '' when the time is free."""
+def clash_line(store, start: str, end: str, skip: str = '', events: list = None, tid=None) -> str:
+    """'clashes with Budget review 2:00-3:00 PM' - or '' when the time is free. `tid`: said to the agent on that task - a meeting on a
+    calendar its task may not use (workstreams.may_use) is a clash at its time, and never named."""
     hit = clashes(store, start, end, skip, events)
     if not hit: return ''
     e = hit[0]
+    key = lambda x: (x.get('start'), x.get('subject'))
+    named = not tid or key(e) in {key(x) for x in busy(store, tid=tid)}
     more = f' and {len(hit) - 1} more' if len(hit) > 1 else ''
-    return f"clashes with {e.get('subject') or 'another meeting'} {cal.span(e['start'], e.get('end') or '')}{more}"
+    return f"clashes with {named and e.get('subject') or 'another meeting'} {cal.span(e['start'], e.get('end') or '')}{more}"
 
 
 def free_slots(store, minutes: int = 30, start: date = None, end: date = None, n: int = SLOTS, avoid: tuple = None, events: list = None) -> list:
@@ -316,9 +322,11 @@ NEED_MS = (f'Calendar access needs to be granted - sign in again on the Outlook 
 NO_G = f'The Gmail card has no Google sign-in, and its App Password carries no calendar - press {G_SIGNIN} on the card.'
 
 
-def account(store, msg: dict = None, provider: str = '') -> dict:
+def account(store, msg: dict = None, provider: str = '', tid=None) -> dict:
     """The card that answers for this message - the Outlook card of the mailbox it arrived in, else the Gmail card with a
-    Google calendar on it - as {provider, connector, cfg, secret, mailbox}. Raises NoAccess with its fix when none can."""
+    Google calendar on it - as {provider, connector, cfg, secret, mailbox}. Raises NoAccess with its fix when none can.
+    `tid`: picked for the agent on that task - among its own profile's calendars and the untagged ones (workstreams.may_use)."""
+    from .workstreams import may_use
     box = str((msg or {}).get('SourceName') or (invite_of(msg) or {}).get('mailbox') or '')
     want = provider or (invite_of(msg) or {}).get('provider') or ''
     from . import demo
@@ -327,12 +335,12 @@ def account(store, msg: dict = None, provider: str = '') -> dict:
         for c in store.connectors_by_type('outlook', with_secret=True):
             if not c.get('Active'): continue
             boxes = [s['Address'] for s in store.list_sources() if s.get('Channel') == 'email' and s.get('Address')
-                     and (not s.get('ConnectorId') or s['ConnectorId'] == c['ConnectorId'])]
+                     and (not s.get('ConnectorId') or s['ConnectorId'] == c['ConnectorId']) and may_use(store, tid, s['Address'])]
             mb = next((b for b in boxes if b.lower() == box.lower()), boxes[0] if boxes else '')
             if mb: return {'provider': 'outlook', 'connector': c['ConnectorId'], 'cfg': {**_cfg(c), '_cid': c['ConnectorId']}, 'secret': c.get('Secret'), 'mailbox': mb}
     for c in store.connectors_by_type('gmail', with_secret=True):
         cfg = _cfg(c)
-        if c.get('Active') and cfg.get('google_refresh_token'):
+        if c.get('Active') and cfg.get('google_refresh_token') and may_use(store, tid, c['ConnectorId']):
             return {'provider': 'google', 'connector': c['ConnectorId'], 'cfg': cfg, 'secret': None, 'mailbox': cfg.get('address') or box}
     # NOTHING CONNECTED IS SAID SO, with the connect step (B15, the email walk 2026-10-29): with no mailbox card at all, Accept on an
     # invite talked about a Google refresh token and "Open the Gmail card", and Find a time offered "Sign in again" - nothing had ever
@@ -504,11 +512,44 @@ def draft(store, mid: int, act: str, start: str = None, end: str = None, actor: 
     return {'reviewId': rid, 'taskId': msg.get('TaskId'), 'say': head + (f' ({clash})' if clash else '') + f'. It waits for your {send_word()}.'}
 
 
+# ── Accept and Decline, pressed (the owner, 2026-11-26: "for calendar invites it should just show accept/decline button") ─────────
+# The press IS his yes, so it is the answer and its Send in one: the same card, sent through the one door every Send takes
+# (verdicts.decide). No note rides along - none was shown to him. Propose a new time needs his words, and stays a draft.
+ONE_PRESS, WENT = ('accept', 'decline'), {'accept': 'Accepted', 'decline': 'Declined'}
+_PRESS = threading.Lock()                             # one press at a time: two at once must find one answer, not make two
+
+
+def rsvp(store, mid: int, act: str, actor: str = 'owner') -> dict:
+    """{reviewId, taskId, sent, say, fix}: the invite answered at the press. An answer the calendar already took is said again and
+    nothing is sent; one still on its way, or that nobody could confirm, is checked - never sent beside. A send that failed stays on
+    its card (`sent` False, `say` why, `fix` the way past it). Raises as `draft` does where no answer can be set up at all."""
+    if act not in ONE_PRESS: raise ValueError(f'not a one-press answer: {act}')
+    from . import verdicts
+    with _PRESS:
+        mine = [r for r in store.reviews_for_message(int(mid)) if env_of(r).get('kind') == 'calendar' and env_of(r).get('act') != 'schedule']
+        if (r := next((r for r in mine if r.get('DeliveryState') == 'sent'), None)):
+            env = env_of(r)
+            return {'reviewId': r['ReviewId'], 'taskId': r.get('TaskId'), 'sent': True, 'say': went_line(env), 'fix': None}
+        r = next((r for r in mine if r.get('Status') == 'pending' and r.get('DeliveryState') in ('sending', 'unknown')), None)
+        rid = r['ReviewId'] if r else draft(store, mid, act, actor=actor, note='')['reviewId']
+        out = verdicts.decide(store, store.get_review(rid), 'approve', None, None, actor)
+        r = store.get_review(rid) or {}
+        sent = bool(out.get('ok') and not out.get('send_error') and r.get('DeliveryState') == 'sent')
+        return {'reviewId': rid, 'taskId': r.get('TaskId'), 'sent': sent, 'fix': out.get('send_fix'),
+                'say': went_line(env_of(r)) if sent else str(out.get('send_error') or 'The calendar was not told.')}
+
+
+def went_line(env: dict) -> str:
+    "\"Accepted Budget sync - sent to erin@northwind.example\": what a one-press answer says once the calendar took it."
+    to = ', '.join(env.get('to') or [])
+    return f"{WENT.get(env.get('act'), 'Answered')} {env.get('subject') or 'the meeting'}" + (f' - sent to {to}' if to else '')
+
+
 # ── a meeting asked for in the chat (the owner, 2026-10-28: "schedule a meeting" opened an agent's job) ──────────────────────────
-def can_book(store) -> bool:
+def can_book(store, tid=None) -> bool:
     """A card that can put a meeting on a calendar is connected - Outlook with a mailbox, or a Gmail card signed in with Google.
-    Whether it may WRITE is asked at the press (require_write), where the refusal carries its sign-in."""
-    try: account(store); return True
+    Whether it may WRITE is asked at the press (require_write), where the refusal carries its sign-in. `tid`: one its agent may use."""
+    try: account(store, tid=tid); return True
     except NoAccess: return False
 
 
@@ -519,15 +560,15 @@ def connect_fix(store) -> dict:
 
 
 def people_of(store, who) -> tuple:
-    """(addresses, names nobody could place) for the people a meeting is with - an address as given, a name through the people search
-    the pickers use (peoplesearch.search), its best hit taken. A name with no hit is said back, never guessed into an address."""
-    from . import peoplesearch
+    """(addresses, names nobody could place) for the people a meeting is with - an address as given, a name by the one answer to who someone
+    is (people.resolve: his mail in and out, his own words on any task, the directory). A name with no one hit is said back, never guessed."""
+    from . import people
     names = [w.strip() for w in (who if isinstance(who, (list, tuple)) else re.split(r'[,;]|\band\b', str(who or ''))) if str(w or '').strip()]
     got, miss = [], []
     for n in names[:20]:
         if '@' in n: got.append(n.lower()); continue
-        hit = next(iter(peoplesearch.search(store, n[:120], 'email').get('data') or []), None)
-        (got.append(hit['to'].lower()) if hit and '@' in str(hit.get('to')) else miss.append(n))
+        hit = people.resolve(store, n[:120]).get('address')
+        (got.append(hit.lower()) if hit else miss.append(n))
     return list(dict.fromkeys(got)), miss
 
 
@@ -541,8 +582,13 @@ NO_CAL = 'No calendar is connected, so a meeting cannot be set up yet - connect 
 
 def within_days(within: str = '', first=None, last=None, today: date = None) -> tuple:
     """(first, last) day the times are looked for in: 'this_week' is today to Friday (a weekend looks at the week ahead), 'next_week'
-    Monday to Friday after it, else the range typed - never before today - else the coming week."""
+    Monday to Friday after it, else the range typed - never before today - else the coming week. `within` by its words however they are
+    spaced or cased ("next week", "Next-Week"); one that is neither is refused with what it takes - never read as the coming week (walk 22,
+    2026-11-25: "next week" fell through to today's week, and a meeting for next week went out proposing Wednesday and Thursday of this one)."""
     today = today or date.today()
+    within = '_'.join(re.split(r'[\s_-]+', str(within or '').strip().lower())).strip('_')
+    if within not in ('', 'this_week', 'next_week'):
+        raise ValueError(f"`within` {within!r} is not this_week or next_week - give one of them, or the meeting's own `start` and `end`")
     if within == 'next_week':
         mon = today + timedelta(days=7 - today.weekday()); return mon, mon + timedelta(days=4)
     if within == 'this_week':
@@ -612,11 +658,12 @@ def their_busy(store, acct: dict, people: list, first: date, last: date) -> tupl
     return [e for p in people for e in got.get(p, [])], [p for p in people if p in got], [p for p in people if p not in got]
 
 
-def suggest(store, people, minutes: int = 30, within: str = '', first=None, last=None, n: int = PICKS) -> dict:
+def suggest(store, people, minutes: int = 30, within: str = '', first=None, last=None, n: int = PICKS, tid=None) -> dict:
     """The free times New → Meeting offers: `n` slots of `minutes` in working hours, one a day first, clear on the owner's calendar
     and on every attendee's the provider answered for - and when the days asked are full, the next free times after them (`later`).
-    Raises NoAccess with its fix for a card that may not write: the press says so before a pick, not after."""
-    acct = account(store); require_write(store, acct)
+    Raises NoAccess with its fix for a card that may not write: the press says so before a pick, not after. `tid`: the calendar it
+    goes on is one that task's agent may use (account); his free time is read off every calendar, since he is one person - only times."""
+    acct = account(store, tid=tid); require_write(store, acct)
     tz = cal.tz_of(store); today = datetime.now(tz).date()
     try: mins = int(minutes)
     except (TypeError, ValueError): mins = 30
@@ -630,17 +677,24 @@ def suggest(store, people, minutes: int = 30, within: str = '', first=None, last
 
 
 def name_of(store, addr: str) -> str:
-    """What to call someone in a title: the name the mail, the org chart or the directory knows them by, else the address."""
+    """What to call someone in a title: the name the mail, the org chart or the directory knows them by, else the address. A NAME IS SHOWN
+    ONLY FOR THE ADDRESS IT BELONGS TO (the red team, 2026-11-24, T9): a stranger's From typed "Erin Blake" made every card to them read
+    "Erin Blake", the address out of sight. Where another address carries the same name, it is that address's only when this one alone is
+    vouched for (peoplesearch.known: one he wrote to, the org chart's, the directory's); else the address is said."""
     from . import peoplesearch
-    try: hit = next((r for r in peoplesearch.known(store, 'email') if r['to'] == addr.lower() and r.get('name')), None)
-    except Exception: hit = None
-    return hit['name'] if hit else addr
+    try: ps = peoplesearch.known(store, 'email')
+    except Exception: ps = []
+    hit, a = next((r for r in ps if r['to'] == str(addr or '').lower() and r.get('name')), None), str(addr or '').lower()
+    if not hit: return addr
+    n = ' '.join(hit['name'].split()).lower()
+    rivals = [r for r in ps if r['to'] != a and ' '.join(str(r.get('name') or '').split()).lower() == n]
+    return hit['name'] if not rivals or (hit.get('vouched') and not any(r.get('vouched') for r in rivals)) else addr
 
 
 def _and(xs: list) -> str: return ' and '.join(xs) if len(xs) < 3 else f"{', '.join(xs[:-1])} and {xs[-1]}"
 
 
-def _checked(store, people, subject: str, start: str, end: str) -> tuple:
+def _checked(store, people, subject: str, start: str, end: str, tid=None) -> tuple:
     """(addresses, subject, account) for a new meeting, or ValueError for what is missing, NoAccess for a card that may not write."""
     to, subject = _addrs(people), ' '.join(str(subject or '').split())[:200]
     if not to: raise ValueError('add who the meeting is with')
@@ -648,7 +702,7 @@ def _checked(store, people, subject: str, start: str, end: str) -> tuple:
     try: a, b = _dt(start), _dt(end)
     except (TypeError, ValueError): raise ValueError('pick a time first')
     if b <= a: raise ValueError('that time ends before it starts')
-    acct = account(store); require_write(store, acct)
+    acct = account(store, tid=tid); require_write(store, acct)
     return to, subject, acct
 
 
@@ -656,9 +710,11 @@ def _checked(store, people, subject: str, start: str, end: str) -> tuple:
 LINK = {'outlook': 'Teams', 'google': 'Google Meet'}
 
 
-def _invite(store, tid: int, to: list, subject: str, start: str, end: str, note: str, actor: str, acct: dict, online: bool = False) -> dict:
-    """The invite as a review on task `tid` - the 'schedule' act every new meeting drafts, waiting on the owner's Send. {reviewId, head, clash}."""
-    line, clash = when(start, end), clash_line(store, start, end)
+def _invite(store, tid: int, to: list, subject: str, start: str, end: str, note: str, actor: str, acct: dict, online: bool = False,
+            walled: bool = False) -> dict:
+    """The invite as a review on task `tid` - the 'schedule' act every new meeting drafts, waiting on the owner's Send. {reviewId, head, clash}.
+    `walled`: set up by the task's agent - a clash on a calendar its task may not use is said without its name (clash_line)."""
+    line, clash = when(start, end), clash_line(store, start, end, tid=tid if walled else None)
     env = {'kind': 'calendar', 'channel': 'calendar', 'act': 'schedule', 'provider': acct['provider'], 'connector_id': acct['connector'],
            'mailbox': acct['mailbox'], 'subject': subject, 'to': to, 'clash': clash, 'start': start, 'end': end, 'when': line,
            **({'link': LINK.get(acct['provider'], 'Teams')} if online else {})}
@@ -709,18 +765,44 @@ def meeting(store, tid: int, who, subject: str, minutes: int = 30, within: str =
     to, miss = people_of(store, who)
     if miss: raise ValueError(f"no address for {_and(miss)} in the owner's mail or directory - give the address, or your best guess "
                               "(their first name at the company's domain) named in `guessed`")
+    if not can_book(store, tid): return by_email(store, tid, to, subject, minutes, within, start, end, note, actor, guessed)
     if not (start and end):
-        free = suggest(store, to, minutes, within)['slots']
+        free = suggest(store, to, minutes, within, tid=tid)['slots']
         if not free: raise ValueError('no free time in those days - name other days (within) or a start and end')
         start, end = free[0]['start'], free[0]['end']
-    to, subject, acct = _checked(store, to, subject, start, end)
-    got = _invite(store, int(tid), to, subject, start, end, note, actor, acct, online)
+    to, subject, acct = _checked(store, to, subject, start, end, tid)
+    got = _invite(store, int(tid), to, subject, start, end, note, actor, acct, online, walled=True)
     if (g := [a for a in (str(x).strip().lower() for x in guessed or ()) if a in {t.lower() for t in to}]):
         from .slots import with_guess
         store.update_review_reason(got['reviewId'], with_guess((store.get_review(got['reviewId']) or {}).get('Reason'), g))
     env = env_of(store.get_review(got['reviewId']))
     return {'ok': True, 'review': got['reviewId'], 'to': to, 'when': env['when'], 'link': env.get('link') or '',
             'says': _told(got['head'] + (f" ({got['clash']})" if got['clash'] else ''))}
+
+
+# EVERY ACT HAS A ROAD TO A CARD (walk 9, 2026-11-23: a 30-minute meeting with a known address and a chosen slot ended twice on "No calendar
+# is connected - connect one", the job not done). With no calendar to put it on, the same meeting is an email to them proposing the time -
+# the email road's one card (slots.draft), the owner's Send. Connecting a calendar turns the next one into an invite.
+def by_email(store, tid: int, to: list, subject: str, minutes: int = 30, within: str = '', start: str = None, end: str = None, note: str = '',
+             actor: str = 'agent', guessed=()) -> dict:
+    "The meeting as an email proposing `start`-`end` (else the first free working-hours times in `within`). {ok, review, to, when, says}."
+    from . import slots
+    if not str(note or '').strip(): raise ValueError(f"no calendar is connected, so this meeting goes as an email to {', '.join(to)} proposing the "
+                                                     "time - call again with `note`: the email's words (the times are added under them)")
+    subject = ' '.join(str(subject or '').split())[:200]
+    if not subject: raise ValueError('say what the meeting is about')
+    if start and end: times = [{'start': start, 'end': end}]
+    else:
+        a, b = within_days(within, today=datetime.now(cal.tz_of(store)).date())
+        times = free_slots(store, minutes, a, b, n=3, events=[])
+    if not times: raise ValueError('no time in those days - name other days (within) or a start and end')
+    say = [when(t['start'], t['end']) for t in times]
+    out = slots.draft(store, int(tid), f"{str(note).strip()}\n\n" + '\n'.join(f'- {x}' for x in say), to[0], subject, 'new', actor,
+                      cc=to[1:], guessed=[g for g in guessed or () if g])
+    if not out.get('ok'): return out
+    return {'ok': True, 'review': out.get('review_id'), 'to': to, 'when': '; '.join(say), 'by': 'email',
+            'says': f"No calendar is connected, so it is set up as an email to {', '.join(to)} proposing {' or '.join(say)} - it waits on the "
+                    "owner's Send; their calendar was not read, so no clash was checked. A calendar connected makes the next one an invite."}
 
 
 def env_of(r) -> dict:
@@ -750,7 +832,7 @@ def _ok(r, what: str):
 
 
 def deliver(store, env: dict, note: str) -> dict:
-    """Tell the calendar what the owner approved. Called from verdicts._send_snapshot only - behind Send, never before it."""
+    """Tell the calendar what the owner approved. Called from verdicts._send_snapshot only - behind his press, never before it."""
     act, tz, note = env.get('act'), cal.tz_of(store), str(note or '').strip()
     c = store.get_connector(int(env.get('connector_id') or 0), with_secret=True)
     if not c or not c.get('Active'): raise RuntimeError('the calendar card it was drafted for is gone or switched off')

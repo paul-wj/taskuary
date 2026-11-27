@@ -11,7 +11,7 @@ test("an external agent handoff focuses the same chat and preserves the owner's 
     const errors = [], starts = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("request", (r) => {
-      if (r.method() === "POST" && /\/(dispatch|assistant\/stream|continue-work)$/.test(new URL(r.url()).pathname)) starts.push(r.url());
+      if (r.method() === "POST" && /\/(dispatch|assistant\/messages|continue-work)$/.test(new URL(r.url()).pathname)) starts.push(r.url());
     });
     await page.evaluateOnNewDocument((lang) => localStorage.setItem("taskuary.language", lang), language);
     await page.goto(h.ui, { waitUntil: "domcontentloaded", timeout: 90000 });
@@ -43,14 +43,14 @@ test("an external agent handoff focuses the same chat and preserves the owner's 
     await page.click('[data-tq-agent-handoff="general"] button');
     await page.waitForFunction(() => !document.querySelector("[data-tq-agent-handoff]"));
     assert.equal(await page.$eval(selector, (el) => el.value), "Analyse the export without changing it");
-    // The regular agent keeps master's stream road; demo answers locally without launching a real agent.
+    // The regular agent keeps master's conversation message route; demo never launches a real agent.
     await page.evaluate((id) => window.dispatchEvent(new CustomEvent("tq-agent-ask", { detail: { tid: id, coding: false } })), taskId);
     await page.waitForSelector('[data-tq-agent-handoff="general"]');
-    const sent = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname.endsWith("/assistant/stream"));
+    const sent = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname.endsWith("/assistant/messages"));
     await page.focus(selector); await page.keyboard.press("Enter");
     assert.equal((await sent).status(), 200);
     await page.waitForFunction((sel) => !document.querySelector("[data-tq-agent-handoff]") && document.querySelector(sel)?.value === "", { timeout: 15000 }, selector);
-    assert.equal(starts.length, 1, "only the explicit Send starts the stream");
+    assert.equal(starts.length, 1, "only the explicit Send starts the turn");
     const saved = await page.evaluate(async (id) => (await (await fetch(`/api/tasks/${id}/assistant`, {
       headers: { "X-Taskuary-Token": localStorage.getItem("taskuary_token") },
     })).json()).messages, taskId);
@@ -74,6 +74,7 @@ test("an external agent handoff focuses the same chat and preserves the owner's 
       } else page.fixtureRequestGuard(request);
     });
     await page.focus(selector); await page.keyboard.press("Enter"); await held;
+    await page.keyboard.down("Shift"); await page.keyboard.press("Enter"); await page.keyboard.up("Shift");
     await page.type(selector, "Keep this additional note");
     const refused = page.waitForResponse((r) => r.request() === heldRequest);
     await heldRequest.continue(); assert.equal((await refused).status(), 403);

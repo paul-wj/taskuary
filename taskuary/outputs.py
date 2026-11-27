@@ -17,7 +17,6 @@ from . import config
 from .store import task_ref
 
 MAX_FILES, MAX_DEPTH = 200, 4
-FIGURES = 'Every figure in it is computed from its source by that script, never typed in.'     # AGENT.md's Files you make (terminal.with_fence_rule)
 ROWS, COLS, CELL, SHEETS, GRID = 200, 40, 300, 30, 2000         # what a preview carries: enough to recognise the sheet, never the whole book
 TYPES = {'.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12',
          '.csv': 'text/csv', '.tsv': 'text/tab-separated-values', '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json',
@@ -31,11 +30,15 @@ TYPES = {'.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 # be able to play/interact/edit things taskuary generates right on screen" - an MP4 opened as its raw bytes)
 PREVIEW = {'.xlsx': 'sheet', '.xlsm': 'sheet', '.csv': 'table', '.pdf': 'pdf', '.png': 'picture', '.jpg': 'picture', '.jpeg': 'picture',
            '.gif': 'picture', '.webp': 'picture', '.md': 'text', '.txt': 'text', '.json': 'text', '.log': 'text', '.tsv': 'text',
-           '.svg': 'page', '.html': 'page', '.htm': 'page', '.docx': 'document',
+           '.svg': 'page', '.html': 'page', '.htm': 'page', '.docx': 'document', '.pptx': 'document',
            '.mp4': 'video', '.m4v': 'video', '.webm': 'video', '.mov': 'video', '.mp3': 'audio', '.wav': 'audio', '.m4a': 'audio', '.ogg': 'audio'}
 
 
 def folder(tid: int) -> Path: return config.home() / 'scratch' / 'outputs' / task_ref(tid)
+# ...AND A FOLDER TO WORK IN OF ITS OWN (walk 9, 2026-11-23: every general agent ran in the one shared scratch folder - a Glob for the file
+# attached to its ask listed another task's deck, report and charts): its scratch work beside its outputs, never another task's
+def work_folder(tid: int) -> Path:
+    d = config.home() / 'scratch' / 'work' / task_ref(tid); d.mkdir(parents=True, exist_ok=True); return d
 def content_type(name: str) -> str: return TYPES.get(Path(name).suffix.lower()) or mimetypes.guess_type(name)[0] or 'application/octet-stream'
 
 
@@ -67,14 +70,40 @@ def take_in(tid: int, paths) -> list:
             if not p.is_file(): continue
             if p.parent == folder(tid).resolve(): out.append(str(p)); continue
             if not p.is_relative_to(root): continue
-            d = folder(tid); d.mkdir(parents=True, exist_ok=True)
-            stem, ext = Path(_STAMPED.sub('', p.name) or p.name).stem, p.suffix
-            q = next(d / f'{stem}{f"-{i}" if i else ""}{ext}' for i in range(1000) if not (d / f'{stem}{f"-{i}" if i else ""}{ext}').exists()
-                     or (d / f'{stem}{f"-{i}" if i else ""}{ext}').read_bytes() == p.read_bytes())
-            if not q.exists(): shutil.copyfile(p, q)
-            out.append(str(q))
+            out.append(str(_copy_in(tid, p)))
         except (OSError, ValueError, StopIteration): continue
     return list(dict.fromkeys(out))
+
+
+def _copy_in(tid: int, p: Path, name: str = '') -> Path:
+    "`p` copied into task `tid`'s folder under its own name (an upload's stamp off; or `name`) - the same bytes there already are that copy, never a second"
+    d = folder(tid); d.mkdir(parents=True, exist_ok=True)
+    stem, ext = Path(Path(name).name or _STAMPED.sub('', p.name) or p.name).stem, p.suffix
+    q = next(d / f'{stem}{f"-{i}" if i else ""}{ext}' for i in range(1000) if not (d / f'{stem}{f"-{i}" if i else ""}{ext}').exists()
+             or (d / f'{stem}{f"-{i}" if i else ""}{ext}').read_bytes() == p.read_bytes())
+    if not q.exists(): shutil.copyfile(p, q)
+    return q
+
+
+# A FILE ON A CARD IS TAKEN FROM WHEREVER ITS AGENT MAY READ (his live app, 2026-11-25: a Codex agent's picture sat in its work folder and in
+# Codex's own generated_images, and a post card takes only the task's folder - where an agent saved a file decided whether it rode on the card).
+# One road for every card that carries a file: the task's folder as before; else any file the read gate lets this task read (readgate.judge -
+# never Taskuary's own data or a sign-in place), a bare name read against its work folder - copied into the task's folder, and that copy carried
+def take(store, tid: int, raw):
+    "The file `raw` names for a card on task `tid`, in its folder - copied there from where the agent may read it - or None."
+    if f := named(tid, raw): return f
+    from . import readgate
+    raw = str(raw or '').strip().strip('"\'')
+    try:
+        # ...AND BY THE HANDLE ITS OWN TOOL GAVE IT (walk 23, 2026-11-25: draw_image answered only `shown:1`, propose refused that as "no picture
+        # this task may read", and every post card went up without its picture): a file the agent showed or drew is its task's by that too
+        if (m := re.fullmatch(r'shown:(\d+)', raw)) and (a := store.get_task_artifact(int(m[1]))) and a.get('TaskId') == int(tid) and a.get('Kind') == 'shown':
+            return _copy_in(int(tid), Path(a['Path']), str(a.get('Name') or ''))
+        q = Path(raw).expanduser()
+        p = (q if q.is_absolute() else work_folder(int(tid)) / q).resolve()
+        if not raw or not p.is_file() or any(readgate.judge(store, tid, [str(p)])): return None
+        return _copy_in(int(tid), p)
+    except (OSError, ValueError, StopIteration): return None
 
 
 def take_in_text(tid: int, text: str) -> str:
@@ -194,11 +223,21 @@ def preview_of(p: Path, name: str = ''):
 # A PICTURE DRAWS AT ITS OWN SHAPE (the owner, 2026-11-18: "images should be able to render however the agent wants it or make sense to
 # show"): the page reserves its real width and height before it loads, so nothing jumps - read here off the file's header, no imaging library
 def pixels(p) -> list | None:
-    "[width, height] of a PNG, GIF, JPEG, WebP or BMP picture, read off its header - None for anything else or a header it cannot read."
+    """[width, height] of a PNG, GIF, JPEG, WebP or BMP picture, or of an MP4, MOV or WebM video, read off its header - None for anything else
+    or a header it cannot read. A VIDEO TOO (the owner, 2026-11-23: an upright clip stood in a 16:9 frame the chat's whole width): its shape
+    reserves its room as a picture's does (taskOutputs.mediaFit)."""
     import struct
     try:
-        with open(p, 'rb') as f: b = f.read(64 * 1024)
-        if b[:8] == b'\x89PNG\r\n\x1a\n': w, h = struct.unpack('>II', b[16:24])
+        with open(p, 'rb') as f:
+            b = f.read(64 * 1024)
+            if b[4:8] in (b'ftyp', b'moov', b'mdat', b'wide', b'free'): return _track(f)
+        if b[:4] == b'\x1aE\xdf\xa3':                     # ...a WebM: its first video track's PixelWidth (B0) and PixelHeight (BA)
+            m = re.search(rb'\xb0([\x81\x82])', b)
+            if not m: return None
+            n = m[1][0] - 0x80; w = int.from_bytes(b[m.end():m.end() + n], 'big')
+            m = re.compile(rb'\xba([\x81\x82])').search(b, m.end() + n)
+            h = int.from_bytes(b[m.end():m.end() + m[1][0] - 0x80], 'big') if m else 0
+        elif b[:8] == b'\x89PNG\r\n\x1a\n': w, h = struct.unpack('>II', b[16:24])
         elif b[:6] in (b'GIF87a', b'GIF89a'): w, h = struct.unpack('<HH', b[6:10])
         elif b[:2] == b'BM': w, h = struct.unpack('<ii', b[18:26]); h = abs(h)
         elif b[:4] == b'RIFF' and b[8:12] == b'WEBP':
@@ -219,6 +258,28 @@ def pixels(p) -> list | None:
     except (OSError, struct.error, ValueError): return None
 
 
+def _track(f) -> list | None:
+    "[width, height] of an MP4/MOV's first video track, off its track header (tkhd), turned as its matrix turns it (a phone's upright clip)."
+    import struct
+    def boxes(at, end):
+        while at + 8 <= end:
+            f.seek(at); n, k = struct.unpack('>I4s', f.read(8)); h = 8
+            if n == 1: n, h = struct.unpack('>Q', f.read(8))[0], 16
+            elif n == 0: n = end - at
+            if n < h: return
+            yield k, at + h, at + n
+            at += n
+    for k, a, z in boxes(0, f.seek(0, 2)):
+        if k != b'moov': continue
+        for t in (x for x in boxes(a, z) if x[0] == b'trak'):
+            for k3, a3, _ in boxes(t[1], t[2]):
+                if k3 != b'tkhd': continue
+                f.seek(a3); v = f.read(1)[0]; f.seek(a3 + 4 + (32 if v == 1 else 20) + 16)
+                m = struct.unpack('>9i', f.read(36)); w, h = (x >> 16 for x in struct.unpack('>II', f.read(8)))
+                if w > 0 and h > 0: return [int(h), int(w)] if m[0] == 0 and m[1] != 0 else [int(w), int(h)]
+    return None
+
+
 def row(tid: int, p: Path, rel: str) -> dict:
     "One file as the page draws it - the same shape as a shown page (page_row), so one list draws both."
     from urllib.parse import quote
@@ -226,17 +287,52 @@ def row(tid: int, p: Path, rel: str) -> dict:
     st = p.stat()
     return {'id': f'output:{rel}', 'name': p.name, 'path': rel, 'kind': 'output', 'content_type': kind,
             'size': st.st_size, 'at': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'), 'preview': sheet, 'url': f'/api/task-outputs/{int(tid)}/{quote(rel)}',
-            **({'dims': d} if kind.startswith('image/') and (d := pixels(p)) else {}),
+            **({'dims': d} if kind.startswith(('image/', 'video/')) and (d := pixels(p)) else {}),
             **({'note': 'No preview on this install - Download opens it in your spreadsheet app.'} if PREVIEW.get(ext) == 'sheet' and not sheet else {})}
 
 
-# EACH TURN KEEPS THE FILE AS IT MADE IT (the owner, 2026-11-07: "same file with revisions"): an agent improves one file in place (ONE_FILE),
+# EACH TURN KEEPS THE FILE AS IT MADE IT (the owner, 2026-11-07: "same file with revisions"): an agent improves one file in place,
 # so a turn that named it drew the NEWEST version - turn 1's words about three tools over the four-tool table a later turn wrote. The turn that
 # writes a file keeps its version: a copy when it is small, else only its name and stamp, read as "changed later" once a newer turn writes it.
 # The newest turn and the file itself are the latest; the copies live beside the outputs folder, never in it (listing, deliverables)
 TURN_COPY_MAX = 5_000_000
 def turns_folder(tid: int) -> Path: return config.home() / 'scratch' / 'output-turns' / task_ref(tid)
 def turn_folder(tid: int, turn: int) -> Path: return turns_folder(tid) / str(int(turn))
+
+
+# WHAT HIS AGENT HANDED HIM, NOT WHAT IT WORKED WITH (the owner's live task, 2026-11-25: "it should work through what it needs and action cards,
+# not a bunch of artifacts"): a script's charts and a drafts file were drawn in the chat beside the cards that carried them, as every file a
+# turn wrote was. A file of the folder is drawn in its turn only once `show` hands it over - several at once one artifact; the rest stay in
+# the task's files
+def hand(tid: int, paths) -> None:
+    """Mark these files of task `tid`'s folder (paths in it, or under it) as handed over to the owner, in the order they were handed - ONE CALL,
+    ONE HAND-OVER (the card gallery, 2026-11-25: a chart and its workbook, each shown by a call of its own, stood as one artifact "2 files"):
+    what one call hands is one group (calls), and a file handed before keeps the place it has."""
+    got, new = calls(tid), []
+    for p in paths:
+        try: r = rel(tid, Path(p))
+        except (OSError, ValueError): continue
+        if r not in new and not any(r in g for g in got): new.append(r)
+    if not new: return
+    turns_folder(tid).mkdir(parents=True, exist_ok=True)
+    (turns_folder(tid) / 'handed.json').write_text(json.dumps(got + [new]), encoding='utf-8')
+def calls(tid: int) -> list:
+    "What each `show` call handed over, a list of paths per call, in order. A list kept before calls were (bare paths) is one hand-over."
+    try: got = list(json.loads((turns_folder(tid) / 'handed.json').read_text(encoding='utf-8')))
+    except (OSError, ValueError): return []
+    old = [g for g in got if isinstance(g, str)]
+    return ([old] if old else []) + [list(g) for g in got if isinstance(g, list)]
+def handed(tid: int) -> list:
+    "The files of task `tid`'s folder its agent handed over (hand), by their paths in it - in the order it handed them."
+    return [p for g in calls(tid) for p in g]
+def call_of(tid: int) -> dict:
+    "{path: which hand-over it was in} - the page draws each hand-over as an artifact of its own."
+    return {p: i for i, g in enumerate(calls(tid)) for p in g}
+def as_handed(rows: list, gave: list) -> list:
+    """`rows` with the handed ones among them in the order they were handed (the card gallery, 2026-11-25: "three versions - pick one" stood
+    newest first, the third version leading; a board pack led with its clip): each keeps a handed row's place, the rest stay where they were."""
+    own = iter(sorted((r for r in rows if r.get('handed')), key=lambda r: gave.index(r['path']) if r['path'] in gave else len(gave)))
+    return [next(own) if r.get('handed') else r for r in rows]
 
 
 def _kept_copy(tid: int, path: str, made: list):
@@ -273,13 +369,17 @@ def keep_turn(tid: int, turn: int, since: float) -> list:
 # A FILE A CARD CARRIES IS DRAWN ON THAT CARD ONLY (the owner, 2026-11-10: "it should have drafted email not show me the file and the privew of
 # the file. don't need preview need the email acion card"): the file the agent attached to its reply stood under its answer as a preview card
 # of its own, read there as the thing it made. `show` still draws what the agent chose to show (agenttools.show_files) - never a card's file
+# ...AND A POST'S PICTURE (the owner's live task, 2026-11-24: the comparison image stood under the answer as a file of its own) - on its card once
 def on_cards(store, tid: int) -> set:
-    "The names of the files a draft or card of task `tid` carries (its delivery envelope's attachments)."
+    "The names of the files a draft or card of task `tid` carries (its delivery envelope's attachments, an act's picture)."
     out = set()
-    for r in store._rows("SELECT Deliver FROM review WHERE TaskId=? AND IFNULL(Deliver,'')<>''", (int(tid),)):
-        try: d = json.loads(r['Deliver']) or {}
-        except (TypeError, ValueError): continue
+    for r in store._rows("SELECT Kind, Deliver, DraftText FROM review WHERE TaskId=? AND (IFNULL(Deliver,'')<>'' OR Kind='action')", (int(tid),)):
+        try: d = json.loads(r['Deliver'] or '{}') or {}
+        except (TypeError, ValueError): d = {}
         out |= {str(a['name']) for a in (d.get('attachments') or []) if isinstance(a, dict) and a.get('name')} if isinstance(d, dict) else set()
+        try: p = json.loads(r['DraftText'] or '{}') if r['Kind'] == 'action' else {}
+        except (TypeError, ValueError): p = {}
+        if isinstance(p, dict) and isinstance(p.get('image'), str) and p['image'].strip(): out.add(Path(p['image']).name)
     return out
 
 
@@ -322,14 +422,14 @@ def turn_versions(tid: int) -> list:
     from urllib.parse import quote
     made_ = turns_made(tid)
     if not made_: return []
-    now, out = {r['path']: r for r in listing(tid)}, []
+    now, out, gave = {r['path']: r for r in listing(tid)}, [], call_of(tid)
     for turn, made in made_:
         for k in made:
             cur, p = now.get(k['path']), resolve(tid, k['path'])
             c = resolve(tid, k['path'], turn_folder(tid, turn)) if k.get('kept') else None
             # ...nor one written back since as it was (keep_turn): the file as it is now IS this turn's
             if cur and p and ((p.stat().st_mtime, p.stat().st_size) == (k['mtime'], k['size']) or _same(c, p)): continue
-            mine = {'id': f"output:{k['path']}@{turn}", 'turn': f'comment-{turn}', 'after': f'comment-{turn}'}
+            mine = {'id': f"output:{k['path']}@{turn}", 'turn': f'comment-{turn}', 'by': f'comment-{turn}', **({'after': f'comment-{turn}', 'handed': True, 'call': gave[k['path']]} if k['path'] in gave else {})}
             if c:
                 out.append({**row(tid, c, k['path']), **mine, 'url': f"/api/task-outputs/{int(tid)}/{quote(k['path'])}?turn={turn}"})
             elif cur: out.append({**cur, **mine, 'later': True, 'note': 'Changed later - this opens its newest version.'})
@@ -456,7 +556,7 @@ def page_row(a: dict) -> dict:
     "A task's artifact as the page draws it - a page an agent showed or published among them - here, so a look-up never imports the server."
     return {'id': a['ArtifactId'], 'name': a.get('Name') or 'session artifact.md',
             'content_type': a.get('ContentType') or 'text/markdown', 'size': a.get('Size') or 0,
-            **({'dims': d} if str(a.get('ContentType') or '').startswith('image/') and (f := _confined(a.get('Path'))) and (d := pixels(f)) else {}),
+            **({'dims': d} if str(a.get('ContentType') or '').startswith(('image/', 'video/')) and (f := _confined(a.get('Path'))) and (d := pixels(f)) else {}),
             'kind': a.get('Kind') or 'session', 'created_by': a.get('CreatedBy') or '', 'created_at': a.get('CreatedAt'),
             'url': f"/api/task-artifacts/{a['ArtifactId']}" if a.get('Path') else None,
             # a page a Claude session published: its claude.ai link (claude_artifacts); `url` is the local copy
@@ -464,8 +564,11 @@ def page_row(a: dict) -> dict:
 
 PAGES = ('shown', 'claude_artifact')
 def pages(store, tid: int) -> list:
-    "The pages task `tid`'s agents showed (agenttools.show_files) or published (claude_artifacts), as rows - each chat places them by its turns."
-    return [page_row(a) for a in store.list_task_artifacts(int(tid)) if a.get('Kind') in PAGES]
+    """The pages task `tid`'s agents showed (agenttools.show_files) or published (claude_artifacts), as rows - each chat places them by its turns.
+    NEVER A FILE A CARD CARRIES, whichever tool made or showed it and whether its card is drawn yet or queued (on_cards; walks 22 and 23: an
+    agent's `show` of a queued card's picture stood beside the cards with Download): that is drawn on its card only."""
+    cards = on_cards(store, tid)
+    return [page_row(a) for a in store.list_task_artifacts(int(tid)) if a.get('Kind') in PAGES and not (a['Kind'] == 'shown' and a.get('Name') in cards)]
 
 
 def find(store, query: str = '', kind: str = '', tid: int = None, limit: int = 8) -> list:
@@ -599,7 +702,9 @@ def document(p: Path) -> dict:
     DOC_BLOCKS of them - read from the file's own XML (a .docx is a zip), so no library is needed and nothing in it runs."""
     import zipfile
     from xml.etree import ElementTree as ET
-    with zipfile.ZipFile(p) as z: root = ET.fromstring(z.read('word/document.xml'))
+    with zipfile.ZipFile(p) as z:
+        if 'word/document.xml' not in z.namelist(): return _deck(z)
+        root = ET.fromstring(z.read('word/document.xml'))
     body = root.find(f'{_W}body')
     text = lambda el: ''.join(t.text or '' for t in el.iter(f'{_W}t'))
     blocks, more = [], False
@@ -613,6 +718,35 @@ def document(p: Path) -> dict:
             rows = [[_cell(text(c).strip()) for c in r.findall(f'{_W}tc')][:COLS] for r in el.findall(f'{_W}tr')][:ROWS]
             if rows: blocks.append({'rows': rows})
     while blocks and not blocks[-1].get('text', True): blocks.pop()
+    return {'blocks': blocks, 'more': more, 'max_blocks': DOC_BLOCKS}
+
+
+def _deck(z) -> dict:
+    """A DECK IS READ THE SAME WAY (the card gallery, 2026-11-25: a .pptx handed over stood as a bare name - nothing under it, not even a line
+    saying why): each slide in the deck's own order, its title the heading (its number where it has none), then its lines and its tables.
+    Its words, not its look - off the slides' own XML, by each tag's local name."""
+    from xml.etree import ElementTree as ET
+    loc = lambda el: el.tag.rpartition('}')[2]
+    words = lambda el: ''.join(t.text or '' for t in el.iter() if loc(t) == 't').strip()
+    names = sorted((n for n in z.namelist() if re.fullmatch(r'ppt/slides/slide\d+\.xml', n)), key=lambda n: int(re.search(r'(\d+)\.xml$', n).group(1)))
+    # ...the order he sees them in is the presentation's list, not the files' numbers: a slide moved keeps its file name
+    try:
+        rel = {r.get('Id'): f"ppt/{str(r.get('Target') or '').lstrip('/').removeprefix('ppt/')}" for r in ET.fromstring(z.read('ppt/_rels/presentation.xml.rels'))}
+        listed = [rel.get(next((v for k, v in s.attrib.items() if k.endswith('}id')), '')) for s in ET.fromstring(z.read('ppt/presentation.xml')).iter() if loc(s) == 'sldId']
+        names = [n for n in listed if n in names] or names
+    except (KeyError, ET.ParseError): pass
+    blocks, more = [], False
+    for i, n in enumerate(names, 1):
+        if len(blocks) >= DOC_BLOCKS: more = True; break
+        root = ET.fromstring(z.read(n))
+        titled = {id(x) for sp in root.iter() if loc(sp) == 'sp' and any(loc(e) == 'ph' and e.get('type') in ('title', 'ctrTitle') for e in sp.iter()) for x in sp.iter()}
+        tables = [t for t in root.iter() if loc(t) == 'tbl']
+        celled = {id(x) for t in tables for x in t.iter()}
+        title = ' '.join(w for x in root.iter() if loc(x) == 'p' and id(x) in titled and (w := words(x)))
+        blocks.append({'text': _cell(f'{i}. {title}' if title else f'Slide {i}'), 'heading': True})
+        blocks += [{'text': _cell(w)} for x in root.iter() if loc(x) == 'p' and id(x) not in titled and id(x) not in celled and (w := words(x))]
+        blocks += [{'rows': rows} for t in tables
+                   if (rows := [[_cell(words(c)) for c in r if loc(c) == 'tc'][:COLS] for r in t if loc(r) == 'tr'][:ROWS])]
     return {'blocks': blocks, 'more': more, 'max_blocks': DOC_BLOCKS}
 
 
@@ -655,19 +789,12 @@ def brief(tid: int) -> str:
     d = folder(tid)
     try: d.mkdir(parents=True, exist_ok=True)
     except OSError: pass
-    return (f'FILES YOU MAKE FOR THE OWNER: your outputs folder is {d} - each file there shows on this task with Preview and Download. '
-            'Point at one by its full path. Never write a URL or a link to it (Taskuary serves the folder; an address you make up leads nowhere); '
-            'asked to send it "here", it already is - name it. A file on a reply or an email rides on that card: name it there by its '
-            'name, never its path.')     # ...one final file per thing: AGENT.md's Files you make (with_fence_rule)
+    return f'YOUR OUTPUTS FOLDER: {d} - each file saved there shows on this task with Preview and Download.'
 
 
-# ...and a TERMINAL session is told the same by its environment (terminal.session_env: TASKUARY_OUTPUTS) and its standing rules
-# (AGENT.md, or WHERE appended to an older copy - terminal.with_fence_rule), not its seed, which a real TUI types character by
-# character under a budget: a Claude Code session on a task saved every workbook it made to the owner's Downloads and a scratchpad,
-# where the task page - serving only this folder - had nothing to open or download.
+# ...and a TERMINAL session finds the same folder in its environment (terminal.session_env: TASKUARY_OUTPUTS): a Claude Code session on a
+# task saved every workbook it made to the owner's Downloads and a scratchpad, where the task page - serving only this folder - had nothing
 ENV = 'TASKUARY_OUTPUTS'
-WHERE = (f"Save each file you make for the owner in the task's outputs folder - its path is in ${ENV} (or your brief): the task page "
-         'offers only that folder to open and download, so a file saved anywhere else never reaches the owner.')
 
 
 def env_folder(tid) -> str:
@@ -678,8 +805,3 @@ def env_folder(tid) -> str:
     except OSError: pass
     return str(d)
 
-
-# ...and at the source (the owner, 2026-10-28): an agent that leaves every draft and every helper beside the answer is what made the list
-ONE_FILE = ('Deliver one final file per thing asked: overwrite it as you improve it (or keep your drafts elsewhere), never leave every '
-            'version beside it. Keep your scratch work - scripts, logs, test data, intermediate files - out of the folder the owner reads '
-            'from. Make several files, or a list of files, only when the ask wants several.')

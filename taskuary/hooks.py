@@ -172,7 +172,11 @@ def browser_command(base: str, token: str = '', home: str = None) -> str:
     return f'{curl} -s -f -m {int(BROWSER_WAIT)} -X POST "{base}{BROWSER_MARK}" -H "Content-Type: application/json"{token_arg(token, home)} --data-binary @-'
 
 
-BROWSER_WAIT = 120                  # a snapshot and one light verdict; past this curl gives up and Claude runs the command
+BROWSER_WAIT = 120                  # a snapshot and one light verdict; past this curl gives up
+# ...AND A GATE THAT CANNOT ANSWER HOLDS (red team round 6: waits parked on the gate's own threads left its judging queued until curl gave
+# up - and Claude ran the command). The server answers before curl gives up (GATE_WAIT): a step of one of OUR sessions it could not judge in
+# time, or whose judging failed, is refused (unjudged) - and a hook that rides in a session's own settings blocks where it fails outright
+GATE_WAIT = BROWSER_WAIT - 15
 
 
 def spool_path(home: str = None) -> str:
@@ -207,7 +211,8 @@ def session_hooks(token: str = None, base: str = None) -> dict:
     d = {e: [{'hooks': [ev]}] for e in EVENTS}
     d['PreToolUse'] = [{'matcher': 'AskUserQuestion', 'hooks': [{'type': 'command', 'command': ask_command(base, token), 'timeout': ASK_TIMEOUT}]},
                        {'matcher': REASON_MATCH, 'hooks': [{'type': 'command', 'command': reason_command(base, token), 'timeout': ASK_TIMEOUT}]},
-                       {'matcher': BROWSER_MATCH, 'hooks': [{'type': 'command', 'command': browser_command(base, token), 'timeout': BROWSER_WAIT + 10}]}]
+                       {'matcher': BROWSER_MATCH, 'hooks': [{'type': 'command', 'command': browser_command(base, token), 'timeout': BROWSER_WAIT + 10,
+                                                             'onFailure': 'block'}]}]      # ...a session of ours: its gate fails closed (GATE_WAIT)
     return d
 
 
@@ -370,7 +375,7 @@ def _questions(p: dict) -> list:
 
 
 def _asked_in_code(t) -> bool:
-    "A session whose permission asks are answered by Taskuary's gate, never by the owner at a prompt: one run over ACP (acpgate)."
+    "A session whose permission asks are answered by Taskuary's gate, never by the owner at a prompt: one run over ACP (gate)."
     from . import terminal as term
     return term.is_acp(t)
 
@@ -400,6 +405,8 @@ def _events(t, p: dict) -> None:
             # working again, not the owner speaking, so it must not overtake a question still open (open_requests)
             from .background import is_wake
             ws.record(st, tid, sid, 'working', text=ws.WAKE if is_wake(p.get('prompt')) else '', source='hook')
+            from . import browserview
+            browserview.tidy_soon(st, tid, sid)          # ...and the tabs its last turn left are put away as this one begins
             # ...AND ONLY HIS OWN WORDS MOVE THE CONVERSATION ON (recorded on the real CLI, 2026-11-15): every prompt did - a note another agent
             # left, a brief Taskuary typed - so his waiting reply greyed a second after a peer's note arrived and its agent was told "THE OWNER
             # MOVED ON". Whose a prompt is, by the record's one rule (sessionrecord.mark_briefs). Over ACP his line is heard as the turn
@@ -411,11 +418,11 @@ def _events(t, p: dict) -> None:
                     from . import proposals
                     # ...said to it as Taskuary's next line: the prompt that passed them is already in (general.to_agent, the one road)
                     # ...and every card he wrote past, set aside as his line goes in (proposals.set_aside_drafts - the terminal's line is heard here)
+                    # ...each card's new state is its event (events.card): the waiting room hands them over as its next line
                     now_ = time.time()
-                    from .cardqueue import screen
-                    if (proposals.move_on(st, tid) + proposals.set_aside_drafts(st, tid, now_, actions=now_)) and (note := screen(st, tid)):
+                    if proposals.move_on(st, tid) + proposals.set_aside_drafts(st, tid, now_):
                         from . import general
-                        general.to_agent(st, tid, note)
+                        general.to_agent(st, tid, '')
                 except Exception as e: logger.debug(f'task {tid}: a held step stayed pending - {e}')
             if not is_wake(p.get('prompt')):                # ...and the owner's words are their next move after a stop (outcomes.py)
                 try:
@@ -455,7 +462,7 @@ def _events(t, p: dict) -> None:
                     ws.record(st, tid, sid, 'input_needed', request_id=ws.question_id(g, i), text=text, choices=choices, source='hook')
             elif getattr(t, 'mode', 'full') == 'auto': pass     # a stranger's session: the permit door (permit) owns this card
             # OVER ACP NOTHING WAITS ON THE OWNER HERE (the owner, 2026-11-11: "Stop making popups for approvals"): the adapter asks for
-            # every tool and Taskuary's own gate answers in code at once (acpgate.answerer) - what it holds is the one card with its
+            # every tool and Taskuary's own gate answers in code at once (gate.answerer) - what it holds is the one card with its
             # buttons. Claude fires this hook for each of those asks all the same, so a five-minute test run stood in the chat as "the
             # agent needs your approval" over a tool at work, with nothing to press. Only a terminal's own prompt is a stop
             elif _asked_in_code(t): pass
@@ -511,31 +518,27 @@ def _events(t, p: dict) -> None:
             said, signing = selfclose.signin_marker(str(p.get('last_assistant_message') or ''))
             said, turn = selfclose.turn_marker(said)
             said, asks = selfclose.ask_markers(said)
-            ws.record(st, tid, sid, 'turn_end', text=said[:4000], source='hook')
+            ws.record(st, tid, sid, 'turn_end', text=said[:4000], source='hook', asks=bool(asks))
             # ...AND THE START IN FLIGHT IS OVER, as an ACP turn's end says (acpcoding._idle): a coding task's first turn in its terminal began
             # before its session existed, nothing took the mark off, and the chat read "working 15m" over his sign-in (the recorded walk, 2026-11-12)
             try:
                 from . import general
                 general.answered(tid, 0)
             except Exception as e: logger.debug(f'task {tid}: the start in flight was not let go of - {e}')
-            if signing is not None:                     # a sign-in it needs: Taskuary's to do, never the agent's (signin.py)
-                from . import signin
-                try: signin.needs(st, tid, sid, signing)
-                except Exception as e: logger.warning(f'task {tid}: the sign-in the agent asked for was not raised - {e}')
-            if turn is not None:                        # a step only the owner can do on the page (browserview.your_turn)
+            if signing is not None or turn is not None:     # a marker a session still writes: the one road hand_over takes
                 from . import browserview
-                try: browserview.your_turn(st, tid, sid, turn)
-                except Exception as e: logger.warning(f'task {tid}: the page the agent handed over was not raised - {e}')
+                try: browserview.hand_over(st, tid, turn or '', signing or '', sid, sign_in=signing is not None, ended=True)
+                except Exception as e: logger.warning(f'task {tid}: the step the agent handed over was not raised - {e}')
             try:                                        # the ledger: what the owner does next after a stop (outcomes.py); never breaks a hook
                 from . import ci, outcomes
                 agent = getattr(t, 'agent', '') or 'agent'
                 outcomes.stopped(st, tid, f'agent:{agent}', facts={'pr': bool(ci.pr_of(st, tid)), 'agent': agent})
             except Exception as e: logger.debug(f'task {tid}: the stop was not ledgered - {e}')
-            # ...as plain questions: a marker's words are no chooser, so they carry no chips (the owner, 2026-11-03)
+            # ...with the choices it offered, a button each as on every road (general._file; walk 13): its answer still goes as words
             g = ws.group_key('|'.join(q for q, _ in asks)) if len(asks) > 1 else None
-            for i, (q, _) in enumerate(asks, 1):
+            for i, (q, c) in enumerate(asks, 1):
                 ws.record(st, tid, sid, 'input_needed', request_id=ws.question_id(g, i) if g else ws.request_id_for(q),
-                          text=q, source='hook')
+                          text=q, choices=c, source='hook')
             # ...and a turn that asked only in its PROSE asked nothing here (the owner, 2026-11-10: "why would we ask anything in the
             # assistant rail? remove that no need for that ever"). A light model used to read every last message and write its own
             # wording of a question onto the row - over a card already standing in the task with the same ask. What the agent means
@@ -614,19 +617,20 @@ def held_for(store, tid: int, sid: str) -> bool:
 def finished(summ) -> bool: return isinstance(summ, dict) and summ.get('nothing_left') is True
 def left_for_send(summ) -> bool: return isinstance(summ, dict) and bool(summ.get('drafted'))
 def on_him(summ) -> bool: return isinstance(summ, dict) and any(str(x or '').strip() for x in summ.get('on_you') or [])
-def letter_waits(store, tid: int) -> bool:
-    "A reply or one of the task's emails waits for the owner's Send (store.waiting_on_owner). A held step is its own session's: held_for."
-    return (store.waiting_on_owner(int(tid)) or {}).get('Kind') not in (None, 'action')
-def checks_back(store, tid: int, sid: str) -> bool:
-    """THE TURN PUT ITS OWN RETURN ON THE CLOCK: a check-back it set since it began still waits on the task (checkback.set_check's audit row,
-    against the turn's own start on the worker record). Taskuary wakes its agent when that comes due - so "I'll check back in two days" is
-    no turn that ended short. Recorded on the real CLI, 2026-11-13: two emails went, the agent said so and set its check-back, the judge read
-    that as work of its own, and the agent was woken ten seconds later to report that nobody had answered yet."""
-    from . import checkback, workerstate as ws
-    if not checkback.of_task(store.get_task(int(tid))): return False
-    began = next((e['CreatedAt'] for e in reversed(ws.events(store, tid, sid)) if e['Kind'] == 'working'), '')
-    at = (store._one("SELECT MAX(CreatedAt) AS at FROM audit WHERE EntityType='task' AND EntityId IN (?,?) AND Action='check_back'", (int(tid), str(tid))) or {}).get('at') or ''
-    return bool(began) and str(at) >= str(began)
+def waits_on_him(store, tid: int) -> bool:
+    """A CARD OF ANY KIND WAITS FOR HIS PRESS OR ANSWER on the task (card.waiting - a letter, an act, a post, the landing question, the agent's
+    question, a step on a page): he moves next, a stored fact. Walk 22, 2026-11-25 (Codex): only a letter counted, so a turn that raised a post
+    card and stopped was read as short and woken - it "checked whether Taskuary kept the draft" and wrote a second answer under its own card."""
+    from . import card
+    return any(c['state'] == 'pending' for c in card.waiting(store, int(tid)))
+def checks_back(store, tid: int) -> bool:
+    """THE TASK'S AGENT IS ON THE CLOCK: a check-back stands on the task (checkback.of_task), whichever turn set it. Taskuary wakes its agent
+    when that comes due - so "I'll check back in two days" is no turn that ended short. Recorded on the real CLI, 2026-11-13: two emails went,
+    the agent set its check-back, and was woken ten seconds later to report that nobody had answered yet. And walk 14, 2026-11-24: a turn that
+    leaned on the check-back set two turns earlier ("I'll check Friday 9 a.m.") was read as short - only a check-back of THIS turn counted -
+    and woken with "Nothing wakes you once a turn ends" under "Checks back Fri 9 AM"; it kept its turn open and polled the mail for 16 minutes."""
+    from . import checkback
+    return bool(checkback.of_task(store.get_task(int(tid))))
 
 
 def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = False, then=None, summ=None, jobs=None):
@@ -641,13 +645,13 @@ def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = F
     # reply and said one thing on it was still his; the model read that as asking him for a sign-in, the answer was taken back and its
     # agent woken with "you asked for a password" - and came back with a second letter to the same person under the first. Work the turn
     # itself put aside and that still runs (`jobs`) wakes it as before
-    # ...NOR ONE THAT SET ITS OWN CHECK-BACK (checks_back): its return is on the clock, a stored fact, and no wake before it is due
-    # ...NOR WHILE A LETTER STILL WAITS FOR HIS SEND, whichever turn left it (letter_waits): recorded on the real CLI, 2026-11-13 - he sent
-    # the first of two emails, the agent said the second "hasn't been sent yet", the model read that as unfinished and it was woken to
-    # answer "Only you can send the email. Nothing else is needed from me"
+    # ...NOR ONE WHOSE TASK HAS A CHECK-BACK STANDING (checks_back): its return is on the clock, a stored fact, and no wake before it is due
+    # ...NOR WHILE A CARD STILL WAITS ON HIM, whichever turn left it and whatever its kind (waits_on_him): recorded on the real CLI, 2026-11-13 -
+    # he sent the first of two emails, the agent said the second "hasn't been sent yet", the model read that as unfinished and it was woken
+    # to answer "Only you can send the email. Nothing else is needed from me"
     # ...NOR ONE WHOSE SUMMARY LEFT A STEP ON HIM (its on_you): he moves next, by the turn's own record - on the Codex road each such read was a
     # whole `codex` session of its own, started beside the turn (the walk, 2026-11-21)
-    if jobs is None and (left_for_send(summ) or on_him(summ) or checks_back(store, tid, sid) or letter_waits(store, tid)): return
+    if jobs is None and (left_for_send(summ) or on_him(summ) or checks_back(store, tid) or waits_on_him(store, tid)): return
     key = (str(sid), hashlib.sha1(said.encode('utf-8', 'replace')).hexdigest())
     def go():
         from . import workerstate as ws
@@ -792,7 +796,7 @@ def browser_settings(sid: str) -> str:
 def _browser_hold(sid: str) -> dict:
     from urllib.parse import quote
     cmd = browser_command(base_url(), agent_token()).replace(BROWSER_MARK, f'{BROWSER_MARK}?sid={quote(str(sid))}', 1)
-    return {'matcher': BROWSER_MATCH, 'hooks': [{'type': 'command', 'command': cmd, 'timeout': BROWSER_WAIT + 10}]}
+    return {'matcher': BROWSER_MATCH, 'hooks': [{'type': 'command', 'command': cmd, 'timeout': BROWSER_WAIT + 10, 'onFailure': 'block'}]}
 
 
 def _session_file(name: str, d: dict) -> str:
@@ -805,13 +809,28 @@ def _session_file(name: str, d: dict) -> str:
     return str(f)
 
 
+def not_his() -> dict:
+    "The settings that keep the owner's own CLAUDE.md, and all under his ~/.claude, out of a run - which no --setting-sources does."
+    return {'claudeMdExcludes': [f'{Path.home().as_posix()}/.claude/CLAUDE.md', f'{Path.home().as_posix()}/.claude/**']}
+
+
+def not_his_file(base: str = '') -> str:
+    """One --settings file for a run that reads none of the owner's own setup: `base` (a settings file the run already carries - Claude keeps
+    only the last one it is given) with not_his merged in. '' when it cannot be written."""
+    import hashlib
+    try: d = json.loads(Path(base).read_text(encoding='utf-8')) if base else {}
+    except (OSError, ValueError): d = {}
+    d = {**(d if isinstance(d, dict) else {}), **not_his()}
+    return _session_file(f"headless-{hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:12]}", d)
+
+
 def general_settings(task_id, sid: str = '') -> str:
     """Claude's ONE --settings for a general task's session, which reads none of the owner's own Claude setup (the owner, 2026-11-09:
     a WhatsApp task's agent read their coding-style guide, their plugins' skills, and searched mail through their claude.ai connector).
     --setting-sources leaves out their user settings - and with them the user-wide hooks this app reports through - so Taskuary's
     own hooks ride here, with the browser hold naming its chat; their own CLAUDE.md, which no setting source reaches, is excluded.
     Claude keeps only the last --settings it is given, so this is the whole file."""
-    d = {'hooks': session_hooks(), 'claudeMdExcludes': [f'{Path.home().as_posix()}/.claude/CLAUDE.md', f'{Path.home().as_posix()}/.claude/**']}
+    d = {'hooks': session_hooks(), **not_his()}
     # ...THE SHELL HOLD NAMES ITS TASK (the real-CLI walks, 2026-11-12): a chat's session is found by its CLI's conversation id, which its
     # first turn has not given it yet - so a delete held in that turn passed the hook unread, was held at the ACP permission instead, and
     # the agent heard only "User refused permission": never the hold's own words, and it told the owner the step "waits for your approval"
@@ -875,52 +894,39 @@ def reason(payload: dict, wait: float = None) -> dict:
 
 
 def browser(payload: dict, sid: str = '', task: str = '') -> dict:
-    """Before one of OUR sessions runs a shell command (command_gate): a step that leaves the machine, or reads outside its folders,
-    is refused and held for the owner. Not our pane, not a shell tool, nothing to gate: {} at once - the command is Claude's. (A press
-    in the browser or on the desktop is held where it runs, gatecmd.)"""
-    from . import browsergate, readgate, shellgate
+    """Before one of OUR sessions runs a shell command or a file tool: the one check point (gate.check) - a step that leaves the machine,
+    deletes outside its folder or reads outside the task's folders is held for the owner. Not our pane, not a shell or file tool: {} at
+    once - the call is Claude's. (A press in the browser or on the desktop is held where it runs, gate.main.)"""
+    from . import gate, readgate, shellgate
     tool, inp = str(payload.get('tool_name') or ''), payload.get('tool_input') or {}
-    if tool in readgate.WRITE_TOOLS:              # ...what it writes is its own work: reading it back is never asked (readgate.wrote)
-        t = _pane(payload, 'claude') or _general(payload, sid, task)
-        if t: readgate.wrote(t.task_id, readgate.tool_paths(inp, cwd=str(payload.get('cwd') or getattr(t, 'cwd', '') or '')))
-        return {}
-    if tool in readgate.READ_TOOLS:
-        t = _pane(payload, 'claude') or _general(payload, sid, task)
-        st, cwd = getattr(t, 'store', None) if t else None, str(payload.get('cwd') or getattr(t, 'cwd', '') or '')
-        if not st: return {}
-        held, never = readgate.judge(st, t.task_id, readgate.tool_paths(inp, cwd=cwd), cwd)
-        if never: return browsergate._deny(never)
-        return shellgate.check(st, t.task_id, t.sid, '', tool, cwd, shellgate.asks(st, t), reads=held) if held else {}
-    if tool not in ('Bash', 'PowerShell'): return {}
-    cmd = str(inp.get('command') or '')
-    # the cheap tests first: this hook sees every shell command - A STEP THAT LEAVES THE MACHINE (a push, a merge, a public post, a
-    # publish, a mail) waits for the owner (shellgate.py, the Advisor's risky-step hold, the owner 2026-10-28)
-    # ...and a delete outside the agent's own folder, read against the folder it runs in (shellgate.deletes, 2026-11-03)
-    if not needs_gate(cmd, str(payload.get('cwd') or '')) and not readgate.command_paths(cmd, str(payload.get('cwd') or '')): return {}
-    t = _pane(payload, 'claude') or _general(payload, sid, task)
-    st = getattr(t, 'store', None) if t else None
+    cmd = str(inp.get('command') or '') if tool in ('Bash', 'PowerShell') else ''
+    t = _gated(payload, sid, task)
+    st, cwd = getattr(t, 'store', None) if t else None, str(payload.get('cwd') or getattr(t, 'cwd', '') or '')
     if not t or not st: return {}
+    w = tool in readgate.WRITE_TOOLS
+    paths = readgate.tool_paths(inp, cwd=cwd) if w or tool in readgate.READ_TOOLS else None
+    if paths and tool in readgate.LIST_TOOLS: paths = readgate.listed(paths)
     # ...asked in the CLI's own prompt where the owner can answer it there, held for the task's Approve where nobody can (shellgate.asks)
-    return command_gate(st, t.task_id, t.sid, cmd, tool, str(payload.get('cwd') or getattr(t, 'cwd', '') or ''), shellgate.asks(st, t),
-                        about=str((payload.get('tool_input') or {}).get('description') or ''))
+    # ...A WRITE PASSES THE SAME GATE AS A READ (red team F2): a Write to Taskuary's config, its package or a startup folder ran unasked
+    out = gate.check(st, t.task_id, t.sid, cmd, cwd, tool, shellgate.asks(st, t), about=str(inp.get('description') or ''), paths=paths, write=w)
+    if w and not out: readgate.wrote(t.task_id, paths)      # ...what it wrote is its own work: reading it back is never asked (readgate.wrote)
+    return out
 
 
-def needs_gate(cmd: str, cwd: str = '') -> bool:
-    "The cheap test first: does this shell line leave the machine or delete outside its folder? (A press in the browser or on the desktop is gatecmd's.)"
-    from . import shellgate
-    return bool(shellgate.acts(cmd, cwd))
+def _gated(payload: dict, sid: str = '', task: str = ''):
+    "The session of OURS whose shell or file tool this hook speaks for - None for any other call: the owner's own Claude, another tool."
+    from . import readgate
+    if str(payload.get('tool_name') or '') not in readgate.WRITE_TOOLS + readgate.READ_TOOLS + ('Bash', 'PowerShell'): return None
+    return _pane(payload, 'claude') or _general(payload, sid, task)
 
 
-def command_gate(st, tid: int, sid: str, cmd: str, tool: str = 'Bash', cwd: str = '', ask: bool = False, about: str = '') -> dict:
-    """THE ONE DECISION for a shell command an agent of ours is about to run - a CLI's (its PreToolUse hook, browser above) and an API
-    agent's (apiagent.run_command) alike: {} runs it; anything else holds it, with the reason in permissionDecisionReason (or `ask`, the
-    CLI's own prompt). A step that leaves the machine or deletes outside its folder (shellgate), or a read outside its folders (readgate),
-    waits for the owner. A press in the browser or on the desktop is held where it runs, on every AI alike (gatecmd)."""
-    from . import browsergate, readgate, shellgate
-    out = shellgate.acts(cmd, cwd)
-    reads, never = readgate.of_command(st, tid, cmd, cwd)
-    if never: return browsergate._deny(never)
-    return shellgate.check(st, tid, sid, cmd, tool, cwd, ask, about=about, reads=reads) if out or reads else {}
+def unjudged(payload: dict, sid: str = '', task: str = '', why: str = '') -> dict:
+    """The gate's answer where it has none (GATE_WAIT): a step of one of our sessions is refused and said so - it never runs unjudged; any
+    other call is Claude's as ever. A session that cannot be looked up either is taken for ours."""
+    from . import gate
+    try: ours = _gated(payload, sid, task) is not None
+    except Exception: ours = True
+    return gate.deny(gate.unjudged(why)) if ours else {}
 
 
 def run_sid(payload: dict, tid: int) -> str:
@@ -944,7 +950,7 @@ def permit(payload: dict, tid: int, wait: float = None, store=None) -> dict:
     inp = inp if isinstance(inp, dict) else {}
     from .sessionrecord import DRAFT_SHOWN, drafting
     # a draft by what it is, never its body (sessionrecord.hide_draft)
-    what = redact.scrub(str(inp.get('command') or inp.get('url') or inp.get('file_path') or inp))[:600]
+    what = redact.secrets(str(inp.get('command') or inp.get('url') or inp.get('file_path') or inp))[:600]
     if drafting(payload.get('tool_name'), inp): what = DRAFT_SHOWN
     g = ws.group_key(f'permit:{tid}:{sid}:{time.time_ns()}')        # a new group per call, so one Allow can never cover the next
     rid = ws.question_id(g, 1)

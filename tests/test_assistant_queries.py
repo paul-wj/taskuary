@@ -140,7 +140,7 @@ class EverydayAsks(unittest.TestCase):
         from taskuary import capabilities
         drawn = {'send': 'Draft it', 'note': 'Note it',
                  'goal': 'Plan it' if capabilities.has_ai(Q._world()) else 'Track it',
-                 **{k: 'Set up with AI' for k in ('dashboard', 'playbook')}}
+                 **{k: 'Set up with AI' for k in ('dashboard', 'skill')}}
         for r in (r for r in self.rows if r['q'].cat == 'new' and r['q'].expect.startswith('new:')):
             with self.subTest(ask=r['q'].text):
                 self.assertEqual(r['ideal']['say'], f"Opened {concierge.OPENED.get(r['q'].expect[4:], 'New')} with your words - {drawn[r['q'].expect[4:]]} there {'keeps' if r['q'].expect == 'new:note' else 'starts'} it.")
@@ -182,14 +182,6 @@ class EverydayAsks(unittest.TestCase):
         r = next(r for r in self.rows if r['q'].text == 'go back to the one before')
         # ...the tour, made last in the demo world (demo.seed_tour): 36 since the general agent's day joined it (demo.seed_agent_day)
         self.assertEqual(r['ideal']['say'], 'Opened TQ-0036.', 'Back from TQ-0001 is the row above it, Start here')
-
-    def test_the_habits_row_names_each_habit_and_answers_it_in_the_owners_words(self):
-        # the model was told only "Learned 1 habit · 1 to check"; a habit taken back read "Took {{owner_first}} closes..." (2026-11-02)
-        r = next(r for r in self.rows if r['q'].text == 'what habits did you learn about me?')
-        self.assertIn('[key: sso threads] adopted', r['ideal']['prompt']); self.assertIn('[key: fwd fyi] asking', r['ideal']['prompt'])
-        for r in (r for r in self.rows if r['q'].seed is Q.habits_row and r['q'].expect.startswith('did:')):
-            with self.subTest(ask=r['q'].text):
-                self.assertNotIn('{{', r['ideal']['say']); self.assertIn('1 habit still on the habits row', r['ideal']['say'])
 
     def test_a_watched_task_is_said_watched_where_the_assistant_reads_it(self):
         # "what am I watching?" and "where did it go?" read tasks.list and task.read, and neither said so (2026-11-02)
@@ -239,9 +231,9 @@ class WhatItKnowsOnEveryPage(unittest.TestCase):
     def test_soul_job_counsel_and_the_memory_reach_it_on_every_page_and_style_and_agent_on_asking(self):
         from contextlib import ExitStack
         from unittest import mock
-        from taskuary import __version__, counsel as counsel_doc, memoryedit, server
+        from taskuary import __version__, counsel as counsel_doc, server, memory
         s = Q._world()
-        memoryedit.remember(s, 'I put vendor renewals off to Friday', section='work')
+        memory.remember(s, 'I put vendor renewals off to Friday')
         soul, job, counsel = (next(l for l in str(d).splitlines() if len(l.strip()) > 30).strip()
                               for d in (s.doc('soul'), s.doc('job'), counsel_doc.for_chat(s)))     # COUNSEL.md as read: its comments left out
         for name, view, phone in [('no page', None, False), ('a task', Q.TASKPAGE, False), ('a connection', Q.IMAP, False),
@@ -253,7 +245,7 @@ class WhatItKnowsOnEveryPage(unittest.TestCase):
                 concierge.say(s, 'what matters most today?', llm=lambda sy, u, **k: (seen.append(sy), 'The month-end close.')[1], view=view)
                 sy = seen[0]
                 for part in (soul, job, counsel, 'I put vendor renewals off to Friday', f'TASKUARY {__version__}'): self.assertIn(part, sy)
-                self.assertIn('STYLE.md (how they write', sy); self.assertIn('AGENT.md (the rules every agent works under)', sy)
+                self.assertIn('STYLE.md (how they write', sy)
                 self.assertIn('"your doc style"', sy)
 
 

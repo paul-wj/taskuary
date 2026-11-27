@@ -1,6 +1,8 @@
 // THE TASK PAGE'S LAYOUT: what it came FROM, and the one chat where the agent works and every draft, Send and close is (the owner,
 // 2026-11-06: "there should no longer be close out code anywhere"). Pure, so node --test reads it.
 import { channelName } from "./taskSources.js";
+import { personName, senderName } from "./personName.js";
+import { plural } from "./timeWords.js";
 import { fmtDate } from "./dates.js";
 import { drawerLit, mainView, sectionOf, sectionOf as sectionOfStage, stageOf } from "./stages.js";
 import { waitingEmails } from "./taskLifecycle.js";
@@ -59,8 +61,8 @@ export const replyHolds = ({ pending = false, sent = false, proposals = 0, check
 // THE ONE LINE From folds to: who it came from and how many messages ("Gail Moreno · 3 messages"), a workflow's name, or - with
 // no message at all - where it was made
 export const fromLine = ({ sender = null, count = 0, workflow = null, made = "" } = {}) => {
-  if (count && sender) return [sender.FromName || sender.FromEmail || channelName(sender.Channel), t(count === 1 ? "{count} message" : "{count} messages", { count })].join(" · ");
-  if (workflow) return t("Routine · {title}", { title: workflow.title });
+  if (count && sender) return [senderName(sender) || channelName(sender.Channel), plural(count, "message")].join(" · ");
+  if (workflow) return `Routine · ${workflow.title}`;
   return made || "";
 };
 
@@ -71,6 +73,12 @@ export const fromLine = ({ sender = null, count = 0, workflow = null, made = "" 
 export const SECTIONS = [{ key: "from", n: 1, name: "Came from" }, { key: "agent", n: 2, name: "Agent" }];
 // ...a live CODING terminal: a general agent's own chat is a session too (mode "assistant"); a coding CLI's is a toggle in its chat (GeneralWorkspace)
 export const liveTerminal = (term) => !!term?.alive && term.mode !== "assistant";
+// WHETHER A START IS ANOTHER AGENT - a new conversation, the chat drawn afresh around it - READ ONCE, AT THE PRESS (the owner, 2026-11-23: "I hit
+// Try again on the canvas and the whole thing flickered"): Try again after a start that failed is that same press again (`again`, what the press
+// read). Read again off the page its own failure changed - a failure line in the chat, the run marked failed - a first start's retry became
+// "another agent": a fresh conversation, and the whole chat remounted under his press
+export const startsAnother = (page, again) => (typeof again === "boolean" ? again
+  : !!(page?.report || page?.transcript || page?.alive || page?.started));
 // ...A PLAIN TO-DO NO AGENT HAS TOUCHED IS ONE SECTION (the owner, 2026-11-06: the "Agent - not started" column beside a to-do): what came in,
 // the box under it - typing there starts the agent, and its chat then joins as the second section. `started`: any agent ever on it
 export const soloTodo = ({ kind, started = false } = {}) => kind === "task" && !started;
@@ -113,20 +121,23 @@ export const TAB_MOST = 40;
 const UNNAMED = /^Teams (?:chat with (.+)|group|meeting|chat)$/i;
 export const cameFrom = (m) => {
   if (!m) return "";
-  if (String(m.Channel || "").toLowerCase() === "email") return String(m.FromName || m.FromEmail || "");
+  if (String(m.Channel || "").toLowerCase() === "email") return senderName(m);
   if (!String(m.SourceName || "").includes("@")) return String(m.SourceName || "");
   const s = String(m.Subject || "").trim(), u = s.match(UNNAMED);
-  return (u ? u[1] || m.FromName : s || m.FromName) || String(m.FromEmail || "");
+  return (u ? u[1] || personName(m.FromName) : s || personName(m.FromName)) || String(m.FromEmail || "");
 };
 // THE PILL ON THE BOX IS THE CONNECTION AND THE CHAT (the owner, 2026-11-17: "pill should be what the message connection card source is"):
 // "Teams · MFA Security App Help", "WhatsApp · Finance team", "Email · Gail Moreno", "Report · End of day checkup"
 // ...his own ask is the channel alone: its source is himself (ownwork.SOURCE "you"), never a second word for him
 export const cameChip = (m) => { const f = cameFrom(m); return !f ? "" : /^you$/i.test(f) ? channelName(m.Channel) : `${channelName(m.Channel)} · ${f}`; };
+// ...and THE MARKS triage put on the message (its `judged`: how hard the work, whether its data is sensitive), only where not ordinary - drawn
+// beside who sent it on What came in (the owner, 2026-11-25: "sensitive data" stood under the attachments pill)
+export const judgedMarks = (j) => [j?.difficulty === "hard" && "hard work", j?.data_class === "sensitive" && "sensitive data"].filter(Boolean).join(" · ");
 export const fromStatus = ({ channel = "", count = 0, msgs = [], workflow = null, made = "", sorted = "", to = "" } = {}) => ({
   lines: [count ? [channel, count === 1 ? t("{count} message", { count }) : t("{count} messages", { count })].filter(Boolean).join(" · ") : workflow ? t("Routine · {title}", { title: workflow.title }) : made, to,
     ...msgs.slice(0, TAB_MOST).map((m) => `${m.who}: ${q(m.words)}`)].filter(Boolean),
   foot: sorted ? `✓ ${sorted}` : "" });
-// ...the Agent: its profile and where it stands, what it did in a line, what it made - and at its foot its state
+// ...the Agent: its name and where it stands, what it did in a line, what it made - and at its foot its state
 // ...and a start held back for a free agent slot says so (`queued`, QueuedStart), never "not started" over a start already on its way (2026-11-04)
 export const agentWord = ({ live = false, waiting = false, failed = false, stopped = false, result = false, record = false, codeRun = false, queued = false } = {}) =>
   live ? (waiting ? "needs you" : "working") : queued ? "waiting its turn" : failed ? "failed" : stopped ? "stopped" : result ? "finished" : record ? "ran" : codeRun ? "steps ran by code" : "not started";
@@ -140,29 +151,9 @@ export const reportLine = (body) => {
   // 2026-10-29): the line it opens rides with it
   return line.endsWith(":") && ls[i + 1] ? `${line} ${ls[i + 1]}` : line;
 };
-export const agentStatus = ({ profile = "", word = "not started", said = "", made = "" } = {}) => ({
-  lines: [[profile, t(word)].filter(Boolean).join(" · "), said, made ? t("Made: {made}", { made }) : ""].filter(Boolean),
-  foot: word === "finished" ? t("✓ Done") : "" });
-// ...Close out: who it answers and where, the draft's first words, and whether it went - "Drafted · waiting for Send", "Sent", "Nothing owed"
-// ...and what is in it: the draft's first words, or what was sent and when, the emails owed, the close and its note
-// ...and at its foot the Advisor's next move when that move is Close out's (advisorAt): "Mark done is next" stood under an Agent nobody started
-// ...and AN EMAIL THE TASK OWES LEADS, ITS OWN TO FIRST (`owes`, taskLifecycle.owedEmails - the owner, 2026-11-02): a chat asked for an email
-// to somebody else and the tab said only "Reply to <the chat's sender>"; each owed email says where it goes and where it stands, and
-// the count of drafted ones is not said again under them
-export const closeStatus = ({ closed = false, note = "", to = "", where = "", draft = "", waiting = false, emails = 0, sent = false, sentWhen = "", owed = false, advisor = "", owes = [] } = {}) => ({
-  lines: [...(closed ? [] : owes.map((o) => t("Email to {to} · {state}", { to: o.to || o.name, state: t(o.state) }))), to ? (where ? t("Reply to {to} in {where}", { to, where }) : t("Reply to {to}", { to })) : "", q(draft),
-    closed ? [t("Closed"), note].filter(Boolean).join(" · ") : waiting ? t("Drafted · waiting for Send") : sent ? (sentWhen ? t("Sent {when}", { when: sentWhen }) : t("Sent")) : owed ? t("Not drafted yet") : emails || owes.length ? "" : t("Nothing owed", {}, "task-closeout"),
-    emails && !owes.length ? t(emails === 1 ? "{count} email waiting for Send" : "{count} emails waiting for Send", { count: emails }) : ""].filter(Boolean),
-  foot: advisor ? t("Advisor: {advisor} is next", { advisor }) : "" });
-
-// THE SECTION THE TASK OPENS ON, AND WHERE THE ADVISOR'S LINE STANDS (the owner, 2026-10-29: answered in Teams, the page opened on Came from
-// with "Mark done is next" under an Agent nobody started): the Advisor's decision names the section its move is in (rulebook.SEC, the
-// decision's `section`) and that is where the task is up to - save over a live agent or a closed task, whose page is theirs. With no
-// section named, the stage's (stages.sectionOf), and the line stays the Agent's, under its work.
-const OWN_PAGE = new Set(["agent_working", "done", "closed_by_agent"]);
-export const sectionHere = ({ stage, advised = "" } = {}) =>
-  advised && SECTIONS.some((s) => s.key === advised) && !OWN_PAGE.has(stage) ? advised : sectionOfStage(stage);
-export const advisorAt = (advised = "") => (advised === "close" ? "close" : "agent");
+export const agentStatus = ({ name = "", word = "not started", said = "", made = "" } = {}) => ({
+  lines: [[name, word].filter(Boolean).join(" · "), said, made ? `Made: ${made}` : ""].filter(Boolean),
+  foot: word === "finished" ? "✓ Done" : "" });
 
 // ANSWERED OUTSIDE TASKUARY: the newest message on the task is the owner's own, typed in Teams, the mail client or a chat
 // (channels.ingest_own_message: a `context` row, Direction out) - not a reply sent from here coming back (taskLifecycle.sentElsewhere
@@ -185,8 +176,8 @@ const squash = (s) => String(s || "").replace(/\s+/g, " ").trim();
 export const sameWords = (a, b) => !!squash(a) && squash(a) === squash(b);
 // ...and AN ASK THAT IS THE MESSAGE'S OWN WORDS - all of them, or a stretch of them - is read once, in What came in (the product audit, 2026-11-08)
 export const askInBody = (ask, body) => !!squash(ask) && squash(ask).length >= 20 && squash(body).includes(squash(ask));
-// ...and THE ASK THAT IS THE TITLE is not said under it again (the owner, 2026-10-26, a playbook task on a laptop: "you can't see anything.
-// there are too many lines on top"): the same words, or a title cut from the ask's own start (a playbook's is its first 100 characters) -
+// ...and THE ASK THAT IS THE TITLE is not said under it again (the owner, 2026-10-26, a skill task on a laptop: "you can't see anything.
+// there are too many lines on top"): the same words, or a title cut from the ask's own start (a skill's is its first 100 characters) -
 // whoever waits on it still gets the band, and the ask's whole words are the title's hover
 export const askIsTitle = (ask, title) => {
   const a = squash(ask).toLowerCase(), t = squash(title).replace(/(…|\.\.\.)$/, "").trim().toLowerCase();
@@ -202,7 +193,7 @@ export const waitingOn = ({ task = {}, messages = [], now = new Date() } = {}) =
   const who = String(task.Assignee || "");
   if (task.Status !== "waiting" || !who.startsWith("person:")) return null;
   const addr = who.slice(7), mail = messages.find((m) => String(m.FromEmail || "").toLowerCase() === addr.toLowerCase() && m.FromName);
-  const name = mail?.FromName || holderName(addr) || addr;
+  const name = personName(mail?.FromName) || holderName(addr) || addr;
   const due = /^\d{4}-\d{2}-\d{2}/.test(String(task.DueAt || "")) ? new Date(`${String(task.DueAt).slice(0, 10)}T00:00:00`) : null;
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const late = due ? Math.round((today - due) / 86400000) : 0;

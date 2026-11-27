@@ -67,12 +67,9 @@ def sync_connections(store, actor='system'):
         srv = config.load().get('server') or {}
         auth = ' (header X-Taskuary-Token)' if srv.get('token') else ''
         kinds = '|'.join(sorted({k for _, ks in have for k in ks}))
-        books = ' WRITES to the books (quickbooks_bill, quickbooks_expense) are never yours to run directly: propose one - TASKUARY-PROPOSE ' \
-                '{"action": "run_tool", "type": "quickbooks_bill", "vendor": ..., "amount": ..., "account": ..., "date": ..., "memo": ..., ' \
-                '"doc_number": ...} in your session - and the owner approves it on the task.' if any(c['Type'] == 'quickbooks' for c, _ in have) else ''
         lines.append(f"- To USE one of the systems above, POST http://{srv.get('host', '127.0.0.1')}:{srv.get('port', 7787)}/api/tools/run{auth} "
                      f'with {{"type": "{kinds}", ...}} - saved credentials are filled in for you; if several cards have that type, pass '
-                     f'"connector_id": <the id named above>; the raw output comes back.{books}')
+                     f'"connector_id": <the id named above>; a read\'s raw output comes back, and a write waits on the task for his press.')
     block = '\n'.join(lines) or '_(no connections yet — add them in the Connections tab)_'
     head, rest = doc.split(CONN_START, 1)
     _, tail = rest.split(CONN_END, 1)
@@ -85,20 +82,23 @@ def _kinds(c):
     from .reports import REGISTRY, card_of
     return sorted(t for t in REGISTRY if card_of(t) == c['Type'] and not t.startswith('_'))
 
-def tool_cards(store) -> list:
-    "[(card, its tool types)] for every card that is on, an agent tool, and runs at least one tool."
+def tool_cards(store, tid=None) -> list:
+    """[(card, its tool types)] for every card that is on, an agent tool, and runs at least one tool. `tid`: only those the agent on that
+    task may use - its profile's and the untagged ones (workstreams.may_use)."""
     from .store import roles_of
-    return [(c, k) for c in store.list_connectors() if c['Active'] and 'tool' in roles_of(c) and (k := _kinds(c))]
+    from .workstreams import may_use
+    return [(c, k) for c in store.list_connectors() if c['Active'] and 'tool' in roles_of(c) and (k := _kinds(c)) and may_use(store, tid, c['ConnectorId'])]
 
 def data_cards(store) -> list:
     "The tool cards that hold the owner's own data - every one but the Hub's, which is notes, not figures (general.NUMBER_LINE)."
     return [c for c, _ in tool_cards(store) if c['Type'] != 'handbook']
 
 
-def agent_systems(store, tooled: bool = True) -> str:
+def agent_systems(store, tooled: bool = True, tid=None) -> str:
     """The owner's systems a WORKING agent may use, each with its Authority, and the call that reaches them. SOUL.md's
     list is triage's; a general agent never read it, so it was told to use /api/tools/run and shown nothing to use it on
-    (2026-10-05). '' when no connection is an agent tool."""
+    (2026-10-05). '' when no connection is an agent tool. `tid`: the task it works - what it is told it has is what the wall lets it use
+    (workstreams.may_use; walk 25: Harbor's agent was listed Northwind's mailbox, Outlook and QuickBooks as its own)."""
     from .store import roles_of
     from . import scopes
     from .reports import REGISTRY, card_of
@@ -106,13 +106,18 @@ def agent_systems(store, tooled: bool = True) -> str:
     # the TOOL types each card runs, by name: a card's own type is not one when its tools are named apart from it - the Hub card
     # is `handbook` and its tools handbook_search/..., so "type handbook" came back "unknown tool type" (2026-10-05). A card with
     # no tool at all is not listed as one: the Gmail card read "tools: gmail" and the agent sending from it got "unknown tool type:
-    # gmail" (TQ-1354) - a mailbox is sent FROM with propose_email, named below
-    tools = tool_cards(store)
-    boxes = mailboxes(store)
+    # gmail" (TQ-1354) - a mailbox is sent FROM with propose (kind email), named below
+    tools = tool_cards(store, tid)
+    boxes = mailboxes(store, tid)
     # ...said by the one road the session has (the agent walk, 2026-11-10): the tool and the command stood side by side
-    how = 'propose_email with `from` set to one' if tooled else '`taskuary --draft "<text>" --to <address> --subject "<subject>" --from <one of them>`'
+    how = 'propose (kind email) with `from` set to one' if tooled else '`taskuary --draft "<text>" --to <address> --subject "<subject>" --from <one of them>`'
     mail = ('MAILBOXES you can send FROM (an email waits for the owner\'s Send): ' + ', '.join(f"{m['address']} ({m['kind']})" for m in boxes)
             + f' - {how}; they are not run_system tools.') if boxes else ''
+    # ...AND THE ACCOUNTS ITS BROWSER CAN SIGN IN TO (ledger.accounts): one task's sign-up is the next task's inbox
+    from . import ledger
+    try: kept = ledger.accounts(store)
+    except Exception: kept = ''
+    mail = '\n'.join(x for x in (mail, kept, act_cards(store, tid)) if x)
     if not tools: return mail
     lines = [f"- {c['Name'] or c['Type']} (connector_id {c['ConnectorId']}, authority {scopes.scope_of(c)}) - tools: {', '.join(k)}"
              for c, k in tools]
@@ -127,10 +132,30 @@ def agent_systems(store, tooled: bool = True) -> str:
             # the owner, 2026-10-25: never sent without their press - so the agent is told the call waits, not that it failed
             # ...and a change above a card's Authority is the same wait (server.tool_run): one road, so the agent is never told to
             # write a TASKUARY-PROPOSE line for what its own call already files
-            'A call that would SEND, post, pay or place an order, an MCP tool its server does not mark read-only, and a change on a '
-            'system whose AUTHORITY (the owner\'s ceiling on it) is read, never runs from here: it answers {"queued": true} and waits '
-            'on the task, on its card, for the owner to press Approve. Do not retry it; say in your reply what it will change and why. '
-            '(At read a SQL batch that writes is rolled back.) At write you may make the change yourself; say what you changed.')
+            "A call that changes anything on a system - a write, a send, a post, a payment, an MCP tool not marked read-only - waits on "
+            "the task as his card; a read runs at once.")
+
+
+# WHAT GOES OUT ON HIS CONNECTED CARDS, AS FACTS (the prompt rebuild, 2026-11-23, took the list of them out with the rules round it, and an
+# agent asked for a post had no card's type or connector_id to set it up with). Each signed-in card (connectorcatalog.connected - the page's own
+# answer; one failing right now named with its state) that posts, sends or orders (scopes.REACHES), with what the agent fills on it and what
+# the owner's defaults on the card fill (connectorcatalog `actions`). The generic ones (an MCP tool, a GraphQL call) are no act of their own.
+def act_cards(store, tid=None) -> str:
+    from . import scopes
+    from .connectorcatalog import action_for, as_now, connected, given
+    from .proposals import MEDIA, VIDEO
+    from .reports import REGISTRY, card_of
+    from .workstreams import may_use
+    try: cards = [c for c in connected(store, failing=True) if may_use(store, tid, c['ConnectorId'])]
+    except Exception: return ''
+    def takes(t):
+        act = action_for(t) or {'fields': []}
+        mine = [f"`{given(f)}`" for f in act['fields'] if f.get('agent')]
+        theirs = [f"`{f['key']}` ({' or '.join(str(c['value']) for c in f['choices'])})" for f in act['fields'] if f.get('setting')]
+        return (f"; it takes {', '.join(mine)}" if mine else '') + (f"; {' and '.join(theirs)} come from the owner's defaults on the card" if theirs else '')
+    rows = [f"- {c.get('Name') or c['Type']} (connector_id {c['ConnectorId']}): {t} - {scopes.REACHES[t]}" + (', with a picture or a video' if t in VIDEO else ', with a picture' if t in MEDIA else '')
+            + takes(t) + as_now(c) for c in cards for t in sorted(REGISTRY) if t in scopes.REACHES and t not in ('mcp', 'graphql') and card_of(t) == c['Type']]
+    return ('WHAT GOES OUT ON HIS CONNECTED CARDS - each a run_tool proposal by its type and connector_id, waiting for his press:\n' + '\n'.join(rows)) if rows else ''
 
 
 def not_a_tool(store, t) -> str:
@@ -150,12 +175,12 @@ def not_a_tool(store, t) -> str:
     if own: what, step = f'"{t}" is a connection, not a tool', f'call one of its tools: {", ".join(own)}.'
     elif t in MAILBOXES:
         boxes = ', '.join(m['address'] for m in mailboxes(store) if m['kind'] == t)
-        what, step = (f'"{t}" is a mailbox, not a tool', f'an email from it is propose_email with `from` set to its address'
+        what, step = (f'"{t}" is a mailbox, not a tool', f'an email from it is propose (kind email) with `from` set to its address'
                       f'{" (" + boxes + ")" if boxes else ""}; it waits for the owner\'s Send.')
     elif cat and cat.get('mcp'): what, step = f'"{t}" is {cat["title"]}\'s own MCP server in your CLI', 'call its MCP tools directly.'
     elif cat and cat.get('planned'): what, step = f'"{t}" ({cat["title"]}) is not built yet', 'say so to the owner instead of working round it.'
     elif cat: what, step = (f'"{t}" ({cat["title"]}) brings work in or sends replies, it is no tool',
-                            'an answer on it is a draft the owner sends (propose_reply / propose_email).')
+                            'an answer on it is a draft the owner sends (propose, kind reply or email).')
     elif not t: what, step = 'no `type` was given', 'call run_system again with the name of one tool on one of the systems.'
     else:
         near = difflib.get_close_matches(t, real, 3, 0.6)

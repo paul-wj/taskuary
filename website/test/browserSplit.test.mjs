@@ -17,7 +17,7 @@ import {
   viewportFor,
   viewportMoved,
   viewOnScreen,
-  heldOn,
+  heldOn, pressable, pageBars,
   isTurn,
   askPlaceholder,
   wheelMessage,
@@ -136,6 +136,22 @@ test("what waits on the view: a held act of THIS browser, and the agent's hand-o
   assert.equal(heldOn(row({ ...act, what: "" }), "s1").what, act.command);
   assert.ok(isTurn({ ask: "turn" }));
   assert.ok(!isTurn({ ask: "signin", site: "bank.example" }) && !isTurn({ ask: "question" }) && !isTurn(null));
+});
+
+test("the view's Approve line names only a card the chat draws for his press, and one bar stands at a time", () => {
+  // walk 10 (2026-11-23): "Waits for your Approve in the chat" named a held sign-up for 15 minutes while the turn at work drew no card, and
+  // stood stacked over his turn on another tab
+  const working = { items: [{ id: "t:1", kind: "turn", state: "working", cards: [] }] };
+  assert.deepEqual([...pressable(working)], [], "a turn at work draws no card: nothing to point at");
+  const ended = { items: [{ id: "t:1", kind: "turn", state: "done", cards: [{ id: "r:7", review: 7, status: "pending" }, { id: "r:8", review: 8, status: "passed" }] },
+    { id: "r:9", kind: "card", review: 9, status: "pending" }] };
+  assert.deepEqual([...pressable(ended)].sort(), [7, 9], "a greyed card is no card to press");
+  assert.deepEqual([...pressable(null)], []);
+  // walk 22 (2026-11-25): the final Post of a card's browser road, held - it is that card's next press (`step`), so the view names it too
+  assert.deepEqual([...pressable({ items: [{ id: "r:2", kind: "card", review: 2, status: "pending", step: { review: 4, what: "Publish your post" } }] })].sort(), [2, 4]);
+  const held = [{ id: 7, what: "Submit the sign-up on RentScope" }];
+  assert.deepEqual(pageBars({ ask: "turn" }, held), { turn: { ask: "turn" }, held: [] }, "his turn on the page stands alone");
+  assert.deepEqual(pageBars(null, held), { turn: null, held });
 });
 
 

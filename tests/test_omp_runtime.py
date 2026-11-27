@@ -119,31 +119,28 @@ def test_omp_cancel_reports_failed_descendant_cleanup():
         def wait(self): return self.returncode
     def fail(_): raise PermissionError('descendant is inaccessible')
     with mock.patch.object(agents, '_resolve_cmd', return_value=['omp']), mock.patch.object(agents, '_git', return_value=''), \
-         mock.patch('taskuary.spawn.popen', return_value=Process()), mock.patch('taskuary.spawn.stop_tree', side_effect=fail):
+         mock.patch('taskuary.spawn.popen', return_value=Process()), mock.patch('taskuary.spawn.end', side_effect=fail):
         with pytest.raises(RuntimeError, match='descendant is inaccessible'):
             agents.run_cli({'cmd': 'omp'}, 'hello', lambda *args: None, cancel=cancel)
 
 
-def test_omp_terminal_wrapper_stops_descendants_by_configured_family(tmp_path):
-    class Pty:
-        def __init__(self, argv, cwd, rows, cols, env, strict, family=''):
-            self.family, self.child_alive = family, True
-        def read(self): return ''
-        def kill(self):
-            if self.family == 'omp': self.child_alive = False
-    with mock.patch.object(terminal, '_WinPty' if __import__('os').name == 'nt' else '_UnixPty', Pty):
-        import sys
-        from pathlib import Path
-        term = terminal.Term([sys.executable, str(Path(__file__).parent / 'fake_acp_server.py')], str(tmp_path), 'coding', cli='omp')
-        term.pty.kill()
-    assert not term.pty.child_alive
+@pytest.mark.parametrize('pty_type', ['_WinPty', '_UnixPty'])
+def test_terminal_wrapper_uses_shared_process_cleanup(pty_type):
+    cls = getattr(terminal, pty_type)
+    pty = cls.__new__(cls)
+    pty.p = mock.MagicMock()
+    if pty_type == '_WinPty': pty.p.isalive.return_value = True
+    else: pty.p.poll.return_value = None
+    with mock.patch('taskuary.spawn.end') as end:
+        pty.kill()
+    end.assert_called_once_with(pty.p)
 
 
-def test_omp_terminal_close_reports_failed_descendant_cleanup():
+def test_terminal_close_reports_failed_process_cleanup():
     pty = terminal._UnixPty.__new__(terminal._UnixPty)
-    pty.p, pty._tree = mock.MagicMock(), True
-    with mock.patch('taskuary.spawn.stop_tree', side_effect=PermissionError('descendant is inaccessible')):
-        with pytest.raises(PermissionError, match='descendant is inaccessible'): pty.kill()
+    pty.p = mock.MagicMock()
+    with mock.patch('taskuary.spawn.end', side_effect=PermissionError('descendant is inaccessible')):
+        with pytest.raises(RuntimeError, match='descendant is inaccessible'): pty.kill()
 
 
 def test_terminal_close_releases_waiters_even_when_process_cleanup_fails():
@@ -180,9 +177,8 @@ def test_stop_api_reports_cleanup_failure_without_claiming_the_task_stopped(rout
 def test_omp_acp_close_reports_failed_descendant_cleanup():
     client = acp.ACPClient.__new__(acp.ACPClient)
     client.p = mock.MagicMock()
-    client.p._taskuary_tree = True
     client.p.poll.return_value = None
-    with mock.patch('taskuary.spawn.stop_tree', side_effect=PermissionError('descendant is inaccessible')):
+    with mock.patch('taskuary.spawn.end', side_effect=PermissionError('descendant is inaccessible')):
         with pytest.raises(RuntimeError, match='descendant is inaccessible'): client.close()
 
 
@@ -455,7 +451,7 @@ def test_omp_acp_applies_shell_permission_rules(command, decision, tmp_path, mon
     def stop_fixture(process):
         process.stdin.close()
         process.wait(timeout=5)
-    monkeypatch.setattr(acp.spawn, 'stop_tree', stop_fixture)
+    monkeypatch.setattr(acp.spawn, 'end', stop_fixture)
     monkeypatch.setenv('FAKE_ACP_ASK', command)
     answer, _, _ = agents.run_acp({'cmd': 'omp', 'acp': ['acp'], 'cwd': str(tmp_path), 'timeout': 10},
                                   'synthetic request', lambda *a: None)
@@ -642,7 +638,6 @@ def _omp_acp_client(seen, events, stop='end_turn', answer='all done', fail_promp
         client = mock.MagicMock()
         client.connect.return_value = {}
         client.session_id, client.permission_denied = 'omp-session-1', False
-        client.p._taskuary_tree = True
         def prompt(_):
             for u in events: kwargs['on_update'](dict(u))
             if prompt_hook: prompt_hook(client)

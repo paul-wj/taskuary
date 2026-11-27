@@ -3,9 +3,9 @@
 A WORKFLOW is a scheduled or hand-run job the owner configured on the Reports tab's Workflows shelf: the
 `agent` source with its write grant, or the monthly invoice job. It carries its objective, its configured
 inputs, the connections it names, its steps (a saved skill), what it may do, what it must ask first, and
-when it is done. A PROCEDURE is a playbook (playbooks.py): how this company handles ONE kind of incoming
+when it is done. A PROCEDURE is a skill (skills.py): how this company handles ONE kind of incoming
 request, chosen by triage when a message is an instance of it. The two were one shelf; converting every
-playbook into a scheduled job would have been wrong, so the existing definitions stay exactly where they
+skill into a scheduled job would have been wrong, so the existing definitions stay exactly where they
 are and this module only reads them apart (PW-207).
 
 A triggered workflow used to run inside the report loop through a coding CLI, then file its answer as a
@@ -63,20 +63,38 @@ def _names(store, ids) -> list:
     return out
 
 
+# A ROUTINE HAS TWO PARTS (the owner, 2026-11-26): its own instructions - a script, or the words its AI steps work by - and, OPTIONALLY,
+# one of his skills it uses to do the job (`skill`, on the routine or on one agent step). Not everything is a skill: the instructions
+# stay the routine's, and the skill is a link to the one library (skills.py) - edited there, read here on every run.
+def skill_text(cfg: dict, skill: str) -> str:
+    """The words of the skill a routine uses, '' with none. A CODING ROUTINE'S SKILL IS THE CLI'S OWN (the owner, 2026-10-29): typed as its
+    slash command in the repository (slash_of), so Claude Code finds it in that repo's .claude/skills or the user's ~/.claude/skills -
+    Taskuary's own skills folder is a general routine's."""
+    if not skill or runs_on(cfg) == 'coding': return ''
+    from . import skills
+    return skills.read(skill) or ''
+
+
+def uses_skill(store) -> dict:
+    "{skill: [the routines and reports that use it, by title]} - what the Skills shelf says beside each, read off the saved setups."
+    out = {}
+    for s in store.list_sources(active_only=False):
+        if s.get('Channel') != 'report': continue
+        cfg = cfg_of(s)
+        named = [cfg.get('skill'), *(x.get('skill') for x in cfg.get('flow') or [] if isinstance(x, dict))]
+        for k in dict.fromkeys(str(x).strip().lstrip('/') for x in named if x):
+            out.setdefault(k, []).append(str(cfg.get('title') or s.get('Address') or ''))
+    return out
+
+
 def definition(store, src) -> dict:
     """The workflow as data (PW-203), read from the source it has always been stored on."""
     cfg = cfg_of(src); sid = src.get('SourceId') if isinstance(src, dict) else None
     # a saved flow that is one agent step carries its words on that step (flow.steps_of), not on the config
     lone = cfg['flow'][-1] if isinstance(cfg.get('flow'), list) and cfg['flow'] and isinstance(cfg['flow'][-1], dict) else {}
     if lone.get('kind') == 'agent': cfg = {**cfg, 'prompt': cfg.get('prompt') or lone.get('prompt'), 'skill': cfg.get('skill') or lone.get('skill')}
-    skill, steps = str(cfg.get('skill') or '').strip().lstrip('/'), ''
-    # A CODING ROUTINE'S SKILL IS THE CLI'S OWN (the owner, 2026-10-29): typed as its slash command in the repository (slash_of), so Claude
-    # Code finds it in that repo's .claude/skills or the user's ~/.claude/skills - Taskuary's own skills folder is a general routine's
-    if skill and runs_on(cfg) != 'coding':
-        from . import config
-        p = config.home() / 'skills' / skill / 'SKILL.md'
-        try: steps = p.read_text(encoding='utf-8') if p.is_file() else ''
-        except OSError: steps = ''
+    skill = str(cfg.get('skill') or '').strip().lstrip('/')
+    steps = skill_text(cfg, skill)
     return {'source_id': sid, 'type': cfg.get('type'), 'title': cfg.get('title') or (src.get('Address') if isinstance(src, dict) else '') or '',
             'objective': str(cfg.get('prompt') or cfg.get('objective') or '').strip(), 'skill': skill, 'steps': steps,
             'inputs': cfg.get('inputs') or {},
@@ -88,16 +106,16 @@ def definition(store, src) -> dict:
             'browser': bool(cfg.get('browser')),
             'on_mail': str(cfg.get('on_mail') or '').strip(),
             'schedule': {k: cfg[k] for k in ('cron', 'daily_at', 'every_minutes', 'every', 'on_startup', 'tz', 'at') if cfg.get(k) is not None},
-            'runs_on': runs_on(cfg), 'agent': cfg.get('agent') or None,
+            'runs_on': runs_on(cfg),
             'model': str(cfg.get('model') or '').strip(), 'effort': str(cfg.get('effort') or '').strip(),     # blank: the general agents' (brain)
             'enabled': bool(src.get('Active', 1)) if isinstance(src, dict) else True}
 
 
 def catalog(store) -> dict:
     """Configured workflows on one shelf, request procedures on the other - never the same thing (PW-203/207)."""
-    from . import playbooks
+    from . import skills
     flows = [definition(store, s) for s in store.list_sources(active_only=False) if s.get('Channel') == 'report' and is_workflow(s)]
-    procs = [{'slug': b['slug'], 'title': b['title'], 'when': b['when'], 'uses': b['uses'], 'about_code': b['about_code']} for b in playbooks.list_all()]
+    procs = [{'slug': b['slug'], 'title': b['title'], 'description': b['description'], 'uses': b['uses'], 'about_code': b['about_code']} for b in skills.list_all()]
     return {'workflows': flows, 'procedures': procs}
 
 
@@ -126,9 +144,10 @@ def brief(defn: dict, trigger: str, when: str, context: dict = None) -> str:
     if context: lines.append('THIS RUN: ' + json.dumps(context, default=str))
     if defn.get('connections'): lines.append('CONNECTIONS: ' + ', '.join(str(c) for c in defn.get('connection_names') or defn['connections']))
     if defn.get('steps'): lines.append('STEPS (the saved skill):\n' + defn['steps'].strip())
-    lines.append('ALLOWED ACTIONS: ' + ("you may write to the connected systems this workflow names, through Taskuary's tools and proposals; "
-                                        'anything outside them, and anything under ASK FIRST, waits for the owner'
-                                        if 'write' in defn['allowed_actions'] else 'read only - propose changes, make none'))
+    # ...AND NO RULE OF THE CODE'S (his live app, 2026-11-25: a routine for posts on X, Reddit and LinkedIn, LinkedIn alone named, was told
+    # it "may write to the connected systems this workflow names ... anything outside them waits for the owner", and its "Say --done with
+    # your result" - a command gone since end_turn - and it wrote three posts as prose, no card to press). What an act may do is the gates':
+    # every one waits as a card for his press, whatever this brief says. The run is told the routine's own words and its facts
     # the sign-in the owner typed by hand on an earlier run is in the profile this browser restores
     # (browserview.RESTORE_KEY), so the job starts signed in for as long as the site lets it
     if defn.get('browser'):
@@ -140,8 +159,6 @@ def brief(defn: dict, trigger: str, when: str, context: dict = None) -> str:
                      'a password or a code yourself.')
     if defn.get('approvals'): lines.append('ASK FIRST: ' + defn['approvals'])
     if defn.get('done_when'): lines.append('DONE WHEN: ' + defn['done_when'])
-    lines.append('This is a configured workflow, not an incoming request: no triage and no procedure selection apply. '
-                 'Say --done with your result when it is finished.')
     return '\n'.join(lines)
 
 
@@ -278,8 +295,13 @@ def script_routine(store, p: dict) -> tuple:
     # online for that job and naming it (`based_on`), never from Taskuary's own profiles alone. One card, one save, as the script's
     if not script.strip() and str(p.get('prompt') or '').strip() and title:
         kind = 'report' if str(p.get('kind') or '').lower() == 'report' else 'routine'
+        # ...and the skill of his it uses, where it names one: a link, never a copy - and never to one that is not there
+        from . import skills
+        uses = str(p.get('skill') or '').strip().lstrip('/')
+        if uses and skills.read(uses) is None: return {}, f'no skill is named {uses!r} - name one the skills tool lists, or leave `skill` out'
         cfg = {'type': 'agent', **({'access': 'write'} if kind == 'routine' else {}), 'title': title, 'prompt': str(p['prompt']).strip(),
-               'goal': ' '.join(str(p.get('why') or '').split())[:300], **({'based_on': based} if based else {}), **{k: p[k] for k in CLOCK if p.get(k)}}
+               'goal': ' '.join(str(p.get('why') or '').split())[:300], **({'based_on': based} if based else {}),
+               **({'skill': skills.key(uses)} if uses else {}), **{k: p[k] for k in CLOCK if p.get(k)}}
         if why := schedule_error(cfg): return {}, why
         if any(x.get('Channel') == 'report' and str(x.get('Address') or '').casefold() == title.casefold() for x in store.list_sources(active_only=False)):
             return {}, f'a routine or report named {title!r} already exists - give this one its own name, or change that one (change_routine)'
@@ -303,6 +325,11 @@ def script_routine(store, p: dict) -> tuple:
     if any(x.get('Channel') == 'report' and str(x.get('Address') or '').casefold() == title.casefold() for x in store.list_sources(active_only=False)):
         return {}, f'a routine or report named {title!r} already exists - give this one its own name'
     return cfg, ''
+
+
+def _told(store, src) -> str:
+    "What a run of this routine is told of it (brief), past the run's own first line - '' for what is no routine."
+    return brief(definition(store, src), '', '').split('\n', 1)[-1] if src and is_workflow(src) else ''
 
 
 def save(store, fields: dict, actor: str) -> int:
@@ -336,6 +363,13 @@ def save(store, fields: dict, actor: str) -> int:
     # Wednesday ran seconds later, beside the editor's "Saved - runs Mon at 08:00", and again beside its own Save & run now -
     # two laptop tasks, two approvals (walk 2026-10-21). Run now is the door for running it now.
     if not was and is_workflow(store.get_source(sid)): store.touch_source(sid)
+    # A RUN AT WORK HEARS ITS ROUTINE'S NEW WORDS (his live app, 2026-11-25): a post routine's words said "keep the drafts for manual posting";
+    # he changed them to "a post card for my press" and typed "make these posts again" on the run - its conversation went on, resumed, its
+    # first prompt holding the old words alone, and it wrote prose again. What changed is one event on each open run (events.note), told once
+    if was and (now := _told(store, store.get_source(sid))) != _told(store, was):
+        from . import events
+        for r in store._rows("SELECT TaskId FROM task WHERE Source='workflow' AND SourceRef=? AND Status NOT IN ('done','dropped')", (f'workflow:{sid}',)):
+            events.note(store, r['TaskId'], f"This task's routine was changed - what it says now:\n{now}")
     from .docsync import sync_connections
     sync_connections(store, actor)
     return sid
@@ -370,6 +404,16 @@ def change_of(store, tid: int, p: dict) -> tuple:
     was, new = flow.steps_of(cfg), p.get('flow')
     # ...and its clock and its name, beside or without its steps: one card, one save (save - the editor's own)
     patch = {k: p[k] for k in (*CLOCK, 'title', 'goal', 'done_when') if p.get(k) not in (None, '')}
+    # ...AND WHAT ELSE IT IS SAVED WITH (the owner, 2026-11-26: a routine rewritten for his press still said "browser on" and a goal "for manual
+    # posting" - nothing an agent could change): whether it is driven in the browser, and the skill of his it uses - a link, never a copy
+    if isinstance(p.get('browser'), bool) and p['browser'] != bool(cfg.get('browser')):
+        if not is_workflow({**cfg, 'browser': p['browser']}): return {}, 'this routine only reads, in the browser - with the browser off nothing would run it'
+        patch['browser'] = p['browser']
+    uses, had = str(p.get('skill') or '').strip().lstrip('/'), definition(store, src)['skill']
+    if uses:
+        from . import skills
+        if skills.read(uses) is None: return {}, f'no skill is named {uses!r} - name one the skills tool lists, or leave `skill` out'
+        uses = skills.key(uses)
     if patch:
         from .reports import schedule_error
         if (why := schedule_error({**{k: None for k in CLOCK}, **patch} if set(patch) & set(CLOCK) else {**cfg, **patch})): return {}, f'that schedule does not hold: {why}'
@@ -377,17 +421,126 @@ def change_of(store, tid: int, p: dict) -> tuple:
         agent = [i for i, x in enumerate(was) if x.get('kind') == 'agent']
         if len(agent) != 1: return {}, "this routine has no one agent step to give new instructions to - send `flow`, its steps whole"
         new = [{**x, 'prompt': str(p['prompt']).strip()} if i == agent[0] else x for i, x in enumerate(was)]
-    if new is None and patch: new = was                                     # ...its clock or name alone
+    if new is None and (patch or uses): new = was                           # ...its clock, its name or its skill alone
+    if uses and uses != had and isinstance(new, list):
+        agent = [i for i, x in enumerate(new) if isinstance(x, dict) and x.get('kind') == 'agent']
+        if len(agent) != 1: return {}, 'this routine has no one agent step to use a skill - send `flow`, its steps whole, the skill on the step that uses it'
+        new = [{**x, 'skill': uses} if i == agent[0] else x for i, x in enumerate(new)]
     if not isinstance(new, list) or not new: return {}, "change_routine needs `prompt` (its agent step's new instructions), `flow` (its steps whole), or a schedule (daily_at, cron, every_minutes) or title"
     ok, why = flow.validate(store, new)
     if not ok: return {}, f'the changed steps do not hold: {why}'
-    d = flow.diff(was, new)
+    # ...and a script step it adds or repoints carries its script whole: a file's words are on no card, and could change after the press
+    had = {x.get('id'): x.get('path') for x in was}
+    if any(x.get('path') and x.get('path') != had.get(x.get('id')) for x in new if 'path' in flow.code_keys(x)):
+        return {}, 'a script step in a change carries its code in `script`, whole, so the card shows what will run - never a `path` to a file'
     clock = {k: patch.get(k) for k in CLOCK} if set(patch) & set(CLOCK) else {}
-    said = ([f"Runs: {runs_words(cfg)} -> {runs_words({**cfg, **clock})}"] if clock and runs_words({**cfg, **clock}) != runs_words(cfg) else []) +            ([f"Name: {cfg.get('title') or src.get('Address')} -> {patch['title']}"] if patch.get('title') and patch['title'] != cfg.get('title') else []) +            [f"{w}: {cfg.get(k) or '(none)'} -> {patch[k]}" for k, w in (('goal', 'Goal'), ('done_when', 'Done when')) if patch.get(k) and patch[k] != cfg.get(k)]
-    if not d and not said: return {}, 'that is the routine as it already is'
-    return {'action': 'repair_workflow', 'source_id': src['SourceId'], 'title': cfg.get('title') or src.get('Address') or '', 'flow': new,
-            'was': was, 'changes': '\n'.join([*said, *([flow.diff_text(d)] if d else [])]), 'why': ' '.join(str(p.get('why') or '').split())[:300],
-            **({'patch': {**clock, **{k: patch[k] for k in ('title', 'goal', 'done_when') if patch.get(k)}}} if said else {})}, ''
+    rows = ([{'label': 'Runs', 'was': runs_words(cfg), 'now': runs_words({**cfg, **clock})}] if clock and runs_words({**cfg, **clock}) != runs_words(cfg) else []) + (
+        [{'label': 'Name', 'was': cfg.get('title') or src.get('Address') or '', 'now': patch['title']}] if patch.get('title') and patch['title'] != cfg.get('title') else []) + (
+        [{'label': 'Browser', 'was': ON[not patch['browser']], 'now': ON[patch['browser']]}] if 'browser' in patch else [])
+    words = {k: patch[k] for k in ('goal', 'done_when') if patch.get(k) and patch[k] != cfg.get(k)}
+    if not flow.diff(was, new) and not rows and not words: return {}, 'that is the routine as it already is'
+    return change_card({'action': 'repair_workflow', 'source_id': src['SourceId'], 'title': cfg.get('title') or src.get('Address') or '', 'flow': new,
+            'was': was, 'rows': rows, 'why': ' '.join(str(p.get('why') or '').split())[:300], 'facts': facts(store, src),
+            **({'patch': {**clock, **{k: patch[k] for k in ('title', 'browser', *words) if patch.get(k) not in (None, '')}}, 'before': {k: cfg.get(k) or '' for k in words}} if rows or words else {})}), ''
+
+
+# THE ROUTINE AS IT STANDS, IN ITS KEY FIELDS (the owner, 2026-11-26: he approved new instructions over a goal that still said "for manual
+# posting" and a browser still on - the card showed neither): what it is for, when it runs, whether it is driven in the browser, the
+# connections it names and the skill it uses. One reading for the change card (after: these with the change laid over) and the agent's
+# own look at a routine (lookup).
+ON = {True: 'on', False: 'off'}
+def facts(store, src, cfg: dict = None) -> dict:
+    cfg = cfg_of(src) if cfg is None else cfg
+    d = definition(store, {**src, 'ConfigJson': json.dumps(cfg)})
+    return {'Goal': str(cfg.get('goal') or '').strip(), 'Runs': runs_words(cfg), 'Browser': ON[d['browser']], 'Connections': ', '.join(d['connection_names']),
+            'Skill': d['skill'], 'Done when': d['done_when']}
+
+
+def after(p: dict) -> list:
+    """[{label, now, was?}] - a routine's key fields as its change card's press leaves them, `was` on each one the press changes. Its goal
+    and its done-when are here while they stay as they are: changed, each is a box of its own on the card (texts)."""
+    from . import flow
+    had, patch = p.get('facts') or {}, p.get('patch') or {}
+    now = {**{k: v for k, v in had.items() if not patch.get({v: k for k, v in WORDS.items()}.get(k))},
+           **({'Browser': ON[bool(patch['browser'])]} if 'browser' in patch else {}), **{r['label']: r['now'] for r in p.get('rows') or [] if r.get('label') == 'Runs'}}
+    lone = [x for x in flow.steps_of({'flow': p.get('flow')}) if isinstance(x, dict) and x.get('kind') == 'agent']
+    if len(lone) == 1 and lone[0].get('skill'): now['Skill'] = str(lone[0]['skill']).strip().lstrip('/')
+    return [{'label': k, 'now': v or 'none', **({'was': had.get(k) or 'none'} if v != had.get(k) else {})} for k, v in now.items() if v or k != 'Done when']
+
+
+# THE `routines` TOOL'S ANSWER (the owner, 2026-11-26: an agent asked to change a routine could not read it, and wrote its instructions anew):
+# with no name every routine, report and dashboard by title; with one, that one whole - its facts, then its instructions as they are saved.
+def lookup(store, name: str = '') -> str:
+    from . import flow
+    kind = lambda s: 'routine' if is_workflow(s) else 'dashboard' if cfg_of(s).get('type') == 'dashboard' else 'report'
+    if not str(name or '').strip():
+        rows = [s for s in store.list_sources(active_only=False) if s.get('Channel') == 'report' and (is_workflow(s) or cfg_of(s).get('title'))]
+        return '\n'.join(f"{cfg_of(s).get('title') or s.get('Address')} (#{s['SourceId']}, {kind(s)}) - runs {runs_words(cfg_of(s))}"
+                         + (f" - uses the skill {d['skill']}" if (d := definition(store, s))['skill'] else '') for s in rows) or 'There are no routines or reports yet.'
+    src = named_setup(store, name)
+    if not src: return f'No routine or report is called {name!r} - ask with no name for the list.'
+    cfg = cfg_of(src)
+    head = [f"{kind(src).upper()}: {cfg.get('title') or src.get('Address')} (#{src['SourceId']}){'' if src.get('Active', 1) else ' - switched off'}",
+            *(f'{k.upper()}: {v or "none"}' for k, v in facts(store, src).items() if v or k != 'Done when')]
+    if not is_workflow(src):
+        q = str(cfg.get('prompt') or cfg.get('ai_prompt') or '').strip()
+        return '\n'.join([*head, *([f'QUESTION ({len(q):,} characters):\n{q}'] if q else []), *([f"QUERY:\n{cfg['query']}"] if cfg.get('query') else [])])
+    steps = flow.steps_of(cfg)
+    if not flow.is_flow(cfg): return '\n'.join([*head, f"INSTRUCTIONS ({len(str(steps[0].get('prompt') or '')):,} characters):\n{steps[0].get('prompt') or ''}"])
+    return '\n'.join([*head, 'STEPS:', *(f"{x.get('id')} · {x.get('label') or x.get('kind')} ({x.get('kind')}{', skill ' + str(x['skill']) if x.get('skill') else ''})"
+                                         + (f":\n{x['prompt']}" if x.get('prompt') else '') for x in steps)])
+
+
+# A CHANGE TO SOMETHING STORED SHOWS WHAT IT WILL SAY (the owner, 2026-11-24, over a card whose box held "prompt: <whole old> -> <whole new>":
+# "to edit text it should show the edited text?"): each set of words it rewrites is a box of its own holding the NEW words, beside what they were
+# (texts: {key, label, was, now}), and what else it changes is a fact read off (rows: {label, was, now}). One place for the card, the press that
+# saves what he left in the boxes (edit_change) and the line its agent is told (changes).
+TEXTS = ('prompt', 'ai_prompt', 'query', 'script', 'text', 'body', 'message')
+WILL = {'routine': 'The routine will say', 'report': 'The report will ask', 'dashboard': 'The dashboard will ask'}
+WORDS = {'goal': 'Goal', 'done_when': 'Done when', 'query': 'Query'}
+def change_card(p: dict) -> dict:
+    from . import flow
+    rows, texts = [r for r in p.get('rows') or [] if r.get('label') not in ('Adds', 'Removes', 'Step', 'Skill') and 'step' not in r], []
+    if p.get('action') == 'change_setup':
+        texts = [{'key': k, 'label': WILL.get(p.get('kind') or 'report') if k in ('prompt', 'ai_prompt') else WORDS.get(k, k), 'was': str((p.get('was') or {}).get(k) or ''),
+                  'now': str(v)} for k, v in (p.get('patch') or {}).items() if k in TEXTS]
+    else:
+        new, d = p.get('flow') or [], flow.diff(p.get('was') or [], p.get('flow') or [])
+        one, by = sum(s.get('kind') == 'agent' for s in new) == 1, {s.get('id'): s for s in new if isinstance(s, dict)}
+        said_ = lambda v: v if isinstance(v, str) else '' if v is None else json.dumps(v, default=str)
+        for x in d:
+            name, s = x['label'] or x['id'], by.get(x['id']) or {}
+            if x['change'] != 'changed': rows.append({'label': 'Adds' if x['change'] == 'added' else 'Removes', 'was': '', 'now': f"the step {name}"})
+            # EVERY FIELD THE PRESS SAVES IS ON THE CARD (red team round 6: a step a change ADDED was one line, "Adds the step <label>", and the
+            # press saved its script for the routine's clock to run unpressed): a step it adds is drawn field by field as one it changes is -
+            # its words each a box, read as added, and the rest a fact with what it was and what it becomes
+            keys = x['keys'] if x['change'] == 'changed' else [{'key': k, 'was': None, 'now': v} for k, v in s.items() if k not in ('id', 'label')] if x['change'] == 'added' else []
+            for k in keys:
+                if k['key'] == 'skill' and x['change'] == 'changed': rows.append({'label': 'Skill', 'was': str(k['was'] or 'none'), 'now': str(k['now'] or 'none')})
+                elif k['key'] in TEXTS and isinstance(k['now'], str) and k['now']:
+                    texts.append({'key': f"flow.{x['id']}.{k['key']}", 'was': str(k['was'] or ''), 'now': k['now'],
+                                  'label': WILL['routine'] if one and k['key'] == 'prompt' and s.get('kind') == 'agent' else f"{name} · {WORDS.get(k['key'], k['key'])}"})
+                else: rows.append({'label': f"{name} · {k['key'].replace('_', ' ')}", 'was': said_(k['was']), 'now': said_(k['now']) or 'none', 'step': x['id']})
+        texts += [{'key': k, 'label': WORDS[k], 'was': str((p.get('before') or {}).get(k) or ''), 'now': str((p.get('patch') or {})[k])}
+                  for k in ('goal', 'done_when') if (p.get('patch') or {}).get(k)]
+    said = [f"{r['label']}: {r['was']} -> {r['now']}" if r.get('was') else f"{r['label']} {r['now']}" for r in rows] + [f"{t['label']}: {t['now']}" for t in texts]
+    return {**p, 'rows': rows, 'texts': texts, 'changes': chr(10).join(said), **({'after': after({**p, 'rows': rows})} if p.get('facts') else {})}
+
+
+def edit_change(p: dict, fields: dict) -> dict:
+    """The change as he left its boxes at the press (fields: {key: words}) - only a box the card drew (texts), never emptied."""
+    if not fields: return p
+    keys = {t['key'] for t in p.get('texts') or []}
+    flow_, patch = [dict(s) for s in p.get('flow') or []], dict(p.get('patch') or {})
+    for k, v in fields.items():
+        if k not in keys: raise ValueError(f'{k} cannot be changed on this card')
+        if not (v := str(v or '').strip()): raise ValueError('a box on this card cannot be left empty - Dismiss it instead')
+        if k.startswith('flow.'):
+            sid, key = k[5:].rsplit('.', 1)
+            for s in flow_:
+                if str(s.get('id')) == sid: s[key] = v
+        else: patch[k] = v
+    return change_card({**p, **({'flow': flow_} if p.get('flow') is not None else {}), **({'patch': patch} if patch else {})})
 
 
 # A REPORT OR A DASHBOARD IS CHANGED THE SAME WAY (the owner, 2026-11-20): its question, its schedule, its name - one card showing each old ->
@@ -402,12 +555,12 @@ def setup_change(src, cfg: dict, p: dict) -> tuple:
     clock = {k: want.get(k) for k in CLOCK} if set(want) & set(CLOCK) else {}
     if clock and (why := schedule_error(clock)): return {}, f'that schedule does not hold: {why}'
     patch = {**{k: v for k, v in want.items() if k in SETUP_KEYS and v != cfg.get(k)}, **clock}
-    said = [f"{SETUP_KEYS[k]}: {cfg.get(k) or '(none)'} -> {v}" for k, v in patch.items() if k in SETUP_KEYS]
-    if clock and runs_words({**cfg, **clock}) != runs_words(cfg): said.insert(0, f"Runs: {runs_words(cfg)} -> {runs_words({**cfg, **clock})}")
-    if not said: return {}, 'that is the setup as it already is - give its new question (prompt), schedule (daily_at, cron, every_minutes) or title'
+    rows = [{'label': SETUP_KEYS[k], 'was': cfg.get(k) or '', 'now': v} for k, v in patch.items() if k in SETUP_KEYS and k not in TEXTS]
+    if clock and runs_words({**cfg, **clock}) != runs_words(cfg): rows.insert(0, {'label': 'Runs', 'was': runs_words(cfg), 'now': runs_words({**cfg, **clock})})
+    if not rows and not set(patch) & set(TEXTS): return {}, 'that is the setup as it already is - give its new question (prompt), schedule (daily_at, cron, every_minutes) or title'
     kind = 'dashboard' if cfg.get('type') == 'dashboard' else 'report'
-    return {'action': 'change_setup', 'source_id': src['SourceId'], 'kind': kind, 'title': cfg.get('title') or src.get('Address') or '',
-            'patch': patch, 'was': {k: cfg.get(k) for k in patch}, 'changes': '\n'.join(said), 'why': ' '.join(str(p.get('why') or '').split())[:300]}, ''
+    return change_card({'action': 'change_setup', 'source_id': src['SourceId'], 'kind': kind, 'title': cfg.get('title') or src.get('Address') or '',
+            'patch': patch, 'was': {k: cfg.get(k) for k in patch}, 'rows': rows, 'why': ' '.join(str(p.get('why') or '').split())[:300]}), ''
 
 
 def named_setup(store, name):
@@ -456,7 +609,7 @@ def running(store, sid) -> dict | None:
 
 # ── a mail starts it (the owner, 2026-10-21: "a workflow can be started by an incoming mail") ───────────────────────────────────
 # A workflow may say, in words, which arriving mail starts it (`on_mail`, the editor's "Start when a mail like this arrives") - the
-# playbook's `when`, for a job instead of a procedure. Triage is shown these the way it is shown the playbooks and names the one a
+# skill's `when`, for a job instead of a procedure. Triage is shown these the way it is shown the skills and names the one a
 # mail is an instance of (triage.classify_intent `workflow`); the run is then that mail's task, through the one road below.
 MAIL_NAME = 'workflow-'
 
@@ -503,7 +656,6 @@ def run(store, src, actor: str = 'schedule', trigger: str = 'schedule', context:
 
 def _run(store, src, actor, trigger, context, mail) -> dict:
     from . import chatlog, ingest, browserview, flow
-    from .agents import CODING_KINDS
     defn, steps = definition(store, src), flow.is_flow(cfg_of(src))
     busy = running(store, defn['source_id'])
     if busy:
@@ -517,14 +669,8 @@ def _run(store, src, actor, trigger, context, mail) -> dict:
     # a browser job's run task asks for a browser the way the walk that taught it did: the tag is what
     # general.py reads to launch one, bound to this session and restored from the owner's profile
     tags = ','.join(x for x in (browserview.WANTS if kind == 'general' and defn.get('browser') else '', f'{TRIGGER_TAG}{trigger}') if x)
-    # ...and it runs AS the worker it names, wearing that worker's rules (an AP workflow gets AP.md), as reports.run_agent did.
-    # A coding name on a GENERAL run is a brain picked long ago, not a role; a coding run takes the profile it names, else the
-    # coding profile (ingest._auto_code) - and either way the default brain runs it.
-    row = store.get_agent(defn['agent']) if defn.get('agent') else None
-    named = bool(row) and (kind == 'coding' or str(row.get('Kind') or '').lower() not in CODING_KINDS)
     tid = store.create_task({'Title': f"{defn['title']} - {when}", 'Summary': text, 'Kind': kind, 'Status': 'open', 'Priority': 'normal',
-                             'Source': 'workflow', 'SourceRef': f"workflow:{defn['source_id']}", 'Tags': tags,
-                             **({'Assignee': f"agent:{defn['agent']}"} if named else {})}, actor)
+                             'Source': 'workflow', 'SourceRef': f"workflow:{defn['source_id']}", 'Tags': tags}, actor)
     b = brain(store, cfg_of(src), store.get_task(tid))
     if steps:
         n = len(flow.steps_of(cfg_of(src)))

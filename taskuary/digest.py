@@ -267,7 +267,7 @@ HEADER = ('# DIGEST.md — your morning brief\n\n'
 # what the assistant's voice document does NOT settle for a brief: the shape of the answer
 CONTRACT = ('\n\nYOU ARE WRITING THE MORNING BRIEF, not a post on the work rail: the instruction in the user message decides the '
             'sections and the length. Plain text with the emoji headers it names - no JSON, no markdown headings, no '
-            'tables. Facts only from the data you are given; a TQ-ref keeps the title and the link the data gave it; a '
+            'tables. Facts only from the data you are given; a TQ-ref keeps the title the data gave it, and a line the link it ends with; a '
             'block reading "(none)" has nothing to say. The data may be a CAPPED slice (a block says so when it is cut) - '
             'never describe a cut block as complete, and say plainly when something the instruction asks about is not '
             'in what you got.')
@@ -298,12 +298,22 @@ def _block(out, head, lines):
 def task_link(tid: int) -> str:
     """The URL that opens this task in the app - the digest carries one per task so the brief
     is a set of doors, not a reading. The UI honours #task=<id> on load (TaskHubPage)."""
+    return app_link(f'task={int(tid)}')
+def followup_link(mid: int) -> str:
+    "The door on a line about something owed BY SOMEBODY ELSE: his sent message it waits on - pressed, its task's agent prepares the follow-up (assistant.follow_up_on)."
+    return app_link(f'followup={int(mid)}')
+def _loop(c: dict) -> str:
+    "One open loop's line with its ONE door: a chase's is the follow-up on its own sent message (a stored id, never read from words), any other its task's."
+    line, a = c['facts'].split('\n', 1)[0], c.get('action') or {}
+    return f"{line} {followup_link(a['ask_mid'])}" if a.get('type') == 'followup' and a.get('ask_mid') else _linked(line)
+def app_link(place: str) -> str:
+    "The URL of one place in the app (its #hash): the brief's doors are whole URLs, so they open from DIGEST.md too."
     from . import config
     try: srv = config.load().get('server') or {}
     except Exception: srv = {}
     host = srv.get('host') or '127.0.0.1'
     if host in ('0.0.0.0', '::', ''): host = '127.0.0.1'
-    return f"http://{host}:{srv.get('port') or 7787}/#task={int(tid)}"
+    return f"http://{host}:{srv.get('port') or 7787}/#{place}"
 
 
 def _linked(text: str) -> str:
@@ -336,10 +346,11 @@ def _ruled_out(store, c: dict) -> str:
 
 def global_rules(store) -> list:
     """The owner's active GLOBAL verdicts, and their TOPIC verdicts with the topic named, whole - for the model to hold each ask against."""
-    # ...the owner's own general lines on what they care about, in LEARNED.md (memorylines, 2026-10-27) - what a global note was
-    from . import memorylines
+    # ...every general or topic line in use (memory.notes): what he said, and what was learned that he confirmed - a verdict he gave for
+    # good is a confirmed learned line, which memory.standing (the per-message reader) leaves out when it is global
+    from . import memory
     try: return [n['Note'].strip() + (f" (about: {n['ScopeKey']})" if n['Scope'] == 'subject' and n.get('ScopeKey') else '')
-                 for n in memorylines.standing(store) if n['Scope'] in ('global', 'subject') and str(n.get('Note') or '').strip()]
+                 for n in memory.notes(store) if n['Scope'] in ('global', 'subject') and str(n.get('Note') or '').strip()]
     except Exception as e:
         logger.debug(f'digest: global verdicts skipped - {e}'); return []
 
@@ -433,7 +444,7 @@ def gather(store, days: int = DAYS) -> str:
     try: blind = sentjudge.blind(store)
     except Exception as e: blind = f'could not check which of your sent messages were read - {str(e)[:120]}'
     _block(out, 'MY OPEN LOOPS (I asked and nothing came back; I promised; work gone quiet):',
-           ([f"  NOT TRACKED: {blind}"] if blind else []) + [f"  [{c_['kind']}] {_linked(c_['facts'].split(chr(10), 1)[0])}{said(c_)}" for c_ in loops[:20]])
+           ([f"  NOT TRACKED: {blind}"] if blind else []) + [f"  [{c_['kind']}] {_loop(c_)}{said(c_)}" for c_ in loops[:20]])
     # the ref carries its task's TITLE here too (list_reviews already joins it): a line
     # holding only the attached MAIL SUBJECT let the subject and the ref drift apart, and a
     # brief that renames a task is a lie in the one place the owner trusts by default
@@ -446,7 +457,7 @@ def gather(store, days: int = DAYS) -> str:
     _block(out, 'OUT OF OFFICE (from their auto-replies):', (f'  {k}: {v}' for k, v in away.items()))
     _block(out, 'OPEN WORK (each line ends with the link that opens the task):', _linked(A._open(store)))
     _block(out, 'FINISHED THIS WINDOW (with the agent\'s own summary where there is one):', _linked(A._done(store, span)))
-    from .memorylines import lessons
+    from .memory import lessons
     # what the owner's verdicts in the window taught, as the lines they are in LEARNED.md (the notes table is gone, 2026-10-27) - the
     # header says plainly that nothing here is live work: a quoted subject was once recycled into a fake pending review
     _block(out, 'WHAT YOUR VERDICTS TAUGHT THIS WINDOW (already lines in memory - standing lessons, NOT open work,\n'

@@ -144,9 +144,9 @@ class CoreTests(unittest.TestCase):
         with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch.object(senders, 'wrote_to', return_value=False):
             self.assertEqual(ingest_message(s, mail(external_id='e2', from_email='Stranger@evil.example'), llm=CODING_LLM)['status'], 'created')
         spawn.assert_not_called()
-        # ...until the owner has dealt with them: their own words on one of the stranger's threads
+        # ...until the owner has dealt with them: his own reply TO them (a thread they cite is no reply - the red team, 2026-11-24, T1a)
         s.add_message({'ExternalId': 'own-e2', 'Channel': 'email', 'SourceName': 'dana@northwind.example',
-                       'ConversationId': 'e2', 'FromEmail': 'dana@northwind.example',
+                       'ConversationId': 'e2', 'FromEmail': 'dana@northwind.example', 'RecipientsJson': '{"to": ["stranger@evil.example"], "cc": []}',
                        'Status': 'context', 'BodyText': 'thanks - looking into it'})
         with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch.object(senders, 'wrote_to') as wt:
             self.assertEqual(ingest_message(s, mail(external_id='e2b', from_email='Stranger@evil.example'), llm=CODING_LLM)['status'], 'created')
@@ -285,7 +285,8 @@ class CoreTests(unittest.TestCase):
                   "print(json.dumps({'type':'item.completed','item':{'id':'i1','type':'command_execution','command':'dir','aggregated_output':'ok','exit_code':0,'status':'completed'}}));"
                   "print(json.dumps({'type':'item.completed','item':{'id':'i2','type':'agent_message','text':'finished'}}))")
         ev = []
-        with mock.patch('taskuary.agents._resolve_cmd', return_value=[sys.executable, '-c', script]):
+        with mock.patch('taskuary.agents._resolve_cmd', return_value=[sys.executable, '-c', script]), \
+             mock.patch('taskuary.agents._own_settings', side_effect=lambda p, n, a: list(a)):    # the reviewed fixture argv, as written
             out, sid, _ = run_cli({'cmd': 'codex', 'args': ['exec'], 'timeout': 60},
                                   'hi', lambda k, n, d: ev.append((k, n, d)))
         self.assertEqual((out, sid), ('finished', 'cx1'))
@@ -950,6 +951,8 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(is_due({'every_minutes': 30}, (now - timedelta(minutes=45)).isoformat(sep=' ')))
         self.assertFalse(is_due({'every_minutes': 30}, (now - timedelta(minutes=5)).isoformat(sep=' ')))
         s = MemoryStore()
+        from taskuary import scopes                       # ...a stand-in that reads, declared so (an undeclared one waits as a write)
+        p = mock.patch.dict(scopes.ACTIONS, {'_t': 'read'}); p.start(); self.addCleanup(p.stop)
         REGISTRY['_t'] = lambda cfg: ('3 rows', 'a\nb\nc')
         try:
             # a run its triage line sends (2026-10-16) that triage calls informational is filed, never a task
@@ -1103,6 +1106,9 @@ class CoreTests(unittest.TestCase):
     def test_prose_reports_produce_no_files_and_row_reports_produce_both(self):
         s = MemoryStore()
         body = '\n'.join(json.dumps(r) for r in self._report_rows())
+        bare = s.add_message({'Channel': 'report', 'Subject': 'Payroll Journal', 'BodyText': body, 'Status': 'feed'})
+        self.assertEqual(len(artifacts.attach_report_output(s, bare, 'Payroll Journal', body)), 1)   # no chart its answer did not ask for
+        body += '\nCHART: Debit | Employee | Debits'
         mid = s.add_message({'Channel': 'report', 'Subject': 'Payroll Journal', 'BodyText': body, 'Status': 'feed'})
         self.assertEqual(len(artifacts.attach_report_output(s, mid, 'Payroll Journal', body)), 2)
         names = [a['Name'] for a in s.list_attachments(mid)]

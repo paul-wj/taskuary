@@ -106,6 +106,14 @@ def test_the_offer_is_worded_for_the_sender_s_organisation():
     wa, _ = _held(s, 'whatsapp', 'x ' + NOBODY, FromName='Erin Blake', FromEmail='whatsapp:155', ConversationId='whatsapp:g')
     assert senders.trust_offer(s, wa) == {'person': 'Trust Erin', 'org': None}
 
+def test_a_last_comma_first_display_name_is_trusted_by_the_first_name():
+    "Outlook writes outside senders \"Last, First at Organisation\": the press read \"Trust Moreno,\" (the owner's live task, 2026-11-25)."
+    s = _store()
+    t, _ = _held(s, FromEmail='gail@partner.example', FromName='Moreno, Gail at Partner Co')
+    assert senders.trust_offer(s, t)['person'] == 'Trust Gail'
+    # ...and the hold's own line names her as she is called, never the directory's order
+    assert origin.hold(s, t)['who'] == 'Gail Moreno'
+
 def test_a_forged_from_offers_no_organisation():
     s = _store()
     t, _ = _held(s, FromEmail='gail@partner.example', FromName='Gail Moreno', MailMetaJson=json.dumps({'auth': 'fail'}))
@@ -138,3 +146,30 @@ def test_the_task_page_s_origin_carries_the_same_words():
     d = TestClient(server.app).get(f'/api/tasks/{t}').json()
     assert d['origin']['trust'] == {'person': 'Trust Gail', 'org': 'Trust everyone at partner.example'}
     assert d['agentStory']['trust'] == d['origin']['trust']
+
+
+def test_a_chat_strangers_hold_names_them_never_their_chat_id():
+    "Walk 20: \"You have not trusted Gail Moreno (15550100142@s.whatsapp.net) yet\" - a chat's id beside her name, where a mail's address goes."
+    s = _store()
+    t, _ = _held(s, 'whatsapp', FromEmail='15550100142@s.whatsapp.net', FromName='Gail Moreno', ConversationId='whatsapp:15550100142@s.whatsapp.net')
+    h = origin.hold(s, t)
+    assert h and h['line'] == origin.HELD_LINE.format(who='Gail Moreno'), h
+
+
+def test_the_hold_names_the_new_sender_and_trust_vouches_for_them_alone():
+    """HIPAA walk 6, H8: a printer's quote joined a colleague's task; past the trusted mark her own chat line came first, and the hold read
+    "You have not trusted Gail Moreno yet ... [Trust Gail]" - the press that vouches would have vouched for her. The line, the button and
+    what the press remembers are the one held sender (senders.whom, judged as the hold judges). Invented people."""
+    s = _store()
+    t = s.create_task({'Title': 'Board pack', 'Kind': 'general', 'Status': 'open', 'Source': 'email'}, 'triage')
+    s.add_message({'TaskId': t, 'Channel': 'email', 'Status': 'routed', 'FromEmail': 'gail@northwind.example', 'FromName': 'Gail Moreno',
+                   'BodyText': 'Can you pull the board pack together?', 'SourceName': 'alex@northwind.example'})
+    origin.raise_to(s, t, 'trusted', 'owner')
+    chat = {'TaskId': t, 'Channel': 'whatsapp', 'Status': 'routed', 'FromEmail': 'whatsapp:15550004444', 'FromName': 'Gail Moreno', 'BodyText': 'Headcount is 214.'}
+    s.remember_trust('whatsapp', senders.chat_key(chat), 'you vouched for them'); s.add_message(chat)
+    s.add_message({'TaskId': t, 'Channel': 'email', 'Status': 'routed', 'FromEmail': 'quotes@vendor.example', 'FromName': 'Spendly Print',
+                   'BodyText': 'Our quote for 1,000 colour pages.', 'SourceName': 'alex@northwind.example'})
+    h = origin.hold(s, t)
+    assert h and 'Spendly Print' in h['line'] and 'Gail' not in h['line'] and h['person'] == 'Trust Spendly', h
+    origin.raise_to(s, t, 'trusted', 'owner')                                                      # ...the press
+    assert senders.known(s, {'channel': 'email', 'from_email': 'quotes@vendor.example', 'source_name': 'alex@northwind.example'})[0]

@@ -33,8 +33,12 @@ VERSION = 1
 # purpose: declaring it would route the agent's file reads through Taskuary, which is a different
 # project. Under `-p` today it uses its own hands, and this keeps that true.
 CLIENT_CAPS = {'fs': {'readTextFile': False, 'writeTextFile': False}, 'terminal': False}
-# ONCE, never always: an allow_always ("don't ask again for commands that start with git") would stop the next call reaching us
-ALLOW_KINDS, REJECT_KINDS = ('allow_once', 'allow_always'), ('reject_once', 'reject_always')
+ALLOW_KINDS, REJECT_KINDS = ('allow_once',), ('reject_once', 'reject_always')
+
+
+# the session/update kinds that are the session's state - {kind: (where it is kept, the field that carries it)}
+SESSION_STATE = {'available_commands_update': ('commands', 'availableCommands'), 'current_mode_update': ('mode', 'currentModeId'),
+                 'usage_update': ('usage', None), 'config_option_update': ('options', 'configOptions')}      # ...None: the update is the state
 
 
 class ACPAgentError(RuntimeError):
@@ -49,6 +53,15 @@ class ACPStartError(ACPAgentError):
     """The agent never got as far as a session: it did not start, or failed initialize. Nothing of the turn ran, so the
     caller may take another road (agents.run_cli falls back to the argv one)."""
 
+
+def asked_update(params: dict) -> dict:
+    """A session/request_permission as the update of its call it is (the spec: its toolCall IS a ToolCallUpdate for that call), marked as the
+    ask, with the agent's own options by their names - so the call's row is where it is asked (conversation.acp_steps). {} without a call."""
+    tc = (params or {}).get('toolCall') or {}
+    if not isinstance(tc, dict) or not tc.get('toolCallId'): return {}
+    opts = [{'id': o.get('optionId'), 'name': o.get('name'), 'kind': o.get('kind')} for o in params.get('options') or [] if isinstance(o, dict)]
+    meta = {**(tc.get('_meta') or {}), 'taskuary': {'ask': opts}}
+    return {**{k: v for k, v in tc.items() if k != 'status'}, 'sessionUpdate': 'tool_call_update', '_meta': meta}
 
 
 def pick(options: list, allow: bool) -> dict:
@@ -73,6 +86,7 @@ class ACPClient:
         self._id, self._waiters, self._idlock, self._alive = 0, {}, threading.Lock(), True
         self._caps, self._meta, self._write_lock, self.options, self.last_turn = {}, {}, threading.Lock(), [], {}
         self.unnamed_own = False         # a chunk with no message id is the adapter's own line, not the model's (clis.ADAPTERS `unnamed_own`)
+        self.state = {}                  # the session's own state as it says it: commands, mode, usage (SESSION_STATE)
         try:
             self.p = spawn.popen([cmd] + list(args or []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
@@ -80,8 +94,6 @@ class ACPClient:
                                  **({'start_new_session': True} if process_tree and os.name != 'nt' else {}))
         except PermissionError: raise
         except OSError as e: raise ACPStartError(f'{cmd} did not start: {e}') from e
-        self.p._taskuary_tree = process_tree
-        if process_tree and isinstance(getattr(self.p, 'pid', None), int) and self.p.pid > 0: spawn.track_tree(self.p)
         self._err = []
         threading.Thread(target=self._pump, daemon=True).start()
         self._err_reader = threading.Thread(target=lambda: self._err.append(self.p.stderr.read()), daemon=True); self._err_reader.start()
@@ -111,8 +123,16 @@ class ACPClient:
             for q in list(self._waiters.values()): q.put(None)      # wake anyone waiting rather than let them hang
 
     def _notified(self, m):
-        if m.get('method') != 'session/update' or not self.on_update: return
-        try: self.on_update((m.get('params') or {}).get('update') or {})
+        if m.get('method') != 'session/update': return
+        u = (m.get('params') or {}).get('update') or {}
+        # ...WHAT THE SESSION IS, NOT WHAT IT SAID (the owner, 2026-11-23: adopt the open-source model - Zed, agent-shell): its commands, its mode,
+        # its usage and its options are its state, kept here as they change - never a line of the chat (chatlog.feed draws no row of them)
+        if (kind := u.get('sessionUpdate')) in SESSION_STATE:
+            key, val = SESSION_STATE[kind]; got = u.get(val) if val else {k: v for k, v in u.items() if k != 'sessionUpdate'}
+            if got is not None: self.state[key] = got
+            if kind == 'config_option_update' and isinstance(got, list): self.options = got
+        if not self.on_update: return
+        try: self.on_update(u)
         except Exception as e: logger.debug(f'acp: update handler raised - {e}')
 
     def _asked(self, m):
@@ -128,17 +148,27 @@ class ACPClient:
                         'error': {'code': -32601, 'message': f'{method} is not supported by this client'}})
 
     def _permit(self, params):
-        """Answer one request. A rule that raises refuses; None defers to the connection's policy."""
+        """Answer one request. Only an explicit allow_once grants access; denials are observable to the turn owner."""
+        options = [o for o in params.get('options') or [] if o.get('kind') != 'allow_always']
+        params = {**params, 'options': options}
         if self.permit:
             try: out = self.permit(params)
             except Exception as e:
                 logger.warning(f'acp: the permission rule raised, so the call is refused - {e}')
-                return pick(params.get('options'), False)
-            if out is not None: return out
-        if self.permission_policy == 'deny':
+                out = pick(options, False)
+            if out is None: out = pick(options, self.permission_policy != 'deny')
+        else:
+            out = pick(options, self.permission_policy != 'deny')
+        # A callback cannot grant an option the client deliberately withheld (notably allow_always).
+        if not isinstance(out, dict) or out.get('outcome') not in ('selected', 'cancelled'):
+            out = pick(options, False)
+        if out.get('outcome') == 'selected' and not any(
+                o.get('optionId') == out.get('optionId') and o.get('kind') == 'allow_once' for o in options):
+            out = pick(options, False)
+        if out.get('outcome') != 'selected' or not any(
+                o.get('optionId') == out.get('optionId') and o.get('kind') == 'allow_once' for o in options):
             self.permission_denied = True
-            return {'outcome': 'cancelled'}
-        return pick(params.get('options'), True)
+        return out
 
     def _last_words(self) -> str:
         """Why the adapter went, for the log: its exit code and the tail of what it wrote to stderr - read to its end first. The reader thread
@@ -164,7 +194,8 @@ class ACPClient:
                 # ...and nothing of the process after it, which the chat drew as "(the agent exited)" - that detail is the log's
                 if method == 'session/prompt': logger.warning(f"acp: died mid-turn - {err or 'the agent exited'}"); raise DiedMidTurn(MID_TURN, self.session_id)
                 raise ACPAgentError(f'the agent stopped during {method}' + (f': {err[-300:]}' if err else ''))
-            if 'error' in m: raise ACPAgentError(f"{method}: {m['error'].get('message', m['error'])}")
+            if 'error' in m:
+                e = ACPAgentError(f"{method}: {m['error'].get('message', m['error'])}"); e.method = method; raise e   # ...read by agents.prompt_failure
             return m.get('result')
         finally: self._waiters.pop(mine, None)            # a reply to a request we gave up on is dropped by the pump
 
@@ -192,7 +223,8 @@ class ACPClient:
     STEER = '_session/steering'
     def steer(self, text, timeout: float = 60) -> str:
         "'injected' when the words joined the running turn; else what the adapter said ('promptRequired': no turn runs; 'failed'), or ''."
-        r = self.request(self.STEER, {'sessionId': self.session_id, 'prompt': [{'type': 'text', 'text': str(text or '')}],
+        from .redact import scrub
+        r = self.request(self.STEER, {'sessionId': self.session_id, 'prompt': [{'type': 'text', 'text': scrub(text)}],
                                       '_meta': {'steering': {'idleBehavior': 'promptRequired'}}}, timeout=timeout) or {}
         return str(r.get('outcome') or '')
 
@@ -242,7 +274,7 @@ class ACPClient:
         THE ANSWER IS WHAT IT SAID LAST, after its last tool call - what claude's `result` and codex's last agent_message are on the
         argv road. Its words before are steps in the trace (agents.ACPSteps); joined into the answer they read "I'll list the
         files... There are 3 files" as one reply. All of it when it said nothing after its last call."""
-        said, cut, of, own = [], [0], [None], []
+        said, cut, of, own, tail = [], [0], [None], [], []     # tail: the adapter's own lines since the model's last word or call
         self.last_turn = {}
         outer = self.on_update
         t0, first = time.time(), [None]          # ...the wait before the model's first word, in the log (a slow start read, never guessed)
@@ -252,8 +284,11 @@ class ACPClient:
             # ...THE ADAPTER'S OWN LINE IS NEVER THE AGENT'S WORDS (clis.ADAPTERS `unnamed_own`): Codex's "Warning: Model metadata ... not found"
             # stood above every answer, and a turn's provider error stood as its answer, raw JSON and all (the gateway walk, 2026-11-20). It
             # goes to the log; a turn that said nothing else failed, in those words (say.turn_failed reads them for him)
+            # ...AND SO DID ONE IT ENDED (walk 12, 2026-11-23): the gateway's budget 422 came after "I'll check the workspace..." and a call,
+            # was dropped for the words before it, and the task read "agent done". A line the model went on past (a warning) is not the end
             if kind == 'agent_message_chunk' and self.unnamed_own and not u.get('messageId'):
-                own.append(_text_of(u.get('content'))); logger.info(f'acp: the adapter said: {own[-1].strip()[:400]}'); return
+                own.append(_text_of(u.get('content'))); tail.append(own[-1]); logger.info(f'acp: the adapter said: {own[-1].strip()[:400]}'); return
+            if kind in ('agent_message_chunk', 'tool_call', 'plan'): tail.clear()
             # a message resumed after a tool call is a new paragraph: copilot and devin both stream
             # "Hello!" / tool_call / "What would you like..." and the result read "Hello!What would you"
             if kind == 'agent_message_chunk':
@@ -273,7 +308,7 @@ class ACPClient:
         finally:
             self.on_update = outer
         self.last_turn = r              # ...the whole PromptResponse: its `usage` and _meta are what the turn used (aiusage.acp)
-        if own and not ''.join(x for x in said if x).strip() and r.get('stopReason') != 'cancelled': raise ACPAgentError(''.join(own).strip())
+        if own and r.get('stopReason') != 'cancelled' and (tail or not ''.join(x for x in said if x).strip()): raise ACPAgentError(''.join(tail or own).strip())
         last = ''.join(x for x in said[cut[0]:] if x).strip()
         if not last: return r.get('stopReason'), ''.join(x for x in said if x).strip()
         # ...and what it wrote FOR THE APP before its last tool call goes with the answer (selfclose.carried): a question asked, then one more
@@ -291,28 +326,23 @@ class ACPClient:
 
     def close(self):
         self._alive = False
-        tree = getattr(self.p, '_taskuary_tree', False)
+        if getattr(self, '_close_error', None) is not None:
+            raise RuntimeError(f'could not stop all agent processes: {self._close_error}') from self._close_error
+        if self.p.poll() is not None: return
+        error = None
+        try: spawn.end(self.p)
+        except Exception as e: error = e
         try:
-            if self.p.poll() is not None: return
-            if tree:
-                # an explicitly owned tree (Oh My Pi): stop the whole process tree and verify it is gone
-                spawn.stop_tree(self.p)
-            else:
-                # A failed tree-kill must still end the process we hold.
-                if os.name == 'nt':
-                    try: spawn.run(['taskkill', '/PID', str(self.p.pid), '/T', '/F'], capture_output=True, timeout=15)
-                    except Exception as e: logger.debug(f'acp: the tree-kill did not run - {e}')
-                if self.p.poll() is None: self.p.kill()
+            if self.p.poll() is None: self.p.kill()
         except Exception as e:
-            if tree:
-                self._close_error = e
-                try: self.p.kill()
-                except Exception: pass
-        if tree:
-            try: self.p.wait(timeout=5)
-            except Exception: pass
-            error = getattr(self, '_close_error', None)
-            if error: raise RuntimeError(f'could not stop all agent processes: {error}') from error
+            if error is None: error = e
+        try: self.p.wait(timeout=5)
+        except Exception as e:
+            if error is None: error = e
+        if self.p.poll() is None and error is None: error = RuntimeError('the agent process is still running')
+        if error is not None:
+            self._close_error = error
+            raise RuntimeError(f'could not stop all agent processes: {error}') from error
 
 
 class Conversation:
@@ -358,7 +388,8 @@ def blocks(text, caps: dict = None) -> list:
     "A prompt as ACP content: its words, then each file its own ATTACHED block names (general.prompt_files) as a block the agent takes."
     from pathlib import Path
     from .general import prompt_files
-    out = [{'type': 'text', 'text': str(text or '')}]
+    from .redact import scrub
+    out = [{'type': 'text', 'text': scrub(text)}]          # ...the prompt's words as they leave for the agent's provider (redact.py)
     # ...only a line that IS a file on this computer (the Codex walk, 2026-11-21: a seed whose next lines ran on under the block with no blank
     # line between sent "STATUS: in_progress" and each checklist line as links to files)
     for f in dict.fromkeys(x for x in prompt_files(text) if Path(x).is_absolute() and Path(x).is_file()):

@@ -79,7 +79,7 @@ class LaneTests(unittest.TestCase):
         self.s.set_setting('startup_sync_days', '3', 't')
         with mock.patch('taskuary.channels.poll_channels', poll), \
              mock.patch.object(server, 'run_due_reports', reports), \
-             mock.patch('taskuary.wabridge.ready'), mock.patch('taskuary.learn.reflect_if_due'):
+             mock.patch('taskuary.wabridge.ready'), mock.patch('taskuary.learning.reflect_if_due'):
             server.catch_up_on_startup().join(60)
         self.assertEqual(order[0], 'inputs')                     # the mail is read first
         self.assertEqual(order[-1], 'reports')                   # ...and the reports come after it
@@ -553,9 +553,10 @@ def test_lifespan_starts_the_chat_clock_as_its_own_guarded_boundary(test_safety_
 
 class DrainOrderTests(unittest.TestCase):
     """drain() is the one place triage happens, in arrival order per conversation. Fresh chat
-    channels move to the front of the line; nothing else about the order changes."""
+    channels move to the front of the line; nothing else about the order changes. One lane, so the line's order is the order judged -
+    with more, it is the order lanes take rows in (test_async_triage.LaneTests)."""
     def setUp(self):
-        self.s = MemoryStore()
+        self.s = MemoryStore(); self.s.set_setting('triage_lanes', '1', 'test')
         self.order = []
         def judged(store, msg, llm=None, **k):
             self.order.append(msg['_mid']); store.place_message(msg['_mid'], None, 'filed')

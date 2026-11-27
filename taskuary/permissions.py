@@ -13,7 +13,7 @@ and the answer is one of its options.
    It is a held ask (workerstate.hold), so the rail reads the agent as waiting on you, and the generic answer road resolves it too.
 3. No answer in TIMEOUT is a refusal, said plainly in the task and on the channel.
 
-THE ACP ROAD (step 1, acpgate.answerer): what acpgate would HOLD for the owner comes here through `acp(store, tid, params)` - the
+THE ACP ROAD (step 1, gate.answerer): what gate would HOLD for the owner comes here through `acp(store, tid, params)` - the
 session/request_permission params in, the ACP outcome out. ACP is always answered allow_once / reject_once: an "always" is kept here,
 so the next call still reaches Taskuary's rules first.
 """
@@ -127,6 +127,7 @@ def pending(tid: int = None, store=None) -> list:
     with _LOCK: rows = [dict(p) for p in PENDING.values() if (tid is None or p['tid'] == int(tid)) and (store is None or p['store'] is store)]
     return [{'id': p['id'], 'tid': p['tid'], 'ref': task_ref(p['tid']), 'line': line(p['req']), 'title': p['req']['title'], 'tool': p['req']['tool'],
              'kind': p['req']['kind'], 'locations': p['req']['locations'], 'at': p['at'], 'until': p['until'], 'risky': p['req']['risky'],
+             'call': p['req']['call'],          # ...the tool call it is about: the chat draws it on that call's row (chatlog one_step `call`)
              **{k: p['req'][k] for k in ('about', 'what', 'why', 'command')},
              'options': [{'kind': o, 'label': LABEL[o]} for o in p['req']['options']]} for p in sorted(rows, key=lambda p: p['at'])]
 
@@ -163,7 +164,7 @@ ASIDE: dict = {}      # the requests set aside (set_aside) -> what closed them: 
 
 def ask(store, tid: int, request: dict, wait: float = None, timed_out=None, moved_on=None) -> str:
     """THE SEAM. Blocks until answered (call it off an event loop). Returns one of the request's options. `timed_out()` is called when
-    nobody answered - the refusal returned then is no owner's word, and a caller may file it for later (acpgate); `moved_on(said)` when it was
+    nobody answered - the refusal returned then is no owner's word, and a caller may file it for later (gate); `moved_on(said)` when it was
     still waiting as the chat moved past it or he stopped the turn (set_aside, `said` the words it closed with) - no one's no either, and its agent is told so (the owner, 2026-11-16: the agent wrote
     "You declined my search of the FanApp code" of a step he never answered)."""
     from . import agents, agentchannels, workerstate as ws
@@ -215,7 +216,8 @@ def ask(store, tid: int, request: dict, wait: float = None, timed_out=None, move
         if ans.endswith('_always'): store.set_perm_rule(tid, pattern(r), 'allow' if ans.startswith('allow') else 'reject')
         store.audit('task', tid, 'permission_answered', 'owner', detail={'pid': pid, 'answer': ans, 'pattern': pattern(r), 'asked': asked(r), 'call': r['call']})
         try:                                           # ...the turn that waited on it hears it now: his press stands where he made it
-            from . import conversation
+            from . import chatlog, conversation
+            chatlog.asked_answered(store, tid, r['call'], ans)          # ...on the row it was asked on, where there is one - no line besides
             conversation.hear_press(store, tid, 'permission_answered')
         except Exception as e: logger.debug(f'permission on {task_ref(tid)}: its answer not written as heard - {e}')
         # ...AND EVERY CHAT BOUND TO THE TASK HEARS IT, whichever road it came by (the button, the chat, the rail's answer): answered on the
@@ -294,7 +296,7 @@ def refuse_orphans(store) -> list:
     return out
 
 
-# ── the ACP road (acpgate) ─────────────────────────────────────────────────────────────────────────────────────────────────
+# ── the ACP road (gate) ─────────────────────────────────────────────────────────────────────────────────────────────────
 def from_acp(params: dict) -> dict:
     "session/request_permission params as a request."
     tc = (params or {}).get('toolCall') or {}

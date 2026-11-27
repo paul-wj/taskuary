@@ -156,9 +156,9 @@ class DeskRoutes(unittest.TestCase):
     def test_every_shelf_of_the_reports_page_has_its_address_in_the_page_list(self):
         """The 2026-10-26 sweep: "go to reports" opened the Workflows shelf - #report=workflows was the only shelf the model was told."""
         block = concierge.pages_block(store())
-        # ...playbooks too: About you held them a few hours on 2026-11-06 and gave them back ("how you work, not about you")
-        for shelf in ('reports', 'workflows', 'dashboards', 'playbooks'): self.assertIn(f'#report={shelf}', block)
-        self.assertNotIn('#about=playbooks', block)
+        # ...skills too: About you held them a few hours on 2026-11-06 and gave them back ("how you work, not about you")
+        for shelf in ('reports', 'workflows', 'dashboards', 'skills'): self.assertIn(f'#report={shelf}', block)
+        self.assertNotIn('#about=skills', block)
 
     def test_any_row_button_named_by_its_own_label_lights(self):
         """The 2026-10-26 sweep: button.light {button: 'Remind me'} missed with "has no remind me button - its row has ..., Remind me",
@@ -176,7 +176,7 @@ class DeskRoutes(unittest.TestCase):
         out, _ = say(s, 'remind me about this', item['key'], 'CALL: {"kind": "button.light", "params": {"button": "Remind me"}}')
         self.assertEqual(out['light']['verb'], 'defer')
         # ...and the strong re-run, on a task whose reader was unsure (the ▾ draws it then), by its label - lit, nothing runs
-        s.judge_task(tid, {'sure': False}, 'triage')
+        s.judge_task(tid, {'sure': False}, 'owner')
         out, _ = say(s, 'use the strong model for this', item['key'],
                      'CALL: {"kind": "button.light", "params": {"button": "Run again on the strong model"}}')
         self.assertEqual(out['light']['verb'], 'strong_again')
@@ -317,8 +317,32 @@ class DeskRoutes(unittest.TestCase):
         with concierge.delivering(concierge.PHONE), mock.patch.object(concierge, '_on_task', return_value=True), \
              mock.patch.object(waitroom, 'state', return_value=('working', None)):
             out, _ = say(s, 'tell the agent to use the main branch', item['key'], 'CALL: {"kind": "agent.tell", "params": {"text": "use the main branch"}}')
-        self.assertEqual([waitroom.parts(n['Note']) for n in s.waiting_notes(tid)], [('tell the agent to use the main branch', 'use the main branch')])
+        # ...as he sent them: no second voice's version rides with his words (rule 1; walk 6, H3)
+        self.assertEqual([waitroom.parts(n['Note']) for n in s.waiting_notes(tid)], [('tell the agent to use the main branch', '')])
         self.assertNotIn('open', out)
+
+    def test_on_the_phone_his_line_and_his_file_reach_the_agent_as_he_sent_them(self):
+        """Walk 6 (H3): "give this to the vendor trials agent: which of the vendors ... do we already pay for?" with a PDF reached the agent as
+        the model's rewrite of the question, the PDF dropped, while the chat said "it has them now". His words go in verbatim, the file as a
+        file beside them, and the receipt names the file only because it went."""
+        import tempfile
+        from taskuary import config, waitroom
+        s = store(); tid, item = on_table(s)
+        s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))
+        pdf = config.home() / 'attachments' / 'phone' / 'test' / 'vendor-report.pdf'
+        pdf.parent.mkdir(parents=True, exist_ok=True); pdf.write_bytes(b'%PDF-1.4 invented')
+        self.addCleanup(pdf.unlink)
+        line = 'give this to the vendor trials agent: which of the vendors it signed up for does this report say we already pay for?'
+        model = ('CALL: {"kind": "agent.tell", "params": {"text": "Which of the vendors signed up for does the Daily vendor invoices report say we '
+                 'already pay for?", "files": ["C:/elsewhere/secret.txt"]}}')
+        with concierge.delivering(concierge.PHONE), mock.patch.object(concierge, '_on_task', return_value=True), \
+             mock.patch.object(waitroom, 'state', return_value=('working', None)), mock.patch.object(terminal, 'live_sessions', return_value=[]), \
+             mock.patch.object(ingest, '_spawn'):
+            out = concierge.say(s, line, key=item['key'], llm=lambda *a, **k: model, images=[str(pdf)])
+        notes = s.waiting_notes(tid)
+        self.assertEqual([waitroom.parts(n['Note']) for n in notes], [(line, '')])
+        self.assertEqual(waitroom.files_of(notes[0]), [str(pdf.resolve())], 'his file, and never one the model named')
+        self.assertIn('vendor-report.pdf', out['say'])
 
     def test_an_outward_send_in_words_still_only_lights(self):
         # ...the line the owner kept: what leaves the app is theirs to press (pageview.is_send) - "send it" over a draft lights Send
@@ -336,7 +360,7 @@ class DeskRoutes(unittest.TestCase):
     def test_a_new_job_is_started_on_its_own_task_and_opened(self):
         # the owner, 2026-11-12: "assistant tab should not open new but open task directly" - no New card filled in and pressed on the way
         s = store(); started = []
-        with mock.patch('taskuary.capabilities.has_ai', return_value=True),              mock.patch.object(general, 'start_session', side_effect=lambda st, t, actor='owner': started.append(t) or mock.Mock()):
+        with mock.patch('taskuary.capabilities.has_ai', return_value=True),              mock.patch.object(general, 'start_session', side_effect=lambda st, t, actor='owner', **k: started.append(t) or mock.Mock()):
             out, _ = say(s, 'research which payroll vendors integrate with Payworth', None,
                          'CALL: {"kind": "task.create_from_text", "params": {"kind": "general", "text": "which payroll vendors integrate with Payworth"}}')
         t = next(t for t in s.list_tasks() if 'payroll' in str(t.get('Title')).lower())
@@ -523,22 +547,22 @@ class DeskRoutes(unittest.TestCase):
         self.assertNotIn('new', out)
         self.assertEqual(s.get_task(int(out['open'].split('=')[1]))['Summary'], 'list the AP bills due this month')
 
-    def test_a_playbook_asked_for_is_new_playbook_never_an_agents_job(self):
-        # the owner, 2026-10-22: "can I build a playbook for it?" opened New on Give an agent a job - "this is not playbook ui?"
-        s = store(); ask = 'when people ask me for their combined leave, can I build a playbook for it?'
-        self.assertIn('"playbook"', concierge.SETUP_SORT_SYSTEM)
+    def test_a_skill_asked_for_is_new_skill_never_an_agents_job(self):
+        # the owner, 2026-10-22: "can I build a skill for it?" opened New on Give an agent a job - "this is not skill ui?"
+        s = store(); ask = 'when people ask me for their combined leave, can I build a skill for it?'
+        self.assertIn('"skill"', concierge.SETUP_SORT_SYSTEM)
         from taskuary import toolcatalog
-        self.assertIn('a playbook', toolcatalog._DECIDE['setup'])
-        with mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps({'kind': 'playbook', 'why': 'a recurring ask'})):
+        self.assertIn('a skill', toolcatalog._DECIDE['setup'])
+        with mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps({'kind': 'skill', 'why': 'a recurring ask'})):
             out, spawn = say(s, ask, None, json.dumps({'kind': 'setup', 'params': {'text': ask}}).join(('CALL: ', '')))
-        self.assertEqual({k: out['new'][k] for k in ('kind', 'how', 'text')}, {'kind': 'playbook', 'how': '', 'text': ask})
-        self.assertEqual(out['say'], 'Opened New on a playbook with your words - Set up with AI there starts it.')
+        self.assertEqual({k: out['new'][k] for k in ('kind', 'how', 'text')}, {'kind': 'skill', 'how': '', 'text': ask})
+        self.assertEqual(out['say'], 'Opened New on a skill with your words - Set up with AI there starts it.')
         spawn.assert_not_called(); self.assertEqual(proposals(s), [])
-        # ...and a phone, which has no New, is told where a playbook is made - nothing is started from the line
+        # ...and a phone, which has no New, is told where a skill is made - nothing is started from the line
         with concierge.delivering(concierge.PHONE), \
-             mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps({'kind': 'playbook'})):
+             mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: json.dumps({'kind': 'skill'})):
             out, spawn = say(s, ask, None, json.dumps({'kind': 'setup', 'params': {'text': ask}}).join(('CALL: ', '')))
-        self.assertIn('Reports → Playbooks', out['say']); self.assertNotIn('proposal', out); spawn.assert_not_called()
+        self.assertIn('Reports → Skills', out['say']); self.assertNotIn('proposal', out); spawn.assert_not_called()
 
     def test_the_phone_keeps_its_text_yes_or_no(self):
         s = store(); tid, item = on_table(s)
@@ -751,11 +775,11 @@ class ClearingASet(unittest.TestCase):
     def test_a_set_that_would_not_clear_says_why(self):
         # "28 items would not clear" said nothing, "why not?" had no answer, and the Assistant sent an agent to find out (TQ-1251)
         s = store(); tid, item = on_table(s); notices(s, 3)
-        lag = ValueError('processing membership must be reconciled before settlement')
+        lag = ValueError('processing target is unavailable')
         with mock.patch.object(terminal, 'live_sessions', return_value=[]), mock.patch.object(concierge.funnel, 'settle', side_effect=lag):
             out = concierge.say(s, 'mark all the fyi read', key=item['key'], llm=lambda *a, **k: 'CALL: {"kind": "pipe.clear", "params": {"select": {"kind": "fyi"}}}')
-        self.assertIn('3 items would not clear - new mail kept landing while they were being marked', out['say'])
-        self.assertNotIn('reconciled', out['say'])
+        self.assertIn('3 items would not clear - they are still being filed', out['say'])
+        self.assertNotIn('processing', out['say'])
 
     def test_a_cleared_table_moves_the_walk_on(self):
         s = store(); notices(s, 3)

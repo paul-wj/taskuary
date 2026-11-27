@@ -78,14 +78,26 @@ test("the general chat's ACP trace keeps the words where they were said: the ans
     { type: "progress", name: "text", detail: "All 212 pass." }];
   const live = stepsOf(trace, { keepStart: false }).map((s) => s.summary);
   assert.deepEqual(live, ["Running the suite.", "Ran pytest -q", "Quick update: half of it passed.", "All 212 pass."]);
-  // ...filed: the answer leaves the trail, every earlier line stays where it stood
-  assert.deepEqual(stepsOf(trace, { keepStart: false, answer: "All 212 pass." }).map((s) => s.summary), live.slice(0, 3));
+  // ...filed, the same: the answer is its last row, and its filed copy is the server's to leave out (chatlog.read `tail`)
 });
 
 // A TASK OPENS ON THE LAST THING (the owner, 2026-11-11: "task should open on last thing not randomly in middle"). A long thread from Gail
 // Moreno, the agent at rest: the chat pinned its end on the first draw, then each of forty long messages measured itself and drew a "Show
 // all" - 896px more, after the pin and before the pin's own scroll event. That event found the end far away, read it as the owner having
 // moved off, and nothing followed the chat down again - not the late picture either.
+// Walk 17, recorded: Send on the first of two cards folded it to "✓ Sent" a beat before the second was drawn - the chat, held at its end,
+// got 400 px shorter and then longer again, and the view flicked up to the turn's words and back down within 0.2 s.
+test("at its end a card's fold and the card drawn under it are one move, never up and back down", async () => {
+  const { shrinkHeld, SHRINK_HOLD } = await import("../src/chatStream.js");
+  let tall = 0; const drawn = [];
+  for (const h of [1720, 1320, 1745]) { const keep = shrinkHeld(true, tall, h); drawn.push(Math.max(h, keep)); if (!keep) tall = h; }
+  assert.deepEqual(drawn, [1720, 1720, 1745], "the fold waits for what comes under it: the chat never got shorter under him");
+  assert.equal(shrinkHeld(false, 1720, 1320), 0, "away from its end the row he reads holds his place instead (anchorOf)");
+  assert.ok(SHRINK_HOLD >= 300 && SHRINK_HOLD <= 800, "a beat, not a gap left standing");
+  const view = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(view, /keep = shrinkHeld\(stick\.current, tall, h\)/, "the chat's own observer keeps it");
+});
+
 test("the chat lets go of its end only for the owner's own scroll up, never for its own growth", async () => {
   const { heldAtEnd, AT_END } = await import("../src/chatStream.js");
   // the live order: pinned at 4763 of 5297+534, grown to 6193 before the event - the same top, 896 from the end, nobody touching it
@@ -105,7 +117,7 @@ test("the chat lets go of its end only for the owner's own scroll up, never for 
   let moved = 0; const chat = { hasAttribute: (n) => n === "data-tq-follows-end", getBoundingClientRect: () => ({ top: 0, left: 0, width: 400, height: 300, bottom: 300 }), scrollTo: () => { moved += 1; }, scrollTop: 72 };
   unclip(chat, { getBoundingClientRect: () => ({ top: 200, bottom: 230 }) });
   assert.equal(moved, 0, "a scroller that follows its own end is never unclipped");
-  assert.match(view, /const ro = new ResizeObserver\(\(\) => \{ if \(stick\.current\) v\.scrollTop = v\.scrollHeight; \}\);/, "and any resize while held pins it");
+  assert.match(view, /const ro = new ResizeObserver\(\(\) => \{[\s\S]{0,700}?\s+if \(stick\.current\) v\.scrollTop = endAt\(v, el\);/, "and any resize while held pins it");
   assert.doesNotMatch(view, /stick\.current = v\.scrollHeight - v\.scrollTop - v\.clientHeight < 56/, "where it stands alone no longer decides");
 });
 
@@ -189,13 +201,17 @@ test("a missing fact is one question: the reply not written yet waits under no o
 });
 
 // A CARD HE SAID NO TO STAYS WHERE IT STOOD (the real-CLI walk, 2026-11-16: Don't send took the email off the chat, only "You dropped the email"
-// was left - the basic flow's "no card gone from the canvas"): drawn with its words, under what he pressed - "Not sent"
-test("a card he said no to is drawn where it stood, with its words", async () => {
-  const { isPastCard } = await import("../src/chatStream.js");
+// was left - the basic flow's "no card gone from the canvas") - AND IT IS STILL THE CARD (the owner, 2026-11-26: "cards never just disappear" -
+// a dismissed post folded to a line naming none of its words): its own card where the page holds one, the plain note only where it holds none
+test("a card he said no to is drawn where it stood: its own card, or a note with its words where the page holds none", async () => {
+  const { isPastCard, noCard } = await import("../src/chatStream.js");
   assert.ok(isPastCard({ id: "r:9", review: 9, status: "rejected", was: { text: "Hi Erin, the open house moved" } }));
+  assert.equal(noCard(9, [{ rid: 9, key: "rv:9" }], []), false, "the page drew its card: it stays that card, saying Dismissed");
+  assert.equal(noCard(9, [], [{ ReviewId: 9 }]), false, "a post's row is its card");
+  assert.equal(noCard(9, [{ rid: 4 }], [{ ReviewId: 5 }]), true, "no card of it: the note");
   const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /if \(isPastCard\(c\) && c\.status === "rejected"\) \{ if \(!stands\.has\(c\.review\)\) claim\(\); return \[<NotSent key=\{c\.id\} c=\{c\} \/>\]; \}/);
-  assert.match(src, /<div className="tq-conv-past-head">\{c\.what === "action" \? "You said no to this" : "Not sent - you said don't send"\}<\/div>/);
+  assert.match(src, /bare = no && \(stands\.has\(c\.review\) \|\| noCard\(c\.review, nodes, posts\)\)/);
+  assert.match(src, /if \(bare\) \{ if \(!stands\.has\(c\.review\)\) claim\(\); return \[<NotSent key=\{c\.id\} c=\{c\} \/>\]; \}/);
 });
 
 
@@ -207,4 +223,202 @@ test("his line keeps its words through the swap: placed by the server before it 
   assert.deepEqual(got.items.filter((x) => x.kind === "line").map((x) => [x.id, x.text]), [["l-9", "Post it to all three."]], "one line, its words, in the server's place");
   const filed = { ...placed, items: [{ ...placed.items[0], text: "Post it to all three." }, placed.items[1]] };
   assert.deepEqual(withMine(filed, mine).items.filter((x) => x.kind === "line").map((x) => x.text), ["Post it to all three."]);
+});
+
+
+// EVERY ROW KEEPS ITS KEY (the owner, 2026-11-23: adopt the open-source model - Zed, Toad and agent-shell key a row by the agent's own id): the
+// turn's rows as the log serves them, read again after a call joins the run and after words come under it - every row and part keeps its id,
+// so React patches it in place and nothing is drawn again from nothing (a run keyed by all its calls was a new row each time it grew; parts p0, p1)
+test("a row and a part keep their keys as the turn grows", async () => {
+  const { eventsOf, turnParts } = await import("../src/chatStream.js");
+  const read = (id, f) => ({ id, k: "tool", name: "Read", args: { file_path: `C:/work/${f}` }, status: "completed" });
+  const said = (id, t) => ({ id, k: "said", text: t });
+  const ids = (steps) => turnParts(eventsOf(steps, true), { live: true }).map((p) => [p.type, p.id, (p.steps || []).map((s) => s.id)]);
+  const one = [said("s:x:m:1", "Reading the sheets."), read("s:x:c1", "a.csv")];
+  const two = [...one, read("s:x:c2", "b.csv")];
+  const three = [...two, said("s:x:m:2", "Both read.")];
+  assert.deepEqual(ids(one), [["said", "s:x:m:1", []], ["work", "s:x:c1", ["s:x:c1"]]]);
+  assert.deepEqual(ids(two)[1].slice(0, 2), ["work", "s:x:c1"], "the run that grew is the same part");
+  assert.deepEqual(ids(two)[1][2], ["s:x:c1"], "and the same row, keyed by its first call");
+  assert.deepEqual(ids(three).map((p) => p[1]), ["s:x:m:1", "s:x:c1", "s:x:m:2"], "words under it are a part of their own, by their own id");
+});
+
+
+// THE WORDS STREAM INTO THEIR ROW, AND THE TURN'S END MOVES NOTHING (the owner, 2026-11-23: "the live layout IS the finished layout")
+test("a pushed row patches its turn in place, and a turn lays out the same at work and filed", async () => {
+  const { eventsOf, patchSteps, runsOf, turnParts } = await import("../src/chatStream.js");
+  const said = (id, t) => ({ id, k: "said", text: t }), read = (id) => ({ id, k: "tool", name: "Read", args: { file_path: "C:/work/a.csv" }, status: "completed" });
+  const list = { rev: 3, items: [{ id: "l-1", kind: "line" }, { id: "t:1", kind: "turn", state: "working", steps: [said("s:x:m:1", "Checking the")] }] };
+  const pushed = [{ tid: 7, turn: "t:1", step: said("s:x:m:1", "Checking the sheet.") }, { tid: 7, turn: "t:1", step: read("s:x:c1") },
+    { tid: 8, turn: "t:1", step: read("s:y:c9") }];
+  const got = patchSteps(list, pushed, 7);
+  assert.deepEqual(got.items[1].steps.map((s) => [s.id, s.text || s.name]), [["s:x:m:1", "Checking the sheet."], ["s:x:c1", "Read"]], "in place, then at the foot - another task's never");
+  assert.equal(got.items[0], list.items[0], "what was not touched is the same object");
+  assert.equal(patchSteps(list, [{ tid: 7, turn: "t:9", step: read("s:x:c2") }], 7), list, "a turn not in the list yet waits for the read");
+  const steps = [said("s:x:m:1", "Checking the sheet."), read("s:x:c1"), read("s:x:c2"), said("s:x:m:2", "Done.")];
+  const at = (live) => runsOf(turnParts(eventsOf(steps, live), { live })).map((r) => [r.id, !!r.fold]);
+  assert.deepEqual(at(true), at(false), "the same folds, by the same keys, live and filed");
+  assert.deepEqual(at(false), [["s:x:m:1", false], ["s:x:c1", true], ["s:x:m:2", false]], "words where they were said, the work between them one fold");
+});
+
+
+// THE AGENT'S OWN WORDS ARE THE ROW (the owner, 2026-11-23: adopt the open-source model): an ACP agent's call reads by its title, an icon by
+// its kind and the files it named - never our reading of its command; Taskuary's own tools and a road that gives no title keep our words
+test("a titled call is the agent's title, kind and files; our own tools and an untitled call keep our words", async () => {
+  const { eventsOf, turnParts } = await import("../src/chatStream.js");
+  const rows = (steps) => turnParts(eventsOf(steps, false)).flatMap((p) => p.steps || []);
+  const [ls, rd, grep, own, plain] = rows([
+    { id: "s:x:c1", k: "tool", name: "Bash", title: "`ls -la vendors`", tool_kind: "execute", args: { command: "ls -la vendors", description: "List vendors" }, status: "completed" },
+    { id: "s:x:c2", k: "tool", name: "Read", title: "Read File", tool_kind: "read", paths: ["C:/work/ledger/budget.py"], args: { file_path: "C:/work/ledger/budget.py" }, status: "completed" },
+    { id: "s:x:c3", k: "tool", name: "Grep", title: "grep -n \"total\" src", tool_kind: "search", args: { pattern: "total" }, status: "completed" },
+    { id: "s:x:c4", k: "tool", name: "mcp__taskuary__my_task", title: "mcp__taskuary__my_task", tool_kind: "other", args: {}, status: "completed" },
+    { id: "s:x:c5", k: "tool", name: "Bash", args: { command: "ls -la vendors", description: "List vendors" }, status: "completed" }]);
+  // ...a title that is only its own command text says nothing of what it does (walk 16): read by our words, as a road with no title is
+  assert.deepEqual([ls.summary, ls.kind], ["Listed the files in vendors", "list"], "a title that is its command reads by what the command did");
+  assert.deepEqual([rd.summary, rd.kind, rd.chips], ["Read File", "read", ["budget.py"]], "the file it named beside a title that does not say it");
+  assert.deepEqual([grep.summary, grep.kind], ['grep -n "total" src', "search"]);
+  assert.notEqual(own.summary, "mcp__taskuary__my_task", "Taskuary's own tool in the product's words");
+  assert.equal(plain.summary, "Listed the files in vendors", "a call with no title of the agent's: our words, as before");
+  assert.equal(rows([{ id: "a", k: "tool", name: "Read", title: "Read a.ts", tool_kind: "read", args: {}, status: "completed" },
+    { id: "b", k: "tool", name: "Read", title: "Read b.ts", tool_kind: "read", args: {}, status: "completed" }]).length, 2, "two titled reads are two rows");
+});
+
+
+// A PERMISSION ASKED IS ON ITS CALL'S ROW (the owner, 2026-11-23: action cards stay cards; "just permissions to push something" in the row)
+test("a permission waiting on him is drawn on its call's row with the agent's option names, and its card only where no row names it", async () => {
+  const { askOn, asksOff, eventsOf, turnParts } = await import("../src/chatStream.js");
+  const p = { id: "p1", call: "toolu_7", options: [{ kind: "allow_once", label: "Allow once" }, { kind: "reject_once", label: "Reject" }] };
+  const row = { id: "s:x:toolu_7", call: "toolu_7", k: "tool", name: "Bash", title: "git push origin main", tool_kind: "execute", args: { command: "git push origin main" },
+    status: "pending", ask: [{ id: "allow", name: "Yes, push it", kind: "allow_once" }, { id: "no", name: "No", kind: "reject_once" }, { id: "always", name: "Always", kind: "allow_always" }] };
+  const [step] = turnParts(eventsOf([row], true), { live: true })[0].steps;
+  const asked = askOn(step, new Map([[p.call, p]]));
+  assert.deepEqual(asked.options, [{ kind: "allow_once", label: "Yes, push it" }, { kind: "reject_once", label: "No" }], "the agent's names, only what the request offers (no Always for a push)");
+  assert.equal(askOn(step, new Map()), null, "answered, nothing waits on the row");
+  const list = [{ kind: "turn", id: "t:1", steps: [row] }];
+  assert.deepEqual(asksOff([p, { id: "p2", call: "toolu_8", options: [] }, { id: "p3", options: [] }], list).map((x) => x.id), ["p2", "p3"]);
+});
+
+test("his no on a call's row is the row's record of it: not run, in his name - never 'nobody allowed it'", async () => {
+  const { eventsOf } = await import("../src/chatStream.js");
+  const row = { id: "s:x:toolu_7", call: "toolu_7", k: "tool", name: "Bash", args: { command: "git push origin main" } };
+  const result = (s) => eventsOf([{ ...row, ...s }], false).find((e) => e.type === "tool_result").detail;
+  assert.deepEqual([result({ status: "pending", answer: "reject_once" }), result({ status: "failed", answer: "reject_once" })].map((d) => [d.result, d.state]),
+    [["Not run - you said no.", "refused"], ["Not run - you said no.", "refused"]]);
+  assert.equal(result({ status: "completed", answer: "allow_once", output: "pushed" }).result, "pushed", "allowed, it reads as it ran");
+});
+
+
+// THE CALL'S OWN DIFF, AND A COMMAND'S OUTPUT AS IT COMES (the owner, 2026-11-23: Zed draws the agent's `diff` and a live terminal)
+test("an edit row is the call's own diff, never one read off its arguments, and a running command shows its newest output", async () => {
+  const { eventsOf, turnParts } = await import("../src/chatStream.js");
+  const parts = (steps, live = false) => turnParts(eventsOf(steps, live), { live });
+  const asked = { id: "s:x:c1", k: "tool", name: "Edit", args: { file_path: "C:/work/budget.py", old_string: "a = 1", new_string: "a = 2" }, status: "completed" };
+  assert.ok(!parts([asked]).some((p) => p.type === "edit"), "its arguments are no diff: the row is the call, worded");
+  const made = { id: "s:x:c2", k: "tool", name: "Edit", file: "C:/work/budget.py", edit: { whole: true, parts: [{ old: "a = 1\n", new: "a = 2\n" }] }, status: "completed" };
+  const [edit] = parts([made]);
+  assert.deepEqual([edit.type, edit.id, edit.summary], ["edit", "s:x:c2", "Edited budget.py (+1 −1)"]);
+  const out = Array.from({ length: 30 }, (_, i) => `test_${i} PASSED`).join("\r\n");
+  const run = { id: "s:x:c3", k: "tool", name: "Bash", args: { command: "pytest -q" }, status: "in_progress", output: out };
+  const [step] = parts([run], true)[0].steps;
+  assert.equal(step.status, "running");
+  assert.deepEqual(step.tail.split("\n"), Array.from({ length: 8 }, (_, i) => `test_${22 + i} PASSED`), "its newest lines, behind its row (AgentStepRows)");
+  const [ended] = parts([{ ...run, status: "completed" }])[0].steps;
+  assert.ok(!ended.tail && ended.detail.includes("test_29 PASSED"), "once it ends, the whole of it, behind the same row");
+});
+
+// THE BROWSER PANE OPENS BESIDE THE CHAT (walk 12, recorded): the chat went from full width to a column, every line re-wrapped, the chat grew from
+// 997 to 1502 px and what he was reading moved ~500 px down the screen, three times in one task. Away from its end, the row he reads stays put
+test("a change of width keeps the row he was reading where it stood", async () => {
+  const { anchorOf, anchorShift } = await import("../src/chatStream.js");
+  let narrow = false;
+  const view = { scrollTop: 450, clientHeight: 400, getBoundingClientRect: () => ({ top: 100 }) };
+  const hs = [100, 100, 100, 100, 100, 100, 100, 100], h = () => (narrow ? 200 : 100);
+  const rows = hs.map((_, i) => ({ isConnected: true, children: [], name: i,
+    getBoundingClientRect: () => { const y = i * h(); return { top: 100 + y - view.scrollTop, bottom: 100 + y + h() - view.scrollTop, height: h() }; } }));
+  const at = () => rows[4].getBoundingClientRect().top;
+  const mark = anchorOf(view, { children: rows }), was = at();
+  assert.equal(mark.el.name, 4, "the row at the top of the view");
+  narrow = true;                                                              // ...the pane opens: every row twice as tall
+  assert.notEqual(at(), was, "unheld, the row he read moves");
+  view.scrollTop += anchorShift(view, mark);
+  assert.equal(at(), was, "held, it stands where it stood");
+  const gw = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(gw, /else \{ const d = anchorShift\(v, mark\); if \(Math\.abs\(d\) > 1\) v\.scrollTop \+= d; \}/);
+});
+
+// The card gallery, 2026-11-25: a view taller than the window was drawn a beat after its chat opened; held at its end, the chat went to the view's
+// foot and its title was off the top. What is drawn under a reply at rest never carries that reply's top out of the view
+test("held at its end, a chat at rest follows what is drawn under it no further than the top of its newest reply", async () => {
+  const { endAt } = await import("../src/chatStream.js");
+  const chat = (hs, live = false) => {
+    const view = { scrollTop: 0, clientHeight: 400, scrollHeight: hs.reduce((a, b) => a + b, 0), getBoundingClientRect: () => ({ top: 60 }) };
+    const tops = hs.map((_, i) => hs.slice(0, i).reduce((a, b) => a + b, 0));
+    const rows = hs.map((_, i) => ({ parentElement: { closest: () => null }, hasAttribute: () => false, getBoundingClientRect: () => ({ top: 60 + tops[i] - view.scrollTop }) }));
+    return { view, root: { querySelectorAll: () => rows, querySelector: () => (live ? {} : null) }, tops };
+  };
+  const view = chat([14, 900]);                                 // the reply's head at 14, its view drawn late: 900 tall in a 400 window
+  assert.equal(endAt(view.view, view.root), 14, "the reply's top stays at the top of the view - never its foot");
+  view.view.scrollTop = 300;                                    // ...he read on past its top: the end is followed, as it was
+  assert.equal(endAt(view.view, view.root), 514);
+  const working = chat([14, 900], true);
+  assert.equal(endAt(working.view, working.root), 514, "a turn at work is followed to its last word");
+  const short = chat([600, 300, 80]);
+  assert.equal(endAt(short.view, short.root), short.view.scrollHeight - 400, "a short reply's top is past the end: the end");
+  const gw = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(gw, /v\.scrollTop = v\.scrollHeight/, "every pin to the end goes by the one rule");
+});
+
+// A CHAT OPENS AT THE START OF ITS NEWEST REPLY (the owner, 2026-11-24): opened at its very bottom, a long answer was read from its last lines up
+test("a chat opens with the top of its newest reply at the top of the view, unless that is past the end", async () => {
+  const { openAt } = await import("../src/chatStream.js");
+  // rows laid out top to bottom at the given heights, in a view 400 tall scrolled to `scrollTop`; `cards`: a turn's trailing card row
+  const chat = (hs, cards = []) => {
+    const view = { scrollTop: 0, clientHeight: 400, scrollHeight: hs.reduce((a, b) => a + b, 0), getBoundingClientRect: () => ({ top: 60 }) };
+    const tops = hs.map((_, i) => hs.slice(0, i).reduce((a, b) => a + b, 0));
+    const rows = hs.map((_, i) => ({ name: i, parentElement: { closest: () => null }, hasAttribute: (n) => n === "data-tq-row-cards" && cards.includes(i),
+      getBoundingClientRect: () => ({ top: 60 + tops[i] - view.scrollTop }) }));
+    return { view, root: { querySelectorAll: () => rows }, tops };
+  };
+  const long = chat([120, 80, 120, 900]);                       // his line, a reply, his line, a reply taller than the view
+  long.view.scrollTop = long.view.scrollHeight - 400;           // ...wherever it stood before: the answer does not depend on it
+  assert.equal(openAt(long.view, long.root), long.tops[3], "the newest reply's top, not the bottom");
+  const short = chat([600, 300, 80]);                           // a short last reply: its top is past the end, so the end
+  assert.equal(openAt(short.view, short.root), short.view.scrollHeight - 400);
+  const fits = chat([100, 120]);
+  assert.equal(openAt(fits.view, fits.root), 0, "a chat that fits does not move");
+  const carded = chat([120, 700, 260], [2]);                    // a reply and the cards it set up under it
+  assert.equal(openAt(carded.view, carded.root), carded.tops[1], "the reply's top, its cards under it");
+  const nested = chat([120, 700]), inner = { parentElement: { closest: () => ({}) }, hasAttribute: () => false, getBoundingClientRect: () => ({ top: 9999 }) };
+  nested.root.querySelectorAll = ((all) => () => [...all, inner])(nested.root.querySelectorAll());
+  assert.equal(openAt(nested.view, nested.root), nested.tops[1], "a row inside a row is not the chat's newest");
+});
+
+test("a failed turn says its failure once: the error step the open chat patched in gives way to the turn's own line (walk 19)", async () => {
+  const { turnSteps, turnParts, eventsOf } = await import("../src/chatStream.js");
+  const err = { id: "e:1.1", k: "error", text: "No AI is connected - connect one on Connections → AI to run this task", status: "failed" };
+  const failed = { kind: "turn", state: "failed", fail: "No AI is connected - connect one on Connections → AI to run this task.", steps: [err] };
+  const rows = (t) => turnParts(eventsOf(turnSteps(t), false)).flatMap((p) => p.steps || []);
+  assert.deepEqual(rows(failed), []);
+  assert.equal(rows({ ...failed, fail: undefined, state: "done" }).length, 1, "a turn with no failed line keeps the step");
+});
+
+// A CARD THAT WAITS IS THE LAST THING IN THE CHAT (the owner, 2026-11-26: "you put text under the card which is never allowed ... if text goes
+// after the card it makes the card look useless"): the server's rule (taskuary/chatlog.py waits_last), the same cases read by both
+test("a card that waits is set down under what the agent said after it, never across his line - the server's own cases", async () => {
+  const { waitsLast } = await import("../src/chatStream.js");
+  const cases = JSON.parse(fs.readFileSync(new URL("../../tests/fixtures/waits_last.json", import.meta.url), "utf8"));
+  const shape = (items) => items.map((x) => (x.kind === "turn" ? `${x.id}[${(x.cards || []).map((c) => c.id).join(",")}]` : x.id));
+  for (const c of cases) {
+    const got = waitsLast(c.items);
+    assert.deepEqual(shape(got), c.want, c.name);
+    assert.deepEqual(shape(waitsLast(got)), c.want, `${c.name} - set down once`);
+  }
+  const still = [{ id: "l1", kind: "line" }, { id: "tA", kind: "turn", cards: [{ id: "r1", kind: "card", status: "pending" }] }];
+  assert.equal(waitsLast(still), still, "nothing to move: the same list, so nothing redraws");
+});
+
+test("the chat draws its list through that rule, and a turn's cards are its last thing while it works too", () => {
+  const view = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(view, /const items = useMemo\(\(\) => waitsLast\(served\), \[served\]\)/);
+  assert.ok(view.indexOf("data-tq-working=") < view.indexOf("<div data-tq-turn-cards"), "the working line stands above a card that waits, never under it");
 });

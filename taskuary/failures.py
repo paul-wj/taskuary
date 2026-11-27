@@ -76,7 +76,9 @@ def classify(e, *, act: str = None, tid=None) -> dict:
     prompt; `fix` is {label, href} or None; `retry` is whether pressing it again could work; `unknown` only for a send that may
     have gone. A string is read as the error's own words (a handler that reported its failure instead of raising)."""
     from .operations import plain
-    text = str(e if isinstance(e, str) else _smtp(e) or plain(e))
+    from .terminal import no_codes
+    # ...a CLI's stderr comes with its colour codes, and they reached his screen as "[2m2026-11-24T09:27 [31mERROR" (walk 15): its words only
+    text = no_codes(e if isinstance(e, str) else _smtp(e) or plain(e))
     fix = None if isinstance(e, str) else outbound.fix_of(e)
     fix = fix or outbound.auth_fix(RuntimeError(text))
     sentence = text
@@ -106,7 +108,7 @@ def classify(e, *, act: str = None, tid=None) -> dict:
     # on, the owner's Trust (concierge.recover) - a retry is refused the same way
     from .origin import Refusal, RefusedForStranger
     code = 'stranger' if any(isinstance(x, (Refusal, RefusedForStranger)) for x in (e, getattr(e, '__cause__', None), getattr(e, '__context__', None))) else ''
-    return {'sentence': redact.scrub(sentence)[:500], 'fix': fix, 'retry': not fix and not unknown and not code, 'unknown': bool(unknown), 'code': code}
+    return {'sentence': redact.secrets(sentence)[:500], 'fix': fix, 'retry': not fix and not unknown and not code, 'unknown': bool(unknown), 'code': code}
 
 
 def outcome(c: dict, **more) -> dict:

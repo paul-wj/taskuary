@@ -5,7 +5,7 @@ import json, unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from taskuary import general, proposals, shellgate as sg, verdicts
+from taskuary import card, general, proposals, shellgate as sg, verdicts
 from taskuary.store import MemoryStore
 from taskuary.testing import Factory
 
@@ -57,8 +57,8 @@ class HeldStepsOneCard(unittest.TestCase):
         # told they still waited, worked the failure while his next press ran the same step into it again
         ids, out, ran, told, _ = self.run_all([0, 1, 0])
         self.assertEqual([self.s.get_review(i)['Status'] for i in ids], ['approved', 'superseded', 'superseded'])
-        self.assertIn('failed: rejected', self.s.get_review(ids[1])['ActError'])
-        self.assertIsNone(proposals.held_pending(self.s, self.tid), 'nothing on the card waits on him')
+        self.assertIn('exited with code 1: rejected', self.s.get_review(ids[1])['ActError'])
+        self.assertIsNone(card.pending(self.s, self.tid, 'held'), 'nothing on the card waits on him')
         [t] = told; self.assertIn('Nothing on that card waits on the owner now', t); self.assertIn('held as a new card', t)
         again = sg.approve_steps(self.s, ids[1:], verdicts.decide)                      # a second press on the old card runs nothing
         self.assertFalse(again['ok']); self.assertEqual(len(ran), 2)
@@ -99,10 +99,12 @@ class HeldStepsOneCard(unittest.TestCase):
             out = verdicts.decide(self.s, rv, 'approve')
         self.assertTrue(out['ok'], out); self.assertEqual(self.s.get_review(rv['ReviewId'])['Status'], 'approved')
 
-    def test_one_dismiss_dismisses_them_all_and_the_agent_hears_once(self):
+    def test_one_dismiss_dismisses_them_all_and_the_agent_hears_it_once_with_its_next_turn(self):
+        # his no never wakes the agent (the owner, 2026-11-26): it is the task's event, said once, in the turn his next line starts
+        from taskuary import events
         ids, out, ran, told, _ = self.run_all([0, 0, 0], 'reject')
         self.assertEqual(ran, []); self.assertEqual([self.s.get_review(i)['Status'] for i in ids], ['rejected'] * 3)
-        [t] = told; self.assertIn('NOT done', t)
+        self.assertEqual(told, []); self.assertEqual(events.take(self.s, self.tid)[0].count('The owner dismissed 3 held steps'), 1)
 
     def test_a_second_press_on_an_answered_card_runs_nothing_and_tells_nobody(self):
         # a double click, or the card pressed again from a page or phone that had not read the first press: the steps were already approved
@@ -143,7 +145,7 @@ class HeldStepsOneCard(unittest.TestCase):
 
     def test_the_hold_tells_the_agent_the_button_is_the_ask(self):
         said = sg.check(self.s, self.tid, 'run1', 'git push origin deploy', 'Bash', HELD)['hookSpecificOutput']['permissionDecisionReason']
-        self.assertIn('never ask them to run it', said); self.assertIn('print it for them to copy', said)
+        self.assertIn('action card', said); self.assertIn('rest of the job', said); self.assertNotIn('end your turn', said.lower())
         from taskuary.selfclose import CARD_TAIL
         self.assertIn(CARD_TAIL, said)                    # ...and the one tail every hold ends on: the card says it waits, so the agent never does
 

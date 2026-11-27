@@ -1,7 +1,7 @@
 """A general agent runs on the AI the person set up - never on claude because nobody chose anything.
 
 A fresh install where the person had set up only Codex: a researcher task started on a claude that was signed out (a claude
-connection left behind, first in the list, was the fallback), and a playbook the person created themselves was refused on Codex
+connection left behind, first in the list, was the fallback), and a skill the person created themselves was refused on Codex
 as "a stranger's task - start it with claude". The rule: the brain the owner chose; else only an AI that is connected, starts
 here and did not fail its test; else "No AI is connected". Fake CLIs only - nothing here starts a real one."""
 import json
@@ -10,16 +10,16 @@ from unittest import mock
 
 import pytest
 
-from taskuary import agents, cli_connections as clic, config, general, llm, origin, playbooks
+from taskuary import agents, brainroute, cli_connections as clic, config, general, llm, origin, skills
 from taskuary.store import MemoryStore
 
 
 def _home(conns=(), tests=None, settings=None, connector=None):
-    """A home with these CLI connections (and their last Test), the shipped profiles synced before any brain was chosen - as a
-    fresh start leaves them - and optionally one API connector holding a key."""
+    """A home with these CLI connections (and their last Test), the coding agent's row and an older install's role row (one that
+    names no CLI) synced before any brain was chosen, and optionally one API connector holding a key."""
     s = MemoryStore()
     cfg = {**config.load(), 'cli_connections': {k: clic.with_defaults({'cmd': k}) for k in conns},
-           'agents': {n: {'kind': p['kind'], 'purpose': p['purpose']} for n, p in agents.DEFAULT_PROFILES.items()}}
+           'agents': {'coding': {'kind': 'coding'}, 'researcher': {'kind': 'research'}}}
     for k, ok in (tests or {}).items(): agents.record_cli_test(s, k, ok)
     for k, v in (settings or {}).items(): s.set_setting(k, v, 'owner')
     if connector:
@@ -80,7 +80,7 @@ def _researcher(s):
 
 
 def _job(s):
-    """The owner's own general job (it was a playbook-authoring task: playbooks are built by the Assistant on their page now, build.py)."""
+    """The owner's own general job (it was a skill-authoring task: skills are built by the Assistant on their page now, build.py)."""
     return s.create_task({'Title': 'Check the Payworth invoice against the purchase order', 'Kind': 'general', 'Status': 'open',
                           'OriginBase': 'owner'}, 'owner')
 
@@ -129,7 +129,7 @@ def test_a_refusal_never_names_another_tool(world):
 
 
 # ── Claude only ───────────────────────────────────────────────────────────────────────────────────────────────────
-def test_a_claude_only_home_runs_the_researcher_and_a_playbook_on_claude(world):
+def test_a_claude_only_home_runs_the_researcher_and_a_skill_on_claude(world):
     world['installed'] |= {'claude'}
     s, cfg = _home(('claude',), tests={'claude': True}, settings={'default_brain': 'claude', 'assistant_ai': 'cli:claude'})
     _run(s, cfg, _researcher(s)); _run(s, cfg, _job(s))
@@ -138,7 +138,7 @@ def test_a_claude_only_home_runs_the_researcher_and_a_playbook_on_claude(world):
 
 # ── An API connector only ─────────────────────────────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize('typ', ['hipaa_ai', 'openai'])
-def test_an_api_only_home_runs_the_researcher_and_a_playbook_on_the_connector(world, typ):
+def test_an_api_only_home_runs_the_researcher_and_a_skill_on_the_connector(world, typ):
     s, cfg = _home(connector=typ)
     for tid in (_researcher(s), _job(s)):
         said = _run(s, cfg, tid)
@@ -200,7 +200,9 @@ def test_a_launch_that_finds_a_saved_claude_signed_out_moves_to_codex_for_the_ne
     assert not s.get_setting('default_brain') and not s.get_setting('assistant_ai')
 
 
-def test_a_claude_the_person_picked_stays_and_says_it_is_not_signed_in(world):
+def test_a_claude_the_person_picked_says_it_is_not_signed_in_and_the_next_try_runs_on_what_else_is_connected(world):
+    """His pick stays his - the setting is never rewritten - but an AI signed out takes no work while another is connected (the owner,
+    2026-11-24: "It should switch back to whatever else is connected"), and the route says why: never quietly another AI."""
     world['installed'] |= {'codex', 'claude'}; world['signed_out'] |= {'claude'}
     s, cfg = _pinned('owner')
     with mock.patch.object(config, 'load', lambda: cfg), mock.patch('taskuary.clisetup.signed_in', return_value=False) as probe:
@@ -208,9 +210,10 @@ def test_a_claude_the_person_picked_stays_and_says_it_is_not_signed_in(world):
     tid = _researcher(s)
     said = _run(s, cfg, tid)
     assert "claude isn't signed in" in said and 'Set it up' in said, said
-    with mock.patch.object(config, 'load', lambda: cfg), pytest.raises(RuntimeError, match="claude isn't signed in"):
-        _again(s, tid)
-    assert [r['cmd'] for r in world['ran']] == ['claude', 'claude']          # never quietly another AI
+    with mock.patch.object(config, 'load', lambda: cfg): again = _again(s, tid)
+    assert not again.startswith('error') and [r['cmd'] for r in world['ran']] == ['claude', 'codex']
+    said = [c['Body'] for c in s.list_comments(tid, internal=True)]
+    assert said.count('Running on OpenAI Codex CLI - Claude Code failed its last test.') == 1, said      # ...said once, in the chat
     assert s.get_setting('assistant_ai') == 'cli:claude'
 
 
@@ -365,11 +368,8 @@ def test_a_coding_pane_its_role_row_and_its_failover_head_name_one_cli(world):
     "brain_for, the pane's chain and the row sync (cli_connections.brain_of) read the settings each their own way; now the resolver's."
     world['installed'] |= {'claude', 'codex'}
     s, cfg = _two_ready()
-    s.set_setting('profile_brains', json.dumps({'researcher': 'claude'}), 'owner')
     with mock.patch.object(config, 'load', lambda: cfg):
-        for role, want in (('coding', 'codex'), ('researcher', 'claude')):
-            assert agents.brain_for(s, role) == agents.resolve_brain(s, 'coding', cli_only=True, role=role)[4:] == want
-            assert clic.brain_of(s, cfg, role, {}) == want
+        assert agents.brain_for(s) == clic.brain_of(s, cfg, 'coding', {}) == 'codex'
         assert agents.brain_chain(s)[0] == agents.resolve_brain(s, 'coding', cli_only=True)[4:] == 'codex'
 
 
@@ -380,7 +380,7 @@ def test_a_brain_an_update_saved_that_no_longer_starts_is_set_aside_by_every_roa
     for k, v in (('default_brain', 'gemini'), ('triage_ai', 'cli:gemini')): s.set_setting(k, v, 'migration')
     with mock.patch.object(config, 'load', lambda: cfg):
         assert llm.effective_pick(s) == agents.resolve_brain(s, 'triage') == 'cli:codex'
-        assert agents.brain_for(s, 'coding') == agents.brain_chain(s)[0] == 'codex'
+        assert agents.brain_for(s) == agents.brain_chain(s)[0] == 'codex'
 
 
 def test_the_task_header_names_the_ai_its_session_opens_on(world):

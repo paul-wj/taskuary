@@ -86,7 +86,9 @@ def _inbound(store, item) -> list:
     return [m for m in ms if m and str(m.get('Direction') or 'in') != 'out' and m.get('Status') not in ('context',)]
 
 
-def _name(m: dict) -> str: return ' '.join(str(m.get('FromName') or m.get('FromEmail') or 'Someone').split())
+def _name(m: dict) -> str:
+    from .waiton import person
+    return person(m) or ' '.join(str(m.get('FromName') or m.get('FromEmail') or 'Someone').split())
 
 
 def same_thread(store, item) -> int | None:
@@ -163,7 +165,7 @@ def waited(store, item, t: dict) -> tuple:
     """(who, working days) a task waiting on someone else has waited: since the owner last wrote on it, else since it was set waiting."""
     from . import waiton
     from .processing_unread import holder_name
-    who = (waiton.name_of(t['WaitingOn']) if t.get('WaitingOn') else holder_name(t.get('Assignee'))) or ''
+    who = next((w['who'] for w in waiton.on_them(store, t)), '') or holder_name(t.get('Assignee')) or ''      # ...whom the header names (on_them)
     out = store._one("SELECT SentAt, CreatedAt FROM message WHERE TaskId=? AND Direction='out' ORDER BY IFNULL(SentAt,CreatedAt) DESC LIMIT 1",
                      (int(t['TaskId']),)) or {}
     since = _dt(out.get('SentAt') or out.get('CreatedAt')) or _dt(t.get('WaitingSince')) or _dt(t.get('UpdatedAt')) or _dt(t.get('CreatedAt'))
@@ -201,10 +203,11 @@ def state(store, item: dict, verbs: list) -> tuple:
     kind, lane, tid = str(it.get('kind') or ''), str(it.get('lane') or ''), it.get('tid')
     t = (store.get_task(int(tid)) or {}) if tid else {}
     if t.get('Status') in ('done', 'dropped'): return 'closed', {}
-    # AN ACTION WAITS FOR THE OWNER'S YES (proposals.held_pending - a `git push` the shell gate held): read before an agent asking or at work,
-    # which lit nothing over the Approve it waited on (the 2026-11-02 audit) - its Approve is lit
-    from . import proposals
-    if tid and (h := proposals.held_pending(store, tid)): return 'action_held', {'what': h['what'], EV: [f"rv{h['rid']}"]}
+    # AN ACTION WAITS FOR THE OWNER'S YES (card.pending - a `git push` the shell gate held, a proposal, a skill): read before an agent asking
+    # or at work, which lit nothing over the Approve it waited on (the 2026-11-02 audit) - its Approve is lit
+    from . import card
+    if tid and (r := card.pending(store, tid, 'acts')):
+        h = card.of_review(store, r); return 'action_held', {'what': h['what'], EV: [h['id']]}
     if lane == 'working' or (tid and _at_work(store, 'task', tid)): return 'working', {}
     if kind == 'agent' and (it.get('asking') or lane == 'blocked'): return 'agent_asking', {}
     # ...and a run that ENDED on a question to the owner - a restart cut it off at "go ahead?" - is still asking, not stopped: the finish
@@ -226,6 +229,8 @@ def state(store, item: dict, verbs: list) -> tuple:
     from . import watch
     if (wb := watch.back(t)) == 'handled': return 'watch_handled', {'who': _name((_inbound(store, it) or [{}])[-1])}
     if wb == 'quiet': return 'watch_quiet', {}
+    # ...and ONE STILL WATCHED says what it waits for (watch.line; the owner, 2026-11-25: its row read "<sender> asked 2 hours ago")
+    if watch.watching(t) and not store.waiting_on_owner(t['TaskId']): return 'watching', {'back': (b := watch.back_when(t))[:1].upper() + b[1:]}
     # THE WRITER SAID WHAT IT NEEDS (store.set_review_draft_needs): no failure - the work is an agent's, so Continue the one that worked it,
     # else Send to agent. Its reason is on the card already, so nothing is said (walk 2026-10-29: it lit "New task to fix this")
     if draft_needs(store, it) or reply_unwritten(store, it): return 'needs_agent', {}
@@ -254,8 +259,17 @@ def state(store, item: dict, verbs: list) -> tuple:
             clash = calwrite.clash_line(store, c['start'], c['end'], skip=c.get('subject') or '') if c.get('start') and not c.get('all_day') else ''
         except Exception as e: logger.debug(f'rulebook: no clash read - {e}'); clash = ''
         return ('invite_clash', {'clash': _cut(clash[:1].upper() + clash[1:], 58)}) if clash else ('invite_free', {})
-    if kind in ('agentdone', 'wrapup'):
-        if tid and 'review_changes' in offered and changes_waiting(store, tid): return 'unpushed', {}
+    if kind in ('agentdone', 'wrapup') and tid and 'review_changes' in offered and changes_waiting(store, tid): return 'unpushed', {}
+    # ...AND A FINISHED AGENT WHOSE TASK WAITS ON SOMEBODY'S ANSWER IS THAT WAIT (walk 21: "waiting for Jordan's input" in the header over a row
+    # reading "Finished at 5:43 AM; nothing since"): one reading of who moves next, taskstate.standing, as the header's
+    # ...and one whose next move is his or its agent's is never "Finished; nothing since" (walk 21: the chip "waiting for your input" off a step
+    # the turn left on him, the row "Finished at 6:12 AM; nothing since" beside it): no line there - where it stands says what waits
+    if kind in ('agentdone', 'wrapup') and tid and lane != 'theirs':
+        from . import taskstate
+        waits = taskstate.standing(store, int(tid))['waits_on']
+        if waits == 'them': lane = 'theirs'
+        elif waits: return 'agent_done', {'what': '', 'when': ''}
+    if kind in ('agentdone', 'wrapup') and lane != 'theirs':
         # ...its reason the newest of what ended it - the agent's last word, or the owner's reply that went - with nothing come in since
         try: sent = store.sent_reply(task_id=int(tid)) if tid else None
         except Exception: sent = None
@@ -295,8 +309,7 @@ def state(store, item: dict, verbs: list) -> tuple:
         if u: return ('waiting_late_usual', {'who': who, 'days': days, 'usual': usual.days(u['median'])}) if days >= u['days'] else ('waiting', {})
         return ('waiting_late', {'who': who, 'days': days}) if days >= CHASE_DAYS else ('waiting', {})
     if kind == 'idea': return 'idea', {}
-    # A PHISH FILED FYI IS PUT DOWN, NEVER HANDED ON (the owner, 2026-10-30): its row lit Send to agent - the one press that feeds a scam to
-    # an agent. Not ours is its move, lit (MOVES), and Send to agent waits in the ▾ (FyiCard's Foot `tuck`)
+    # A PHISH FILED FYI is named so to the model (the owner, 2026-10-30); its row is every FYI's one move, Send to agent (2026-11-25)
     if kind == 'fyi' and it.get('danger'): return 'fyi_danger', {}
     if kind == 'fyi': return 'fyi', {}
     ins = _inbound(store, it)
@@ -333,10 +346,10 @@ def recipients(store, rv: dict) -> list:
 
 def leaving(store, item: dict, rv: dict) -> str:
     """'' or the line: who on the draft is new to its thread, and the files it sends."""
-    from . import learned_cut
+    from .memory import people_of
     from .ingest import owner_addresses, own_addresses
     tk, ti = ('task', item['tid']) if item.get('tid') else ('message', rv.get('MessageId') or item.get('mid'))
-    known = {a for m in _msgs(store, item, tk, ti) for a in learned_cut.people_of(m)} | owner_addresses(store) | own_addresses(store)
+    known = {a for m in _msgs(store, item, tk, ti) for a in people_of(m)} | owner_addresses(store) | own_addresses(store)
     new = [a for a in dict.fromkeys(recipients(store, rv)) if a not in known]
     try: files = [f.get('name') for f in (json.loads(rv.get('Deliver') or '{}') or {}).get('attachments') or [] if isinstance(f, dict) and f.get('name')]
     except (TypeError, ValueError, AttributeError): files = []
@@ -356,14 +369,19 @@ def last_word(store, tid):
 
 def answered(store, item: dict, last_in: dict):
     """When the owner's own reply - one sent from here (its review) or typed anywhere (an outgoing message) - went after `last_in`, the
-    newest such; None when none did."""
+    newest such; None when none did. An answer with no words is one too (walk 25, 2026-11-26: Accept on an invite told the calendar, and
+    the task read "asked you" on): a card of the task that went, whatever it carried - never an agent's act or a routine's email."""
     tid, mid = item.get('tid'), item.get('mid')
-    try: r = store.sent_reply(task_id=int(tid)) if tid else store.sent_reply(message_id=int(mid)) if mid else None
+    # ...a task's every card that went, with words or none, in ONE read (sent_reply's receipt is among them): the rail asks this per task
+    try: r = None if tid else store.sent_reply(message_id=int(mid)) if mid else None
     except Exception: r = None
     try: outs = [m for m in _msgs(store, item, 'task' if tid else 'message', tid or mid) if str(m.get('Direction') or 'in') == 'out']
     except Exception: outs = []
     last = _dt(last_in.get('SentAt') or last_in.get('CreatedAt'))
-    ats = [_dt((r or {}).get('DecidedAt') or (r or {}).get('CreatedAt'))] + [_dt(m.get('SentAt') or m.get('CreatedAt')) for m in outs]
+    try: took = store._rows("SELECT DecidedAt, CreatedAt FROM review WHERE TaskId=? AND (DeliveryState='sent' OR (DeliveryState IS NULL AND Status IN"
+                            " ('approved','edited','sent'))) AND Kind NOT IN ('action','slot')", (int(tid),)) if tid else []
+    except Exception: took = []
+    ats = [_dt((x or {}).get('DecidedAt') or (x or {}).get('CreatedAt')) for x in (r, *took)] + [_dt(m.get('SentAt') or m.get('CreatedAt')) for m in outs]
     went = [a for a in ats if a and last and a > last]
     return max(went) if went else None
 
@@ -416,16 +434,18 @@ NOTHING_LEFT = 'Its agent said nothing is left to do'
 
 
 def agent_word(store, tid) -> str | None:
-    """What the agent's newest turn summary (general.SUMMARY_TYPE) leaves the owner: 'on_you' while a step of its list is theirs,
-    'nothing_left' where it said so, '' where it said neither - and None with no summary (no agent ran, or one that writes none)."""
+    """What the agent's newest turn summary (general.SUMMARY_TYPE) leaves the owner: 'on_you' while the task waits for his input, 'nothing_left'
+    where it said so and nobody's input is awaited, '' otherwise - and None with no summary (no agent ran, or one that writes none). Where it
+    stands is the task's one reading (taskstate.standing): Mark done is never lit over an answer still awaited (walks 14-16)."""
     from . import general
+    from .taskstate import standing
     try:
         last = next((c for c in reversed(store.list_comments(int(tid), internal=True)) if c.get('ActorType') == general.SUMMARY_TYPE), None)
         summ = json.loads(last['Body']) if last else None
     except (TypeError, ValueError, KeyError): summ = None
     if not isinstance(summ, dict): return None
-    if any(c.get('on_you') and not c.get('done') and c.get('text') for c in _checklist(store.get_task(int(tid)))): return 'on_you'
-    return 'nothing_left' if summ.get('nothing_left') else ''
+    waits = standing(store, tid)['waits_on']
+    return 'on_you' if waits == 'you' else 'nothing_left' if summ.get('nothing_left') and waits is None else ''
 
 
 def _recommended(store, it: dict, verbs: list | None, f: dict | None, unlit: bool = False) -> dict | None:

@@ -172,6 +172,23 @@ class OwnerControlsTests(Base):
         self.assertFalse(any(c.startswith('Started') for c in self.comments(tid)))
         self.assertTrue(any('try 1 of 3' in c for c in self.comments(tid)), self.comments(tid))
 
+    def test_a_queued_start_whose_first_turn_dies_mid_turn_promises_no_retry(self):
+        """Walk 14, 2026-11-24 (invented people): a full house queued the owner's own note "renew the domain"; the drain opened its Codex agent,
+        which died 1.3 s into its first turn. The turn said "the turn was not run again - type to carry on" with Try again, and the failed-start
+        path wrote "trying again at 02:57 (try 1 of 3)" under it - nothing ran in 17 minutes. A turn cut part-way is never run again by itself:
+        one line says so, the start is no longer owed, and no retry is armed."""
+        from taskuary.acp import DiedMidTurn
+        from taskuary.clipool import MID_TURN
+        tid = self.task('Renew the domain before Dec 1', kind='general'); self.s.enqueue_dispatch(tid, None, 'assistant', 'slot')
+        ses = mock.Mock(); ses.send_prompt.side_effect = DiedMidTurn(MID_TURN, 'sid-1')
+        with mock.patch.object(ingest, 'first_ask', return_value='Remember to renew the domain before Dec 1.'), \
+             mock.patch.object(general, 'start_session', return_value=ses): bb.drain(self.s)
+        ses.send_prompt.assert_called_once()
+        self.assertIsNone(self.row(tid), 'no start is owed: the turn ran')
+        self.assertFalse(any('trying again' in c or 'try 1 of 3' in c or c.startswith('Started') for c in self.comments(tid)), self.comments(tid))
+        self.timer.assert_not_called()
+        bb.drain(self.s); ses.send_prompt.assert_called_once()                    # ...and the next pass runs nothing again
+
     def test_every_restored_deadline_is_armed_not_only_the_earliest(self):
         """PW-088/089: one timer for the earliest deadline, and the later one waited for an unrelated event."""
         t1, t2 = self.task('a'), self.task('b')
@@ -210,6 +227,35 @@ class OwnerControlsTests(Base):
         rows = self.c.get('/api/tasks').json()['data']
         q = next(t for t in rows if t['TaskId'] == tid)['Queued']
         self.assertEqual((q['state'], q['attempts']), ('failed', 1)); self.assertIn('unknown agent', q['lastError'])
+
+
+class WorkedStartTests(Base):
+    """The owner's live app, 2026-11-23: a start of a task whose agent had worked it (the queue's retry, a full house's queued start, a
+    restart) opened its old conversation, wrote "it carries on the conversation already open here", sent no turn - and the mail that had
+    come in since sat unheard until the session idled out. Every start hands the agent what it was never given, or opens nothing."""
+    def worked(self):
+        tid = self.task('Offsite venue', 'general'); self.s.enqueue_dispatch(tid, None, 'assistant', 'slot'); return tid
+    def drain(self, ses):
+        with mock.patch.object(general, 'history', return_value=[{'role': 'assistant', 'content': 'Two venues look right.'}]), \
+             mock.patch.object(general, 'start_session', return_value=ses) as start, mock.patch.object(ingest, '_spawn', lambda f, *a, **k: f(*a, **k)):
+            bb.drain(self.s)
+        return start
+
+    def test_a_queued_start_of_a_worked_task_hands_its_agent_the_mail_it_never_heard(self):
+        tid = self.worked(); ses = mock.Mock()
+        mid = self.s.add_message({'TaskId': tid, 'ExternalId': 'w1', 'Channel': 'email', 'Subject': 'Re: Offsite venue', 'Status': 'routed',
+                                  'FromName': 'Erin Blake', 'FromEmail': 'erin@northwind.example', 'BodyText': 'The Quay Hall can take 40 on March 12.'})
+        self.drain(ses)
+        ses.send_prompt.assert_called_once()
+        self.assertIn('Quay Hall', ses.send_prompt.call_args[0][0]); self.assertEqual(list(ses.send_prompt.call_args[1]['mails']), [mid])
+        self.assertIsNone(self.row(tid))
+        self.assertFalse(any('carries on the conversation' in c for c in self.comments(tid)), self.comments(tid))
+
+    def test_a_start_with_nothing_unheard_opens_no_session_and_says_nothing(self):
+        tid = self.worked(); ses = mock.Mock(); n = len(self.comments(tid))
+        start = self.drain(ses)
+        start.assert_not_called(); ses.send_prompt.assert_not_called()
+        self.assertIsNone(self.row(tid)); self.assertEqual(self.comments(tid)[n:], [])
 
 
 class FreedSlotTests(Base):

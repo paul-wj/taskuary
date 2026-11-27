@@ -10,7 +10,7 @@ is what Taskuary DOES with that answer, what the line says, and how long each to
   action     - the answer with its act: the button lit, the page opened, the draft started, the rows cleared
 `python -m tests.assistant_walk` prints the table (FAKE_CLAUDE_* env vars change the timings); `--real` runs the same steps on the
 installed claude instead - see real_cli_safe() for what has to hold first. tests/test_assistant_walk.py holds every step in CI."""
-import json, os, re, sys, tempfile, threading, time
+import json, os, re, sys, threading, time
 from contextlib import ExitStack
 from unittest import mock
 
@@ -143,9 +143,15 @@ def _instrument(st, clock: Clock):
 
 
 def _guards(st, live_box):
+    from types import SimpleNamespace
     from taskuary import concierge, ingest, terminal
-    st.enter_context(mock.patch.object(terminal, 'live_sessions', return_value=[]))
-    st.enter_context(mock.patch.object(terminal, 'for_task', lambda tid, **k: {'sid': f's{tid}'} if live_box and int(tid) in live_box else None))
+    # a step's live agent is live to every reader: the dock's, the pile's (funnel.observe) and the task's own state (taskstate.live) - its row a
+    # running agent's, never the chat's done row (funnel.one_state)
+    info = lambda tid, **k: {'sid': f's{tid}', 'taskId': int(tid), 'alive': True, 'waiting': False}
+    st.enter_context(mock.patch.object(terminal, 'live_sessions', lambda *a, **k: [info(t) for t in live_box]))
+    st.enter_context(mock.patch.object(terminal, 'for_task', lambda tid, **k: info(tid) if live_box and int(tid) in live_box else None))
+    st.enter_context(mock.patch.object(terminal, 'session_for', lambda tid: SimpleNamespace(alive=True, started='', info=lambda details=False: info(tid))
+                                       if live_box and int(tid) in live_box else None))
     st.enter_context(mock.patch.object(concierge, 'stop_turn', lambda tid: bool(live_box) and int(tid) in live_box))      # the x's road, never a real session
     st.enter_context(mock.patch.object(ingest, '_spawn'))
     st.enter_context(mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: '{"kind": "report", "why": "scripted"}'))
@@ -170,7 +176,8 @@ def real_cli_safe() -> tuple:
     if not exe: return False, 'no claude on PATH'
     if '--setting-sources' not in subprocess.run([exe, '--help'], capture_output=True, text=True, encoding='utf-8').stdout:
         return False, 'this claude has no --setting-sources'
-    d = tempfile.mkdtemp(prefix='tq-real-control-'); os.makedirs(os.path.join(d, '.claude'))
+    from taskuary.spawn import own_temp
+    d = own_temp('tq-real-control-'); os.makedirs(os.path.join(d, '.claude'))
     with open(os.path.join(d, '.claude', 'settings.json'), 'w') as f:
         json.dump({'hooks': {'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': 'echo control>> control.txt'}]}]}}, f)
     env = {k: v for k, v in os.environ.items() if not k.startswith('TASKUARY_')}
@@ -202,7 +209,8 @@ def run(steps=STEPS, real: bool = False, warm: bool = True, quiet: bool = False,
     if quiet:
         from loguru import logger
         logger.remove()
-    scratch = tempfile.mkdtemp(prefix='tq-walk-')
+    from taskuary.spawn import own_temp
+    scratch = own_temp('tq-walk-')            # gone with the run, or swept by the next
     script = os.path.join(scratch, 'script.json')
     with open(script, 'w', encoding='utf-8') as f:
         json.dump([{'when': '^' + re.escape(s.text) + '$', 'first': s.first, 'then': s.then or 'Ok.'} for s in steps], f)

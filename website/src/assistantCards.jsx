@@ -4,13 +4,15 @@
 // queue or the Board; the card only puts it under the sentence that was just said. Reading
 // happens IN the card (the full text unfolds under it) and every card links to where the whole of
 // it lives - the task, or the row on the Timeline - because everything is the chat.
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getLocale, t, translateDescriptor } from "./i18n.js";
-import { useLocale } from "./LocaleProvider.jsx";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cannotStart, draftCanSend, useCapabilities } from "./capabilities.js";
 import { movesOf, repeatClick, useVerbs } from "./actionRow.js";
-import { choice, hint as btnHint, label as btn, liveVerb, VERBS } from "./buttons.js";
-import { Button, TextField } from "@mui/material";
+import { VERBS, choice, hint as btnHint, label as btn, liveVerb } from "./buttons.js";
+import { getLocale, t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+import { JiraDetail } from "./JiraDetail.jsx";
+import { jiraStatusText, jiraStatusTip, jiraStatusTone, jiraStatusSub } from "./jiraStatus.js";
+import { Box, Button, TextField } from "@mui/material";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import DoneRoundedIcon from "@mui/icons-material/DoneRounded";
@@ -19,23 +21,22 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import OutlinedFlagIcon from "@mui/icons-material/OutlinedFlag";
 import InsertChartOutlinedIcon from "@mui/icons-material/InsertChartOutlined";
 import api from "./api.js";
-import { gistFor } from "./fyiRow.js";
+import { gistFor, sortedSays } from "./fyiRow.js";
 import { dangerLine } from "./strangerLine.js";
-import { canUnsubscribe, unsubscribeFrom } from "./unsubscribe.js";
 import { runOperation } from "./taskOps.js";
 import { ChannelIcon, DraftField, LinkedText, TaskuaryMark, channelColor, cleanText, fmtDateTime, fmtTime12 } from "./ui.jsx";
 import { openAppLink } from "./appLinks.js";
 import { CardErr, failOf } from "./failure.jsx";
 import { press, sure } from "./press.js";
+import { hisText } from "./heldEdits.js";
 import { DASH, place } from "./words.js";
 import Dashboard from "./dashboard/Dashboard.jsx";
 import { snapshotOf } from "./dashboard/slice.js";
 import { Md, looksMd } from "./md.jsx";
 import { jsonRows, nameAndRest } from "./reportRows.js";
 import DigestText from "./DigestText.jsx";
-import ReportRows from "./ReportRows.jsx";
-import ReportBrief from "./ReportBrief.jsx";
-import { briefOf } from "./reportBrief.js";
+import ViewSpec from "./ViewSpec.jsx";
+import { citeHref, ideaSource, ideaView, madeTask, reportView, routineSource } from "./madeTask.js";
 import TodayMeetingsStrip from "./TodayMeetingsStrip.jsx";
 import { useCalendarToday } from "./calendarToday.js";
 import { ROLES, ASSISTANT, ALERT, ALERT_INK } from "./theme.jsx";
@@ -63,15 +64,16 @@ import { READY } from "./taskLifecycle.js";
 import { connError, openBugReport } from "./bugReportOpen.js";
 import { dayLabel, fmtTime } from "./dates.js";
 import { useShare } from "./Share.jsx";
-import ItemSections, { ItemLay, ItemPart, handToItem } from "./ItemSections.jsx";
-import { PaneMoves } from "./TaskPage.jsx";   // an FYI's Came from carries its pane's moves as a task's does
+import ItemSections, { ItemLay, ItemPart, startItem } from "./ItemSections.jsx";
+import { arrivalHand, arrivalMoves, handToItem, whoName } from "./itemHand.js";
+import TaskPage from "./TaskPage.jsx";   // what Taskuary made is drawn by the one task page (useMade)
 import { TYPE_LABELS } from "./reportWords.js";
 import { SECTIONS as STEPS } from "./taskLayout.js";   // a task's sections, by name (ItemSections)
 import { WorkstreamLabel } from "./Workstream.jsx";   // the idea's workstream, a small label (the owner, 2026-11-01)
 import { channelName } from "./taskSources.js";
+import { personName } from "./personName.js";
 import { repliesOf } from "./connectorCatalog.js";
-import { jiraStatusText, jiraStatusTip, jiraStatusTone, jiraStatusSub } from "./jiraStatus.js";
-import { JiraDetail } from "./JiraDetail.jsx";
+import Artifact from "./Artifact.jsx";
 
 const errText = (e) => e?.response?.data?.detail || e?.message || { source: "That did not work" };
 const shownErr = (err) => err?.source ? translateDescriptor(err) : err;
@@ -195,15 +197,8 @@ const CHANNEL_WORD = { email: "Email", github: "GitHub", whatsapp: "WhatsApp", t
 export const channelWord = (ch) => { const key = String(ch || "").toLowerCase(), word = CHANNEL_WORD[key]; return word ? t(word, {}, key === "sms" ? "sms" : "") : (ch ? String(ch)[0].toUpperCase() + String(ch).slice(1) : ""); };
 // work the owner started has nobody behind it: its "sender" is the owner ("owner" from CreatedBy, "You" from ownwork)
 export const isOwn = (card) => card?.channel === "own" || ["owner", "you", "me"].includes(String(card?.who || "").trim().toLowerCase());
-// a display name as a person is called (triage.person_name): Outlook's "Doyle, Alex M. at Northwind" reads "Alex M. Doyle"
-export const personName = (name) => {
-  let n = String(name || "").replace(/\s*<[^>]*>/g, "").replace(/"/g, " ").replace(/\s+/g, " ").trim();
-  if (!n || n.includes("@")) return n;
-  n = n.replace(/\s+at\s+[^,<>@]+$/i, "").trim();
-  const parts = n.split(",");
-  if (parts.length === 2 && parts[0].trim() && parts[1].trim() && parts[0].trim().split(" ").length <= 2) n = `${parts[1].trim()} ${parts[0].trim()}`;
-  return n;
-};
+// a display name as a person is called (personName.js, triage.person_name): Outlook's "Doyle, Alex M. at Northwind" reads "Alex M. Doyle"
+export { personName };
 const capital = (s) => { const t = String(s || "").trim(); return t ? t[0].toUpperCase() + t.slice(1) : ""; };
 // WHAT AN AGENT IS, never the profile it runs under (the owner, 2026-09-28, puzzled by a bare profile name on a card; 2026-10-28:
 // "General agent · researcher" named the instructions as the worker): a chat agent is Taskuary, a terminal one the coding agent.
@@ -386,14 +381,7 @@ const TASK_ACTS = [["not_a_task", "remove"], ["handoff", "forward"], ["reshape",
 // a card's word that is the Advisor's to light, never one of the row's own leads (the owner, 2026-10-27: Pause this report on a report)
 const QUIET = new Set(["report_off"]);
 
-// `stages`: { verb: pane } - a word that rides one of the item's own panes instead of the bar (an FYI's Should be a task on its Came from,
-// where a task's Not a task stands: actionRow.splitRow `only`)
-// `tuck`: words that wait in the ▾ unless lit (actionRow.pill) - a phish's Send to agent (dangerTuck)
-// A PHISH FILED FYI IS PUT DOWN, NOT HANDED ON (the owner, 2026-10-30): Send to agent stood as its main move; Not ours is lit now
-// (rulebook fyi_danger) and the agent's words wait in the ▾ - an FYI with no danger keeps its row as it was
-export const dangerTuck = (card) => (card?.kind === "fyi" && card.danger ? ["regular_agent", "coding_agent"] : []);
-export function Foot({ verb, then, where, covers = [], close, onDone, more, promote, extra = [], inline = false, openTask, taskId, moves = false, stages = {}, tuck = [] }) {
-  useLocale();
+export function Foot({ verb, then, where, covers = [], close, onDone, more, promote, extra = [], inline = false, openTask, taskId, moves = false }) {
   const nav = React.useContext(CardNav);
   const shut = useClose(close || {}, onDone);
   const [open, setOpen] = useState(false);
@@ -413,10 +401,9 @@ export function Foot({ verb, then, where, covers = [], close, onDone, more, prom
   // the task page's acts - sit behind More. The card's own move (its Foot `verb`) stays in the card.
   // ...and in a task's three sections on a desk, EVERY one rides the pane the item is about (ItemLay: actionRow.splitRow `all`) - the bar keeps
   // Back and Next, as under a task (the owner, 2026-10-31)
-  const lay = React.useContext(ItemLay), staged = words.find((a) => stages[a.verb]);
-  const laid = lay || (staged ? { only: stages[staged.verb] } : null);
-  const asVerb = (a, group) => ({ id: `w:${a.verb || a.label}`, group, tone: "s", label: a.label, title: a.title, disabled: a.disabled, ...(a.send ? { send: true } : {}),
-    ...(stages[a.verb] ? { stage: stages[a.verb] } : {}), ...(laid ? { laid } : {}), ...(tuck.includes(a.verb) ? { tucked: true } : {}), run: (e, anchor) => a.onClick?.({ currentTarget: anchor || e?.currentTarget }) });
+  const laid = React.useContext(ItemLay);
+  const asVerb = (a, group) => ({ id: `w:${a.verb || a.label}`, group, tone: "s", label: a.label, title: a.title, disabled: a.disabled,
+    ...(laid ? { laid } : {}), run: (e, anchor) => a.onClick?.({ currentTarget: anchor || e?.currentTarget }) });
   useVerbs("foot", rowed ? [
     // a move that IS the way on - a batch's "All read, next" (`moves`) - is the row's Next itself (the design, phase A: the batch verb in
     // the Next group), so the batch shows one way on, and the Advisor's lit Next is it
@@ -493,9 +480,8 @@ function RowsTable({ rows }) {
   );
 }
 
-// `report`: { name } - a report on the table: its rows drawn as a report (ReportRows), its words on the card without a box (reportRows.css)
-export function FullText({ mid, revision, report = null }) {
-  useLocale();
+// ...a report on the table is the Agent tab's turn instead (ReportTurn)
+export function FullText({ mid, revision }) {
   // a card with no mail behind it asks for nothing. A task whose only message a skip rule hid has no
   // mid, and fetching /api/messages/null painted FastAPI's own validation sentence ("path.mid: Input
   // should be a valid integer") into the card (the owner, 2026-09-15).
@@ -511,19 +497,15 @@ export function FullText({ mid, revision, report = null }) {
   const body = whole ? raw : read;
   const cut = body.indexOf("\n--- raw data ---");
   const text = noImages(cut >= 0 ? body.slice(0, cut) : body);
-  const morning = doc.SourceName === "Morning digest" || /^Morning digest\b/i.test(doc.Subject || "");
+  const morning = isMorning(doc);
   // ...a report's table sits in a panel its own width (the owner, 2026-10-28): full width, a two-column table left it 3/4 empty
   const rows = !morning && jsonRows(text);
-  if (report && rows) return <ReportRows rows={rows} name={report.name} mid={none ? null : mid} />;
-  // ...and a brief of the End of day checkup's shape - roll-ups, groups of bullets - is laid out as one, not a wall of markdown (ReportBrief)
-  const brief = report && !morning && !rows && briefOf(text);
-  if (brief) return <ReportBrief brief={brief} mid={none ? null : mid} />;
   // ...and a message with no words of its own (a picture-only mail) is said by its pictures and files, never "(empty)" (Attachments `bare`)
   const bare = !none && !morning && !text.trim() ? { remote: remotePicture(raw) } : null;
   return (
-    <div className={rows ? "tq-card-full fit" : report && !morning ? "tq-card-full report" : "tq-card-full"}>
+    <div className={rows ? "tq-card-full fit" : "tq-card-full"}>
       <JiraDetail message={doc}>
-      {morning ? <DigestText text={text} sourceId={/^report:(\d+)/.exec(doc.ConversationId || "")?.[1] ?? null} /> : rows ? <RowsTable rows={rows} /> : looksMd(text) ? <Md text={text} /> : text.trim() ? <LinkedText text={text} links={doc.Links} /> : bare ? null : t("(empty)")}
+      {morning ? <DigestText text={text} sourceId={digestOf(doc)} /> : rows ? <RowsTable rows={rows} /> : looksMd(text) ? <Md text={text} /> : text.trim() ? <LinkedText text={text} links={doc.Links} /> : bare ? null : "(empty)"}
       {/* ...and the pictures pasted into it, drawn - the screenshot is often the whole ask */}
       {!none && !morning && <Attachments messageId={mid} canFetch={String(doc.Channel || "") === "email" && mentionsPicture(doc.BodyText)} dense bare={bare} />}
       {read !== raw && <button type="button" className="tq-card-more" onClick={() => setWhole((v) => !v)}>{whole ? t("Just what they wrote") : t("Show the whole email")}</button>}
@@ -531,6 +513,21 @@ export function FullText({ mid, revision, report = null }) {
       {doc.SourceLink && <div className="tq-card-note"><a href={doc.SourceLink} target="_blank" rel="noreferrer" style={{ color: "var(--tq-link, #55697a)" }}>{t("open the original")}</a></div>}
     </div>
   );
+}
+const isMorning = (doc) => doc.SourceName === "Morning digest" || /^Morning digest\b/i.test(doc.Subject || "");
+const digestOf = (doc) => /^report:(\d+)/.exec(doc.ConversationId || "")?.[1] ?? null;
+
+// A REPORT'S RUN, AS THE TURN THAT ANSWERED ITS ASK (useMade): its words read once into a view (madeTask.reportView) and drawn by the one view
+// renderer in the one frame - a data report's line, chart and table, a brief's roll-ups and groups, words as words - then the files its run
+// carries, less what the view already is (its chart's picture: ONE THING, ONE PLACE). A morning digest keeps its own way on (DigestText)
+function ReportTurn({ mid, revision, name }) {
+  const doc = useFetched(mid != null && mid !== "" ? `/api/messages/${mid}` : null, revision);
+  const raw = cleanText(doc?.BodyText || ""), cut = raw.indexOf("\n--- raw data ---"), text = noImages(cut >= 0 ? raw.slice(0, cut) : raw);
+  const v = useMemo(() => reportView(text, name), [text, name]);
+  if (!doc) return <div className="tq-card-excerpt">…</div>;
+  if (doc.error) return <div className="tq-card-err">{doc.error}</div>;
+  return <>{isMorning(doc) ? <Artifact style={{ padding: 16 }}><DigestText text={text} sourceId={digestOf(doc)} /></Artifact> : <ViewSpec spec={v.spec} />}
+    <Attachments messageId={mid} dense skip={v.owns} /></>;
 }
 
 // A task is the grouping boundary after triage. Fetching `/thread` here would pull the whole Teams
@@ -558,8 +555,9 @@ function CombinedTaskText({ card, list = true }) {
   if (!doc) return <div className="tq-card-full">…</div>;
   if (doc.error) return <div className="tq-card-err">{shownErr(doc.error)}</div>;
   // NEWEST FIRST (the owner, 2026-09-28): the latest word is what the card is about; the thread reads back from it
-  const messages = (doc.messages || []).filter((m) => String(m.Status || "") !== "context")
-    .slice().sort((a, b) => String(b.SentAt || "").localeCompare(String(a.SentAt || "")));
+  // ...a long task's older ones ride as who and when (server _cut_messages): counted, and the newest read in full
+  const all = (doc.messages || []).filter((m) => String(m.Status || "") !== "context");
+  const messages = all.filter((m) => !m.stub).sort((a, b) => String(b.SentAt || "").localeCompare(String(a.SentAt || "")));
   // The job is the reason this card exists, so it sits above the source thread as a todo rather than
   // disappearing into the thread's pale metadata. The list is read-only here; ticking stays on the task.
   const taskText = String(doc.task?.Summary || doc.task?.Title || card.title || "").trim();
@@ -605,7 +603,7 @@ function CombinedTaskText({ card, list = true }) {
     {task}
     <div className="tq-card-full tq-card-context">
       <div className="tq-card-note" style={{ marginBottom: 7, fontWeight: 600 }}>
-        {t("Email context · {count} messages read together", { count: messages.length })}
+        Email context · {all.length} messages read together{all.length > messages.length ? ` · the newest ${messages.length}` : ""}
       </div>
       {messages.map((m, n) => {
         const body = noImages(cleanText(m.ReadText ?? m.BodyText ?? ""));
@@ -615,7 +613,7 @@ function CombinedTaskText({ card, list = true }) {
               {m.Direction === "out" ? t("You") : (m.FromName || m.FromEmail || t("Someone"))}{m.SentAt ? ` · ${fmtDateTime(m.SentAt)}` : ""}
             </div>
             <JiraDetail message={m}>
-            {looksMd(body) ? <Md text={body} /> : body.trim() ? <LinkedText text={body} links={m.Links} /> : m.MessageId ? null : t("(empty)")}
+            {looksMd(body) ? <Md text={body} outside={m.Direction !== "out"} /> : body.trim() ? <LinkedText text={body} links={m.Links} /> : m.MessageId ? null : "(empty)"}
             {m.MessageId && <Attachments messageId={m.MessageId} canFetch={String(m.Channel || "") === "email" && mentionsPicture(m.BodyText)} dense
               bare={body.trim() ? null : { remote: remotePicture(m.BodyText) }} />}
             </JiraDetail>
@@ -708,7 +706,8 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
     if (co) return reviewText(rv);
     try { const p = JSON.parse(rv.DraftText || ""); return p.text || `${p.action}${p.why ? ` — ${p.why}` : ""}`; } catch { return rv?.DraftText || ""; }
   };
-  const value = text ?? draft();
+  // ...his own words where he typed any on this card elsewhere (heldEdits.js): never the draft under them
+  const value = text ?? (mate ? null : hisText(rv)) ?? draft();
   const stale = !!(rv?.Stale ?? card.stale);          // a raw review row's Stale is 0, which React would draw
   // a GitHub author is their login - their "address" is GitHub's own noreply mailbox, which nobody reads
   const onGithub = String(rv?.Channel || "").toLowerCase() === "github";
@@ -909,16 +908,34 @@ export function MeetingCard({ card, table = null }) {
   );
 }
 
-// WHAT PRODUCED A REPORT, for its Came from (ItemSections): its source row - when it runs, what it reads, where a run goes, in the Reports
-// tab's own words (the server's ScheduleWords and RouteWords) - and its newest run's time and note. Read once per report and kept (useFetched)
-const typeWord = (t) => TYPE_LABELS[t] || capital(String(t || "").replace(/_/g, " "));
-function useReportSource(sid) {
-  useLocale();
-  const rows = useFetched(sid != null ? "/api/sources" : null), runs = useFetched(sid != null ? `/api/reports/${sid}/runs?limit=1` : null);
-  const row = (rows?.data || []).find((r) => r.SourceId === sid);
+// WHAT TASKUARY MADE, ON THE TABLE, IS A TASK IN THE ONE TASK PAGE (the owner, 2026-11-24: "reports/dashboards/ideas and tasks are the SAME CODE,
+// not just consistent - the one task page, the same cards, the prompt as the input into the agent, the same box. Made-item special pages get
+// deleted; only the data mapping differs"): the item read into a task's record (madeTask.js) and drawn by TaskPage - Came from its source, its
+// chat the prompt that asked and the run as the turn that answered, the box that starts the agent on it, the row its moves (taskMoves).
+// `own`: the item's own move (an idea's Connect, a failed run's Run it again), lit; Next is the walk's, as a task's is under CanvasItem.
+// `on`: it is on the table - off it, the card is drawn as a card and this registers nothing
+function useMade(on, card, { kind, label, title, input, source, turn, aside, share = null, own = [], said = "", wide = false }) {
+  const nav = React.useContext(CardNav), src = JSON.stringify(source || {});
+  const base = useMemo(() => madeTask({ key: card.key, kind, label, title, when: card.when, channel: card.channel || "", input, source: JSON.parse(src), wide }),
+    [card.key, kind, label, title, card.when, card.channel, input.head, input.text, src, wide]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const start = useCallback((o) => startItem({ key: card.key, title: card.title }, { verb: "regular_agent", text: o.text, files: o.files }), [card.key, card.title]);
+  useVerbs("next", on && nav.onNext ? [{ id: "next", group: "next", label: btn("next"), disabled: nav.busy, run: () => nav.onNext(), title: btnHint("next") }] : null,
+    on && !!nav.row, nav.ref);
+  return { ...base, turn, aside, share, start, said, came: label, navRef: nav.ref || "", moves: [...own.map((v) => ({ ...v, own: true })), ...(nav.also || [])] };
+}
+const MadePage = ({ made, height }) => <Box data-tq-made-page={made.kind} data-tq-canvas-item={made.key} sx={{ height, display: "flex", flexDirection: "column", minWidth: 0 }}>
+  <TaskPage made={made} canvas active /></Box>;
+
+// WHAT ASKED FOR IT AND WHERE IT COMES FROM: a report's or a dashboard's routine - read once and kept (useFetched) - its own instruction (its AI
+// prompt) the chat's input line, else its run by name, under "Automated · <name> · <when it runs>" (the server's ScheduleWords); the routine
+// itself its Came from (madeTask.routineSource), Edit there
+function useRoutine(card, kind, edit) {
+  const rows = useFetched(card && card.source_id != null ? "/api/sources" : null), row = (rows?.data || []).find((r) => r.SourceId === card?.source_id);
   let cfg = {};
   try { cfg = JSON.parse(row?.ConfigJson || "{}") || {}; } catch { cfg = {}; }
-  return { runs: row?.ScheduleWords || "", reads: !row ? "" : (cfg.sources || []).length > 1 ? cfg.sources.map((x) => x.label || typeWord(x.type)).join(", ") : typeWord(cfg.type), goes: row?.RouteWords || "", run: (runs?.data || [])[0] || null };
+  const [name] = nameAndRest(card?.title, card?.who);
+  return { input: { head: ["Automated", name, row?.ScheduleWords].filter(Boolean).join(" · "), text: String(cfg.ai_prompt || "").trim() || `Run ${name}` },
+    source: routineSource(row || (card?.source_id != null ? { SourceId: card.source_id, Address: name } : { Address: name }), cfg, { types: TYPE_LABELS, edit, kind }) };
 }
 // WHAT AN ITEM SAYS AND THE BOX UNDER IT (ItemSections ItemAsk): triage's reading rides the message the item is drawn from - the very payload
 // FullText reads, so one fetch serves both. `card` false: not on the table, nothing asked
@@ -926,7 +943,6 @@ function useItemAsk(card, kind) {
   const doc = useFetched(card && card.mid ? `/api/messages/${card.mid}` : null, card ? card.presentation_revision : undefined);
   return card ? { key: card.key, kind, title: card.title, reading: doc?.reading || null } : null;
 }
-const secs = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`);
 // a section's facts, a label and its value a row: only those that have something to say
 const Facts = ({ rows }) => <div className="tq-card-facts">{rows.filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><div>{k}</div><div>{v}</div></React.Fragment>)}</div>;
 // WHAT HAPPENS NEXT, said in a Close out with nothing to send: the moves the row under the chat already holds for this item, each with what
@@ -957,43 +973,23 @@ export function ReportCard({ card, onOpenTask, onTimeline, onDone, table = null 
   // first lines are the box, and More - only when there is more - unfolds the rest in place (2026-09-23)
   // ...and its heading says the DAY it ran beside its name: the kicker's "18h ago" left an old one reading like today's (the owner,
   // 2026-10-22: "end of day checkup should say the day it's from")
-  const [name, rest] = nameAndRest(card.title, card.who), day = dayLabel(card.when);
+  const [name, rest] = nameAndRest(card.title, card.who), day = dayLabel(card.when), on = table != null;
   // SHARE IT (the owner, 2026-10-23: "button on report on bottom named share") - the row's Share, while this report is the item on the
-  // table; the server reads the report off its message, never off the page (sharing.py)
+  // table; the server reads the report off its message, never off the page (sharing.py). On the table it is the task page's own Share
   const nav = React.useContext(CardNav);
   // ...and an email it drafts opens on the table at once, its task's Close out, for the owner to read and Send (the owner, 2026-10-23)
-  const share = useShare(`report:${card.key || card.mid}`, { kind: "report", title: card.title, message: card.mid }, !!(nav.table ?? nav.row) && !!card.mid && !card.bad,
-    { onShared: (how, out) => { if (how === "email" && out?.task_id) onOpenTask?.(out.task_id); },
-      summaryWhy: t("a summary is written from a task's work - a report is its own result; Email the result sends it") });
-  // ON THE TABLE, IN A TASK'S THREE SECTIONS (ItemSections; the owner, 2026-10-28): the report itself open in the middle, what produced it
-  // and what happens next the slim tabs either side - its moves are the same ones, on the same row
-  const src = useReportSource(table != null ? card.source_id : null), ask = useItemAsk(table != null && card, "report");
-  if (table != null) {
-    const ran = [card.when && fmtDateTime(card.when), src.run?.ms && t("took {time}", { time: secs(src.run.ms) })].filter(Boolean).join(" · ");
-    return <ItemSections kind="report" itemKey={card.key} label={card.bad ? t("Report failed") : t("Report")} height={table} about="report" lays ask={ask}
-      title={<>{name}<span style={{ fontWeight: 400 }} data-tq-report-day={day || undefined}>{day && ` · ${day}`}{rest}</span></>}
-      aside={<><SourceMark item={card} size={13} />{card.when && ago(card.when)}</>}
-      sections={[
-        { key: "from", n: 1, name: t(STEPS[0].name), lines: [name, src.runs && t("Runs {schedule}", { schedule: src.runs })].filter(Boolean), foot: card.when ? t("✓ Ran {time}", { time: fmtDateTime(card.when) }) : "",
-          body: <ItemPart data-tq-report-from="">
-            <Facts rows={[[t("Report"), <b key="n">{name}</b>], [t("Ran"), ran], [t("Runs"), src.runs], [t("Reads"), src.reads], [t("Goes"), src.goes], [t("Note"), src.run?.error]]} />
-            {card.source_id != null && <div className="tq-card-actions"><Button size="small" component="a" href={`#report=${card.source_id}`} sx={faint}>{t("Edit this report ↗")}</Button></div>}
-          </ItemPart> },
-        { key: "report", n: 2, name: t("Report"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "var(--tq-secondary, #746e64)" }} />,
-          lines: [card.title],
-          body: <ItemPart data-tq-report-body="">
-            {card.bad && <div className="tq-card-excerpt">{t("The run failed — the cause is in the report.")}</div>}
-            {card.brief_today && <TodayMeetingsStrip />}
-            {card.mid && <FullText mid={card.mid} revision={card.presentation_revision} report={{ name }} />}
-            {share}
-          </ItemPart> }]}
-        moves={<ItemPart data-tq-report-close="">
-            <RowMoves close={card} on={t("at the top of the report")} />
-            <Foot close={card} onDone={onDone} promote={card.bad ? "rerun" : null}
-              then={card.bad ? t("Running it again runs the report in the background - its result goes where the report sends it, and if it fails the bell says why.") : null}
-              where={<Where card={card} onOpenTask={onOpenTask} onTimeline={onTimeline} />} />
-          </ItemPart>} />;
-  }
+  const shareOpts = { onShared: (how, out) => { if (how === "email" && out?.task_id) onOpenTask?.(out.task_id); },
+    summaryWhy: "a summary is written from a task's work - a report is its own result; Email the result sends it" };
+  const shareOn = !!(nav.table ?? nav.row) && !!card.mid && !card.bad, shareOwner = `report:${card.key || card.mid}`, shareWhat = { kind: "report", title: card.title, message: card.mid };
+  const share = useShare(shareOwner, shareWhat, shareOn && !on, shareOpts);
+  const routine = useRoutine(on && card, "report", "Edit this report");
+  const made = useMade(on, card, { kind: "report", label: card.bad ? "Report failed" : "Report", title: `${name}${day ? ` · ${day}` : ""}${rest || ""}`, ...routine,
+    aside: <><SourceMark item={card} size={13} />{card.when && ago(card.when)}</>, said: card.title, share: { owner: shareOwner, result: shareWhat, on: shareOn, opts: shareOpts },
+    own: card.bad ? (nav.also || []).filter((a) => a.verb === "rerun") : [],
+    turn: <>{card.bad && <div className="tq-card-excerpt">The run failed — the cause is in the report.</div>}
+      {card.brief_today && <TodayMeetingsStrip />}
+      {card.mid && <ReportTurn mid={card.mid} revision={card.presentation_revision} name={name} />}</> });
+  if (on) return <MadePage made={made} height={table} />;
   return (
     <CardShell card={card} kicker={card.bad ? t("a report failed") : t("report")} title={card.title}
       lead={<div className="tq-card-lead" data-tq-report-day={day || undefined}><b>{name}</b>{day && ` · ${day}`}{rest}</div>}>
@@ -1016,14 +1012,14 @@ export function ReportCard({ card, onOpenTask, onTimeline, onDone, table = null 
 // A DASHBOARD landed: it is LOOKED AT, so it takes the canvas - the filter row, the tiles, the charts and the lists at the canvas's
 // height, scrolling inside itself - with the day it ran and when its rows were read, like a report card's heading (dashboards.py)
 export function DashboardCard({ card, onOpenTask, onDone, table = null }) {
-  useLocale();
-  const [got, setGot] = useState(null), [err, setErr] = useState("");
+  const [got, setGot] = useState(null), [err, setErr] = useState(""), on = table != null;
   // SHARE IT, like a report (the owner, 2026-10-23: Share on report / workflow / Result / dashboard): the store holds no page for a
   // dashboard, so it brings its own words - the tiles and the rows it drew, frozen at the press (snapshotOf); an email opens at once
   const nav = React.useContext(CardNav), snap = useMemo(() => (got?.data ? snapshotOf(got.config, got.data) : null), [got]);
-  const share = useShare(`dashboard:${card.key || card.mid || card.source_id}`, { kind: "dashboard", title: card.title, ...(snap || {}) }, !!(nav.table ?? nav.row) && !!snap,
-    { onShared: (how, out) => { if (how === "email" && out?.task_id) onOpenTask?.(out.task_id); },
-      summaryWhy: t("a summary is written from a task's work - a dashboard is its own result; Email the result sends it") });
+  const shareOpts = { onShared: (how, out) => { if (how === "email" && out?.task_id) onOpenTask?.(out.task_id); },
+    summaryWhy: "a summary is written from a task's work - a dashboard is its own result; Email the result sends it" };
+  const shareOn = !!(nav.table ?? nav.row) && !!snap, shareOwner = `dashboard:${card.key || card.mid || card.source_id}`, shareWhat = { kind: "dashboard", title: card.title, ...(snap || {}) };
+  const share = useShare(shareOwner, shareWhat, shareOn && !on, shareOpts);
   useEffect(() => {
     let live = true;
     setErr("");
@@ -1031,30 +1027,17 @@ export function DashboardCard({ card, onOpenTask, onDone, table = null }) {
     return () => { live = false; };
   }, [card.source_id, card.mid]);
   const [name] = nameAndRest(card.title, card.who), day = dayLabel(card.when), at = got?.data?.at ? fmtTime12(got.data.at) : "";
-  // ON THE TABLE, IN A TASK'S THREE SECTIONS, as a report is (ItemSections): the dashboard open in the middle, what produced it and what
-  // happens next the slim tabs either side, its moves the same ones on the same row
-  const src = useReportSource(table != null ? card.source_id : null), ask = useItemAsk(table != null && card, "dashboard");
-  const drawn = <div className="tq-dash-canvas" data-tq-dash-canvas="">
-    {got?.data ? <Dashboard spec={got.config} data={got.data} /> : <div className="tq-card-excerpt">{err || t(got ? DASH.never : DASH.loading)}</div>}
+  // ...ON THE TABLE in the turn's frame at the chat's whole width: a dashboard is looked at, and room is what it needs (the owner, 2026-11-23:
+  // "Dashboards should take up most of the screen since real estate is paramount")
+  // ...its room kept while its rows are read: drawn short, the chat moved down to the dashboard as they landed - the run's line jumped off the top
+  const drawn = <div className={`${on ? "tq-dash-canvas tq-turn-frame tq-turn-wide" : "tq-dash-canvas"}${got?.data ? "" : " tq-dash-wait"}`} data-tq-dash-canvas="">
+    {got?.data ? <Dashboard spec={got.config} data={got.data} /> : <div className="tq-card-excerpt">{err || (got ? DASH.never : DASH.loading)}</div>}
   </div>;
-  if (table != null) {
-    const ran = [card.when && fmtDateTime(card.when), src.run?.ms && t("took {time}", { time: secs(src.run.ms) })].filter(Boolean).join(" · ");
-    const edit = card.source_id != null && <div className="tq-card-actions"><Button size="small" component="a" href={`#report=${card.source_id}`} sx={faint}>{t(DASH.edit)} ↗</Button></div>;
-    return <ItemSections kind="dashboard" itemKey={card.key} label={t("Dashboard")} height={table} about="report" lays ask={ask}
-      title={<>{name}<span style={{ fontWeight: 400 }} data-tq-report-day={day || undefined}>{day && ` · ${day}`}{at && ` · ${t(DASH.updated)} ${at}`}</span></>}
-      aside={<><SourceMark item={card} size={13} />{card.when && ago(card.when)}</>}
-      sections={[
-        { key: "from", n: 1, name: t(STEPS[0].name), lines: [name, src.runs && t("Runs {schedule}", { schedule: src.runs })].filter(Boolean), foot: card.when ? t("✓ Ran {time}", { time: fmtDateTime(card.when) }) : "",
-          body: <ItemPart data-tq-dash-from="">
-            <Facts rows={[[t("Dashboard"), <b key="n">{name}</b>], [t("Ran"), ran], [t("Runs"), src.runs], [t("Reads"), src.reads], [t("Goes"), src.goes], [t("Note"), src.run?.error]]} />
-            {edit}
-          </ItemPart> },
-        { key: "report", n: 2, name: t("Dashboard"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "var(--tq-secondary, #746e64)" }} />,
-          lines: [card.title],
-          // ...its white cards straight on the section's warm ground, as on the Dashboards page: no card around the cards
-          body: <div data-tq-dash-body="">{drawn}{share}</div> }]}
-        moves={<ItemPart data-tq-dash-close=""><RowMoves close={card} on={t("at the top of the dashboard")} /><Foot close={card} onDone={onDone} /></ItemPart>} />;
-  }
+  const routine = useRoutine(on && card, "dashboard", DASH.edit);
+  const made = useMade(on, card, { kind: "dashboard", label: "Dashboard", title: `${name}${day ? ` · ${day}` : ""}${at ? ` · ${DASH.updated} ${at}` : ""}`, ...routine, wide: true,
+    aside: <><SourceMark item={card} size={13} />{card.when && ago(card.when)}</>, said: card.title, share: { owner: shareOwner, result: shareWhat, on: shareOn, opts: shareOpts },
+    turn: drawn });
+  if (on) return <MadePage made={made} height={table} />;
   return (
     <CardShell card={card} kicker={t("dashboard")} title={card.title}
       lead={<div className="tq-card-lead" data-tq-report-day={day || undefined}><b>{name}</b>{day && ` · ${day}`}{at && ` · ${t(DASH.updated)} ${at}`}</div>}>
@@ -1066,45 +1049,8 @@ export function DashboardCard({ card, onOpenTask, onDone, table = null }) {
   );
 }
 
-// THE HABITS ROW (habits.py; the owner, 2026-11-01: "how many advisor ideas do i have now? it's too many. what does keep it/remind me do
-// here?"): one row for every habit the Advisor learned, each a sentence to the owner - what was seen, what changes - with its own buttons:
-// Not right on one it adopted (taken back for good), Adopt / No on one it asks about (No: never asked again). Moving on from the row marks
-// the adopted ones seen; once nothing in it is open, it goes - folded with the last answer's word when that answer emptied it
-function HabitList({ card, onDone }) {
-  useLocale();
-  const [items, setItems] = useState(card.action?.habits || []), [busy, setBusy] = useState(""), [err, setErr] = useState("");
-  useEffect(() => { setItems(card.action?.habits || []); }, [card.action]);
-  const unseen = useRef(false);
-  useEffect(() => { unseen.current = items.some((h) => h.adopted); });
-  useEffect(() => () => { if (unseen.current) api.post(`/api/assistant/ideas/${card.idea}/seen`, {}).catch(() => {}); }, [card.idea]);
-  const answer = async (h, yes, word) => {
-    setBusy(h.line); setErr("");
-    try {
-      const { data } = await api.post(`/api/assistant/ideas/${card.idea}/habit`, { line: h.line, yes });
-      setItems((xs) => xs.filter((x) => x.line !== h.line));
-      if (!data.open) { unseen.current = false; onDone?.(word); }
-    } catch (e) { setErr(failOf(e)); }
-    setBusy("");
-  };
-  const b = { minHeight: 28, py: 0, px: 1.25, fontSize: 12.5, flexShrink: 0 };
-  return (
-    <div data-tq-habits="">
-      {items.map((h) => (
-        <div key={h.line} data-tq-habit={h.adopted ? "adopted" : "ask"} style={{ display: "flex", gap: 12, alignItems: "baseline", padding: "6px 0" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>{h.say}</div>
-          {h.adopted
-            ? <Button size="small" sx={{ ...b, ...faint }} disabled={!!busy} onClick={() => answer(h, false, "Not right")}>{t("Not right")}</Button>
-            : <><Button size="small" variant="contained" disableElevation sx={{ ...b, ...primary }} disabled={!!busy} onClick={() => answer(h, true, "Adopt")}>{t("Adopt")}</Button>
-              <Button size="small" sx={{ ...b, ...faint }} disabled={!!busy} onClick={() => answer(h, false, "No")}>{t("No", {}, "answer")}</Button></>}
-        </div>))}
-      <CardErr err={err} />
-    </div>
-  );
-}
-
 // the ids a lookout idea rests on (lookout.land: [{ref: "msg12" | "task7", label}]) as links into the app: #msg=N puts that mail's card up,
-// #task=N opens the task (canvasLinks.canvasRequestFromHash); null with none
-export const citeHref = (ref) => { const m = /^(msg|task)(\d+)$/.exec(String(ref || "")); return m ? `#${m[1]}=${m[2]}` : null; };
+// #task=N opens the task (canvasLinks.canvasRequestFromHash) - madeTask.citeHref; null with none
 function citesOf(evidence) {
   const xs = (Array.isArray(evidence) ? evidence : []).map((e) => ({ ...e, href: citeHref(e?.ref) })).filter((e) => e.href);
   return xs.length ? <span data-tq-idea-cites="">{xs.map((e) => (
@@ -1114,14 +1060,10 @@ function citesOf(evidence) {
 
 // the assistant's own line: the slipped ask, the promise, the thread gone quiet
 export function IdeaCard({ card, onOpenTask, onTimeline, onNavigate, onDone, table = null }) {
-  useLocale();
-  // ...its own box answers questions on it, as a report's and an FYI's do (the owner, 2026-11-05) - no task, no agent
-  const ask = useItemAsk(table != null && card, "idea");
-  const a = card.action || {};
+  const a = card.action || {}, on = table != null;
   // A RULE QUESTION's yes makes the rule it proposed (promote.py); its no is the chips' Not ours, like a connect idea's
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const rule = card.idea_kind === "rule" && a.policy && card.idea;
-  const habits = card.idea_kind === "habit" && Array.isArray(a.habits) && card.idea;
   const makeRule = async () => {
     setBusy(true); setErr("");
     try { await api.post(`/api/assistant/ideas/${card.idea}/rule`, {}); onDone?.("Make it a rule"); }
@@ -1155,53 +1097,33 @@ export function IdeaCard({ card, onOpenTask, onTimeline, onNavigate, onDone, tab
   const suggest = look ? a.next_step || a.suggest : a.suggest;
   const rows = [[t("Pitch"), look && a.pitch], [t("Based on"), (from || why) && <>{from}{from && why && ": "}{why}</>], [t("Rests on"), cites]];
   const facts = rows.filter(([, v]) => v);
-  const chip = card.lane === "asked" ? t("on you") : t("not on you");
-  const foot = (
-      <Foot
-        verb={card.idea_kind === "connect" && a.connector_type ? (
-          <Button size="small" variant="contained" disableElevation data-tq-verb="connect" sx={primary}
-            onClick={() => go("Connections", `connector=${a.connector_type}`)}>{t(a.planned ? "See {name}" : "Connect {name}", { name: a.title || a.connector_type })}</Button>
-        ) : card.idea_kind === "health" && a.tab ? (
-          <Button size="small" variant="contained" disableElevation data-tq-verb="open" sx={primary} onClick={() => go(a.tab, a.hash || "")}>{t("Open {name}", { name: tabWord(a.tab) })}</Button>
-        ) : card.idea_kind === "workstream" && a.slug ? (
-          <Button size="small" variant="contained" disableElevation data-tq-verb="workstream_add" sx={primary} disabled={busy} data-tq-workstream-add={a.slug}
-            onClick={addWorkstream}>{busy ? t("Adding…") : a.added ? t("Keep it") : t("Add it")}</Button>
-        ) : card.idea_kind === "report" && a.report ? (
-          // TASKUARY ITSELF FAILING AGAIN (reportideas.py): the one Report popup, drafted from what the Advisor counted - scrubbed, the owner's Submit
-          <Button size="small" variant="contained" disableElevation data-tq-verb="report_bug" sx={primary}
-            onClick={() => openBugReport(a.report)}>{btn("report_bug", "ask")}</Button>
-        ) : rule ? (
-          <Button size="small" variant="contained" disableElevation data-tq-verb="make_rule" sx={primary} disabled={busy} onClick={makeRule}>{busy ? t("Making it…") : t("Make it a rule")}</Button>
-        ) : null}
-        then={card.idea_kind === "connect" && a.connector_type ? t("{action} opens its card on Connections - nothing changes until you finish there.", { action: t(a.planned ? "See" : "Connect") })
-          : card.idea_kind === "health" && a.tab ? t("Open {tab} takes you to the tab that fixes it.", { tab: tabWord(a.tab) })
-          : card.idea_kind === "report" && a.report ? t("{action} drafts it for Taskuary's tracker with names and mail taken out - you read it and submit it on GitHub.", { action: btn("report_bug", "ask") })
-          : rule ? t("Make it a rule adds it under Settings, Rules - switch it off there to undo it.")
-          // the buttons in the bar say what they do; the sentence that explained them is gone (2026-10-10)
-          : null}
-        where={<Where card={{ ...card, tid: a.tid || card.tid, mid: a.mid || card.mid }} onOpenTask={onOpenTask} onTimeline={onTimeline} />} />);
-  // ON THE TABLE, IN THE THREE SECTIONS EVERYTHING ELSE COMES IN (ItemSections; the owner, 2026-10-31: "it looks pretty dumb this idea ... it
-  // should go in the coming from tab like fyi's"): what the Advisor noticed opens in Came from - the idea, its suggestion and the mail it is
-  // based on - Agent and Close out beside it; its moves are the same ones, on its panes (ItemLay), and the bar is Back and Next
-  if (table != null) return (
-    <ItemSections kind="idea" itemKey={card.key} label={look ? `${t("Advisor")} · ${t(ideaWord(card.idea_kind))}` : t("Advisor")} height={table} about="from" lays ask={ask} title={card.title} noAgent
-      aside={<><SourceMark item={card} size={13} />{card.when && ago(card.when)}{card.workstream && <WorkstreamLabel slug={card.workstream} sx={{ ml: 0.75 }} />}</>}
-      sections={[
-        { key: "from", n: 1, name: t(STEPS[0].name), lines: [card.title, `${chip[0].toUpperCase()}${chip.slice(1)}`],
-          body: <><ItemPart data-tq-idea-from="">
-            <div className="tq-card-lead">{card.title}{suggest && !habits && <> {suggest}</>}</div>
-            {/* ...what it is based on, the mail itself one press away, whenever there is one - with or without the Advisor's reason; the
-                habits row lists its habits instead, with no Whose move or Suggestion */}
-            {habits ? <HabitList card={card} onDone={onDone} />
-              : <Facts rows={rows} />}
-          </ItemPart><CardErr err={err} /></> }]}
-        moves={<ItemPart data-tq-idea-close=""><RowMoves on={t("on its panes")} />{foot}</ItemPart>} />);
+  const chip = card.lane === "asked" ? "on you" : "not on you";
+  // ITS OWN MOVE, by kind - a press of its own, lit: on the table the task page's row carries it (taskMoves `made`), off it the card's Foot
+  const own = card.idea_kind === "connect" && a.connector_type ? { verb: "connect", label: `${a.planned ? "See" : "Connect"} ${a.title || a.connector_type}`, onClick: () => go("Connections", `connector=${a.connector_type}`),
+      then: <><b>{a.planned ? "See" : "Connect"}</b> opens its card on Connections - nothing changes until you finish there.</> }
+    : card.idea_kind === "health" && a.tab ? { verb: "open_tab", label: `Open ${a.tab}`, onClick: () => go(a.tab, a.hash || ""), then: <><b>Open {a.tab}</b> takes you to the tab that fixes it.</> }
+    : card.idea_kind === "workstream" && a.slug ? { verb: "workstream", label: busy ? "Adding…" : a.added ? "Keep it" : "Add it", disabled: busy, onClick: addWorkstream }
+    // TASKUARY ITSELF FAILING AGAIN (reportideas.py): the one Report popup, drafted from what the Advisor counted - scrubbed, the owner's Submit
+    : card.idea_kind === "report" && a.report ? { verb: "report_bug", label: btn("report_bug", "ask"), onClick: () => openBugReport(a.report),
+      then: <><b>{btn("report_bug", "ask")}</b> drafts it for Taskuary's tracker with names and mail taken out - you read it and submit it on GitHub.</> }
+    : rule ? { verb: "rule", label: busy ? "Making it…" : "Make it a rule", disabled: busy, onClick: makeRule, then: <><b>Make it a rule</b> adds it under Settings, Rules - switch it off there to undo it.</> }
+    : null;
+  // ON THE TABLE, A TASK IN THE ONE PAGE (useMade; the owner, 2026-11-23: "Right now the Advisor comes in the Came from tab but should be in the
+  // Agent tab since it's generated"): the prompt its look was sent as the input line, what it noticed and what to do as the turn - and what it
+  // rests on, each mail and task it cites, its Came from (madeTask.ideaSource)
+  const made = useMade(on, card, { kind: "idea", label: look ? `Advisor · ${ideaWord(card.idea_kind)}` : "Advisor", title: card.title,
+    input: { head: `Automated · Advisor · ${ideaWord(card.idea_kind)}`, text: card.asked || "" }, source: ideaSource(card), own: own ? [own] : [], said: suggest || card.title,
+    aside: <><SourceMark item={card} size={13} />{card.when && ago(card.when)}{card.workstream && <WorkstreamLabel slug={card.workstream} sx={{ ml: 0.75 }} />}</>,
+    turn: <><ViewSpec spec={ideaView(card)} /><CardErr err={err} /></> });
+  if (on) return <MadePage made={made} height={table} />;
   return (
-    <CardShell card={card} kicker={<>{t(ideaWord(card.idea_kind))}<span className="tq-card-chip">{chip}</span></>} title={card.title}>
-      {habits && <HabitList card={card} onDone={onDone} />}
-      {!habits && suggest && <div className="tq-card-lead">{suggest}</div>}
-      {!habits && facts.length > 0 && <div className="tq-card-facts">{facts.map(([k, v]) => <React.Fragment key={k}><div>{k}</div><div>{v}</div></React.Fragment>)}</div>}
-      {foot}
+    <CardShell card={card} kicker={<>{ideaWord(card.idea_kind)}<span className="tq-card-chip">{chip}</span></>} title={card.title}>
+      {suggest && <div className="tq-card-lead">{suggest}</div>}
+      {facts.length > 0 && <div className="tq-card-facts">{facts.map(([k, v]) => <React.Fragment key={k}><div>{k}</div><div>{v}</div></React.Fragment>)}</div>}
+      <Foot verb={own && <Button size="small" variant="contained" disableElevation sx={primary} disabled={!!own.disabled} onClick={own.onClick}
+          data-tq-workstream-add={own.verb === "workstream" ? a.slug : undefined}>{own.label}</Button>}
+        then={own?.then || null}
+        where={<Where card={{ ...card, tid: a.tid || card.tid, mid: a.mid || card.mid }} onOpenTask={onOpenTask} onTimeline={onTimeline} />} />
       <CardErr err={err} />
     </CardShell>
   );
@@ -1225,13 +1147,6 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
     setBusy("");
   };
   const asks = card.kind !== "fyi";
-  // a list's way off it (unsubscribe.js): the whole item IS the list's mail, so its Unsubscribe rides the row with the item's verbs,
-  // and the press folds the card wearing it as its badge
-  const unsub = async () => {
-    setBusy("unsubscribe"); setErr("");
-    try { await unsubscribeFrom(api, card.mid); onDone?.(btnSource("unsubscribe")); } catch (e) { setErr(failOf(e)); }
-    setBusy("");
-  };
   // ...read off what is connected, like the row (concierge.chips_for): the card offered Send to coding agent with no coding tool, so the
   // card and the row disagreed and the press failed (the re-audit, 2026-10-18)
   const canCode = useCapabilities().coding;
@@ -1254,8 +1169,8 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
     } catch (e) {
       const msg = errText(e);
       // Compatibility with an older server response when this card already knows its task.
-      if (card.tid && typeof msg === "string" && /could not tell which checkout|no local path/i.test(msg))
-        setRepoAsk({ taskId: card.tid, agent: "" });   // blank: the server finds the coding profile
+      if (card.tid && /no local path/i.test(msg))
+        setRepoAsk({ taskId: card.tid, agent: "" });   // blank: the server finds the coding agent
       else setErr(msg);
     }
     setBusy("");
@@ -1389,13 +1304,12 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
   if (table != null && card.kind === "fyi") return (
     <FyiSections card={card} table={table} items={thread} err={err}
       msgs={<>{thread.map((it) => <FyiMessage key={it.key || it.mid} item={it}>{it.mid && <FullText mid={it.mid} revision={it === card ? card.presentation_revision : undefined} />}</FyiMessage>)}</>}
-      foot={<Foot openTask={onOpenTask} close={card} onDone={onDone} stages={{ mine: "from" }} tuck={dangerTuck(card)}
-        extra={canUnsubscribe(card) ? [{ verb: "unsubscribe", label: btn("unsubscribe"), title: btnHint("unsubscribe"), onClick: unsub, disabled: !!busy }] : []}
+      foot={<Foot openTask={onOpenTask} close={card} onDone={onDone}
         covers={[...(own || mineAlone ? (suggestedKind === "coding" ? ["coding_agent", "coder"] : ["regular_agent"]) : ["reply"]), ...(mineAlone ? ["reply", "not_ours"] : [])]}
         where={<Where card={card} onOpenTask={onOpenTask} onTimeline={onTimeline} />} />} />
   );
   return (
-    <CardShell card={card} kicker={card.kind === "fyi" ? t("fyi") : reported ? t("agent reported") : suggestedKind === "coding" ? t("coding · nobody on it") : own || mineAlone ? t(kindLabel("task")) : t(WORD.asked)}
+    <CardShell card={card} kicker={card.kind === "fyi" ? sortedSays(card).label : reported ? "agent reported" : suggestedKind === "coding" ? "coding · nobody on it" : own || mineAlone ? kindLabel("task") : WORD.asked}
       lead={<Story card={card} agent={own || mineAlone ? true : false} words={words} tail={!!verb || reported}
         fallback={card.channel === "own" ? card.preview : card.title} />}
       /* a Jira reference says where the issue stands on its own (jiraStatus.js): its raw status word, never the
@@ -1407,12 +1321,11 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
           <CardErr err={shut.err} />
         </YourMove>
       ) : verb ? (
-        <YourMove title={own || mineAlone ? t("who should take it?") : t("reply to {name}", { name: asker })} go={verb}
-          then={own || mineAlone ? t(suggestedKind === "coding" ? "starts a coding agent on it; it comes back here when it stops." : "starts an agent on it; it comes back here when it stops.")
-            : t("writes one for you to approve here - nothing is sent.")} />
-      ) : card.kind === "fyi" && <><DangerNote danger={card.danger} aim={card.danger_aim} /><div className="tq-card-note">{t("Nothing to decide - it only wants you to know.")}</div></>}
-      <Foot openTask={onOpenTask} close={card} onDone={onDone} tuck={dangerTuck(card)}
-        extra={card.kind === "fyi" && canUnsubscribe(card) ? [{ verb: "unsubscribe", label: btn("unsubscribe"), title: btnHint("unsubscribe"), onClick: unsub, disabled: !!busy }] : []}
+        <YourMove title={own || mineAlone ? "who should take it?" : `reply to ${asker}`} go={verb}
+          then={own || mineAlone ? `starts ${suggestedKind === "coding" ? "a coding agent" : "an agent"} on it; it comes back here when it stops.`
+            : "writes one for you to approve here - nothing is sent."} />
+      ) : card.kind === "fyi" && <><DangerNote danger={card.danger} aim={card.danger_aim} /><div className="tq-card-note">{sortedSays(card).note || "Nothing to decide - it only wants you to know."}</div></>}
+      <Foot openTask={onOpenTask} close={card} onDone={onDone}
         covers={[...(own || mineAlone ? (suggestedKind === "coding" ? ["coding_agent", "coder"] : ["regular_agent"]) : ["reply"]), ...(mineAlone ? ["reply", "not_ours"] : [])]}
         where={<Where card={card} onOpenTask={onOpenTask} onTimeline={onTimeline} />} />
       {askOpen && <AgentAsk coding={suggestedKind === "coding"} what={card.mid ? t("It gets the message and its attachments.") : t("It gets the task and its messages.")}
@@ -1484,8 +1397,12 @@ const firstNames = (who = []) => who.slice(0, 2).map((w) => String(w).split(/[ @
 // whether the opener's Walk has anything to walk (AssistantView welcome); the card's headline is the rail's Tasks count (DayOpener)
 export const onYouCount = (groups = []) => groups.reduce((n, g) => n + (g.you ?? (SECTION[g.key]?.on_you ? g.n ?? g.rows.length : 0)), 0);
 // `loading`: the launch is still reading the mail, so the counts are not the day's yet - they say so instead of growing under you
-export function DayOpener({ groups = [], onSection, top = null, loading = false }) {
-  useLocale();
+// THE OPEN TASKS BY NAME (the owner, 2026-11-24: the card read "Tasks · you · 1" and named nothing): under the Tasks row, each of its first
+// NAMED rows as the rail draws it - its title and where it stands (the row's own state word, funnel_presentation.shows) - a link that opens it as
+// a rail press does; the rest "+N more", which walks the section
+const NAMED = 3;
+export const namedTasks = (g) => (g?.key === "task" ? { rows: g.rows.slice(0, NAMED), more: Math.max(0, (g.n ?? g.rows.length) - Math.min(NAMED, g.rows.length)) } : null);
+export function DayOpener({ groups = [], onSection, onOpen, top = null, loading = false }) {
   const today = useCalendarToday();
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick((v) => v + 1), 60000); return () => clearInterval(id); }, []);
@@ -1511,11 +1428,18 @@ export function DayOpener({ groups = [], onSection, top = null, loading = false 
   // band count every row the rail draws under it (summarize's `n`, the rail's own count), so the opener and the rail say one number
   const tasks = act.reduce((n, g) => n + (SECTION[g.key]?.on_you ? g.n ?? g.rows.length : 0), 0);
   const bandN = (g) => g.n ?? g.rows.length;
-  const row = (g) => (
-    <button key={g.key} type="button" className={`tq-day-row lvl-${g.key}`} onClick={() => onSection?.(g.key)} title={t("Walk me through {group}", { group: t(g.word) })}>
-      <i className="dot" /><b className="lbl">{t(g.word)}</b><span className="who">{g.urgent ? t("{count} urgent · ", { count: g.urgent }) : ""}{gistOf(g)}</span><b className="n">{loading ? "…" : bandN(g)}</b>
-    </button>
-  );
+  const row = (g) => { const named = namedTasks(g); return (
+    <React.Fragment key={g.key}>
+      <button type="button" className={`tq-day-row lvl-${g.key}`} onClick={() => onSection?.(g.key)} title={`Walk me through ${g.word}`}>
+        <i className="dot" /><b className="lbl">{g.word}</b><span className="who">{g.urgent ? `${g.urgent} urgent · ` : ""}{named ? "" : gistOf(g)}</span><b className="n">{loading ? "…" : bandN(g)}</b>
+      </button>
+      {named && !loading && !!named.rows.length && <div className="tq-day-named" data-tq-day-named="">
+        {named.rows.map((i) => <button key={i.key} type="button" className="tq-day-task" onClick={() => onOpen?.(i.key)} title={`Open ${refOf(i) || "it"}`}>
+          <span className="t">{i.title}</span><span className="st"> - {stateOf(i, laneMeta(i.lane).word)}</span></button>)}
+        {!!named.more && <button type="button" className="tq-day-task more" onClick={() => onSection?.(g.key)}>+{named.more} more</button>}
+      </div>}
+    </React.Fragment>
+  ); };
   // THE WHOLE CARD FROM THE FIRST DAY (the owner, 2026-10-15: "on first startup it should show the full card - say calendar missing if
   // not available"): the calendar side says what it is - none connected, unreadable, or a day with no meetings - instead of vanishing.
   // `sources` is what calendar.today could reach; an answer from before it was sent says nothing, so the side stays as it was.
@@ -1551,8 +1475,8 @@ export function DayOpener({ groups = [], onSection, top = null, loading = false 
         <div className="tq-day-pane tq-day-agenda">
           <div className="tq-day-h">{t("Your day · {meetings}", { meetings: plural(evs.length, "meeting") })}</div>
           {/* the list takes no height of its own past `room`: the card is as tall as its row, and the rest of the day scrolls */}
-          <div className="tq-day-evs" style={{ minHeight: room }}><div ref={evsRef} className="in" data-tq-day-evs="">
-            {allDay.map((e) => <div key={e.subject} className="ev allday"><span className="t">{t("all day")}</span><span className="s"><b>{e.subject}</b></span></div>)}
+          <div className={`tq-day-evs${nLines > EV_SHOWN ? " scrolls" : ""}`} style={{ minHeight: room }}><div ref={evsRef} className="in" data-tq-day-evs="">
+            {allDay.map((e) => <div key={e.subject} className="ev allday"><span className="t">all day</span><span className="s"><b>{e.subject}</b></span></div>)}
             {evs.map((e, i) => (
               <React.Fragment key={`${e.start}-${i}`}>
                 {i === nowAt && <div className="ev now"><span className="t">{t("now")}</span><i /></div>}
@@ -1602,7 +1526,6 @@ export function BriefCard({ card, onStart }) {
 // line - who, the subject, when - and a line of what they wrote (gistFor: their words, no quoted chain, no pictures). Its line is the press
 // that opens it: its whole text, pictures and "open the original" (children, mounted only then) and, in a batch, its own moves. `open` and
 // `onHead` hand the state to the batch (one open at a time); without them the message keeps its own
-const whoName = (w) => String(w || t("someone")).replace(/\s*<[^>]*>/g, "") || t("someone");
 // the mail's own subject, beside triage's title when the two differ (B3): what it was sent as, and what triage made of it
 export const shownSubject = (item) => (item?.subject && item.subject !== item.title ? item.subject : "");
 // what triage read the words as trying to make an AI do (message.Danger): the task page's one warning line, on the card too (B3) - a scam
@@ -1648,20 +1571,18 @@ function FyiSections({ card, table, items, msgs, foot, err, next }) {
   useLocale();
   const nav = React.useContext(CardNav), n = items.length, batch = card.kind === "fyis";
   // ...A HANDFUL GETS THE SAME BOX A SINGLE ONE DOES, by the same road (the owner, 2026-11-06): its ask, under Came from
-  const ask = useItemAsk(card, "fyi");
-  return <ItemSections kind={batch ? "fyis" : "fyi"} itemKey={card.key} label={t("FYI")} height={table} about="from" lays={!batch} ask={ask} hands={batch}
-    title={batch ? t("{count} - nothing to decide", { count: plural(n, "message") }) : card.title}
+  const ask = useItemAsk(card, "fyi"), says = sortedSays(card);
+  return <ItemSections kind={batch ? "fyis" : "fyi"} itemKey={card.key} label={says.label} height={table} about="from" lays={!batch} ask={ask} hands={batch}
+    title={batch ? plural(n, "message") : card.title}
     aside={<><SourceMark item={card} size={13} />{card.when && ago(card.when)}</>}
     sections={[
-      { key: "from", n: 1, name: t(STEPS[0].name), lines: [t("{count} · nothing to decide", { count: plural(n, "message") }), ...items.slice(0, 3).map((i) => `${whoName(i.who)}: “${i.title || ""}”`)],
-        foot: t("✓ Sorted: FYI"),
-        // ...and triage's miss said where a task's Not a task is (the owner, 2026-10-29): Should be a task, from the row's own verbs
-        ...(batch ? {} : { moves: <PaneMoves sec="from" /> }),
+      { key: "from", n: 1, name: STEPS[0].name, lines: [plural(n, "message"), ...items.slice(0, 3).map((i) => `${whoName(i.who)}: “${i.title || ""}”`)],
+        foot: says.foot,
         // ...the handful as ONE list in one card (the owner, 2026-10-28: "too much space in fyi"): a hairline between messages, not a card each
         body: <><ItemPart className="tq-item-msgs" sx={{ py: 0.25 }}>{msgs}</ItemPart><CardErr err={shownErr(err)} /></> }]}
       moves={<ItemPart data-tq-fyi-close="">
-          <div className="tq-card-note">{t(n === 1 ? "Nothing to decide - it only wants you to know." : "Nothing to decide - they only want you to know.")}</div>
-          <RowMoves next={next} on={batch ? "" : t("on its panes")} />
+          <div className="tq-card-note">{says.note || `Nothing to decide - ${n === 1 ? "it only wants" : "they only want"} you to know.`}</div>
+          <RowMoves next={next} on={batch ? "" : "on its panes"} />
           {foot}
         </ItemPart>} />;
 }
@@ -1669,16 +1590,10 @@ function FyiSections({ card, table, items, msgs, foot, err, next }) {
 // how many fyi a card can show whole before every line folds to one (FyisCard)
 const FOLD_AT = 6;
 
-export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAgent, table = null, movedTo = {}, onOpenRef = null }) {
-  useLocale();
-  const caps = useCapabilities(), canCode = caps.coding;      // no coding tool connected: no Coding agent (capabilities.js)
-  const noAi = cannotStart(caps);                              // ...and no AI: Send to agent greyed, saying why (trust audit F3)
+export function FyisCard({ card, onDone, onTimeline, onAgent, table = null, movedTo = {}, onOpenRef = null }) {
+  const noAi = cannotStart(useCapabilities());                 // no AI: Send to agent greyed, saying why (trust audit F3)
   const [open, setOpen] = useState(null);
-  const [busy, setBusy] = useState("");
-  const [err, setErr] = useState("");
-  const [left, setLeft] = useState({});                      // the lines whose list was left: the press is a badge on that line
-  // SEND TO AGENT ON ONE LINE opens the agent box under that line (RunForm.AgentAsk) - what about it is the issue, which agent - and
-  // only its Start hands it over (the owner, 2026-10-23); { key, coding }
+  // ...off the table (a card in the chat, no box of its own to take a chip) Send to agent opens the agent box under that line (RunForm.AgentAsk)
   const [asking, setAsking] = useState(null);
   const items = (card.items || []).map((i) => (movedTo[i.key] && !i.tid ? { ...i, tid: movedTo[i.key].tid } : i));
   // A batch of four is read whole: every line carries its gist and its two doors, and you never
@@ -1687,51 +1602,14 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
   // it does 4 fyi or 10 fyis at one time"). So past FOLD_AT the lines fold: one apiece, and the
   // gist and the doors appear on the one you open.
   const folded = items.length > FOLD_AT;
-  // a reply is the one immediate road (PW-126): the draft is written now, nothing is sent, nothing is marked
-  const reply = async (i) => {
-    setBusy(i.key); setErr("");
-    try { const data = await openReply(api, i.mid); onSurface?.(data.reviewId ? `review:${data.reviewId}` : null, { source: data.drafting ? "Drafting a reply…" : "Reply opened - write it, or Draft with AI", values: {} }); }
-    catch (e) { setErr(failOf(e)); }
-    setBusy("");
-  };
-  const propose = async (verb, i) => {
-    setBusy(i.key); setErr("");
-    try { await onPropose?.(verb, i.key); } catch (e) { setErr(failOf(e)); }
-    setBusy("");
-  };
-  // one line's list, left from under that line (unsubscribe.js) - never the handful's, and never marking it read: All read does that
-  const unsub = async (i) => {
-    setBusy(i.key); setErr("");
-    try { await unsubscribeFrom(api, i.mid); setLeft((l) => ({ ...l, [i.key]: true })); } catch (e) { setErr(failOf(e)); }
-    setBusy("");
-  };
-  // ...and acting on it belongs to the ONE you opened, through the same proposal road the words take (PW-151) - never on the handful, never
-  // marking its siblings; and an entry already filed under a task is never offered to be made one (the owner, 2026-10-01)
-  // ...ON THE TABLE THE LINE'S SEND TO AGENT IS THE AGENT TAB'S BOX, the handful a chip each, the pressed one first (ItemSections.handToItem; the
-  // owner, 2026-11-05: "attach the report or fyi list to the prompt box"): ONE agent starts on the first chip left, the rest named for it to read
-  const handAll = (i, coding) => handToItem(card.key, { verb: coding ? "coding_agent" : "regular_agent",
-    items: [i, ...items.filter((x) => x.key !== i.key)].filter((x) => x.mid && !x.tid && !movedTo[x.key]).map((x) => ({ key: x.key, title: `${whoName(x.who)}: ${x.title || ""}` })),
-    start: async (o) => {
-      const [lead, ...rest] = o.items.map((c) => items.find((x) => x.key === c.key)).filter(Boolean);
-      const also = rest.length ? `\n\nTHE OTHER MESSAGES OF THIS LIST IT IS ABOUT (read each with read_message)\n${rest.map((x) => `m${x.mid} - ${whoName(x.who)}: ${x.title || ""}`).join("\n")}` : "";
-      await onAgent?.(lead, { verb: o.verb, text: `${o.text}${also}`, files: o.files });
-    } });
-  const ask = (i, coding) => { if (!(table != null && handAll(i, coding))) setAsking({ key: i.key, coding }); };
+  // ...ON THE TABLE THE LINE'S ONE MOVE PUTS IT ON THE AGENT TAB'S BOX, the handful a chip each, the pressed one first (itemHand.arrivalHand)
+  const ask = (i) => { if (!(table != null && handToItem(card.key, arrivalHand(i, items, movedTo, onAgent)))) setAsking(i.key); };
   const actsOf = (i) => (<>
             <div className="tq-card-actions tq-fyi-acts">
-              {/* ...Reply where somebody reads one (the item's `replies`, the server's): a code host's or a billing mailer's line has none */}
-              {i.mid && i.replies && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => reply(i)} title={btnHint("reply")} sx={quiet}>{btn("reply")}</Button>}
-              {i.mid && !i.tid && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => propose("mine", i)} title={btnHint("mine", "fyi")} sx={quiet}>{btn("mine", "fyi")}</Button>}
-              {i.mid && !i.tid && canCode && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => ask(i, true)} title={btnHint("coding_agent")} sx={quiet}>{btn("coding_agent")}</Button>}
-              {i.mid && !i.tid && <Button size="small" variant="outlined" disabled={!!busy || !!noAi} onClick={() => ask(i, false)} title={noAi || btnHint("regular_agent")} sx={quiet}>{btn("regular_agent")}</Button>}
-              {/* one line of the handful can be put down on its own - All read was the only way to let any of it go */}
-              {i.mid && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => propose("not_ours", i)} title={btnHint("not_ours")} sx={quiet}>{btn("not_ours")}</Button>}
-              {canUnsubscribe(i) && (left[i.key] ? <span className="tq-pressed" data-tq-pressed={btn("unsubscribe")}>✓ {btn("unsubscribe")}</span>
-                : <Button size="small" variant="outlined" disabled={!!busy} onClick={() => unsub(i)} title={btnHint("unsubscribe")} sx={quiet}>{btn("unsubscribe")}</Button>)}
-              <Button size="small" onClick={() => onSurface?.(i.key)} sx={faint}>{t("Talk about it")}</Button>
+              {arrivalMoves(i).map((v) => <Button key={v} size="small" variant="outlined" disabled={!!noAi} onClick={() => ask(i)} title={noAi || btnHint(v)} sx={quiet}>{btn(v)}</Button>)}
             </div>
-          {asking?.key === i.key && (
-            <AgentAsk key={`${i.key}:${asking.coding}`} coding={asking.coding} what={t("It gets the message and its attachments.")}
+          {asking === i.key && (
+            <AgentAsk key={i.key} what="It gets the message and its attachments."
               onClose={() => setAsking(null)} onStart={async (o) => { await onAgent?.(i, o); setAsking(null); }} />
           )}
   </>);
@@ -1743,7 +1621,7 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
   // together"): Came from open on every message of the handful at once - each one line, who, what and when, and a line of its words - and
   // the one pressed opened whole with its own moves under it, as on the card; Agent and Close out the slim tabs, All read, next the row's
   if (table != null) return (
-    <FyiSections card={card} table={table} items={items} err={err} foot={foot} next={{ label: btn("next", "batch"), title: btnHint("next", "batch") }}
+    <FyiSections card={card} table={table} items={items} foot={foot} next={{ label: btn("next", "batch"), title: btnHint("next", "batch") }}
       msgs={items.map((i) => (
         <FyiMessage key={i.key} item={i} open={open === i.key} onHead={() => setOpen((o) => (o === i.key ? null : i.key))} moved={movedTo[i.key]} onRef={onOpenRef}>
           {i.mid ? <FullText mid={i.mid} revision={i.presentation_revision || card.presentation_revision} /> : gistFor(i) && <div className="tq-card-full">{gistFor(i)}</div>}
@@ -1752,8 +1630,8 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
         </FyiMessage>))} />
   );
   return (
-    <CardShell card={card} kicker={t("{count} fyi · nothing to decide", { count: items.length })}
-      lead={<Lead text={t(items.length === 1 ? "{count} message just wants you to know something." : "{count} messages just want you to know something.", { count: items.length })} />} err={err}>
+    <CardShell card={card} kicker={`${items.length} fyi`}
+      lead={<Lead text={`${plural(items.length, "message")} just want${items.length === 1 ? "s" : ""} you to know something.`} />}>
       {/* THE BOX, like every card's: one line per message - who, what, and its first line - and nothing
           else. The two doors each line wore ("Full message", "Talk about it") made four fyi a card of
           eight buttons (the owner, 2026-09-23: "you never redesigned the fyi cards"). A line is the

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from taskuary import server
 from taskuary.store import MemoryStore
-from taskuary import memorylines
+from taskuary import memory
 from tests.memlines import teaching
 
 
@@ -44,7 +44,7 @@ class IgnoreSenderTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         d = r.json()
         self.assertEqual((d['how'], d['scope'], d['scopeKey']), ('memory', 'sender', 'noreply@bank.example'))
-        self.assertEqual([n['ScopeKey'] for n in memorylines.notes(s)], ['noreply@bank.example'])
+        self.assertEqual([n['ScopeKey'] for n in memory.notes(s)], ['noreply@bank.example'])
         self.assertEqual(s.list_policies(active_only=False), [])       # the mail keeps arriving
         self.assertEqual(s.get_message(mid)['Status'], 'ignored')
 
@@ -83,7 +83,8 @@ class IgnoreScopeInstructionTests(unittest.TestCase):
         said = concierge.fallback(item, opening=True)
         self.assertIn('I read it as just for your information - an automated success-file notification', said)
         self.assertNotIn('fyi - triage: fyi', said)              # the verdict word is not said twice
-        self.assertIn('Make it a task', said); self.assertIn('Not for me', said)   # an FYI's Put it on my list (2026-10-29)
+        self.assertIn('Send to agent', said)                       # an FYI's one move (the owner, 2026-11-25)
+        self.assertNotIn('Make it a task', said); self.assertNotIn('Not for me', said)
 
     def test_a_reason_that_never_names_the_verdict_is_passed_through_whole(self):
         from taskuary import concierge

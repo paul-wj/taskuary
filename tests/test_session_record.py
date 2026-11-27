@@ -426,49 +426,30 @@ def test_a_view_the_agent_showed_is_still_drawn_once_its_turn_is_filed(home):
     assert show['output'] == answer and 'output' not in read
 
 
-def test_a_log_that_grows_while_its_agent_works_is_read_once_byte_for_byte(home, monkeypatch):
-    """The owner's live app, 2026-11-16: a WORKING coding agent's Claude Code log grows every few seconds, so the per-version cache missed on
-    every poll and each poll parsed the whole multi-hundred-MB log again - 25-40 s a call. Polled while it grows by small appends - a line cut
-    in half among them - each byte is read once, and the steps are the ones a whole read gives. A log replaced by another is read afresh."""
+def test_a_log_read_as_it_grows_gives_the_steps_a_whole_read_gives(home, monkeypatch):
+    """The owner's live app, 2026-11-16: a WORKING coding agent's Claude Code log grows every few seconds, and is read on from where the last
+    read stopped. Polled while it grows by small appends - a line cut in half among them - the steps are the ones a whole read gives, and a
+    call a later line completes is completed. A log replaced by another is read afresh."""
     monkeypatch.setattr(sessionrecord, '_STEPS', {})
     f = home / '.claude' / 'projects' / 'C--work-ledger' / 'grow.jsonl'; f.parent.mkdir(parents=True, exist_ok=True)
     pad = 'x' * 20000                                     # long lines, as a real log's tool results are
     line = lambda i: json.dumps({'type': 'assistant', 'message': {'content': [
         {'type': 'tool_use', 'id': f'u{i}', 'name': 'Read', 'input': {'file_path': f'ledger/f{i}.py'}}, {'type': 'text', 'text': f'step {i} {pad}'}]}}) + '\n'
     done = lambda i: json.dumps({'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': f'u{i}', 'is_error': True, 'content': 'no such file'}]}}) + '\n'
-    f.write_text(''.join(line(i) for i in range(500)), encoding='utf-8')        # ~10 MB to start
-    read, real = [], sessionrecord._read_from
-    monkeypatch.setattr(sessionrecord, '_read_from', lambda p, pos: (lambda b: read.append(len(b)) or b)(real(p, pos)))
-    first, _ = sessionrecord.cli_steps('claude', 'grow')
+    f.write_text(''.join(line(i) for i in range(50)), encoding='utf-8')
+    sessionrecord.cli_steps('claude', 'grow')
     for k in range(10):
-        add = line(500 + k) + done(500 + k)
+        add = line(50 + k) + done(50 + k)
         cut = len(add) // 3 if k == 4 else len(add)
         with open(f, 'a', encoding='utf-8') as h: h.write(add[:cut])
         steps, _ = sessionrecord.cli_steps('claude', 'grow')
         if cut < len(add):
             with open(f, 'a', encoding='utf-8') as h: h.write(add[cut:])
     steps, _ = sessionrecord.cli_steps('claude', 'grow')
-    size = f.stat().st_size
-    assert sum(read) - size < len(line(504)), f'read {sum(read)} bytes of a {size}-byte log: a byte read twice is only the half line that waited'
     assert steps == sessionrecord._claude(f), 'the same steps a whole read gives'
     assert [s.get('status') for s in steps if s['k'] == 'tool'][-1] == 'failed', 'a call its later line completes is completed'
     f.write_text(line(0), encoding='utf-8')                                     # replaced, shorter: read from the start
     assert len(sessionrecord.cli_steps('claude', 'grow')[0]) == 2
-
-
-def test_five_reads_of_one_task_at_once_are_one_build(home, monkeypatch):
-    "The old build (frozen for migration, conversation_legacy): reads of one task at once wait for one build and share it."
-    import threading, time
-    from taskuary import conversation_legacy as conversation
-    s = MemoryStore(); tid = s.create_task({'Title': 'Fix the March import', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
-    builds, real = [], conversation._items
-    monkeypatch.setattr(conversation, '_items', lambda st, t: (builds.append(t), time.sleep(0.5), real(st, t))[2])
-    got, go = [], threading.Barrier(5)
-    ts = [threading.Thread(target=lambda: (go.wait(), got.append(conversation.items(s, tid)))) for _ in range(5)]
-    for t in ts: t.start()
-    for t in ts: t.join(10)
-    assert len(builds) == 1 and len(got) == 5 and all(g is got[0] for g in got)
-    conversation.items(s, tid); assert len(builds) == 2, 'a read after the build is its own'
 
 
 def test_a_thought_being_written_is_one_open_step_its_snapshots_update(monkeypatch):
@@ -488,10 +469,10 @@ def test_a_thought_being_written_is_one_open_step_its_snapshots_update(monkeypat
     assert [s['k'] for s in steps] == ['thought'] and not steps[0].get('live') and steps[0]['text'].endswith('so check Bakey next.')
     mid = sessionrecord.trace_steps([{'type': 'live', 'name': 'thinking', 'detail': x} for x in live])
     assert [(s['k'], s['text'], s.get('live')) for s in mid] == [('thought', live[-1], True)], 'mid-thought: one open step, its newest words'
-    # ...and the answer as it streams: snapshots too, the turn's line of what it is doing (a long answer read "Thinking..." for 85 s)
+    # ...and the answer as it streams is its own row in the chat (chatlog.feed, the owner 2026-11-23) - no snapshot of it on the trace
     said.clear(); clock[0] = 10.0
     for w in ['Salem is close. ', 'Providence is cheaper.']: feed({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': w}})
-    assert [d for k, n, d in said if (k, n) == ('live', 'writing')] == ['Tatte opens first.Salem is close.']    # ...the words as they streamed
+    assert not [d for k, n, d in said if (k, n) == ('live', 'writing')]
 
 
 def test_a_call_whose_result_came_back_has_finished_while_the_model_writes():
@@ -507,8 +488,8 @@ def test_a_call_whose_result_came_back_has_finished_while_the_model_writes():
 
 def test_the_turn_at_work_says_when_its_agent_is_still_opening_and_what_it_is_writing(monkeypatch):
     """Recorded on the real CLI, 2026-11-16: a cold adapter took most of a minute to open under "Thinking...", then a long answer streamed in
-    under the same word. The turn at work says it is `opening` until its road hands the agent the prompt, and carries the answer being
-    written as `doing` while that is the newest thing it did."""
+    under the same word. The turn at work says it is `opening` until its road hands the agent the prompt; the answer being written is its own
+    row, streamed into it (chatlog.feed, the owner 2026-11-23) - never a second copy as `doing`."""
     from types import SimpleNamespace
     from taskuary import conversation
     s = MemoryStore(); tid = s.create_task({'Title': 'Plan the offsite', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
@@ -520,9 +501,13 @@ def test_the_turn_at_work_says_when_its_agent_is_still_opening_and_what_it_is_wr
     ses.trace.append({'type': 'opening', 'name': 'claude', 'detail': ''})            # ...the road really opens one (clipool.take)
     assert turn().get('opening') is True and 'doing' not in turn()
     ses.trace += [{'type': 'prompt', 'name': 'prompt_sent_to_agent', 'detail': 'x'}, {'type': 'live', 'name': 'writing', 'detail': 'Option one is Salem.'}]
-    assert 'opening' not in turn() and turn()['doing'] == 'Option one is Salem.'
+    assert 'opening' not in turn() and 'doing' not in turn()
     ses.trace.append({'type': 'tool_call', 'name': 'WebSearch', 'detail': {'tool_call_id': 'c1', 'args': {'query': 'Salem hotels'}}})
-    assert 'doing' not in turn(), 'a step after the words leads'
+    # ...and the thought it is at, while that is the newest thing - the one place a thought reads (never a step: conversation._said)
+    ses.trace.append({'type': 'live', 'name': 'thinking', 'detail': '**Comparing the two hotels**'})
+    assert turn()['thinking'].strip() == 'Comparing the two hotels' and not [x for x in turn()['steps'] if x.get('k') == 'thought']
+    ses.trace.append({'type': 'tool_call', 'name': 'WebSearch', 'detail': {'tool_call_id': 'c2', 'args': {'query': 'Salem parking'}}})
+    assert 'thinking' not in turn(), 'a step after the thought leads'
 
 
 def test_a_failed_calls_note_is_named_by_its_call():

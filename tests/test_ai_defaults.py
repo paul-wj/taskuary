@@ -48,7 +48,7 @@ class ResolveTests(unittest.TestCase):
         s.set_setting('triage_ai', 'cli:claude', 'o')
         r = aidefaults.resolve(s, cfg, 'triage_ai')
         self.assertEqual((r['model'], r['cli']), ('haiku', 'claude'))
-        self.assertIn('light model', r['owner'])
+        self.assertIn('quick model', r['owner'])
         self.assertIn('haiku', r['choices'])
 
     def test_a_cli_brain_with_no_light_model_runs_the_small_one_and_says_so(self):
@@ -57,7 +57,7 @@ class ResolveTests(unittest.TestCase):
         s.set_setting('triage_ai', 'cli:claude', 'o')
         r = aidefaults.resolve(s, cfg, 'triage_ai')
         self.assertEqual(r['model'], '')
-        self.assertEqual(r['default_hint'], 'haiku - the light default'); self.assertEqual(r['note'], '')
+        self.assertEqual(r['default_hint'], 'haiku - the quick default'); self.assertEqual(r['note'], '')
 
     def test_codex_effort_only_light_gear_round_trips(self):
         """codex on a ChatGPT plan has no smaller model - its cheap gear IS the effort."""
@@ -270,7 +270,7 @@ class ApiTests(unittest.TestCase):
         # "drafting which the agent does now no more drafting ai ... where is general agent??"): the task's agent writes every
         # reply, so the General agent's card stands second, beside the Coding agent's, and nothing reads a drafting AI
         self.assertEqual([s['key'] for s in j['slots']], ['triage_ai', 'assistant_ai', 'default_brain', 'concierge_ai', 'judge_ai'])
-        self.assertEqual([s['label'] for s in j['slots']][:4], ['Triage', 'General agent', 'Coding agent', 'Taskuary'])
+        self.assertEqual([s['label'] for s in j['slots']][:4], ['Sorting new mail', 'Task agents', 'Coding agent', 'Taskuary'])
         from taskuary import agents, aidefaults
         self.assertFalse({'draft_ai', 'draft_model'} & ({*aidefaults.SLOT, *aidefaults.MODEL_OF, *agents.HEALED, *agents.BRAIN_SETTINGS}))
         # ...and each card's RUNS line is the router's own answer for its job (brainroute.runs), with where the choice came from
@@ -382,3 +382,12 @@ class CodingPickerTests(unittest.TestCase):
         aidefaults.apply(self.s, self.cfg, 'default_brain', value='cli:claude')
         self.assertEqual(self.s.get_setting('default_brain'), 'claude')
         self.assertEqual(self.agents.resolve_brain(self.s, 'coding'), 'cli:claude')
+
+
+def test_settings_name_the_advisor_on_the_card_whose_ai_runs_it():
+    """Walk 18 (L4c): Settings said sorting "also runs the Advisor" after its look moved to the normal model (brainroute.NORMAL) - general work's
+    AI, the Task agents card. The card that names it is the one the route takes."""
+    from taskuary import brainroute
+    assert 'advisor' in brainroute.NORMAL and 'advisor' not in brainroute.ONE_SHOT
+    assert 'Advisor' not in aidefaults.SLOT['triage_ai']['desc']
+    assert 'Advisor' in aidefaults.SLOT['assistant_ai']['desc']

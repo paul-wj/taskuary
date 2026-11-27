@@ -6,7 +6,7 @@ the task id and title, the objective, the triage checklist, the owner's explicit
 repository when there is one, the latest complete substantive conversation (the chain as stored,
 history included, cleaned and budgeted the way triage reads it), the attachments on the machine -
 and the revision of the context it was built from, so a worker's result can be checked against
-what it actually read. Rules ride separately: AGENT.md for both kinds, CODING.md on top for coding.
+what it actually read.
 """
 from .store import files_of, task_ref
 
@@ -97,15 +97,11 @@ def background(store, chars: int = 9_000, workstream: str = None, drop=()) -> st
         body = re.sub(r'\n{3,}', '\n\n', '\n'.join(keep)).strip()
         if body: out.append(f'## {what}\n{body[:chars]}')
     # ...and what About you saved, which no doc carries: an agent asked for the job title the owner had typed in (the email walk, 2026-10-29)
-    saved = [f'{k}: {v}' for k, n in (('Name', 'owner_name'), ('Job title', 'owner_title'), ('Company', 'owner_company'))
+    saved = [f'{k}: {v}' for k, n in (('Name', 'owner_name'), ('Job title', 'owner_title'), ('Company', 'owner_company'), ('Email', 'owner_email'))
              if (v := ' '.join(str(store.get_setting(n) or '').split()))]
     if saved: out.insert(0, '## Saved in About you\n' + '\n'.join(saved))
-    return ('ABOUT THE OWNER (background for everything below - facts about whom you work for, not tasks to do)\n\n'
-            + '\n\n'.join(out)) if out else ''
-
-
-def rules(store, doc: str, chars: int) -> str:
-    """An operator rules document, flattened for a prompt: headings become plain words, one line."""
-    text = str(store.doc(doc) or '')
-    keep = [l.strip(' #*-').strip() if l.lstrip().startswith('#') else l.strip() for l in text.splitlines() if l.strip()]
-    return ' '.join(' '.join(keep).split())[:chars]
+    # ...AND WHO READS ITS WORDS (the owner, 2026-11-25): an agent wrote of him in the third person to his own face - the reader is a fact
+    from .responder import owner_of
+    who = owner_of(store)
+    return (f"ABOUT THE OWNER (background for everything below - facts about whom you work for, not tasks to do; the person reading "
+            f"your words is the owner{'' if who == 'the owner' else ', ' + who})\n\n" + '\n\n'.join(out)) if out else ''

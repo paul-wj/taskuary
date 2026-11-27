@@ -62,6 +62,21 @@ def kept_secret() -> list:
     out = [Path(home()).resolve(), *(Path.home() / c for c in _CREDS)]
     return [p for p in dict.fromkeys(out) if p.exists()]
 
+# WHAT A PROCESS HOLDS IS NEVER THE SYSTEM'S OWN FILES (red team round 6: /proc was open whole, as a program's folder is - and under it sit
+# every process's environment, command line, memory and open files, where its tokens are). The one rule for both gates: the system's account
+# of itself (cpuinfo, meminfo, loadavg) and a process's plain facts (_PROC_FACTS) are anyone's to read; everything else under a process -
+# any pid, `self`, a glob or a variable in the pid's place - and /proc read whole, is what that process holds
+_PROC_FACTS = {'status', 'stat', 'statm', 'limits', 'comm', 'cgroup', 'sched', 'schedstat', 'oom_score', 'mounts', 'mountinfo'}
+def proc_kept(p) -> bool:
+    "Is rooted path `p` under /proc what a process holds, or /proc itself - never one of the system's own files or a process's plain facts?"
+    ps = [x for x in posixpath.normpath(str(p or '').replace('\\', '/')).split('/') if x]
+    if not str(p or '').replace('\\', '/').startswith('/') or ps[:1] != ['proc']: return False
+    ps = ps[1:]
+    if not ps: return True
+    if re.fullmatch(r'[a-z_][\w.-]*', ps[0], re.I) and ps[0].lower() not in ('self', 'thread-self'): return False
+    if ps[1:2] == ['task'] and len(ps) > 3: ps = ps[2:]                     # ...one of its threads is the process: /proc/<pid>/task/<tid>/environ
+    return not (len(ps) == 2 and ps[1].lower() in _PROC_FACTS)
+
 def _names() -> list:
     "Protected folders by their home-relative name, so `cd ~ && cat .ssh/x` and `../../.ssh/x` are seen without any root in sight."
     ns = [_cf(c) for c in _CREDS]
@@ -84,7 +99,8 @@ def _above(p, roots): return any(r == p or r.startswith(p.rstrip('/') + '/') for
 
 def _deny(why: str) -> dict:
     return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
-                                   'permissionDecisionReason': f"{why} - a stranger's task may not touch it"}}
+                                   'permissionDecisionReason': f"{why} - a stranger's task may not touch it. Nothing ran; go on with the task "
+                                                               "in its own folder"}}
 
 def _port() -> str:
     from . import config
@@ -112,6 +128,7 @@ def _text_hit(text: str, own: list, prot: list, cwd: str = ''):
         rel = cur and '://' not in tok and not re.match(r'(/|[a-z]:/)', tok) and ('/' in tok or tok.startswith('..'))
         n = _pn(posixpath.join(cur, tok) if rel else tok); a = re.sub(r'^/(?=[a-z]:/)', '', n)   # "/c:/x" as bash on Windows writes it
         if _under(a, own): continue
+        if proc_kept(n): return f'it names {tok}, which is what a process holds'
         if _under(a, prot) or _above(a, prot) and re.match(r'([a-z]:)?/', a) or any(re.search(r'(^|/)' + re.escape(s) + r'(/|$)', n) for s in _names()):
             return f'it names {tok}'
     return ''
@@ -147,7 +164,7 @@ _SCRIPT_MARKS = re.compile(r'\bunset\s[^\n;|&]*\btaskuary_|^\s*(?:export\s+|set\
 _PS_MARKS = re.compile(_SCRIPT_MARKS.pattern + '|' + _WIPE, re.I | re.M)
 # cli.STRANGER_ACTS and the options that go with them (test_floor_wave_b keeps the two in step)
 TASKUARY_OK = frozenset({'--reply', '--reply-file', '--draft', '--draft-file', '--attach', '--item', '--tick', '--untick', '--done', '--note', '--waiting-on', '--reply-not-needed', '--withdraw-draft'})
-_TASKUARY_WITH = frozenset({'--slot', '--to', '--subject', '--result', '--overlap', '--settled', '--propose', '--no-reply', '--kind', '--follow-up', '--answers', '--only', '--cc', '--why-to'})
+_TASKUARY_WITH = frozenset({'--slot', '--to', '--subject', '--result', '--overlap', '--settled', '--propose', '--no-reply', '--kind', '--follow-up', '--answers', '--only', '--cc', '--why-to', '--then'})
 _TASKUARY_ASK = frozenset({'--help', '-h', '--version'})
 _SEG = re.compile(r'(?:&&|\|\||[;|&\n]|\$\(|`)+')
 _WORD = re.compile(r'(?:"[^"]*"|\'[^\']*\'|[^\s"\']+)+|["\']')     # a quote inside a word stays in it: --opt="a b"
@@ -416,18 +433,41 @@ def _conf_dirs() -> list:
     "Where the CLIs are told to keep that configuration instead (CLAUDE_CONFIG_DIR and kin), as normalised roots."
     return [_norm(os.environ[v], real=rl) for v in ('CLAUDE_CONFIG_DIR', 'COPILOT_HOME') if os.environ.get(v) for rl in (True, False)]
 
+# ...a checkout Claude Code keeps in its own worktrees folder (<repo>/.claude/worktrees/<name>/) is the repository's code: judged from its own
+# root, so its .claude/settings.json is still one and its app.py is not. A nested `git init .claude` opens nothing - only that folder is read so
+_WORKTREE = re.compile(r'^.*/\.claude/worktrees/[^/]+(?=/)')
+
 def _is_conf(p: str) -> bool:
     "`p` normalised and folded: one of the files above, or anything in a relocated CLI home."
-    return bool(_CONF.search(p)) or _under(p, _conf_dirs()) or bool(os.environ.get('CODEX_HOME')) and any(
+    return bool(_CONF.search(_WORKTREE.sub('', p))) or _under(p, _conf_dirs()) or bool(os.environ.get('CODEX_HOME')) and any(
         p == _norm(os.path.join(os.environ['CODEX_HOME'], f), real=rl) for f in ('config.toml', 'hooks.json', 'AGENTS.md') for rl in (True, False))
 
-def _git_config_write(args: list) -> bool:
-    "`git [-C dir] [-c k=v] config ...` that is not a read: it writes .git/config (or ~/.gitconfig) without naming either."
-    i = 0
-    while i < len(args) and args[i].startswith('-'): i += 2 if args[i] in ('-C', '-c') else 1
-    if i >= len(args) or args[i].lower() != 'config': return False
+# GIT'S OWN CONFIGURATION THAT RUNS A PROGRAM, OR SENDS A PUSH ELSEWHERE (red team #2, T2): `git -c core.sshCommand='sh x' fetch` runs x, and
+# `git -c remote.origin.pushurl=<elsewhere> push` goes past the trusted repo's own origin (shellgate.trusted reads it without the -c). By key,
+# git's own grammar: written to a config file, given for one command (-c, --config-env), or put in the environment git reads them from
+_GIT_EXEC = re.compile(r'(?:core\.(?:sshcommand|hookspath|fsmonitor|editor|askpass|gitproxy|worktree)|credential\..*|alias\..*|include(?:if)?\..*'
+                       r'|diff\.external|filter\..*|protocol\..*|uploadpack\..*|url\..*|remote\..*\.(?:url|pushurl|uploadpack|receivepack|proxy|vcs)'
+                       r'|sequence\.editor|gpg\..*|ssh\.variant|http\.(?:.*\.)?proxy|.*\.(?:textconv|command|cmd|driver|helper|program|process|tool))')
+_GIT_ENV = re.compile(r'(?<![\w$])(?:export\s+|set\s+"?|\$env:)?(GIT_(?:SSH(?:_COMMAND)?|CONFIG(?:_PARAMETERS|_COUNT|_KEY_\d+|_VALUE_\d+|_GLOBAL|_SYSTEM)?'
+                      r'|EXTERNAL_DIFF|ASKPASS|EDITOR|SEQUENCE_EDITOR|EXEC_PATH|PROXY_COMMAND|TEMPLATE_DIR))\s*=', re.I)
+
+def _git_exec(args: list) -> str:
+    """The key of `git [-C dir] [-c k=v] [config ...]` that runs a program or moves a push: given with -c / --config-env, or written by
+    `git config` (a key it cannot read - `--edit`, none named - counts). '' for every other git command, and for config reads."""
+    i, given = 0, []
+    while i < len(args) and args[i].startswith('-'):
+        a = args[i]
+        if a in ('-c', '--config-env') and i + 1 < len(args): given.append(args[i + 1])
+        elif a.startswith('--config-env='): given.append(a.split('=', 1)[1])
+        i += 2 if a in ('-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace') else 1
+    if k := next((k for g in given if _GIT_EXEC.fullmatch(k := g.split('=', 1)[0].strip().casefold())), ''): return k
+    if i >= len(args) or args[i].lower() != 'config': return ''
     rest = args[i + 1:]
-    return not any(a.startswith('--get') or a in ('--list', '-l') for a in rest) and (rest[:1] or [''])[0] not in ('get', 'list')
+    if any(a.startswith('--get') or a in ('--list', '-l') for a in rest) or (rest[:1] or [''])[0] in ('get', 'list'): return ''
+    if any(a in ('--edit', '-e') for a in rest): return 'its whole file'
+    keys = [a for a in rest if not a.startswith('-') and a not in ('set', 'unset', 'rename-section', 'remove-section')]
+    k = keys[0].casefold() if keys else ''
+    return k if not k or _GIT_EXEC.fullmatch(k) else ''
 
 def _write_hit(text: str, cwd: str = '') -> str:
     "Why a shell command writes into one of them, or ''. Its targets: a redirection, or what a writing command writes to."
@@ -448,7 +488,8 @@ def _write_hit(text: str, cwd: str = '') -> str:
             elif p in _ALL_ARGS: targets += plain + [a[3:] for a in args if a.lower().startswith('of=')]
             elif p in _LAST_ARG: targets += plain[-1:] + [args[i + 1] for i, a in enumerate(args[:-1]) if a.lower() in ('-destination', '-t', '--target-directory')]
             elif p in _IN_PLACE and any(re.fullmatch(r'-\w*i\S*|--in-place\S*', a) for a in args): targets += plain
-            elif p == 'git' and _git_config_write(args): return "it changes git's configuration, which runs in the owner's next git command (core.hooksPath and kin)"
+            elif p == 'git' and (k := _git_exec(args)): return f"it sets git's {k}, which runs a program or sends a push elsewhere"
+        if m := _GIT_ENV.search(seg): return f"it sets {m[1].upper()}, which makes git run a program or read settings of its own"
         for t in targets:
             if hit(t): return f'it writes {t}, which a later session of the owner reads as configuration or runs'
     return ''
@@ -469,6 +510,7 @@ def check(payload: dict, tid: int, store=None) -> dict:
         if not inp.get(k): continue
         raw = _strip(inp[k])
         if raw.startswith('//'): return _deny(f'{inp[k]} is a network path')
+        if any(proc_kept(p) for p in (raw, *_forms(inp[k], cwd))): return _deny(f'{inp[k]} is what a process holds')
         for p in _forms(inp[k], cwd):
             if _under(p, prot) and not _under(p, own): return _deny(f'{inp[k]} is a protected file')
             if tool in _WRITE_TOOLS and _is_conf(p): return _deny(f'{inp[k]} is read as configuration, or run, by a later session of the owner')

@@ -9,13 +9,13 @@ the button that does it, lit, or the page that holds it. On a phone it asks yes 
 
 | Bucket | What it is for | Tools, and what each needs |
 |---|---|---|
-| **table** | decide about the item on the table | reply(text, cc?), approve, send_close, redraft(text), mine, regular_agent(text, new?), coding_agent(text, as?, new?), not_ours, not_ours_sender, block_sender, not_ours_kind, close, next, answer_agent(text), stop_agent, rerun, report_off, remember(text), setup(text), confirm, cancel, chase, let_go, accept_invite, decline_invite, propose_time, find_time, prepare, elsewhere |
+| **table** | decide about the item on the table | reply(text, cc?), approve, send_close, redraft(text), mine, regular_agent(text, new?), coding_agent(text, as?, new?), not_ours, not_ours_sender, block_sender, not_ours_kind, close, next, answer_agent(text), stop_agent, rerun, report_off, remember(text, subject, about?), setup(text), confirm, cancel, chase, let_go, accept_invite, decline_invite, propose_time, find_time, prepare, elsewhere |
 | **task** | change any task - the table's or one by ref | task.update(priority/title/assignee/due), task.set_kind(kind), task.set_repo(repo), task.check(item, done?, note?), task.checklist(add?, items?, emails?, drop?), task.watch(what?), task.comment(text), task.split(text), task.merge(into), task.reopen, task.not_a_task, task.complete(note?), task.defer(until), task.handoff(who, note?), task.clarify(text), task.share(who, about?), review.approve, review.reject |
 | **agents** | a task's agent; where work belongs | dispatch.prepare(kind, instructions?), agent.continue, agent.answer(text), agent.tell(text), agent.stop, agents.stop(refs/all), routing.remember(field, value), task.ask_agent(who, text) |
 | **new** | new work with no task yet | task.create_from_text(kind, text, channel?, to?), task.create_from_message(kind), meeting.new(who?, about?, when?, minutes?), task.setup(text) |
 | **pipe** | the walk and sets of items, and filing mail | pipe.clear(select, scope?), pipe.defer(select, until), pipe.close(select), pipe.remove(select, learn?), pipe.block(select, how?), pipe.mine(select), review.each, button.light(button, ref?, note?), item.settle(verb), message.file, message.archive, preference.exclude_sender(scope), preference.sender_rule, message.retriage |
 | **reports** | reports and workflows | report.create(config), report.run, report.rerun, report.pause, report.resume, report.route(line, how, to?), report.edit(config), report.delete, advisor.ideas |
-| **app** | settings, connections, scripts, memory, rules, bell, Hub, Board, Search | setting.set(setting, value), connection.create(type), role.apply(role, portal?), connection.test, connection.pause, connection.resume, app.repair(name, how), issue.draft(kind, trying, happened), script.start(name), memory.remember(note, about?, section?, replaces?), memory.wrong(key, how?), people.relate(who), rule.change(about, how?), deleted.restore(what), hub.publish(title, body, topic?, kind?, why_earned?), hub.comment(post, text), hub.vote(post, up?), page.open(page, query?), problems.dismiss |
+| **app** | settings, connections, scripts, memory, rules, bell, Hub, Board, Search | setting.set(setting, value), connection.create(type), connection.test, connection.pause, connection.resume, app.repair(name, how), issue.draft(kind, trying, happened), script.start(name), memory.remember(note, subject, about?, signature?, doc?), memory.wrong(key, how?), people.relate(who), rule.change(about, how?), deleted.restore(what), hub.publish(title, body, topic?, kind?, why_earned?), hub.comment(post, text), hub.vote(post, up?), page.open(page, query?), problems.dismiss |
 | **look** | look-ups - they run at once and change nothing | app.find, task.read, timeline.search, tasks.list, asks.list, message.read, sender.read, docs.search, agents.now, approvals.list, pipe.list, pipe.read, calendar.read, activity.list, errors.list, memory.about, memory.list, outputs.find, deleted.list, rules.list, missed.check, report.read, reports.list, settings.list, setting.read, connections.list, connection.read, app.health, agents.list, repos.list, tools.list, tools.describe, knowledge.search |
 
 A task you name goes in `ref` ("TQ-0123"); otherwise the tool acts on what is on the table.
@@ -147,12 +147,14 @@ The "Pause this report" button: pause the report on the table - off its clock - 
 Keep a fact about how the owner works in their memory.
 
 - `text` - , their words ("I don't care about the legacy export job any more" too)
+- `subject`
+- `about` (optional) - , as memory.remember's
 
 <p class="runs">Brings up its button for you to press.</p>
 
 ### `setup`
 
-Build a report, a playbook (how one kind of recurring request is handled from now on), a connection to another system or an automation. Never a to-do, and never an agent's job.
+Build a report, a skill (how one kind of recurring request is handled from now on), a connection to another system or an automation. Never a to-do, and never an agent's job.
 
 - `text` - the request
 
@@ -232,7 +234,7 @@ Change a task's priority, title, owner or due day. Any other value is refused wi
 
 - `priority` - regular | important | urgent
 - `title`
-- `assignee` - exactly `owner` (the owner takes it) or `agent:<profile>` (one of the saved profiles)
+- `assignee` - exactly `owner` (the owner takes it) or `none` (nobody holds it)
 - `due` - the day the work is due (2026-10-30, "friday", "2 weeks", or "none" to clear it)
 - `ref` (optional) - the task (TQ-0123), when it is not the one on the table
 
@@ -452,7 +454,7 @@ Stop a SET of agents at once. Each is its task's Stop and save: written up and s
 
 Remember how work like this should be ROUTED next time. kind: coding (an agent in a checkout) | general (the assistant) | task (the owner, no agent). system: where the work actually lives when no repository here can touch it, named plainly ("ADP"). It teaches triage and moves nothing - say it when the owner tells you a verdict was wrong, or where a kind of job really belongs.
 
-- `field` - kind | profile | system
+- `field` - kind | system
 - `value`
 
 <p class="runs">Brings up its button for you to press.</p>
@@ -475,7 +477,7 @@ New work with no task yet.
 
 A new job with no message behind it. MAKING something - a picture, a flyer, a document, a spreadsheet - is a job for a general agent: write it here, never make it in this chat yourself. A job that REPEATS on a clock, or a report, is a job for a general agent too - it sets the routine up for their press; and a short `title` in your own words for the job (never "send it to the agent"). Never for a task that already exists (a TQ ref, or a row on THE RAIL BY NAME): starting an agent on one is dispatch.prepare, its own last session is agent.continue, and "remind me about it" is task.defer on it.
 
-- `kind` - task (a to-do or reminder the owner does themselves, no agent) | general (a regular agent) | coding | send (a new message the owner starts, to someone - `channel`: email | whatsapp | telegram | teams | slack, the one they said; `to`: the name of the person, chat or group as they said it (never the channel word), or an address; drafted in their voice for their Send, never sent from here) | goal (an outcome with a date, its steps tasks) | dashboard (a page of numbers kept up to date)
+- `kind` - todo (a to-do or reminder the owner does themselves, no agent) | general (a regular agent) | coding | send (a new message the owner starts, to someone - `channel`: email | whatsapp | telegram | teams | slack, the one they said; `to`: the name of the person, chat or group as they said it (never the channel word), or an address; drafted in their voice for their Send, never sent from here) | goal (an outcome with a date, its steps tasks) | dashboard (a page of numbers kept up to date)
 - `text`
 - `channel` (optional)
 - `to` (optional)
@@ -725,15 +727,6 @@ Bring up a connector card to connect it; a second one of a kind opens with its A
 
 <p class="runs">Brings up its button for you to press.</p>
 
-### `role.apply`
-
-Set Taskuary up for the owner's job in one go - its worker, playbooks and daily workflow. Before calling, ASK the owner the address of their bill-approval portal (`portal`; fine to leave out). The workflow is created OFF: after the yes, offer to run it once (report.run), and say they sign in to the portal themselves in the browser pane.
-
-- `role` - ap (accounts payable)
-- `portal` (optional)
-
-<p class="runs">Brings up its button for you to press.</p>
-
 ### `connection.test`
 
 Test a connection now and say what it answered.
@@ -787,21 +780,22 @@ Start a script by its name: walk me through my tasks | set up a report.
 
 ### `memory.remember`
 
-Keep a fact or rule the owner tells you, at once, and above the CALL answer them in a few natural words ("Got it - Omar for badge faults.") - never that it was saved, where, or who reads it - those five are LEARNED.md, the memory every reader uses | style: a rule about HOW they write - greetings and salutations ("write Mrs <surname> to women, never her first name"), tone, length, formatting, words to use or avoid - saved to their writing style, STYLE.md's Owner notes, which every draft reads; with `about` (one person: "write to Gail informally") it is kept for that person alone, read only by the drafts to them | signature: how they sign, as the block under every email ("Best,\nAlex") - it becomes their saved signature, the one the signer puts on | soul: who the owner IS, lasting - their title, company, the systems and repositories they use ("I'm now the AP lead", "our ERP is Intacct") - SOUL.md, which triage, drafts, agents and you read | counsel: how YOU should behave and speak to the owner ("be shorter with me", "don't walk me through the FYI") - COUNSEL.md, your own instructions. SOUL and COUNSEL are added to, never rewritten; a fact about their job or about what becomes a task is care or work, never these. Who reports to whom and who owns what is people.relate.
+Keep a fact or rule the owner tells you, at once, and above the CALL answer them in a few natural words ("Got it - Omar for badge faults.") - never that it was saved, where, or who reads it - triage, every agent on a task it bears on, every draft and you read it from then on - the same subject as a line it corrects, which it then replaces (memory.about and memory.list show each line's subject) - it becomes their saved signature - their title, company, the systems they use ("I'm now the AP lead") - or counsel for how YOU should speak to them ("be shorter with me"): appended to SOUL.md or COUNSEL.md, never rewritten. Who reports to whom and who owns what is people.relate.
 
-- `note` - it, in the owner's words ("Gail moved to Ops", "Ray handles payroll for me", "I put renewals off to Friday", "I don't care about the legacy export job any more")
-- `about` (optional) - the person's address or name, for a people or style line
-- `section` (optional) - , always: people (who someone is to them, how they deal with them) | care (what they are responsible for and what they do NOT care about - a legacy process, a system no longer theirs: triage and the report gate then make no task of it) | work (their rhythm) | promises | bring (what the Advisor may raise)
-- `replaces` (optional) - the key of the line it makes untrue, closed and kept as history (memory.about gives the keys)
+- `note` - it, in the owner's words ("Gail moved to Ops", "Ray handles payroll for me", "no meetings before 10", "write Mrs <surname> to women", "I don't care about the legacy export job any more")
+- `subject` - , always: what it is about in a few words ("meeting hours", "who handles payroll", "Gail's role")
+- `about` (optional) - the person it is about (an address or name), never the owner himself
+- `signature` (optional) - true when the note IS how they sign, the block under every email ("Best,\nAlex")
+- `doc` (optional) - soul for who the owner IS, lasting
 
 <p class="runs">Runs at once and says what it changed.</p>
 
 ### `memory.wrong`
 
-Take a line Taskuary learned out of its memory. "forget that Ray does payroll", "that is wrong about Erin". On the habits row: Adopt is keep, No and Not right are wrong. A line the owner wrote themselves takes forget only.
+Take a line out of the memory, or confirm one. "forget that Ray does payroll", "that is wrong about Erin". A line the owner said himself takes forget or ended - a correction of it is memory.remember on its subject.
 
 - `key` - from memory.about or memory.list
-- `how` (optional) - wrong (it was never true: never written back) | forget (not now: back only on much more evidence) | ended (it was true and stopped: kept as history) | keep (the memory page's Keep: a proposed line adopted as the owner's)
+- `how` (optional) - wrong (a learned line that was never true: never learned again) | forget (out for now) | ended (it was true and stopped: kept as history) | keep (the owner said a learned line is right: used from then on)
 
 <p class="runs">Runs at once and says what it changed.</p>
 
@@ -828,7 +822,7 @@ Change or delete one routing rule (its page: rules). Adding a rule for a sender 
 
 ### `deleted.restore`
 
-Bring back something removed in the last 30 days - a report, workflow, dashboard, routing rule, profile or Hub post. A Hub post the vote took off is not here: it is on the Hub's own removed shelf, restored there.
+Bring back something removed in the last 30 days - a report, workflow, dashboard, routing rule or Hub post. A Hub post the vote took off is not here: it is on the Hub's own removed shelf, restored there.
 
 - `what` - its title as deleted.list says it (or its kind, "hub post", when it is the only one)
 
@@ -947,7 +941,7 @@ One person at a glance - how often they write, their recent messages, their open
 
 ### `docs.search`
 
-How Taskuary works and how to set it up (the help pages), and the owner's own docs - STYLE.md (how they write: greeting, sign-off, tone), AGENT.md (the rules every agent works under), TRIAGE.md, CODING.md, DIGEST.md (the morning brief), the profiles - each read whole as `section` "your doc <name>" (your doc style) - and what each release changed (help/whats-new). Use it for any "how do I", "what does X do", "what changed" or "why did it" about the app.
+How Taskuary works and how to set it up (the help pages), and the owner's own docs - STYLE.md (how they write: greeting, sign-off, tone), TRIAGE.md, DIGEST.md (the morning brief) - each read whole as `section` "your doc <name>" (your doc style) - and what each release changed (help/whats-new). Use it for any "how do I", "what does X do", "what changed" or "why did it" about the app.
 
 - `query` - the words
 - `section` - one section read whole, as its contents list names it
@@ -1009,7 +1003,7 @@ What is failing and what failed: the bell (dismissed ones marked), failed agent 
 
 ### `memory.about`
 
-Who someone is to the owner: every line the memory holds about them, with its key, and what the org chart says. Use it for "who's Gail to me", "what do you know about Ray", and before memory.remember replaces or memory.wrong takes out a line about them.
+Who someone is to the owner: every line the memory holds about them, with its key, and what the org chart says. Use it for "who's Gail to me", "what do you know about Ray", and before memory.remember corrects or memory.wrong takes out a line about them.
 
 - `who` - a name or address
 
@@ -1017,7 +1011,7 @@ Who someone is to the owner: every line the memory holds about them, with its ke
 
 ### `memory.list`
 
-Everything kept about the owner: LEARNED.md - what they told you ("remember this"), their verdicts, and what it learned from what they did. Use it for "what do you remember", "what do you know about me"
+Everything kept about the owner: what they said (each line with its key and subject), the facts, what was learned from what they did - confirmed, or still waiting on their word. Use it for "what do you remember", "what do you know about me"
 
 - `about` - words to narrow it (a sender, a topic)
 
@@ -1035,7 +1029,7 @@ The files agents made on tasks - workbooks, PDFs, documents, charts, pages - eac
 
 ### `deleted.list`
 
-What was removed in the last 30 days and can still come back - reports, workflows, dashboards, rules, profiles and Hub posts the owner removed (one the vote took off waits on the Hub's own removed shelf)
+What was removed in the last 30 days and can still come back - reports, workflows, dashboards, rules and Hub posts the owner removed (one the vote took off waits on the Hub's own removed shelf)
 
 <p class="runs">Runs at once and changes nothing.</p>
 
@@ -1108,7 +1102,7 @@ Why a part of Taskuary itself is not working, read now - the connection, the Wha
 
 ### `agents.list`
 
-The agents and profiles, and which brain answers which job.
+The agents, and which brain answers which job.
 
 <p class="runs">Runs at once and changes nothing.</p>
 

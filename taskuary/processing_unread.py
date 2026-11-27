@@ -322,7 +322,8 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
                 if idea.get('Status') in ('open', 'snoozed'): store.set_idea_status(idea['IdeaId'], 'done', 'funnel')
                 late = 0
             elif slip: lane = slip
-            base.update(idea=idea['IdeaId'], idea_kind=idea.get('Kind'), action=action, workstream=idea.get('Workstream') or '',
+            from .lookout import asked
+            base.update(idea=idea['IdeaId'], idea_kind=idea.get('Kind'), action={k: v for k, v in action.items() if k != 'window'}, asked=asked(action), workstream=idea.get('Workstream') or '',
                         priority=triage.get('priority'), tid=action.get('tid') or tid,
                         mid=action.get('mid'), settling=bool(triage.get('pending')), who_email=action.get('who_email') or '', late_days=late,
                         urgent_request=lane == 'asked' and (bool(triage.get('urgent')) or funnel.priority_rank(triage.get('priority')) == 0))
@@ -357,7 +358,8 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
             if not card.get('summary'): card['summary'] = funnel.agent_found(store, tid)
             # a REPLY whose task also waits on a merge: its Close out runs both (verdicts.decide), so its card says so
             if review.get('Kind') not in ('action', 'slot'):
-                other = proposals.closeout_pending(store, tid)
+                from .card import pending as pending_card
+                other = pending_card(store, tid, 'closeout')
                 if other: card.update(closeout=proposals.CLOSEOUT.get(proposals._action(other)), rides=True)
             # the task's close-out (merge the PR, close the issue): ONE word, Approve - the card's sentence says what it does there
             closeout = proposals.CLOSEOUT.get(proposals._action(review)) if review.get('Kind') == 'action' else None
@@ -496,9 +498,11 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
     if card.get('kind') == 'agent' and not card.get('summary'): card['summary'] = funnel.agent_found(store, tid)
     # WAITING ON A NAMED PERSON (waiton.py): an agent said only they can answer, so until they write the task is theirs - not an
     # agent stopped or saved (whose Continue would only ask again), nor one parked at its prompt reading "waiting on you"
-    them = waiton.waiting(task) if active and not review and not news else ''
+    # ...whoever it waits on as the header says it (waiton.on_them): a reply that asked them is a wait too (walk 20: the row read "real work with
+    # nobody on it" under the header's "waiting for Jordan's input")
+    them = next((w for w in waiton.on_them(store, task) if not w['answered']), None) if active and not review and not news else None
     if them and (not worker or worker.get('waiting')) and card['lane'] in ('yours', 'queued', 'stopped', 'saved', 'asked', 'blocked'):
-        card.update(lane='theirs', waiting_on=them, why=f'waiting on {waiton.name_of(them)}')
+        card.update(lane='theirs', waiting_on=them['key'], why=waiton.word('them', them['who']))
     # A LOOSE END (sweep.py): the daily check found this open task in no state that moves it - waiting on nobody named, or with
     # no date - and said so on the task's own row. It is the owner's move until the state is fixed, read live here, so a date or
     # a name put on it takes the line off at once; `lane_was` is what the check reads again tomorrow
@@ -591,6 +595,7 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
     # is asking, which gets through as it does through a reminder
     from . import watch
     card['watching'] = bool(active and watch.watching(task) and not asking_now and not read.get('deferred'))
+    if card['watching']: card['why'] = watch.line(store, task) or card.get('why')       # ...and says what it waits for (watch.line)
     # FOR LATER SAYS WHEN IT COMES BACK (the canvas redesign, 2026-09-29): the rail's gutter counts down to it - a row put away
     # with Remind me, on its date. Nothing else has a time to say: nothing is "passed" any more (Q7, 2026-10-30)
     card.pop('surfaced', None); card.pop('surfaced_at', None)
@@ -623,7 +628,8 @@ def news_since_seen(view, read, allowed) -> dict:
     out = {'new_n': len(new)} if new else {}
     if len(msgs) > 1:
         m = msgs[-1]
-        out.update(last_at=str(m['SentAt']), latest={'who': 'You' if is_ours(m) else m.get('FromName') or m.get('FromEmail') or '',
+        from .triage import person_name
+        out.update(last_at=str(m['SentAt']), latest={'who': 'You' if is_ours(m) else person_name(m.get('FromName')) or m.get('FromName') or m.get('FromEmail') or '',
                                                      'text': ' '.join(str(m.get('BodyText') or m.get('Subject') or '').split())[:160]})
     return out
 
@@ -707,6 +713,68 @@ def fold_fyi_threads(cards: list) -> list:
     return [c for c in cards if id(c) not in gone]
 
 
+# NEWS FILED ONTO A TASK IS STILL NEWS (the owner, 2026-11-24: a colleague's Teams line, read as nothing new and filed onto a task he had closed
+# that morning, showed nowhere - "he thought it never came in"; "if a message is FYI on a task it should show up in the FYI section, not
+# disappear"). The task's item keeps it, closed or open, and stays what it is; the rail gets one FYI row per task for what was filed onto it,
+# the newest line speaking, until he walks past it. `filed:<mid>` is that row's key: walked past (or put down) at a message, every line
+# filed onto its task up to it is read. Only what triage read is news - not his own lines, an auto-reply, a notice come again unchanged, or what Taskuary
+# wrote itself (a report's run, an Advisor line joined to its task: the task's row speaks for it).
+FILED = 'filed:'
+FILED_SINCE = 'fyi_filed_since'     # what was filed before this shipped is not raised now: 84 rows on the owner's rail at once
+
+
+def filed_news(store, now, *, include_read=False, keys=None, days=14) -> list:
+    "One FYI card per task that had a line filed onto it (ingest's filed road), the newest speaking, `more` the rest unread."
+    from . import funnel
+    from .ingest import filed_is_news, own_addresses
+    from .store import OWN_CHANNELS
+    # app start stamps it (processing_startup.initialize): a read writes nothing, and a home not started yet raises nothing older than now
+    since = store.get_setting(FILED_SINCE) or now.strftime('%Y-%m-%d %H:%M:%S')
+    floor = max(str(since), (now - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S'))
+    rows = store._rows("""SELECT m.*, t.Title AS TaskTitle, t.Status AS TaskStatus,
+            (SELECT r.VerdictJson FROM route r WHERE r.MessageId=m.MessageId AND r.VerdictJson IS NOT NULL ORDER BY r.RouteId DESC LIMIT 1) AS Verdict
+        FROM message m JOIN task t ON t.TaskId=m.TaskId
+        WHERE m.Status='filed' AND IFNULL(m.Direction,'in')='in' AND IFNULL(m.Channel,'') NOT IN (%s) AND replace(m.CreatedAt,'T',' ')>=?
+        ORDER BY m.MessageId""" % ','.join('?' * len(OWN_CHANNELS)), (*OWN_CHANNELS, floor))
+    own = own_addresses(store)
+    rows = [r for r in rows if filed_is_news(store, r, own)]
+    if not rows: return []
+    states = {k: v for k, v in store.funnel_states().items() if k.startswith(FILED)}
+    tid_of = {r['MessageId']: r['TaskId'] for r in rows}
+    read_to, held = {}, {}
+    for k, v in states.items():
+        try: mid = int(k[len(FILED):])
+        except ValueError: continue
+        tid = tid_of.get(mid) or (store.get_message(mid) or {}).get('TaskId')
+        if not tid: continue
+        if v.get('Status') in ('surfaced', 'done'): read_to[tid] = max(read_to.get(tid, 0), mid)
+        elif v.get('Status') in ('later', 'skip') and str(v.get('Until') or '9') > now.strftime('%Y-%m-%d %H:%M:%S'): held[tid] = max(held.get(tid, 0), mid)
+    by = {}
+    for r in rows: by.setdefault(r['TaskId'], []).append(r)
+    out = []
+    for tid, rs in by.items():
+        fresh = [r for r in rs if r['MessageId'] > read_to.get(tid, 0)]
+        if not fresh and not include_read: continue
+        r = (fresh or rs)[-1]
+        key = f"{FILED}{r['MessageId']}"
+        if keys is not None and key not in keys: continue
+        who = r.get('FromName') or r.get('FromEmail') or r.get('SourceName') or r.get('Channel') or 'Someone'
+        line = next((x.strip() for x in str(r.get('BodyText') or r.get('Subject') or '').splitlines() if x.strip()), '')
+        closed = r.get('TaskStatus') in ('done', 'dropped')
+        said = f"{who} wrote on {r.get('TaskTitle') or funnel.task_ref(tid)}{' (closed)' if closed else ''}: {funnel._cut(line, 160)}"
+        deferred = held.get(tid, 0) >= r['MessageId']
+        card = funnel._item(key, 'fyi', 'fyi', said, who=who, when=r.get('SentAt'), mid=r['MessageId'], tid=tid, channel=r.get('Channel') or '',
+                            category='info', preview=r.get('BodyText') or '', why='kept on its task - nothing new to do on it' + (', which stays closed' if closed else ''),
+                            email=r.get('FromEmail') or '', cid=r.get('ConversationId'), subject=funnel._short(r.get('Subject') or '', 140))
+        unread = bool(fresh) and not deferred
+        card.update(filed=True, closed=closed, unread=unread, deferred=deferred, more=max(0, len(fresh) - 1), aliases=[],
+                    member_ids=[f"message:{x['MessageId']}" for x in fresh or [r]], arrived_at=str(r.get('SentAt') or r.get('CreatedAt') or ''),
+                    status='filed', source=r.get('SourceName') or '')
+        card.update(order_band=funnel._band(card), actionable=unread and not funnel._not_yet(card))
+        out.append(card)
+    return out
+
+
 def arrived(store, now, query) -> list:
     """When each message of the last day and a half came in - ARRIVALS, read or not (trust audit F2, 2026-10-28): "16 arrived today"
     counted the unread cards, so it fell to 11 and 9 as the owner read them. The page counts the ones on its own today (its zone).
@@ -760,6 +828,8 @@ def build(store, *, now=None, live_state=None, include_read=False, only=None,
     # ...a goal's child told by the goal's row is not a row, read or unread (on_rail)
     cards = [card for card in cards if not card.get('ranked_wait') and not card.get('folded')]
     if not include_read: cards = rail_of(cards)
+    cards += [c for c in filed_news(store, now, include_read=include_read, keys=None if keys is None else set(keys), days=query['days'])
+              if processing_all._matches(c.get('channel') or '', c.get('source') or '', query)]
     # Calendar keeps its established adapter; source filtering applies to it too.
     query = query_for(store, only)
     if processing_all._matches('calendar', '', query):

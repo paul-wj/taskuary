@@ -21,6 +21,7 @@ OWN = 'Hi Dana - the August export was dropping rows over 10k; fixed and re-run,
 
 def task_with(s, inbound=True):
     tid = s.create_task({'Title': 'August export', 'Kind': 'coding', 'Status': 'in_progress'}, 't')
+    s.remember_trust('alex@northwind.example', 'dana@vendor.example', 'in your Sent Items')     # ...someone he writes to: no line held for Trust
     mid = s.add_message({'TaskId': tid, 'ExternalId': 'x-1', 'ConversationId': 'AAQk-x', 'Channel': 'email',
                          'SourceName': 'alex@northwind.example', 'Subject': 'August export', 'FromName': 'Dana',
                          'FromEmail': 'dana@vendor.example', 'SentAt': '2026-09-06 09:00:00',
@@ -128,9 +129,6 @@ class AgentReplyTests(NoHook):
         self.assertTrue(r.json()['ok'])
         self.assertEqual(s.list_reviews('pending')[0]['DraftBy'], 'agent:claude')
 
-    def test_the_seed_tells_every_session_how(self):
-        self.assertIn('taskuary --reply', selfclose.SEED_LINE); self.assertIn('--attach', selfclose.SEED_LINE)
-
 
 def envelope(s, rid):
     import json
@@ -204,11 +202,10 @@ class AttachTests(NoHook):
         self.assertEqual(env.get('not_attached') or [], []); self.assertEqual(len(env['attachments']), 3)
 
     # ...AND THE AGENT HEARS IT: told only in a comment it never reads, it went on telling the owner "the three files are attached"
-    def test_the_reply_tool_tells_the_agent_which_file_did_not_ride_and_what_to_offer(self):
+    def test_the_reply_tool_tells_the_agent_which_file_did_not_ride_and_why(self):
         s = MemoryStore(); tid, _ = task_with(s)
         out = wrapup.agent_reply(s, tid, 'Hi Dana - here are the three summaries.', 'assistant', files=self._three(s, tid))
         self.assertIn('% Summary - 15 east sites.xlsx', out['tell']); self.assertIn('25MB', out['tell'])
-        self.assertIn('link', out['tell']); self.assertIn('smaller copy', out['tell'])
 
     def test_saving_the_words_again_without_files_still_says_the_file_that_did_not_ride(self):
         s = MemoryStore(); tid, _ = task_with(s)
@@ -216,6 +213,12 @@ class AttachTests(NoHook):
         out = wrapup.agent_reply(s, tid, 'Hi Dana - here are two of the three summaries.', 'assistant')     # propose_reply carries no files
         self.assertEqual([w.split(':')[0] for w in out['not_attached']], ['% Summary - 15 east sites.xlsx'])
         self.assertIn('% Summary - 15 east sites.xlsx', out['tell'])
+
+    def test_the_answer_says_what_the_card_carries_after_its_files_are_on_it(self):
+        "Walk 10: one answer said 'This card carries no file' beside 'attached': [4 files] - what it carries was read before they were put on."
+        s = MemoryStore(); tid, _ = task_with(s)
+        out = wrapup.agent_reply(s, tid, 'Hi Dana - the list is attached.', 'assistant', files=[('review.xlsx', self.XLSX)])
+        self.assertEqual(out['card_attachments'], ['review.xlsx']); self.assertNotIn('attachments_note', out)
 
     def test_all_attached_tells_nothing(self):
         s = MemoryStore(); tid, _ = task_with(s)
@@ -258,9 +261,9 @@ class ChatAttachTests(NoHook):
         self.assertEqual(selfclose.reply_marker(rest)[1], OWN)
 
     def test_a_file_from_the_working_folder_rides(self):
-        from taskuary import general
-        f = self.home / 'scratch' / 'review.xlsx'; f.write_bytes(b'xlsx')
+        from taskuary import general, outputs
         s = MemoryStore(); tid, _ = task_with(s)
+        f = outputs.work_folder(tid) / 'review.xlsx'; f.write_bytes(b'xlsx')      # the task's own folder, never the shared scratch
         self.assertEqual(general._files_to_attach(s, tid, [str(f)], []), [('review.xlsx', b'xlsx')])
 
     def test_a_file_the_turn_was_handed_rides(self):
@@ -281,9 +284,9 @@ class ChatAttachTests(NoHook):
 
     def test_a_chat_turn_puts_the_file_on_the_reply_and_keeps_the_marker_out_of_it(self):
         import json
-        from taskuary import general
-        f = self.home / 'scratch' / 'review.xlsx'; f.write_bytes(b'xlsx')
+        from taskuary import general, outputs
         s = MemoryStore(); tid, _ = task_with(s)
+        f = outputs.work_folder(tid) / 'review.xlsx'; f.write_bytes(b'xlsx')
         s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # a thread he trusts: an untrusted sender's task starts no agent (origin.hold)
         answer = f'Here it is.\n{selfclose.REPLY_OPEN}\n{OWN}\n[[TASKUARY-ATTACH: {f}]]\n{selfclose.REPLY_CLOSE}'
         with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')):
@@ -385,6 +388,22 @@ def test_a_letter_with_a_blank_left_to_fill_is_no_card():
     for fine in ('See [the notes](https://northwind.example/n).', 'As agreed [1], it is done.', '- [x] exported', 'Re: [TQ-0012] export'):
         assert wrapup.blanks(fine) == [], fine
     assert wrapup.agent_reply(s, tid, 'Hi Dana, the August export is fixed [1].', 'assistant')['ok']
+
+
+def test_a_letter_that_is_only_its_greeting_and_sign_off_is_no_card():
+    """Walk 14, 2026-11-24: `taskuary --reply` saved "Hi Erin,\\n\\nAlex Doyle" and answered that the card shows its words - a card one press
+    from sending nothing. By shape: his name and saved signature, a closing above them, a short first line that greets - nothing left is no
+    message, refused with what to do next. On both doors: a reply, and a new email."""
+    from taskuary import slots
+    s = MemoryStore(); s.set_setting('owner_name', 'Alex Doyle', 't'); s.set_setting('email_signature', 'Best,\nAlex Doyle\nNorthwind', 't')
+    tid, _ = task_with(s)
+    for bare in ('Hi Erin,\n\nAlex Doyle', 'Hi Erin,\n\nThanks,\nAlex', 'Dear Erin,\n\nBest,\nAlex Doyle\nNorthwind', 'Hi Erin,'):
+        out = wrapup.agent_reply(s, tid, bare, 'assistant')
+        assert out['ok'] is False and 'no message in it yet' in out['why'] and 'ask the owner' in out['why'], bare
+        assert not s.pending_review(tid, 'draft_reply', live_only=False), bare
+        assert slots.draft(s, tid, bare, 'erin@northwind.example', 'Spend sheet', agent='assistant')['ok'] is False, bare
+    assert wrapup.message_of(s, 'Hi Erin,\n\nFriday works.\n\nAlex Doyle') == 'Friday works.'
+    assert wrapup.agent_reply(s, tid, 'Hi Erin,\n\nFriday works.\n\nAlex Doyle', 'assistant')['ok']
 
 
 if __name__ == '__main__':

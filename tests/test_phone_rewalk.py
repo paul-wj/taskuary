@@ -121,7 +121,7 @@ class FailedAgentTests(PhoneCase):
     def test_its_follow_up_reads_failed_too(self):
         tid = self._failed_with_its_session_open()
         self.s.set_setting(ra.PROMISES_KEY, json.dumps([{'tid': tid, 'channel': 'whatsapp', 'chat': self.ph.chat, 'connector_id': self.ph.cid,
-                                                          'at': time.time(), 'lane': 'working', 'armed': True}]), 't')
+                                                          'at': time.time(), 'lane': 'working', 'ended': True}]), 't')
         got = self.ph.push(lambda: ra.keep_promises(self.s, force=True))
         self.assertTrue(got); self.assertReadsFailed(text_of(got))
 
@@ -284,9 +284,16 @@ class UnheardVoiceTests(PhoneCase):
         with mock.patch.object(voice, 'transcribe', side_effect=RuntimeError(why)) if why else mock.patch.object(voice, 'transcribe', wraps=voice.transcribe):
             got = self.ph.voice()
         (said, btns), = got
-        self.assertEqual(btns, self.card[-1][1], 'the card\'s choices still stand')
+        # ...and NOTHING ELSE MOVES (the owner, 2026-11-25: "you have to hit send after a voice note, so if it errors or nothing records,
+        # nothing happens"): the card's choices are never sent again under the line - a poll of Send/Edit/Stop with no task named on it
+        self.assertEqual(btns, [], 'the card it came under is not sent again')
         self.assertEqual(getattr(self.ph, 'reacted', 0), 1, 'the note gets its thumb')
         return said
+
+    def test_a_note_with_no_words_in_it_sends_nothing(self):
+        from taskuary import voice
+        with mock.patch.object(voice, 'transcribe', return_value={'text': '   '}):
+            self.assertEqual(self.ph.voice(), [], 'a silent note: nothing said, nothing offered again')
 
     def test_no_voice_connector_names_the_place_once(self):
         said = self._heard()
@@ -327,7 +334,8 @@ class AlikeFyiTests(PhoneCase):
         for _ in range(3): self.f.filed_fyi(subject='New expense policy PDF')
         self.f.filed_fyi(subject='Office closed Monday')
         self.ph.ready()
-        btns = [b for b in self.ph.walk()[-1][1] if 'expense policy' in b]          # the walk brings FYI together, four at a time
+        # the walk brings FYI together, four at a time - its lines read in the text (no choice since 2026-11-25), each told apart
+        btns = [l for l in self.ph.walk()[-1][0].split('\n') if l.startswith('• ') and 'expense policy' in l]
         self.assertEqual(len(btns), 3, btns); self.assertEqual(len(set(btns)), 3, btns)
         self.assertFalse([b for b in btns if re.search(r'\(\d\)$|just now', b)], btns)
         self.assertEqual(sorted(re.search(r'\((\d) of 3\)$', b).group(1) for b in btns), ['1', '2', '3'], btns)

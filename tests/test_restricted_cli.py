@@ -84,10 +84,10 @@ def test_a_session_that_drops_its_task_and_token_keeping_its_sid_is_a_stranger_s
 
 # ── what a session may run ──────────────────────────────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize('argv', [('--prompts',), ('--prompts', '5'), ('--link',), ('--evalset', 'build'),
-                                  ('--backfill-asks',), ('--demo',), (), ('--no-browser',), ('--port', '7999')])
+                                  ('--demo',), (), ('--no-browser',), ('--port', '7999')])
 def test_a_stranger_s_session_is_refused_everything_but_the_agent_commands(monkeypatch, argv):
     t = _task(); _session(monkeypatch, t, True)
-    for f in ('promptmap.render', 'evalset.run', 'ingest.backfill_asks', 'desktop.Server', 'launchkey.remote_link'):
+    for f in ('promptmap.render', 'evalset.run', 'desktop.Server', 'launchkey.remote_link'):
         monkeypatch.setattr(f'taskuary.{f}', mock.Mock(side_effect=AssertionError(f)))
     monkeypatch.setattr(cli, '_busy', lambda h, p: True); monkeypatch.setattr(cli, '_is_taskuary', lambda u: True)
     with pytest.raises(SystemExit) as e: _run(monkeypatch, *argv)
@@ -106,10 +106,13 @@ def test_an_owner_session_runs_the_owner_s_subcommands(monkeypatch, capsys):
     ran = mock.Mock(); monkeypatch.setattr('taskuary.evalset.run', ran)
     _run(monkeypatch, '--evalset', 'build'); assert ran.called
     monkeypatch.setattr(cli, '_busy', lambda h, p: True); monkeypatch.setattr(cli, '_is_taskuary', lambda u: True)
-    monkeypatch.setattr(launchkey, 'remote_link', lambda url, tok: f'{url}/?k=once')
-    _run(monkeypatch, '--link'); assert '/?k=once' in capsys.readouterr().out
+    # ...but for the address that signs in AS him (red team round 5: an agent on his own task printed it and held his token): --link is
+    # refused in any session, and Taskuary started from one opens the running app's plain address, asking the server for no key
+    asked = []; monkeypatch.setattr(launchkey.http.client, 'HTTPConnection', lambda *a, **k: asked.append(a))
+    with pytest.raises(SystemExit) as e: _run(monkeypatch, '--link')
+    assert '--link refused' in str(e.value) and '?k=' not in capsys.readouterr().out
     opened = []; monkeypatch.setattr(cli, '_open_private', opened.append)
-    _run(monkeypatch); assert opened == [f"{cli.public_url(server.cfg['server']['host'], server.cfg['server']['port'])}/?k=once"]
+    _run(monkeypatch); assert opened == [cli.public_url(server.cfg['server']['host'], server.cfg['server']['port'])] and not asked
 
 def test_an_owner_session_that_dropped_its_token_is_treated_as_a_stranger_s(monkeypatch):
     "Fail closed: without the agent token nothing proves whose it is."
@@ -139,8 +142,9 @@ def test_the_board_door_binds_a_stranger_s_note_to_its_own_task():
     r = c.post('/api/board/notes', json={'body': 'hello', 'task_id': other, 'cwd': 'C:/repo'},
                headers={'X-Taskuary-Token': guard.stranger_token(SRV(), t)})
     assert r.status_code == 200 and r.json()['TaskId'] == t
-    # the agent token and the owner are as before: the task they name
-    a = c.post('/api/board/notes', json={'body': 'hi', 'task_id': other}, headers={'X-Taskuary-Token': SRV()['agent_token']})
+    # ...an agent's session speaks for the task its proof names, whatever its body says (T7); the owner for the task he names
+    a = c.post('/api/board/notes', json={'body': 'hi', 'task_id': t},
+               headers={'X-Taskuary-Token': SRV()['agent_token'], guard.TASK_HDR: guard.task_proof(SRV(), other)})
     assert a.status_code == 200 and a.json()['TaskId'] == other
     assert c.post('/api/board/notes', json={'body': 'hi', 'task_id': other}).json()['TaskId'] == other
 

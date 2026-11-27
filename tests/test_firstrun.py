@@ -456,6 +456,7 @@ class ProvenOnMailTests(unittest.TestCase):
 
 @pytest.mark.parametrize('explicit_gateway', [False, True])
 def test_claude_mail_proof_uses_gateway_without_loading_user_extensions(tmp_path, monkeypatch, explicit_gateway):
+    from pathlib import Path
     from taskuary import clipool, config
 
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path))
@@ -477,7 +478,9 @@ def test_claude_mail_proof_uses_gateway_without_loading_user_extensions(tmp_path
     def cli(_key, cmd, _prompt, _on, *, env, **_kw):
         assert cmd[cmd.index('--setting-sources') + 1] == 'project,local'
         assert cmd[cmd.index('--tools') + 1] == ''
-        assert '--settings' not in cmd and 'TEST_USER_ENV' not in env
+        overrides = json.loads(Path(cmd[cmd.index('--settings') + 1]).read_text(encoding='utf-8'))
+        assert overrides.get('claudeMdExcludes')
+        assert not ({'enabledPlugins', 'apiKeyHelper', 'env'} & overrides.keys()) and 'TEST_USER_ENV' not in env
         assert env['ANTHROPIC_BASE_URL'] == (explicit_url if explicit_gateway else saved_url)
         assert env.get('ANTHROPIC_AUTH_TOKEN') == (None if explicit_gateway else 'saved-token')
         assert env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL') == (None if explicit_gateway else 'gateway-small')

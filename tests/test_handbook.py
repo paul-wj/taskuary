@@ -5,11 +5,12 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import config, concierge, handbook, hubcompletion, scopes, server
-from taskuary.store import MemoryStore, SQLiteStore
+from taskuary import config, guard, handbook, scopes, server
+from taskuary.store import MemoryStore
 
 c = TestClient(server.app)
-AGENT = {'X-Taskuary-Token': config.load()['server']['agent_token']}
+AGENT = {'X-Taskuary-Token': config.load()['server']['agent_token'],          # ...a session's call, proving the task it is on (guard.unproven)
+         guard.TASK_HDR: guard.task_proof(config.load()['server'], 999995)}
 
 
 class OnByDefault(unittest.TestCase):
@@ -140,6 +141,18 @@ class WhoMayWrite(unittest.TestCase):
             self.assertIn('authority', r.json()['detail'].lower())
         finally:
             server.store.save_connector({'ConnectorId': card['ConnectorId'], 'Scope': '', 'Active': 1}, 'owner')
+
+    def test_the_hub_switched_off_is_his_choice_and_the_agent_goes_on(self):
+        # "the Hub is off - turn its card on under Connections" was passed on to him as a step, over a Hub that ships on and he turned off
+        card = server.store.get_connector_by_type('handbook')
+        server.store.save_connector({'ConnectorId': card['ConnectorId'], 'Active': 0}, 'owner')
+        try:
+            r = c.post('/api/hub', json={'title': 'x', 'why_earned': 'The agent compared three approaches and verified it.'}, headers=AGENT)
+            self.assertEqual(r.status_code, 403)
+            self.assertIn("the owner's choice", r.json()['detail']); self.assertIn('Go on without it', r.json()['detail'])
+            self.assertNotIn('turn', r.json()['detail'])
+        finally:
+            server.store.save_connector({'ConnectorId': card['ConnectorId'], 'Active': 1}, 'owner')
 
     def test_an_agent_may_write_at_the_default(self):
         self.assertEqual(c.post('/api/hub', json={'title': 'agents fill this by design',
@@ -373,11 +386,13 @@ class CompanyAndPeopleBesideTheSystems(unittest.TestCase):
     """TQ-1353: the Hub's entries are the systems; the company and its people are SHOWN from where they are written - JOB.md and the
     memory's "Your people" - never filed as a second copy agents would have to keep in step."""
     def test_about_reads_job_and_the_people_lines_without_their_tags(self):
-        from taskuary import learned_cut as lc
+        
         s = MemoryStore()
         s.save_doc('job', '## The job\n\n- **My role:** Director of IT at Northwind, running payroll and finance systems.\n', 'owner')
-        s.save_doc('learned', f"{lc.PEOPLE}\n- Erin Blake owns the month-end close [s:5 | ev: task1 | seen: 2026-11-01]\n"
-                              f"- Gail Moreno is the payroll lead\n\n{lc.CARE}\n- Accuracy over speed\n", 'owner')
+        from taskuary import memory
+        memory.remember(s, 'Erin Blake owns the month-end close', 'erin', 'erin@northwind.example')
+        memory.remember(s, 'Gail Moreno is the payroll lead', 'gail', 'gail@northwind.example')
+        memory.remember(s, 'Accuracy over speed', 'accuracy')
         a = handbook.about(s)
         self.assertIn('Northwind', a['company'])
         self.assertEqual(a['people'], ['Erin Blake owns the month-end close', 'Gail Moreno is the payroll lead'])

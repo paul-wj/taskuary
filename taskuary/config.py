@@ -7,7 +7,7 @@ are runtime overlays on [server] (a container binds 0.0.0.0 this way) and are ne
 back — save() keeps the on-disk [server] block. Empty env is unset, so compose cannot wipe
 a token stored on the volume.
 """
-import json, os
+import json, os, re
 from loguru import logger
 try: import tomllib
 except ImportError: import tomli as tomllib  # py3.10
@@ -42,8 +42,8 @@ def home() -> Path:
     database. Set TASKUARY_ALLOW_TEST_HOME=1 for the rare test that means it."""
     env = os.getenv('TASKUARY_HOME')
     if not env and _under_test():
-        import tempfile
-        env = os.environ['TASKUARY_HOME'] = tempfile.mkdtemp(prefix='taskuary_test_')
+        from .spawn import own_temp           # ...gone again when the run ends (spawn.own_temp)
+        env = os.environ['TASKUARY_HOME'] = own_temp('taskuary_test_')
         print(f'taskuary: test run with no TASKUARY_HOME - using {env}, not your real data',
               file=__import__('sys').stderr)
     p = Path(env or Path.home() / '.taskuary')
@@ -67,12 +67,29 @@ def _read() -> dict:
     f = home() / 'config.toml'
     return tomllib.loads(f.read_text(encoding='utf-8')) if f.exists() else {}
 
-def _write(d: dict):
-    p = home() / 'config.toml'
-    p.write_text(dumps_toml(d) + '\n', encoding='utf-8')
-    if os.name != 'nt':
-        try: p.chmod(0o600)
-        except OSError: pass
+def _put(text: str):
+    """config.toml in one step: a write in place truncates it first, and a load() in that moment read no tokens, minted new ones and wrote
+    them over the owner's - every open page and agent then refused as out of date (CI: the floor door answered 401 to its own token)."""
+    import time, uuid
+    p = home() / 'config.toml'; tmp = p.with_name(f'.config.{uuid.uuid4().hex}.tmp'); tmp.write_text(text, encoding='utf-8')
+    if os.name != 'nt': tmp.chmod(0o600)      # ...the owner's alone from its first byte (red team #2, T3): every save, not only a token's write
+    for i in range(50):                       # ...Windows refuses a replace while a reader holds the file open: a moment later it goes
+        try: return os.replace(tmp, p)
+        except PermissionError:
+            if i == 49: tmp.unlink(missing_ok=True); raise
+            time.sleep(.02)
+
+def _write(d: dict): _put(dumps_toml(d) + '\n')
+
+_CRED = re.compile(r'(token|secret|password|passwd|api_?key)$', re.I)
+def backup(name: str) -> None:
+    """A copy of config.toml to go back to before a migration, once - WITHOUT its tokens and keys (red team #2, T3: the copy held the owner
+    token in clear beside the sealed original). Restored, the server mints fresh ones (guard.ensure_tokens); the owner's alone on disk."""
+    p, b = home() / 'config.toml', home() / name
+    if not p.exists() or b.exists(): return
+    bare = lambda d: {k: bare(v) if isinstance(v, dict) else v for k, v in d.items() if not (_CRED.search(k) and isinstance(v, str))}
+    b.write_text(dumps_toml(bare(_read())) + '\n', encoding='utf-8')
+    if os.name != 'nt': b.chmod(0o600)
 
 def port_number(value) -> int:
     """A TCP port accepted by sockets and server runners."""
@@ -120,7 +137,10 @@ def _load() -> dict:
     # there is no way to tell a session's request from a person's, and guard.DENIED has nothing
     # to act on. It is written back to config.toml so it survives a restart.
     from . import guard
-    guard.ensure_tokens(_read, _write, cfg['server'])
+    k = f'agent_token:{home()}'
+    guard.ensure_tokens(_read, _write, cfg['server'], _LIVE.get(k, ''))
+    _LIVE[k] = cfg['server']['agent_token']
+    _owner_token(cfg['server'])
     # A FRESH INSTALL NAMES NO AI (the owner, 2026-10-20: "the advisor says claude is installed, set it up?? ... it was not, and
     # stop assuming that"): this default carried `cmd = "claude"`, cli_connections.migrate split it into a `claude` connection on
     # the first start, and setup drew Claude as "Connected" and lit it on a machine with no Claude Code. The coding profile is
@@ -129,6 +149,23 @@ def _load() -> dict:
     cfg.setdefault('github', {})
     cfg['server'].update(_env_server())
     return cfg
+
+def _owner_token(srv: dict):
+    """THE OWNER TOKEN LIVES IN THE RUNNING SERVER'S MEMORY ALONE (the owner, 2026-11-25): sealed in config.toml it was still a file a session
+    could read and the OS would open for it (red team F2). Minted when this process first reads its config, and never written anywhere: a
+    restart mints another, and an open tab or the phone opens again from the app. A window, the launch key and the phone link are handed it
+    by the server that holds it (launchkey.remote_link). A process carrying a session's marks (launchkey.in_session) holds a random one of its
+    own. One an older build left on disk, sealed or plain, is deleted - and refused, as any token not this run's."""
+    import secrets
+    from . import launchkey
+    if launchkey.in_session(): srv['token'] = secrets.token_urlsafe(24); return
+    if 'token' in srv:                     # ...read off config.toml just now: an older build's
+        try:
+            if 'token' in (cur := _read()).get('server', {}): cur['server'].pop('token'); _write(cur)
+        except Exception as e: logger.warning(f'the old owner token was not taken off config.toml ({e}) - it is refused all the same')
+    srv['token'] = _LIVE.setdefault('token', secrets.token_urlsafe(24))
+_LIVE: dict = {}
+
 
 def db_path() -> str:
     return str(home() / 'taskuary.db')
@@ -167,4 +204,4 @@ def save(cfg: dict):
     else:
         srv = {k: v for k, v in (cfg.get('server') or {}).items() if v is not None and k not in env}
         if srv: out['server'] = srv
-    (home() / 'config.toml').write_text(dumps_toml(out) + '\n', encoding='utf-8')
+    _put(dumps_toml(out) + '\n')

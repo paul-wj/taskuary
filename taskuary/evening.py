@@ -244,72 +244,111 @@ def collect(store, hours: int = HOURS) -> dict:
             continue
         eligible.append(row)
 
+    # (when, line): THE BLOCK SAYS NEWEST FIRST, AND IS (walk 20: a post that went live at 02:36 stood after every mail of the night, the acts
+    # being added last, and a brief of at most five items left it out)
     accomplished = []
-    accomplished.extend(_row_line(r, 'sent') for r in sent)
-    accomplished.extend(_row_line(r, 'archived') for r in archived)
+    accomplished.extend((r.get('SentAt'), _row_line(r, 'sent')) for r in sent)
+    accomplished.extend((r.get('SentAt'), _row_line(r, 'archived')) for r in archived)
     for row in eligible:
         review = str(row.get('ReviewStatus') or '').lower()
         if review in ('approved', 'edited', 'sent'):
-            accomplished.append(_row_line(row, 'replied'))
+            accomplished.append((row.get('SentAt'), _row_line(row, 'replied')))
         elif row.get('TaskStatus') == 'done':
-            accomplished.append(_row_line(row, 'completed'))
-        elif _invite(row):
-            # Ingest has positively identified and triaged this as a calendar invite. It is safe
-            # to call handled; a plain auto-filed FYI is intentionally not treated the same way.
-            accomplished.append(_row_line(row, 'invite handled'))
+            accomplished.append((row.get('SentAt'), _row_line(row, 'completed')))
 
-    # ...A THREAD ANSWERED IS NO PRIORITY (round 3, 2026-11-22: two threads approved and sent stood as "focus for tomorrow" - the reply's card sat
-    # on the second mail, the first had none): a task whose reply went today is owed nothing, unless a card of it still waits
-    replied = {row.get('TaskId') for row in eligible if row.get('TaskId') and str(row.get('ReviewStatus') or '').lower() in ('approved', 'edited', 'sent')}
-    priorities = []
-    for row in eligible:
-        review = str(row.get('ReviewStatus') or '').lower()
-        flagged = str(_mail_meta(row).get('flag') or '').lower() == 'flagged'
-        if review != 'pending' and row.get('TaskId') in replied: continue
-        if flagged or review == 'pending' or row.get('TaskStatus') in ('open', 'in_progress', 'waiting'):
-            priorities.append(_row_line(row, 'open priority'))
-
+    # ...WHAT IS OWED IS THE TASK'S TO SAY, NEVER A MAIL ROW'S (walk 6, 2026-11-23, the third walk running: "the corrected pack went out" under
+    # Done today and "fix the headcount" under Tomorrow - the corrected copies were new emails, not replies to her mail, so her mail read
+    # unanswered; and a CI build its agent had fixed read open). A mail on a task is that task's: the brief reads the task's one state
+    # (taskstate.standing) and what its cards sent (owed), and the mail rides as what it is about. Only mail no task holds is weighed
+    # by itself
     from .store import task_ref
+    priorities, on, on_tasks = [], {}, []
+    for row in eligible:
+        if (tid := row.get('TaskId')):
+            if row.get('TaskStatus') in ('done', 'dropped') or not (t := store.get_task(tid)): continue
+            if tid not in on: on[tid] = f'on {task_ref(tid)}: {owed(store, t, since)}'
+            on_tasks.append(_row_line(row, on[tid])); continue
+        # ...AN INVITE IS ONE THAT CAME IN, never one "handled" because triage knew it for an invite (walk 21: "handled one meeting invite" with
+        # none answered): his answer is a reply like any other, above; one he has not answered is still his to answer
+        flagged = str(_mail_meta(row).get('flag') or '').lower() == 'flagged'
+        if flagged or str(row.get('ReviewStatus') or '').lower() == 'pending': priorities.append(_row_line(row, 'open priority'))
+        elif _invite(row) and str(row.get('ReviewStatus') or '').lower() not in ('approved', 'edited', 'sent'):
+            priorities.append(_row_line(row, 'invite, not answered'))
+
     # ...never the Assistant's own chat (general.DOCK_TAG), on either list: it is no work of his (walk 5: "Taskuary guide" stood as an open
     # task; round 3, 2026-11-22: "Completed the Taskuary guide task" stood as done)
     from .general import DOCK_TAG
-    done = store._rows("SELECT TaskId, Title, Priority FROM task WHERE Status='done' AND ClosedAt>=? AND IFNULL(SourceRef,'')<>? "
+    done = store._rows("SELECT TaskId, Title, Priority, ThreadJson, Summary FROM task WHERE Status='done' AND ClosedAt>=? AND IFNULL(SourceRef,'')<>? "
                        "ORDER BY ClosedAt DESC LIMIT 80", (since, DOCK_TAG))
     # ...and WHAT HIS AGENTS SENT AND MADE today, on any task (round 3: the chart, the sheet, two PDFs and Paula's email were missing - an agent's
     # work on a chat task leaves no run row): the cards he sent and the files its turns made
     # ...each named by what it was - an email with its subject, a post, an act - never the card's own kind ("slot": walk 5, 2026-11-22, "Sent
     # availability slot to Gail" over the week's total), and never a view the agent drew in its chat as a file he made (session_artifacts.VIEW)
-    for r in store._rows("SELECT ReviewId, TaskId, Kind, Deliver, Reason FROM review WHERE Status IN ('approved','edited') AND DecidedAt>=? AND Kind NOT IN ('draft','draft_reply') "
-                         "AND IFNULL(DeliveryState,'') NOT IN ('failed','unknown') ORDER BY DecidedAt DESC LIMIT 40", (since,)):
-        try: d = json.loads(r.get('Deliver') or '{}') or {}
-        except (TypeError, ValueError): d = {}
-        to = ', '.join(d.get('to') or []) if isinstance(d, dict) else ''
-        what = (f"email \"{_one_line(d.get('subject'), 100)}\"" if isinstance(d, dict) and d.get('subject') else 'email') if r.get('Kind') in ('slot', 'reply')             else _one_line(r.get('Reason') or 'an act he approved', 120)
-        accomplished.append(f"state=sent | src=📤 | task={task_ref(r['TaskId']) if r.get('TaskId') else '-'} | what={what}{f' to {_one_line(to, 120)}' if to else ''}")
+    # ...read off the record of what went (ledger.py): a mail the provider confirmed, an act that ran
+    from . import ledger
+    for r in ledger.rows(store, ('sent', 'act'), since=since, limit=40):
+        if r['Kind'] == 'sent' and r['detail'].get('kind') in ('draft', 'draft_reply'): continue
+        to = ', '.join(r['detail'].get('to') or []) if r['Kind'] == 'sent' else ''
+        what = (f"email \"{_one_line(r['Value'], 100)}\"" if r['Value'] else 'email') if r['Kind'] == 'sent' else \
+               _one_line(r['detail'].get('what') or 'an act he approved', 120) + (f" ({r['Value']})" if r['Value'] else '')
+        accomplished.append((r['At'], f"state=sent | src=📤 | task={task_ref(r['TaskId']) if r.get('TaskId') else '-'} | at={str(r['At'])[:16]} | what={what}{f' to {_one_line(to, 120)}' if to else ''}"))
     from .session_artifacts import VIEW
-    for a in store._rows("SELECT TaskId, Name FROM task_artifact WHERE CreatedAt>=? AND IFNULL(Kind,'')<>? ORDER BY ArtifactId DESC LIMIT 40", (since, VIEW)):
-        accomplished.append(f"state=made | src=📄 | task={task_ref(a['TaskId']) if a.get('TaskId') else '-'} | file={_one_line(a.get('Name'), 120)}")
-    open_ = store._rows("SELECT TaskId, Title, Priority, Status FROM task WHERE Status IN ('open','in_progress','waiting') AND IFNULL(SourceRef,'')<>? "
+    for a in store._rows("SELECT TaskId, Name, CreatedAt FROM task_artifact WHERE CreatedAt>=? AND IFNULL(Kind,'')<>? ORDER BY ArtifactId DESC LIMIT 40", (since, VIEW)):
+        accomplished.append((a['CreatedAt'], f"state=made | src=📄 | task={task_ref(a['TaskId']) if a.get('TaskId') else '-'} | at={str(a['CreatedAt'])[:16]} | file={_one_line(a.get('Name'), 120)}"))
+    accomplished = [l for _, l in sorted(accomplished, key=lambda x: str(x[0] or ''), reverse=True)]
+    open_ = store._rows("SELECT * FROM task WHERE Status IN ('open','in_progress','waiting') AND IFNULL(SourceRef,'')<>? "
                         "ORDER BY CASE Priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 WHEN 'high' THEN 1 ELSE 2 END, COALESCE(UpdatedAt, CreatedAt) DESC "
                         "LIMIT 40", (DOCK_TAG,))
     runs = store._rows("SELECT r.AgentName, r.Status, r.LastError, r.TaskId, t.Title FROM run r LEFT JOIN task t ON t.TaskId=r.TaskId "
                        "WHERE COALESCE(r.FinishedAt, r.UpdatedAt, r.StartedAt)>=? ORDER BY r.RunId DESC LIMIT 80", (since,))
     # ...and a task he closed with its agent's question to him unanswered says so: read as handled, it was told as "confirmed" (walk 5)
-    from .taskstate import open_question
-    def closed(t): return 'closed, its question to him unanswered' if open_question(store, t['TaskId']) else 'closed'
+    # - said on the close's own row (concierge.close_task lets the question go with the task)
+    def closed(t):
+        r = store._one("SELECT Detail FROM audit WHERE EntityType='task' AND EntityId=? AND Action IN ('close_from_assistant','closed_by_road') "
+                       "ORDER BY Id DESC LIMIT 1", (t['TaskId'],)) or {}
+        return 'closed, its question to him unanswered' if '"unanswered"' in str(r.get('Detail') or '') else 'closed'
+    # ...each task by what was ASKED of it, never the title its agent gave it early on - a label, which read "Ask HN post, awaiting Submit"
+    # after he had dismissed the post (walk 16)
+    from .context import asked
     def task_line(t, state):
-        return f"src=📌 | state={state} | task={task_ref(t['TaskId'])} | title={_one_line(t.get('Title'), 140)} | priority={level(t.get('Priority'))}"
+        return f"src=📌 | state={state} | task={task_ref(t['TaskId'])} | asked={_one_line(asked(t) or t.get('Title'), 140)} | priority={level(t.get('Priority'))}"
+    def open_line(t): return task_line(t, owed(store, t, since))
     def run_line(r):
         bits = ['src=🤖', f"agent={_one_line(r.get('AgentName'), 60)}", f"status={r.get('Status') or 'running'}"]
         if r.get('TaskId'): bits.append(f"task={task_ref(r['TaskId'])} {_one_line(r.get('Title'), 120)}")
         if r.get('LastError'): bits.append(f"error={_one_line(r['LastError'], 160)}")
         return ' | '.join(bits)
-    return {'hours': hours, 'since': since, 'accomplished': accomplished, 'priorities': priorities,
-            'done': [task_line(t, closed(t)) for t in done], 'open': [task_line(t, t.get('Status') or 'open') for t in open_],
+    return {'hours': hours, 'since': since, 'accomplished': accomplished, 'priorities': priorities, 'on_tasks': on_tasks,
+            'done': [task_line(t, closed(t)) for t in done], 'open': [open_line(t) for t in open_],
             'runs': [run_line(r) for r in runs]}
 
 
-def has_any(ev: dict) -> bool: return any(ev[k] for k in ('accomplished', 'priorities', 'done', 'open', 'runs'))
+def owed(store, t: dict, since: str) -> str:
+    """WHERE ONE OPEN TASK STANDS, from the facts every surface reads - never a rule of the brief's own: its status as the rail says it
+    (taskstate.status), where it stands (taskstate.standing: whose input it waits for, and what), and what went and
+    what he turned down in the window."""
+    from . import taskstate
+    tid = int(t['TaskId']); now = taskstate.said(taskstate.standing(store, tid))
+    try: word = taskstate.status(store, t)['word']
+    except Exception: word = str(t.get('Status') or 'open')
+    bits = ['' if now.startswith(word) else word, now]
+    from . import ledger
+    # ...WHAT went and what was made, as the ledger says it (walk 14: "Tomorrow: send the vendor spend sheet" - sent at 2:26 - read off the
+    # task's title beside a bare count; "it first needs an account" after the agent had made one)
+    sent = ledger.rows(store, ('sent', 'act'), task=tid, since=since)
+    if sent: bits.append(f"sent today ({len(sent)}): {'; '.join(ledger.said(r) for r in sent[:3])}")
+    if (made := ledger.rows(store, 'account', task=tid, since=since)): bits.append(f"made: {'; '.join(ledger.said(r) for r in made[:3])}")
+    # ...and what he turned down today, as the cards stand NOW (walk 13: "the post goes out only when you press the card" told after he had
+    # declined it) - what still waits for his press is where it stands, above
+    from . import cardqueue
+    from .conversation import _card
+    his = lambda r: (st := _card(r)['status']) == 'rejected' or st == 'closed_unsent' and r.get('DecidedBy') not in ('agent', 'assistant', 'taskuary')
+    no = [r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND DecidedAt>=? ORDER BY DecidedAt", (tid, since)) if his(r)]
+    if no: bits.append(f"he turned down: {'; '.join(cardqueue.what(store, {'rids': [r['ReviewId']], 'rows': [r]}) for r in no[:3])}")
+    return ' · '.join(b for b in bits if b)
+
+
+def has_any(ev: dict) -> bool: return any(ev[k] for k in ('accomplished', 'priorities', 'on_tasks', 'done', 'open', 'runs'))
 
 
 def gather(store, hours: int = HOURS, read=(), unread=()) -> str:
@@ -332,6 +371,9 @@ def _text(ev: dict, read=(), unread=()) -> str:
         '',
         f"OPEN PRIORITY EVIDENCE ({len(priorities)} rows; newest first):",
         *(priorities[:80] or ['(none)']),
+        '',
+        f"MAIL ON OPEN TASKS ({len(ev['on_tasks'])} rows; each row's state is where its task stands - owed only where that says so):",
+        *(ev['on_tasks'][:80] or ['(none)']),
         '',
         f"TASKUARY TASKS CLOSED IN THE WINDOW ({len(ev['done'])}):",
         *(ev['done'] or ['(none)']),

@@ -66,7 +66,7 @@ class TakingTurnsTests(unittest.TestCase):
         self.assertEqual(sorted(got), ['', 'answered', 'answered'], 'two turns: the first, and one for both lines behind it')
         users = [c['Body'] for c in general.chat_rows(self.s, self.tid) if c['ActorType'] == general.USER_TYPE]
         self.assertEqual(users, ['one', 'two', 'actually three'])
-        self.assertTrue(any('THE OWNER SENT 2 MESSAGES' in p for p in prompts))
+        self.assertTrue(any('two' in p and 'actually three' in p for p in prompts[1:]), 'both lines in the one turn behind it')
 
     def test_news_a_turn_has_overtaken_is_not_a_turn_of_its_own(self):
         """Recorded on the real CLI (the browser audit, 2026-11-15): he typed a line while the saved sign-in was going in; his line's turn
@@ -226,7 +226,7 @@ class OneConversationNotTwentyTests(unittest.TestCase):
         self.assertIn('CONVERSATION', seen[0]['user'])               # the first says everything
         self.assertNotIn('CONVERSATION', seen[1]['user'])            # the second only the new turn
         self.assertIn('and what about the chat', seen[1]['user'])
-        self.assertLess(len(seen[1]['user']), len(seen[0]['user']))
+        self.assertNotIn('tell me about the wall', seen[1]['user'], 'what the conversation has is not told again')
 
     def test_a_memory_line_changed_mid_conversation_leads_its_next_turn_whichever_session_picks_it_up(self):
         """The real CLI, 2026-11-14: an agent drafted "laptop faults go to Marcus"; the owner then told the Assistant Marcus had moved and
@@ -234,14 +234,14 @@ class OneConversationNotTwentyTests(unittest.TestCase):
         object (the quick agent's, by the full agent - as after any restart), which knew nothing of what it had been told: the system was
         written afresh, the changed line swapped in silently among fifteen. Now the conversation keeps the system it began with, and its
         next turn opens on the new line and on the one taken back."""
-        from taskuary import memoryedit
+        from taskuary import memory
         self.s.update_task(self.tid, {'Title': 'Laptop fault for Paula', 'Summary': 'Paula asks who fixes laptop faults'}, 'o')
-        memoryedit.remember(self.s, 'Laptop and badge faults go to Marcus Reed')
-        memoryedit.remember(self.s, 'You batch expense approvals on Monday mornings')
+        memory.remember(self.s, 'Laptop and badge faults go to Marcus Reed', 'laptop and badge faults')
+        memory.remember(self.s, 'You batch expense approvals on Monday mornings')
         brain, seen = self._brain()
         self._run(['draft the reply'], brain)
         self.assertIn('faults go to Marcus Reed', seen[0]['system'])
-        memoryedit.remember(self.s, 'Marcus Reed moved to security: laptop and badge faults go to Omar Keller now', replaces='Laptop and badge faults go to Marcus Reed')
+        memory.remember(self.s, 'Marcus Reed moved to security: laptop and badge faults go to Omar Keller now', 'laptop and badge faults')
         self.sess = general.GeneralSession(self.s, self.tid)                 # ...another object picks the conversation up
         self.sess.pick, self.sess.provider, self.sess.cli_sid = 'cli:claude', 'coding', 'sess-1'
         self.sess._remember_session(); self.assertIsNone(self.sess.frozen)
@@ -264,7 +264,7 @@ class OneConversationNotTwentyTests(unittest.TestCase):
         self.assertNotIn(general.UPDATED, seen[4]['user']); self.assertEqual(seen[3]['system'], seen[4]['system'])
         del seen[3:]
         # ...and a line the owner Forgets is taken back the same way, with nothing new beside it
-        memoryedit.mark(self.s, 'You batch expense approvals on Monday mornings', 'forget')
+        memory.mark(self.s, 'You batch expense approvals on Monday mornings', 'forget')
         self._run(['thanks'], brain)
         self.assertIn('- You batch expense approvals on Monday mornings', seen[3]['user'].split(general.UNLEARNED)[1])
         self.assertNotIn('Marcus', seen[3]['user'], 'the one it was already told is taken back is not said again')

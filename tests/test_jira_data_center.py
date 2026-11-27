@@ -504,8 +504,7 @@ def test_promoted_issue_and_later_feed_updates_remain_one_task():
         report['fields']['comment'] = {'comments': [{'id':'94', 'author':{'key':'user-erin'},
             'body':'The large-file export fails', 'created':datetime.now().astimezone().isoformat()}]}
         with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
-        with mock.patch.object(ingest, 'ask_later'):
-            tid = ingest.task_from_message(s, original['mid'], kind='task', assignee='owner')
+        tid = ingest.task_from_message(s, original['mid'], kind='task', assignee='owner')
         rows = _jira_reference_pile(s)
         assert [(r.get('tid'), r['lane'] in processing_unread.OWNER_LANES) for r in rows] == [(tid, True)]
         report['fields']['description'] = 'Repair empty-file exports too'
@@ -515,8 +514,7 @@ def test_promoted_issue_and_later_feed_updates_remain_one_task():
         rows = _jira_reference_pile(s)
         assert [(r.get('tid'), r['lane'] in processing_unread.OWNER_LANES) for r in rows] == [(tid, True)]
         latest = s._one('SELECT MessageId FROM message ORDER BY MessageId DESC LIMIT 1')['MessageId']
-        with mock.patch.object(ingest, 'ask_later'):
-            assert ingest.task_from_message(s, latest, kind='task', assignee='owner') == tid
+        assert ingest.task_from_message(s, latest, kind='task', assignee='owner') == tid
         assert s._rows('SELECT TaskId FROM task') == [{'TaskId':tid}]
     finally: s.close()
 

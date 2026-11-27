@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from taskuary import buttons, concierge, funnel, general, railwalk, server, terminal
 from taskuary.store import MemoryStore
 from taskuary.testing import mailbox
-from taskuary import memorylines
+from taskuary import memory
 
 
 def ago(hours=0): return (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
@@ -617,9 +617,10 @@ class TaskNowTests(unittest.TestCase):
         with mock.patch('taskuary.terminal.live_sessions', return_value=[]):
             fx = concierge.facts(s, it)
         self.assertIn(f'TASK NOW: TQ-{t:04d} [waiting, coding] Export still broken - no agent on it right now', fx)
-        self.assertIn(f"a reply waits for the owner's yes (rv{r})", fx); self.assertIn('the escaping is wrong on line 40', fx)
+        self.assertIn(f'WHERE IT STANDS: waiting for your input', fx); self.assertIn(f'the reply to Dana', fx); self.assertIn(f'[rv{r}]', fx)
+        self.assertIn('the escaping is wrong on line 40', fx)
         s.decide_review(r, 'approved', 'Attached - sorry for the wait.', 'owner')
-        self.assertIn('YOU ALREADY REPLIED', concierge.task_now(s, t)); self.assertIn('sorry for the wait', concierge.task_now(s, t))
+        self.assertIn('a reply went from this task', concierge.task_now(s, t)); self.assertIn('sorry for the wait', concierge.task_now(s, t))
         working = [{'taskId': t, 'agent': 'codex', 'label': 'codex', 'started': ago(0), 'idle': 3, 'waiting': False, 'tail': ['editing']}]
         with mock.patch('taskuary.terminal.live_sessions', return_value=working):
             self.assertIn('Agent is WORKING right now', concierge.task_now(s, t))
@@ -631,7 +632,7 @@ class TaskNowTests(unittest.TestCase):
             self.assertIn('Agent is PARKED and ASKING you: Should I also fix the header?', concierge.task_now(s, t))
         s.update_task(t, {'Status': 'done'}, 'o')
         with mock.patch('taskuary.terminal.live_sessions', return_value=[]):
-            self.assertIn('CLOSED', concierge.task_now(s, t))
+            self.assertIn('closed 20', concierge.task_now(s, t))
         self.assertEqual(concierge.task_now(s, 999), '')
 
 
@@ -818,7 +819,7 @@ class SweepTests(unittest.TestCase):
         out = cleared_by(s, "all the reports for paula vance you can remove. I don't need them", {'sender': 'Paula Vance'})
         self.assertFalse(out.get('proposal')); self.assertEqual(out['cleared'], 3)
         self.assertIn('3 items read', out['say']); self.assertIn('Search still finds them', out['say'])
-        self.assertEqual((funnel.mutes(s), memorylines.notes(s)), ([], []))   # clearing is all it does (R8)
+        self.assertEqual((funnel.mutes(s), memory.notes(s)), ([], []))   # clearing is all it does (R8)
         self.assertEqual([i['who'] for i in funnel.build(s)['items']], ['Omar Keller'])                # Omar stays
         again = cleared_by(s, 'same for all resident refunds', {'contains': 'resident refund'})
         self.assertIsNone(again.get('proposal')); self.assertIn('No items about resident refund are waiting, so there is nothing to clear', again['say'])
@@ -1082,7 +1083,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual([f'review:{r}' in i['aliases'] for i in pile['items']], [True])
             # nine lanes now: 'broken' was added between approve and asked, so a failed check ranks
             # above a person's ask instead of behind every report (funnel.LANES)
-            self.assertEqual([l['n'] for l in pile['lanes']], [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])   # fifteen since 'theirs' (2026-09-25)
+            self.assertEqual([l['n'] for l in pile['lanes']], [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])   # sixteen since 'watching' (2026-11-25)
             nxt = c.post('/api/concierge/next', json={}).json()
             self.assertEqual(nxt['item']['rid'], r)
             self.assertEqual(nxt['say'], 'Next up: TQ-0001.')      # instant, and the card carries the facts (2026-10-21)
@@ -1102,6 +1103,19 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(len(one['messages']), 3)
             self.assertEqual(c.get('/api/concierge/chats/999').status_code, 404)
             self.assertEqual(c.post('/api/funnel/settle', json={'key': 'x', 'verb': 'burn'}).status_code, 422)
+
+    def test_mark_done_answers_without_building_the_rail(self):
+        # 300 mails in, Mark done waited out a whole rebuild of the rail its own write had made stale (48 s); it answers now, the page reads behind
+        s = store()
+        t, m, r = drafted(s)
+        with mock.patch.object(server, 'store', s), mock.patch.dict(terminal.SESSIONS, {}, clear=True):
+            c = TestClient(server.app)
+            key = c.get('/api/funnel/pile?force=1').json()['items'][0]['key']
+            with mock.patch.object(funnel, 'build', wraps=funnel.build) as built:
+                out = c.post('/api/funnel/settle', json={'key': key, 'verb': 'done'}).json()
+            self.assertEqual((out['verb'], out['pile'], built.call_count), ('done', None, 0))
+            with mock.patch.object(funnel, 'build', wraps=funnel.build) as built: c.get('/api/funnel/pile')
+            self.assertEqual(built.call_count, 1)                    # ...and the rail the page reads behind it is built with the press in it
 
     def test_a_new_chat_archives_the_old_one_and_read_stays_read(self):
         s = store()
@@ -1369,6 +1383,14 @@ class PhoneReceiptTests(unittest.TestCase):
         self.assertEqual(self.line(op), f'Sent to Gail Moreno · TQ-{self.t:04d}.')
         self.assertTrue(self.line(op, concierge.DESK).startswith('Done - '), 'the desk keeps its receipt')
 
+    def test_a_send_names_whom_the_card_went_to_from_its_record(self):
+        "Walk 10, 2026-11-23: the phone said 'Sent to gail@...' for a reply whose card went to Paula - the receipt reads the card's record."
+        self.s.set_review_envelope(self.rid, {'to': ['paula@northwind.example'], 'cc': []})
+        op = {'kind': 'review.approve', 'targetKind': 'review', 'target': self.rid, 'status': 'done',
+              'outcome': {'sent': {'to': ['gail@northwind.example']}}}
+        said = self.line(op)
+        self.assertIn('paula', said.lower()); self.assertNotIn('gail', said.lower())
+
     def test_a_close_is_the_task_closed(self):
         op = {'kind': 'task.complete', 'targetKind': 'task', 'target': self.t, 'status': 'done', 'outcome': {}}
         self.assertEqual(self.line(op), f'TQ-{self.t:04d} closed.')
@@ -1416,3 +1438,24 @@ class AttachedFileTests(unittest.TestCase):
         self.assertIn('⟦', seen['user'])                           # ...fenced: what its author wrote is material, never an order
         self.assertFalse(seen['images'])                           # a sheet is no picture: nothing goes down the vision road
         self.assertEqual(out['say'], 'Payworth is 4,180.00 of it.')
+
+    def test_a_picture_stays_with_every_call_of_its_turn(self):
+        """Walk 9 (43): a picture sent from the phone with "what is this?" - the model looked something up first, and the answer after the
+        look-up was asked without the picture, so it summarised the task on the table. Every call of the turn carries what he showed."""
+        import tempfile, os, base64
+        from taskuary import config
+        home = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {'TASKUARY_HOME': home}):
+            d = config.home() / 'attachments' / 'prompt' / '202611'; d.mkdir(parents=True, exist_ok=True)
+            pic = d / '20261123-124300-abc123-badge.png'
+            pic.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='))
+            calls = []
+            def llm(system, user, max_tokens=0, images=None):
+                calls.append((user, images))
+                return 'CALL: {"kind": "tasks.list", "params": {}}' if len(calls) == 1 else 'A visitor badge for the Northwind office.'
+            out = concierge.say(store(), 'what is this?', images=[str(pic)], llm=llm)
+        self.assertGreater(len(calls), 1)
+        for user, images in calls:
+            self.assertTrue(images, user[:200])                        # the picture itself, on every call
+            self.assertIn(str(pic), user)                              # ...and named, for a brain that reads the file
+        self.assertEqual(out['say'], 'A visitor badge for the Northwind office.')

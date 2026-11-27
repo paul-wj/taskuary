@@ -129,11 +129,10 @@ class HandingOverTheKeyboardTests(unittest.TestCase):
     then turned white ... just spinning")."""
 
     def test_the_brief_tells_it_to_stop_and_not_touch_the_tab(self):
-        b = browserview.brief()
-        self.assertIn('WHEN YOU ASK FOR A SIGN-IN OR HAND THEM THE KEYBOARD, STOP', b)
-        self.assertIn('[[TASKUARY-SIGNIN: <the domain of the site>]]', b)   # a sign-in is asked for, never typed (signin.py)
-        self.assertIn('run no browser command at all until they answer', b)
-        for forbidden in ('re-open the page', 'reload it', 'navigate', 'poll'):
+        b = browserview.guide()
+        self.assertIn('A TAB YOU HANDED OVER IS THEIRS', b)                 # ...handed over mid-turn, never reloaded or polled under him
+        self.assertIn('hand_over with its `site`', b)                         # a sign-in is asked for, never typed (signin.py)
+        for forbidden in ('reload', 'navigate', 'poll'):
             self.assertIn(forbidden, b)
         self.assertIn('NEVER type a password', b)            # the rule it already had, still there
 
@@ -265,10 +264,53 @@ class ALeftOverBrowserIsClosedTests(unittest.TestCase):
     def test_the_next_start_closes_what_the_last_run_left_and_only_that(self):
         browserview.listed('run-a', True); browserview.listed('run-b', True)
         (self.dir / 'tq-run-a.stream').write_text('9222')                  # run-b's browser is already gone: nothing to close
-        with mock.patch.object(browserview, 'program', return_value='agent-browser'), mock.patch.object(browserview.spawn, 'run') as run:
+        with mock.patch.object(browserview, 'program', return_value='agent-browser'), mock.patch.object(browserview.spawn, 'output', return_value=(0, '')) as run:
             self.assertEqual(browserview.close_orphans(), 1)
         self.assertEqual([c.args[0] for c in run.call_args_list], [['agent-browser', '--session', 'tq-run-a', 'close']])
         self.assertEqual(browserview._listed(), {})
+
+    def test_quitting_closes_every_listed_browser_whose_session_is_gone_too(self):
+        """Walk 12: 25 agent Chromes ran on after the apps had quit - their sessions had idled out or ended, so the quit's close of each live
+        session never reached them. The quit closes every browser this folder lists."""
+        browserview.listed('run-a', True); (self.dir / 'tq-run-a.stream').write_text('9222')
+        with mock.patch.dict(terminal.SESSIONS, {}, clear=True), mock.patch.object(browserview, 'program', return_value='agent-browser'), \
+             mock.patch.object(browserview.spawn, 'output', return_value=(0, '')) as run:
+            try: terminal.shutdown_sessions()
+            finally: terminal.CLOSING.clear()
+        self.assertEqual([c.args[0] for c in run.call_args_list], [['agent-browser', '--session', 'tq-run-a', 'close']])
+        self.assertEqual(browserview._listed(), {})
+
+    def test_a_turn_closes_the_tabs_it_left_but_the_one_it_works_and_the_owners(self):
+        """Walk 12: three sign-up providers' tabs stood open after the agent had moved on from each. When a turn ends its browser keeps the tab
+        it works and any a step waits on the owner in; the rest close. Nothing closes where a held step names no tab."""
+        from taskuary import browsergate
+        tabs = [{'id': t, 'url': f'https://{t.lower()}.example/'} for t in ('T1', 'T2', 'T3', 'T4')]
+        def tidy(owners):
+            closed = []
+            with mock.patch.object(browserview, 'state', return_value={'open': True}), mock.patch.object(browserview, 'pages', return_value=tabs), \
+                 mock.patch.object(browserview, 'active_tab', return_value='T4'), mock.patch.object(browsergate, 'owner_tabs', return_value=owners), \
+                 mock.patch.object(browserview, '_devtools', lambda sid, path: closed.append(path)):
+                self.assertEqual(browserview.tidy(MemoryStore(), 1, 'run-a'), [p.rsplit('/', 1)[-1] for p in closed])
+            return closed
+        self.assertEqual(tidy({'T2': 'live.example'}), ['/json/close/T1', '/json/close/T3'])
+        self.assertEqual(tidy({'': 'proton.example'}), [])
+
+    def test_the_tabs_a_turn_left_close_as_the_next_begins_never_under_its_last_words_and_that_turn_is_told(self):
+        """Walk 13: the turn ended "open the Trello sign-up tab in the browser pane" and that tab was closed a beat later, at the turn's end. A
+        turn's end closes nothing; the next turn's start puts them away, and that turn is told which tabs stand and which were closed."""
+        import threading
+        from taskuary import browsergate, workerstate as ws
+        s = MemoryStore(); tid = s.create_task({'Title': 'Trello board', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        with mock.patch.object(browserview, 'tidy') as tidy:
+            ws.record(s, tid, 'run-a', 'turn_end', text='Open the Trello sign-up tab in the browser pane.')
+            for t in threading.enumerate():
+                if t.name.startswith('tidy-tabs'): t.join(2)
+        tidy.assert_not_called()
+        tabs = [{'id': 'T1', 'url': 'https://trello.example/signup'}, {'id': 'T2', 'url': 'https://mail.example/inbox'}]
+        def close(sid, path): tabs[:] = [t for t in tabs if not path.endswith('/' + t['id'])]
+        with mock.patch.object(browserview, 'state', return_value={'open': True}), mock.patch.object(browserview, 'pages', lambda sid: list(tabs)),              mock.patch.object(browserview, 'active_tab', return_value='T2'), mock.patch.object(browsergate, 'owner_tabs', return_value={}),              mock.patch.object(browserview, '_devtools', close):
+            said = browserview.tabs_now(s, tid, 'run-a')
+        self.assertEqual(said, 'ITS TABS NOW: https://mail.example/inbox (the one you work). Closed since your last turn: https://trello.example/signup.')
 
     def test_the_helper_its_launch_started_ends_with_the_browser_and_only_that_one(self):
         """The browser audit, 2026-11-15: fourteen agent-browser helpers ran on with no Chrome under them a day after their browsers had
@@ -355,7 +397,7 @@ class ALeftOverBrowserIsClosedTests(unittest.TestCase):
                 opened['on'] = False; time.sleep(.1); n = len(kept); time.sleep(.1)
                 self.assertEqual(len(kept), n)                             # a closed browser stops its clock
             kept.clear(); (self.dir / 'tq-run-d.stream').write_text('9')
-            with mock.patch.object(browserview, 'program', return_value='agent-browser'), mock.patch.object(browserview.spawn, 'run'):
+            with mock.patch.object(browserview, 'program', return_value='agent-browser'), mock.patch.object(browserview.spawn, 'output', return_value=(0, '')):
                 browserview.close('run-d')
             self.assertEqual(kept, ['run-d'])
 

@@ -166,13 +166,63 @@ class ChatReopensTests(unittest.TestCase):
                                                                               'Erin also needs the September statement.'))
         self.assertEqual((back['status'], back['task_id']), ('attached', self.tid))
         t = self.s.get_task(self.tid)
-        self.assertEqual((t['Status'], t['Title'], t['Summary']), ('open', 'Send Erin the September statement', 'Erin also needs the September statement.'))
+        self.assertEqual((t['Status'], t['Title'], t['Summary']), ('open', 'Send Erin the September statement', 'and the September one too please'))   # his line's own words
         self.assertEqual(len(self.s.list_tasks()), 1)
 
     def test_a_same_as_reply_on_a_closed_task_stays_closed_too(self):
         r = mail(self.s, 'm2', brain('reply_only', same_as=self.tid, title='Erin asks if it went out'), conv='other')
         self.assertEqual((r['status'], r['task_id']), ('filed', self.tid))
         self.assertEqual(self.s.get_task(self.tid)['Status'], 'done')
+
+
+class FiledNewsSurfacesTests(unittest.TestCase):
+    """A LINE FILED ONTO A TASK STILL SHOWS (the owner, 2026-11-24): a colleague's Teams line read as nothing new was filed onto the task he had
+    closed that morning, and was on no rail, no FYI and no chat. It stands in the FYI lane, linked to its task, until he walks past it - and
+    it is an arrival in the task's chat. His own line filed there raises nothing."""
+    def setUp(self):
+        from taskuary import processing_unread
+        self.s = MemoryStore()
+        self.s.set_setting('owner_email', 'alex@northwind.example', 'test')
+        self.s.set_setting(processing_unread.FILED_SINCE, '2000-01-01 00:00:00', 'test')
+        self.chat = lambda ext, body, llm, frm='erin@northwind.example': mail(self.s, ext, llm, conv='room-1', subject='', body=body,
+                                                                             channel='teams', frm=frm)
+        first = self.chat('t1', 'Can you send me the August statement?', brain('task', title='Send Erin the August statement'))
+        self.tid, self.mid1 = first['task_id'], first['message_id']
+
+    def joins(self, title):
+        return lambda system, user, **k: json.dumps({'intent': 'fyi', 'why': 'scripted', 'title': title, 'summary': 's', 'relationship': 'answers',
+                                                       'related_message_ids': [self.mid1], 'existing_task_id': self.tid, 'same_problem': True})
+
+    def fyi(self):
+        from taskuary import funnel
+        return [i for i in funnel.build(self.s, live_state=[])['items'] if i.get('filed') and i.get('tid') == self.tid]
+
+    def test_a_line_filed_onto_a_closed_task_stands_in_fyi_and_in_its_chat_until_walked_past(self):
+        from taskuary import chatlog, funnel
+        self.s.update_task(self.tid, {'Status': 'done'}, 'owner')
+        back = self.chat('t2', 'thanks, got it - all good on my side', self.joins('Erin confirms she has it'))
+        self.assertEqual((back['status'], back['task_id']), ('filed', self.tid))
+        self.assertEqual(self.s.get_task(self.tid)['Status'], 'done')                    # news, not work: it stays closed
+        [row] = self.fyi()
+        self.assertEqual((row['lane'], row['mid'], row['closed']), ('fyi', back['message_id'], True))
+        self.assertIn('Erin Blake wrote on', row['title']); self.assertIn('(closed): thanks, got it', row['title'])
+        self.assertIn(f"m:{back['message_id']}", {r['Key'] for r in self.s._rows("SELECT Key FROM chatlog WHERE TaskId=? AND Kind='arrival'", (self.tid,))})
+        self.assertIn(row['key'], [i['key'] for i in funnel.pile(self.s, force=True, quiet=True)['items']])
+        funnel.settle(self.s, row['key'], 'surfaced', 'owner', read=True)                  # Next: walked past
+        self.assertEqual(self.fyi(), [])
+        again = self.chat('t3', 'and the printer works again', self.joins('Erin says the printer works'))
+        self.assertEqual([r['mid'] for r in self.fyi()], [again['message_id']])           # the next one is news again
+
+    def test_a_line_filed_onto_an_open_task_has_its_own_fyi_row(self):
+        back = self.chat('t2', 'fyi I am out on Friday', self.joins('Erin is out Friday'))
+        self.assertEqual((back['status'], back['task_id']), ('filed', self.tid))
+        [row] = self.fyi()
+        self.assertEqual((row['lane'], row['closed']), ('fyi', False))
+
+    def test_his_own_line_filed_onto_a_closed_task_raises_nothing(self):
+        self.s.update_task(self.tid, {'Status': 'done'}, 'owner')
+        self.chat('t2', 'sent it over just now', self.joins('Alex sent it'), frm='alex@northwind.example')
+        self.assertEqual(self.fyi(), [])
 
 
 class OwnChannelRepeatTests(unittest.TestCase):
@@ -310,7 +360,8 @@ class QuestionReopensTests(unittest.TestCase):
                           'Can you explain the difference between the 4100 accounts? Is the text after the comma a class?')
         self.assertEqual((back['status'], back['task_id']), ('attached', self.tid))
         t = self.s.get_task(self.tid)
-        self.assertEqual((t['Status'], t['Title'], t['Summary']), ('open', 'Erin asks what separates the 4100 accounts', 'Erin Blake wants the difference explained.'))
+        self.assertEqual((t['Status'], t['Title'], t['Summary']), ('open', 'Erin asks what separates the 4100 accounts',
+                                                                   'Can you explain the difference between the 4100 accounts? Is the text after the comma a class?'))
         self.assertEqual(self.s.pending_review(self.tid, kind='draft')['MessageId'], back['message_id'])
         self.assertTrue(any(c['Body'].startswith('Reopened - Erin Blake has a question for you') for c in self.s.list_comments(self.tid)))
 

@@ -2,7 +2,7 @@
 // open beside it - these six are read against each other, so hiding five behind a landing
 // grid cost a round trip every time you wanted to compare two.
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, Chip, CircularProgress, TextField, Tooltip, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, TextField, Typography } from "@mui/material";
 import AutoStoriesIcon from "@mui/icons-material/AutoStories";
 import HistoryEduIcon from "@mui/icons-material/HistoryEdu";
 import PsychologyIcon from "@mui/icons-material/Psychology";
@@ -10,21 +10,19 @@ import FilterAltIcon from "@mui/icons-material/FilterAlt";
 import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 import RateReviewIcon from "@mui/icons-material/RateReview";
 import SupportAgentIcon from "@mui/icons-material/SupportAgent";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
+import TipsAndUpdatesIcon from "@mui/icons-material/TipsAndUpdates";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import AddIcon from "@mui/icons-material/Add";
 import api from "./api";
 import { Md } from "./md.jsx";
 import LearnedView, { MarkRow } from "./LearnedView.jsx";
 import { changeMarks } from "./learnedGroups.js";
-import { AgentsPage } from "./AgentsPanel.jsx";
 import SoulInterview from "./SoulInterview.jsx";
-import NewPlaybookDialog from "./NewPlaybookDialog.jsx";
-import SkillImport from "./SkillImport.jsx";
-import RoleStart from "./RoleStart.jsx";
+import NewSkillDialog from "./NewSkillDialog.jsx";
 import { ACCENT2, FAINT, INK, PALETTE, mono } from "./theme.jsx";
 import { meter } from "./docMeter.js";
 import { TaskuaryMark } from "./ui.jsx";
-import { UndoLine, removeNow } from "./Removed.jsx";
 import { plural } from "./timeWords.js";
 import { fmtDate } from "./dates.js";
 import { t } from "./i18n.js";
@@ -34,24 +32,27 @@ const displayMessage = (value) => typeof value === "string" ? value : t(value.so
 
 const DOCS = {
   soul: { label: "SOUL.md", icon: <AutoStoriesIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
-    blurb: "The funnel's constitution AND the base system prompt: what counts as a task, how we respond, escalation rules, the repository map. Injected into every triage and every draft." },
+    blurb: "What Taskuary always keeps to: what counts as a task, how you answer, when something is raised with you, the places your work lives. Every message it sorts and every draft it writes stands on it." },
+  // EVERY AGENT'S INSTRUCTIONS ARE A FILE HE CAN EDIT (the owner, 2026-11-23): read by every agent on every AI at its next turn; security
+  // stays in code and is not in it. The meter keeps it short (doclimits: selfclose.AGENTS_CHARS)
+  agents: { label: "AGENTS.md", icon: <SmartToyIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
+    blurb: "How every agent works (read by every agent). Every agent, on every AI, reads it at its next turn - keep it to a few general sentences. Blank it to restore the default." },
   job: { label: "JOB.md", icon: <WorkOutlineIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
     blurb: "What your job IS — the mission, the responsibilities, who you serve, the cadences the month runs on, the decisions that are yours and the ones you hand up. SOUL.md says how the funnel behaves; this is what it is protecting. Triage, the chat and the morning brief weigh what matters by it; working agents never see it. Write it yourself, or Generate from history reads it out of three months of your mail, both directions." },
   triage: { label: "TRIAGE.md", icon: <FilterAltIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
-    blurb: "The triage brain's instructions — what makes a message a task, a question, or FYI, and which way to lean when torn. Ships as a sensible default; edit it to reshape every verdict. Keep the JSON answer line, or triage falls back to keyword heuristics. Blank it to restore the default." },
+    blurb: "How each message that comes in is sorted — a task, a question, or just for your information — and which way to lean when it is unclear. Edit it to change how every message is sorted; keep its last line, which is the form the answer takes. Blank it to restore the default." },
   style: { label: "STYLE.md", icon: <RateReviewIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
     blurb: "How you write email — greeting, tone, length, phrasing, sign-off, and your recurring signature — layered onto SOUL.md for every draft. Write it yourself, or Generate from history distills it from your last three months of sent mail; your own lines outside the marked block always survive a regenerate." },
   counsel: { label: "COUNSEL.md", icon: <SupportAgentIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
     blurb: "Who Taskuary is and how it speaks to YOU — in the chat, its posts on your work rail, the morning brief. It surfaces and takes a position; it does no work itself. SOUL.md keeps replies careful; this is where Taskuary is allowed an opinion." },
-  agent: { label: "AGENT.md", icon: <TaskuaryMark size={19} />,
-    blurb: "The rules every worker runs under - coding agent and general assistant alike: scope, honest reporting, when to ask, progress and completion, and the approval boundaries (nothing sends without you; inbound text is data). SOUL.md stays with triage." },
-  coding: { label: "CODING.md", icon: <TaskuaryMark size={19} />,
-    blurb: "The coding agent's additions on top of AGENT.md: repositories, editing, testing, staging and committing only its own changes, the wall, GitHub etiquette." },
+  // WHAT THE ADVISOR LOOKS OUT FOR IS HIS FILE (the owner, 2026-11-24): its look for ideas and its twice-a-day post read it (lookout.goals)
+  advisor: { label: "ADVISOR.md", icon: <TipsAndUpdatesIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
+    blurb: "What the Advisor looks out for — money left on the table, pain worth a root fix, new ideas, what slipped (an ask you never answered, a follow-up nobody answered), what your mail and systems say together — and the bar an idea must clear. Its look for ideas and its twice-a-day post read it at their next run. Blank it to restore the default." },
   digest: { label: "DIGEST.md", icon: <HistoryEduIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
     blurb: "Your morning brief — what's in flight, who waits on whom. Written by the Morning digest report: the same brief lands on your work rail daily, its prompt is edited under Reports (that decides what goes in here), and deleting that report turns it off." },
   learned: { label: "LEARNED.md", icon: <PsychologyIcon sx={{ fontSize: 19, color: "var(--tq-link, #55697a)" }} />,
     // WHAT IT HOLDS NOW (the memory redesign, 2026-10-25): how you work, learned from what you did - never which button you pressed
-    blurb: "How you work, learned from what you do: your people and how you deal with them, what you care about, your rhythm, the promises you keep, and what is worth bringing up. Each reader takes the parts that help it. A line waits in Watching until enough of your own acts say it; Keep, Wrong and Forget correct it, every line is yours to edit, and SOUL.md always outranks it." },
+    blurb: "How you work, learned from what you do: your people and how you deal with them, what you care about, your rhythm, the promises you keep, and what is worth bringing up. Each reader takes the parts that help it. A line goes into use by itself once enough of your own acts say it; Wrong and Forget correct it, and SOUL.md always outranks it." },
 };
 const NAMES = Object.keys(DOCS);
 // The rail in Settings draws these, so the list of operator documents lives in ONE place rather
@@ -145,49 +146,15 @@ export function DocMeter({ text, limit }) {
   );
 }
 
-// Playbooks are a separate section of Docs: one file per kind of job, accreted the first time
-// each is done (docs/beyond-code.md). They open in the same editor, but never share the operator
+// Skills are a separate section of Docs: a folder per kind of job with its SKILL.md (taskuary/skills.py), accreted the first time
+// each is done. They open in the same editor, but never share the operator
 // document shelf—a company can have hundreds without burying the owner's identity card.
 const isPb = (n) => n.startsWith("pb:");
 // a person's page (people_pages.py): a doc named person-<address>, compiled from the outcome ledger at reflection
 const isPerson = (n) => String(n || "").startsWith("person-");
 const PERSON_BLURB = "What the outcome ledger says about them, compiled at reflection: how fast they answer, whether a chase is needed, who on copy moves them. Your own lines above the block are yours; the block is rewritten.";
-// A PROFILE's rules document (RESEARCHER.md, ANALYST.md, ...). Its own section rather than more
-// entries in the fixed eight: the operator set is a constitution that always exists, profiles are a
-// roster the owner adds to and removes from - the same reason playbooks got their own shelf. The
-// document is the `doc` row named after the agent row, so `coding` is CODING.md and lives in BOTH:
-// one row, so editing it here or under Operator documents is the same edit.
-const isProf = (n) => n.startsWith("prof:");
-// WHAT AN AGENT READS, in order, on top of every profile: who the owner is, the rules every agent shares, then this profile.
-// AGENT.md is one document - hover to read it whole; it is edited under Operator documents, never copied in here.
-function SharedRulesChip() {
-  useLocale();
-  const [text, setText] = useState("");
-  useEffect(() => { let live = true; api.get("/api/doc/agent").then(({ data }) => live && setText(data.rendered || data.content || "")).catch(() => {}); return () => { live = false; }; }, []);
-  const step = { fontSize: 11.5, color: FAINT };
-  return (
-    <Box data-tq-layers="" sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap", pt: 0.75 }}>
-      <Typography component="span" sx={step}>{t("Every task reads: SOUL.md + JOB.md →")}</Typography>
-      <Tooltip placement="bottom-start" enterDelay={150}
-        componentsProps={{ tooltip: { sx: { maxWidth: 620, maxHeight: 440, overflow: "auto", bgcolor: "var(--tq-panel, #fffdfb)", color: INK,
-          border: "1px solid var(--tq-border, #e1dcd5)", boxShadow: "0 6px 24px rgba(30,40,30,.14)", p: 1.5 } } }}
-        title={<Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 12, lineHeight: 1.5 }}>{text || t("AGENT.md is empty.")}</Box>}>
-        <Chip size="small" label={t("AGENT.md · shared rules")} data-tq-agent-rules=""
-          sx={{ height: 22, fontSize: 11, fontWeight: 600, bgcolor: "var(--tq-inset, #eef1ec)", border: "1px solid var(--tq-border, #d9e0d6)", cursor: "help" }} />
-      </Tooltip>
-      <Typography component="span" sx={step}>{t("→ this profile")}</Typography>
-    </Box>
-  );
-}
-const profName = (n) => n.slice(5);
-// the coding profile is the one of KIND coding, never a name; "coding" is what ships
-const codingDoc = (profs) => (profs || []).find((p) => p.kind === "coding")?.name || "coding";
-const PROF_BLURB = "Instructions for the workers listed under this profile, added to AGENT.md for each task. Define how they work and what they deliver. Workers using different CLIs can share these instructions. Blank the document to restore its starter version.";
-// A row is a rules DOCUMENT, and several agents can share one (every coding worker shares `coding`). It wears no
-// roster chip: triage picks no worker for a task any more (the owner, 2026-11-04) - profiles are for routines and
-// workflows, which name their own - so a chip saying triage could pick it described a router that is gone.
 const pbSlug = (n) => n.slice(3);
-const PB_BLURB = "How THIS company does one kind of job, for the agent that will do it: when it starts, which connections it uses, the steps, what it may do alone, what to ask first, and what counts as done. Triage matches new messages against `when`; the connector cards list the playbooks that name them.";
+const PB_BLURB = "How THIS company does one kind of job, for the agent that will do it. The description on top says what the job is and when to use it - triage and the agents choose by it; the rest is how it is done, in your words. It is context for an agent, never a permission: every send or change still waits for your press.";
 
 // Docs that can bootstrap themselves from the mailbox's own past: the button reads ~3
 // months of mail server-side and fills the doc's marked block - hand-written lines
@@ -251,17 +218,14 @@ const OwnerCard = () => {
 
 // `sel` and `onSel` are how Settings' rail drives this: it owns which document is open, so the
 // page holds nothing but that document. Standalone (no onSel) it keeps its own tab strip and
-// shelf. `onCatalog` hands the rail the lists it has to draw - the profiles and playbooks on disk.
+// shelf. `onCatalog` hands the rail the lists it has to draw - the skills and people on disk.
 // catalogOnly: mounted unseen only to report the shelf (the canvas's Docs list) - it must not act on a link, or it opens a
 // dialog the list's own card is about to unmount
-// `onGone`: the page that opened ONE playbook (Reports -> Playbooks) is told when it is deleted or a new one discarded - it goes back
-// to its list instead of this page opening another playbook in its place
+// `onGone`: the page that opened ONE skill (Reports -> Skills) is told when it is deleted or a new one discarded - it goes back
+// to its list instead of this page opening another skill in its place
 export default function DocsView({ sel = null, onSel = null, onCatalog = null, catalogOnly = false, onGone = null }) {
   useLocale();
   const rail = !!onSel;
-  const [manageProfiles, setManageProfiles] = useState(false);
-  const [createProfile, setCreateProfile] = useState(false);
-  const [importSkills, setImportSkills] = useState(false);
   const [docName, setDocName] = useState(NAMES[0]);
   const [section, setSection] = useState("documents");
   const [docs, setDocs] = useState(Object.fromEntries(NAMES.map((n) => [n, ""])));
@@ -275,22 +239,11 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
   const [genEv, setGenEv] = useState(null);   // the receipts: what was read, line by line
   const [view, setView] = useState("text");    // LEARNED.md: text, or the picture of what drives what (#27)
   const [interview, setInterview] = useState(false);   // SOUL.md, asked for rather than guessed
-  const [books, setBooks] = useState([]);              // the playbooks on disk: slug, title, when, uses
-  const [profs, setProfs] = useState([]);              // the agent rows: each one a worker with a rules document
+  const [books, setBooks] = useState([]);              // the skills on disk: slug, title, description, uses
   const [tpl, setTpl] = useState("");                  // what a new one starts from
   const [pbMsg, setPbMsg] = useState("");
   const [pbFilter, setPbFilter] = useState("");
-  const [newPlaybook, setNewPlaybook] = useState(null);
-  // REMOVE IS AT ONCE (the owner, 2026-10-21): the next profile opens under "Removed <it> - Undo"; Undo opens it again
-  const removeProf = async (name) => {
-    setErr("");
-    try {
-      await removeNow(() => api.delete(`/api/agents/${encodeURIComponent(name)}`), "profile", name);
-      const left = (await loadProfs()) || [];
-      const next = left.find((p) => p.name !== name);
-      if (next) await openProf(next.name); else { setSection("documents"); setDocName(NAMES[0]); }
-    } catch (e) { setErr(e?.response?.data?.detail || localMessage("{name} could not be removed", { name })); }
-  };
+  const [newSkill, setNewSkill] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   // the generation is inspectable, not a vibe: poll its status while it runs so the button
   // narrates ("reading you@... — 240 sent so far"), then show the exact evidence it judged
@@ -313,13 +266,13 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       setLimits((cur) => ({ ...cur, ...Object.fromEntries(NAMES.map((n, i) => [n, res[i].data.limit || null])) }));
     } catch (e) { setErr(e?.response?.data?.detail || localMessage("Failed to load documents")); }
   }, []);
-  // ...not for the unseen catalogue (catalogOnly): it reports profiles, playbooks and people, never a document's words - and it read all
-  // nine every time Settings > Docs or Profiles drew its list, twelve requests for three it uses (the overnight setup walk, 2026-10-26)
+  // ...not for the unseen catalogue (catalogOnly): it reports skills and people, never a document's words - and it read all
+  // nine every time Settings > Docs drew its list, twelve requests for three it uses (the overnight setup walk, 2026-10-26)
   useEffect(() => { if (!catalogOnly) load(); }, [load, catalogOnly]);
 
   const loadBooks = useCallback(async () => {
     try {
-      const { data } = await api.get("/api/playbooks");
+      const { data } = await api.get("/api/skills");
       setBooks(data.data || []); setTpl(data.template || "");
     } catch { /* an older server: the shelf simply stays empty */ }
   }, []);
@@ -339,80 +292,34 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
     } catch (e) { setErr(e?.response?.data?.detail || localMessage("could not open {name}", { name })); }
   }, []);
 
-  const loadProfs = useCallback(async () => {
-    try {
-      const { data } = await api.get("/api/agents");
-      // the STORE rows, not config.toml's table: those are the workers triage is actually offered
-      const grouped = new Map();
-      for (const r of data.data || []) {
-        let prof = {};
-        try { prof = JSON.parse(r.Config || "{}"); } catch { /* an unreadable row still gets its document */ }
-        const kind = prof.kind || r.Kind || "coding";
-        const name = r.rules_doc || prof.rules_doc || (kind === "coding" ? "coding" : r.Name);
-        if (!grouped.has(name)) grouped.set(name, { name, kind, purpose: r.purpose || prof.purpose ||
-          (kind === "coding" ? "Write, review and test code in a repository." : ""), members: [] });
-        grouped.get(name).members.push(r.Name);
-      }
-      const profiles = [...grouped.values()];
-      setProfs(profiles);
-      return profiles;
-    } catch { /* an older server: the shelf simply stays empty */ }
-  }, []);
-  useEffect(() => { loadProfs(); }, [loadProfs]);
-
-  // open a profile's document: fetched on first open, like a playbook's text
-  const openProf = useCallback(async (name) => {
-    const key = `prof:${name}`;
-    setSection("profiles"); setGenMsg(""); setGenEv(null); setPbMsg(""); setDocName(key);
-    try {
-      const { data } = await api.get(`/api/doc/${name}`);
-      setDocs((d) => ({ ...d, [key]: data.content || "" })); setSaved((d) => ({ ...d, [key]: data.content || "" }));
-      setLimits((l) => ({ ...l, [key]: data.limit || null }));
-    } catch (e) { setErr(e?.response?.data?.detail || localMessage("could not open {name}", { name })); }
-  }, []);
-
-  useEffect(() => {
-    const fromHash = () => {
-      if (catalogOnly || window.location.hash !== "#profiles") return;
-      window.history.replaceState(null, "", window.location.pathname + window.location.search);
-      setManageProfiles(false);
-      openProf(profs[0]?.name || codingDoc(profs));
-    };
-    fromHash(); window.addEventListener("hashchange", fromHash);
-    return () => window.removeEventListener("hashchange", fromHash);
-  }, [openProf, profs, catalogOnly]);
-
-  // open a playbook: its text is fetched on first open, not with the shelf (the shelf is titles)
+  // open a skill: its text is fetched on first open, not with the shelf (the shelf is titles)
   const openPb = useCallback(async (slug, seedUses = "") => {
     const key = `pb:${slug}`;
-    setSection("playbooks"); setGenMsg(""); setGenEv(null); setPbMsg(""); setDocName(key);
+    setSection("skills"); setGenMsg(""); setGenEv(null); setPbMsg(""); setDocName(key);
     if (slug === "new") {
-      // a card's "new playbook for this connection" arrives as new:<type> - the uses line is prefilled
-      const t = (tpl || "").replace(/^uses:.*$/m, (l) => (seedUses ? `uses:      ${seedUses} (read)` : l));
+      // a card's "new skill for this connection" arrives as new:<type> - the uses line is prefilled
+      const t = (tpl || "").replace(/^  uses:.*$/m, (l) => (seedUses ? `  uses: "${seedUses}"` : l));
       setDocs((d) => ({ ...d, [key]: t })); setSaved((d) => ({ ...d, [key]: "" }));
       return;
     }
     try {
-      const { data } = await api.get(`/api/playbooks/${slug}`);
+      const { data } = await api.get(`/api/skills/${slug}`);
       setDocs((d) => ({ ...d, [key]: data.content || "" })); setSaved((d) => ({ ...d, [key]: data.content || "" }));
-    } catch (e) { setErr(e?.response?.data?.detail || localMessage("could not open playbook {slug}", { slug })); }
+    } catch (e) { setErr(e?.response?.data?.detail || `could not open skill ${slug}`); }
   }, [tpl]);
   // ...a new one opened before the shelf's template arrived (Settings opens the editor as the page mounts) starts from it when it lands
   useEffect(() => { if (tpl && docName === "pb:new" && !docs["pb:new"]) setDocs((d) => ({ ...d, "pb:new": tpl })); }, [tpl, docName]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // THE RAIL OWNS THE SELECTION. When Settings drives this page its sidebar is the only
   // navigation - nothing in the page header, like every other settings page - so a click there is
-  // what moves the document. An `action` entry (New playbook, Manage profiles, Import skills)
+  // what moves the document. An `action` entry (New skill)
   // arrives down the same channel, because the shelf those buttons lived on is gone.
   const selKey = sel ? `${sel.action || ""}|${sel.group || ""}|${sel.doc || ""}|${sel.n || ""}|${sel.view || ""}` : "";
   useEffect(() => {
     if (!sel) return;
     const { action, group, doc } = sel;
-    if (action === "new-profile") { setCreateProfile(true); setManageProfiles(true); return; }
-    if (action === "manage-profiles") { setCreateProfile(false); setManageProfiles(true); return; }
-    if (action === "new-playbook") { setSection("playbooks"); setNewPlaybook({ connectorType: "" }); return; }
-    if (group === "profiles" && doc) { openProf(doc); return; }
-    if (group === "playbooks" && doc) { openPb(doc); return; }
+    if (action === "new-skill") { setSection("skills"); setNewSkill({ connectorType: "" }); return; }
+    if (group === "skills" && doc) { openPb(doc); return; }
     if (doc && isPerson(doc)) { openPerson(doc); return; }
     // ...and a link can name the VIEW too: the opening screen's "learned this week" lands on LEARNED.md's What changed
     if (doc) { setSection("documents"); setDocName(doc); if (sel.view) setView(sel.view); return; }
@@ -422,19 +329,19 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
   }, [selKey]);
 
   // ...and the rail draws the two lists this page already fetches, so nothing fetches them twice.
-  useEffect(() => { onCatalog?.({ profiles: profs, playbooks: books, people }); }, [onCatalog, profs, books, people]);
+  useEffect(() => { onCatalog?.({ skills: books, people }); }, [onCatalog, books, people]);
 
 
-  // #playbook=<slug> (a connector card's link) opens it; #playbook=new:<type> starts one for that card
+  // #skill=<slug> (a connector card's link) opens it; #skill=new:<type> starts one for that card
   useEffect(() => {
     const fromHash = () => {
-      const m = /playbook=([\w:.-]+)/.exec(window.location.hash || "");
-      // ...where a page drives it (rail), the link is that page's: Reports -> Playbooks opens the playbook it names (canvasLinks)
-      // and its address IS #playbook=<slug> - read here too, it opened a second New playbook dialog over the editor
+      const m = /skill=([\w:.-]+)/.exec(window.location.hash || "");
+      // ...where a page drives it (rail), the link is that page's: Reports -> Skills opens the skill it names (canvasLinks)
+      // and its address IS #skill=<slug> - read here too, it opened a second New skill dialog over the editor
       if (!m || catalogOnly || rail) return;
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
       const [what, type] = m[1].split(":");
-      if (what === "new") { setSection("playbooks"); setNewPlaybook({ connectorType: type || "" }); return; }
+      if (what === "new") { setSection("skills"); setNewSkill({ connectorType: type || "" }); return; }
       openPb(what, type || "");
     };
     fromHash(); window.addEventListener("hashchange", fromHash);
@@ -445,7 +352,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
     if (isPb(docName)) {
       setPbMsg("");
       try {
-        const { data } = await api.put(`/api/playbooks/${pbSlug(docName)}`, { content: docs[docName] });
+        const { data } = await api.put(`/api/skills/${pbSlug(docName)}`, { content: docs[docName] });
         const key = `pb:${data.slug}`;
         setDocs((d) => ({ ...d, [key]: docs[docName] })); setSaved((d) => ({ ...d, [key]: docs[docName] }));
         setDocName(key); await loadBooks();
@@ -453,14 +360,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       } catch (e) { setPbMsg(e?.response?.data?.detail || localMessage("could not save")); }
       return;
     }
-    const target = isProf(docName) ? profName(docName) : docName;
-    await api.put(`/api/doc/${target}`, { content: docs[docName] });
-    if (isProf(docName)) {                      // blank = the shipped default came back: show what took
-      const { data } = await api.get(`/api/doc/${target}`);
-      setDocs((d) => ({ ...d, [docName]: data.content || "" }));
-      setSaved((d) => ({ ...d, [docName]: data.content || "" }));
-      return;
-    }
+    await api.put(`/api/doc/${docName}`, { content: docs[docName] });
     setSaved({ ...saved, [docName]: docs[docName] });
   };
   const removePb = async () => {
@@ -471,61 +371,45 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       else setDocs((d) => ({ ...d, "pb:new": tpl }));
       return;
     }
-    // AT ONCE, no "are you sure" (the owner, 2026-10-21): it goes to Recently deleted on Reports -> Playbooks for 30 days, where
+    // AT ONCE, no "are you sure" (the owner, 2026-10-21): it goes to Recently deleted on Reports -> Skills for 30 days, where
     // Restore puts it back as it was. A failure is said here, over the words that are still open.
     if (deleteBusy) return;
     setDeleteBusy(true); setPbMsg("");
     try {
-      try { await api.delete(`/api/playbooks/${slug}`); }
+      try { await api.delete(`/api/skills/${slug}`); }
       catch (e) { if (e?.response?.status !== 404) throw e; }
       const next = books.find((b) => b.slug !== slug);
       await loadBooks();
       if (onGone) { onGone(); return; }
       await openPb(next?.slug || "new");
-      setPbMsg(localMessage("deleted - Recently deleted on Reports → Playbooks keeps it 30 days, with Restore"));
+      setPbMsg("deleted - Recently deleted on Reports → Skills keeps it 30 days, with Restore");
     } catch (e) {
-      setPbMsg(e?.response?.data?.detail || localMessage("Could not delete this playbook. Please try again."));
+      setPbMsg(e?.response?.data?.detail || "Could not delete this skill. Please try again.");
     } finally { setDeleteBusy(false); }
   };
   const chooseSection = (next) => {
     setSection(next); setGenMsg(""); setGenEv(null); setPbMsg("");
     if (next === "how") return;                      // reference: no shelf, no editor, nothing to open
     if (next === "documents") {
-      if (isPb(docName) || isProf(docName)) setDocName(NAMES[0]);
-    } else if (next === "profiles") {
-      if (!isProf(docName)) openProf(profs[0]?.name || codingDoc(profs));
+      if (isPb(docName)) setDocName(NAMES[0]);
     } else if (!isPb(docName)) {
       openPb(books[0]?.slug || "new");
     }
   };
   const visibleBooks = books.filter((b) => {
     const q = pbFilter.trim().toLowerCase();
-    return !q || [b.title, b.when, b.slug, ...(b.uses || [])].some((v) => String(v || "").toLowerCase().includes(q));
+    return !q || [b.title, b.description, b.slug, ...(b.uses || [])].some((v) => String(v || "").toLowerCase().includes(q));
   });
-  const cur = isProf(docName) ? profs.find((p) => p.name === profName(docName)) : null;
-  // its own document, one member, named after itself: the shape an import (or Add profile) makes.
-  // A shared document (CODING.md, found by kind) is deleted by removing its workers on Manage profiles, not here.
-  const ownProfile = cur && cur.members.length === 1 && cur.members[0] === cur.name && cur.kind !== "coding";
-  const meta = isProf(docName)
-    ? { label: `${profName(docName).toUpperCase()}.md`, blurb: PROF_BLURB }
-    : isPb(docName)
-    ? { label: docName === "pb:new" ? t("New playbook") : `${pbSlug(docName)}.md`, blurb: PB_BLURB }
+  const meta = isPb(docName)
+    ? { label: docName === "pb:new" ? "New skill" : `${pbSlug(docName)} / SKILL.md`, blurb: PB_BLURB }
     : isPerson(docName)
     ? { label: docName.slice(7), blurb: PERSON_BLURB }
     : DOCS[docName];
 
-  if (manageProfiles) return <AgentsPage initialCreate={createProfile} onCreated={async (name, rulesDoc) => {
-    await loadProfs(); setManageProfiles(false); await openProf(rulesDoc || name);
-  }} onRules={async (rulesDoc) => {
-    setManageProfiles(false); await openProf(rulesDoc);
-  }} onBack={async () => {
-    await loadProfs(); setManageProfiles(false);
-  }} />;
-
   if (!loaded && !err) return <CircularProgress size={22} sx={{ m: 4 }} />;
 
-  // Operator documents and playbooks share an editor, not a shelf. The fixed operator set stays
-  // close to the identity it speaks for; the unbounded playbook library gets search and its own
+  // Operator documents and skills share an editor, not a shelf. The fixed operator set stays
+  // close to the identity it speaks for; the unbounded skill library gets search and its own
   // viewport-height list.
   return (
     <>
@@ -533,9 +417,9 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         like every other settings page (the owner, 2026-09-22). */}
     {!rail && (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 2.5, borderBottom: "1px solid var(--tq-border, #e1dcd5)" }}>
-      {[["documents", t("Your documents")], ["profiles", `${t("Profiles")}${profs.length ? ` (${profs.length})` : ""}`],
-        ["playbooks", `${t("Playbooks")}${books.length ? ` (${books.length})` : ""}`],
-        ["how", t("How it works")]].map(([key, label]) => (
+      {[["documents", "Your documents"],
+        ["skills", `Skills${books.length ? ` (${books.length})` : ""}`],
+        ["how", "How it works"]].map(([key, label]) => (
         <Box key={key} component="button" onClick={() => chooseSection(key)}
           sx={{ appearance: "none", border: 0, borderBottom: `2px solid ${section === key ? "#55697a" : "transparent"}`,
             bgcolor: "transparent", color: section === key ? INK : FAINT, cursor: "pointer", px: 1.25, py: 0.9,
@@ -560,50 +444,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       {!rail && (
       <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0,
                  maxHeight: { xs: "none", md: "100%" } }}>
-        {section === "profiles" ? (
-          <>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>{t("Profiles")}</Typography>
-            {/* ONE door. Three buttons, two of them bare text, wrapped mid-label into something that
-                read as a menu of unrelated things (the owner, 2026-09-17: "just have 2 clear buttons
-                .. make them look like buttons.. make it look normal"). Adding a worker - by hand or
-                by importing a skill - is a thing you do ON the manage screen, which is where both
-                roads already live, so it is not a second entry point here. */}
-            <Box sx={{ display: "flex", gap: 1, mb: 1, "& .MuiButton-root": { whiteSpace: "nowrap" } }}>
-              <Button size="small" variant="contained" startIcon={<AddIcon />}
-                onClick={() => { setCreateProfile(true); setManageProfiles(true); }}>{t("New profile")}</Button>
-              <Button size="small" variant="outlined"
-                onClick={() => { setCreateProfile(false); setManageProfiles(true); }}>{t("Manage profiles")}</Button>
-            </Box>
-            <Typography sx={{ fontSize: 11.5, color: FAINT, mb: 1.5 }}>
-              {t("The workers. Triage picks one per task and its session is seeded with that worker’s rules. Edit its instructions here, or manage its name, provider and model above.")}
-            </Typography>
-            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5, mr: -0.5 }}>
-            <RoleStart onApplied={() => { loadProfs(); loadBooks(); }} />
-            {!profs.length && <Typography sx={{ fontSize: 12, color: FAINT }}>{t("No profiles yet — use Manage profiles to add one.")}</Typography>}
-            {profs.map((pr) => (
-              <Box key={pr.name} onClick={() => openProf(pr.name)}
-                sx={{ p: 1.4, mb: 0.75, borderRadius: 2, cursor: "pointer",
-                  bgcolor: `prof:${pr.name}` === docName ? "var(--tq-panel, #fff)" : "transparent",
-                  border: `1px solid ${`prof:${pr.name}` === docName ? "var(--tq-border, #d8cfbe)" : "transparent"}`,
-                  boxShadow: `prof:${pr.name}` === docName ? "0 1px 3px rgba(30,50,38,.06)" : "none",
-                  "&:hover": { bgcolor: `prof:${pr.name}` === docName ? "var(--tq-panel, #fff)" : "var(--tq-panel, #f4f1ec)" } }}>
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <TaskuaryMark size={19} />
-                  <Typography noWrap sx={{ ...mono, fontSize: 12, fontWeight: 600, color: INK, flex: 1, minWidth: 0 }}>
-                    {pr.name.toUpperCase()}.md
-                  </Typography>
-                  {`prof:${pr.name}` === docName && (
-                    <Box component="span" sx={{ px: 0.7, height: 17, display: "inline-flex", alignItems: "center",
-                      borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>{t("open")}</Box>
-                  )}
-                </Box>
-                <Typography sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{pr.purpose || t("no purpose set")}</Typography>
-                <Typography sx={{ fontSize: 11, color: FAINT, pt: 0.5 }}>{t("Used by {members}", { members: pr.members.join(", ") })}</Typography>
-              </Box>
-            ))}
-            </Box>
-          </>
-        ) : section === "documents" ? (
+        {section === "documents" ? (
           <>
             <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5, flexShrink: 0 }}>{t("Your documents")}</Typography>
             {/* the eight scroll; the identity card below them does not, so it is always on screen */}
@@ -631,19 +472,19 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
           </>
         ) : (
           <>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>{t("Playbooks")}</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>Skills</Typography>
             <Typography sx={{ fontSize: 11.5, color: FAINT, mb: 1.25, lineHeight: 1.5 }}>
               {t("One per kind of job—how it is done here, and where the line is between “just do it” and “ask”.")}
             </Typography>
-            <Box component="button" type="button" onClick={() => setNewPlaybook({ connectorType: "" })}
+            <Box component="button" type="button" onClick={() => setNewSkill({ connectorType: "" })}
               sx={{ p: 1.1, mb: 1, borderRadius: 2, cursor: "pointer", display: "flex", alignItems: "center", gap: 1,
                 border: `1px dashed ${docName === "pb:new" ? "var(--tq-border, #d8cfbe)" : "var(--tq-border, #e1dcd5)"}`, bgcolor: docName === "pb:new" ? "var(--tq-panel, #fff)" : "transparent",
                 "&:hover": { bgcolor: "var(--tq-panel, #f4f1ec)" } }}>
               <AddIcon sx={{ fontSize: 17, color: "var(--tq-link, #55697a)" }} />
-              <Typography component="span" sx={{ fontSize: 12, fontWeight: 600, color: "var(--tq-link, #55697a)" }}>{t("New playbook")}</Typography>
+              <Typography component="span" sx={{ fontSize: 12, fontWeight: 600, color: "var(--tq-link, #55697a)" }}>New skill</Typography>
             </Box>
             {books.length > 0 && <TextField size="small" fullWidth value={pbFilter} onChange={(e) => setPbFilter(e.target.value)}
-              placeholder={`Search ${plural(books.length, "playbook")}`}
+              placeholder={`Search ${plural(books.length, "skill")}`}
               sx={{ mb: 1, bgcolor: "var(--tq-panel, #fff)", "& input": { fontSize: 12 } }} />}
             <Box sx={{ maxHeight: { xs: "min(52vh, 520px)", md: "calc(100vh - 260px)" }, overflowY: "auto", pr: { md: 0.5 } }}>
               {visibleBooks.map((b) => {
@@ -659,13 +500,13 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                       {on && <Box component="span" sx={{ px: 0.7, height: 17, display: "inline-flex", alignItems: "center",
                         borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>{t("open")}</Box>}
                     </Box>
-                    <Typography noWrap sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{t("when: {when}", { when: b.when })}</Typography>
-                    {b.uses?.length > 0 && <Typography noWrap sx={{ ...mono, fontSize: 10.5, color: FAINT, pt: 0.25 }}>{t("uses {uses}", { uses: b.uses.join(" · ") })}</Typography>}
+                    <Typography noWrap sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{b.description}</Typography>
+                    {b.uses?.length > 0 && <Typography noWrap sx={{ ...mono, fontSize: 10.5, color: FAINT, pt: 0.25 }}>uses {b.uses.join(" · ")}</Typography>}
                   </Box>
                 );
               })}
               {books.length > 0 && !visibleBooks.length && (
-                <Typography sx={{ fontSize: 12, color: FAINT, py: 2, textAlign: "center" }}>{t("No playbooks match “{filter}”.", { filter: pbFilter })}</Typography>
+                <Typography sx={{ fontSize: 12, color: FAINT, py: 2, textAlign: "center" }}>No skills match “{pbFilter}”.</Typography>
               )}
             </Box>
           </>
@@ -674,25 +515,12 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       )}
 
       <Box sx={{ minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5, flexShrink: 0 }}>{displayMessage(err)}</Alert>}
-        <UndoLine kinds={["profile"]} sx={{ flexShrink: 0 }} onRestored={async (r) => { await loadProfs(); await openProf(r.title); }} />
+        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5, flexShrink: 0 }}>{err}</Alert>}
         <Box sx={{ display: "flex", alignItems: "flex-start", gap: 2, mb: 1.5, flexShrink: 0, flexWrap: { xs: "wrap", md: "nowrap" } }}>
           {/* on a phone the title takes its own line; beside four buttons it was 45px wide */}
           <Box sx={{ flex: 1, minWidth: 0, flexBasis: { xs: "100%", md: "auto" } }}>
             <Typography noWrap sx={{ ...mono, color: INK, fontWeight: 600, fontSize: 17 }}>{meta.label}</Typography>
-            <Typography variant="body2" sx={{ color: FAINT, pt: 0.75 }}>{t(meta.blurb)}</Typography>
-            {/* THE LAYERS, said on every profile (the owner, 2026-10-14: "agent.md is just the start of the profiles ... show [it]
-                that you can hover over to see full text on top of every profile"): SOUL/JOB, then AGENT.md, then this. One AGENT.md,
-                edited under Operator documents - the chip only shows it. */}
-            {isProf(docName) && <SharedRulesChip />}
-            {/* WHO RUNS ON THIS. It used to sit on the
-                profile's card in the shelf; the rail lists documents by name, so the fact that a
-                document governs `coding, codex` has to travel with the document itself. */}
-            {isProf(docName) && cur?.members?.length > 0 && (
-              <Typography variant="caption" sx={{ color: FAINT, pt: 0.5, display: "block" }}>
-                {t("Used by {members}", { members: cur.members.join(", ") })}
-              </Typography>
-            )}
+            <Typography variant="body2" sx={{ color: FAINT, pt: 0.75 }}>{meta.blurb}</Typography>
           </Box>
           {/* SOUL.md cannot be distilled from a mailbox - it is what only the owner knows. The
               assistant therefore asks seven adaptive questions, one answer at a time. */}
@@ -732,14 +560,10 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
               try { await api.post("/api/learn/reflect"); await load(); } catch { /* no AI connected */ }
             }}>{t("Reflect now")}</Button>
           )}
-          {isProf(docName) && ownProfile && (
-            <Button size="small" variant="outlined" color="error" onClick={() => removeProf(cur.name)}
-              title={t("Remove this profile - triage stops offering it; Undo, or Restore under Recently deleted for 30 days, brings it back")}>{t("Remove")}</Button>
-          )}
           {isPb(docName) && (
             <Button size="small" variant="outlined" color="error" onClick={removePb} disabled={deleteBusy}
-              title={t(docName === "pb:new" ? "Discard this draft" : "Remove this playbook - triage stops matching it at once; Recently deleted on Reports → Playbooks keeps it 30 days")}>
-              {t(docName === "pb:new" ? "Discard" : "Remove")}
+              title={docName === "pb:new" ? "Discard this draft" : "Remove this skill - triage stops matching it at once; Recently deleted on Reports → Skills keeps it 30 days"}>
+              {docName === "pb:new" ? "Discard" : "Remove"}
             </Button>
           )}
           <Button size="small" variant="contained" disableElevation disabled={docs[docName] === saved[docName]} onClick={save}>
@@ -787,9 +611,9 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         </>
         )}
         <Typography variant="caption" sx={{ color: FAINT, display: "block", pt: 1.25, lineHeight: 1.6, flexShrink: 0 }}>
-          {t(isPb(docName)
-            ? "Keep the six labelled lines - when is what triage matches, uses is which cards list it. Saved as a file under ~/.taskuary/playbooks, beside your database."
-            : "Editing this changes the funnel on the very next message. Nothing here is sent anywhere — these files live beside your database.")}
+          {isPb(docName)
+            ? "Keep name and description on top - the description is what triage and the agents choose by, uses is which connection cards list it. Saved as SKILL.md in its own folder under ~/.taskuary/skills, beside your database."
+            : "Editing this changes the funnel on the very next message. Nothing here is sent anywhere — these files live beside your database."}
         </Typography>
       </Box>
       <SoulInterview open={interview} onClose={() => setInterview(false)}
@@ -799,10 +623,9 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         }} />
     </Box>
     )}
-    {importSkills && <SkillImport onClose={() => setImportSkills(false)} onImported={loadProfs} />}
-    {newPlaybook && <NewPlaybookDialog {...newPlaybook}
-      onClose={() => { setNewPlaybook(null); loadBooks(); }}
-      onManual={() => { openPb("new", newPlaybook.connectorType); setNewPlaybook(null); }} />}
+    {newSkill && <NewSkillDialog {...newSkill}
+      onClose={() => { setNewSkill(null); loadBooks(); }}
+      onManual={() => { openPb("new", newSkill.connectorType); setNewSkill(null); }} />}
     </>
   );
 }

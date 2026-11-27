@@ -96,7 +96,7 @@ def _references(root, relative, text):
 
 
 def inspect(root):
-    from .skillimport import parse
+    from .skills import parse
     root = Path(root)
     _plain(root)
     if not root.is_dir(): raise ValueError('Skill package directory is missing')

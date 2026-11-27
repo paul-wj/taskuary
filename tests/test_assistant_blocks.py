@@ -520,7 +520,7 @@ class OwnerIsProvenanceTests(unittest.TestCase):
         server.save_source(server.SourceBody(SourceId=sid, Active=False))
         server.save_source(server.SourceBody(SourceId=sid, Active=True))
         reports.run_report_source(s, s.get_source(sid), lambda *a, **k: json.dumps(
-            {'say': [{'key': 'idea:ledger', 'text': 'The ledger looks stuck.', 'why': 'nothing moved'}]}))
+            {'say': [{'key': 'idea:ledger', 'text': 'The ledger looks stuck.', 'why': 'nothing moved', 'section': 'loose'}]}))
         self.assertIn('idea:ledger', {i['Key'] for i in s.list_ideas()})                 # not report:<sid>:idea:ledger
         posts = [m for m in s.recent_messages('2000-01-01', limit=80) if str(m.get('FromName') or '') == 'Advisor']
         self.assertTrue(posts and posts[0]['ConversationId'] == 'assistant', 'the Assistant left its own Timeline thread')
@@ -856,10 +856,10 @@ class MemoryBlocksTests(unittest.TestCase):
     """The clock pass read less of what the app had learned than the event pass did: no LEARNED.md, no ledger, no people pages
     (the owner, 2026-10-12: "it should be much better if it is"). Two blocks on the Memory card close that."""
     def test_learned_lines_reach_the_clock_pass(self):
-        from taskuary import assistant, learn
+        from taskuary import assistant, memory
         from taskuary.store import MemoryStore
         s = MemoryStore()
-        s.save_doc('learned', s.get_doc('learned').replace('## What you care about', '## What you care about' + chr(10) + '- Short replies, no filler. [s:4 | ev: rv1,rv2,rv3 | seen: 2026-08-20]'), 'reflect')
+        memory.infer(s, 'Short replies, no filler.', 'short replies', ['rv1', 'rv2', 'rv3'], confirmed=True)     # a learned line he confirmed
         text = assistant.inputs(s, [])
         self.assertIn('WHAT YOU KNOW ABOUT HOW THE OWNER WORKS (', text); self.assertIn('Short replies, no filler', text)
 

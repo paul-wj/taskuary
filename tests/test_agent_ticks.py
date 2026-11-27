@@ -25,11 +25,6 @@ class TickTests(unittest.TestCase):
         self.assertNotIn(f"[{self.ids['Confirm the renewal with the vendor']}]", md)        # the email box: its --slot line says how
         self.assertNotIn(self.ids['Check the seat count'], self.s.checklist_markdown(self.tid))   # the Assistant's and the page's copy
 
-    def test_both_prompts_carry_the_ids_and_the_rule(self):
-        system, user = general._prompt(self.s, self.tid)
-        self.assertIn(f"[{self.ids['Check the seat count']}]", user); self.assertIn('taskuary --tick <id>', system)
-        seed = terminal.seed_text(self.s, self.tid, repo=None, cwd=None)
-        self.assertIn(f"[{self.ids['Check the seat count']}]", seed); self.assertIn('taskuary --tick <id>', seed)
 
     def _post(self, item, done=True):
         with mock.patch.object(server, 'store', self.s), mock.patch.object(server, '_own_task_only', return_value=None):
@@ -49,21 +44,11 @@ class TickTests(unittest.TestCase):
         self.assertEqual(self._post(self.ids['Confirm the renewal with the vendor']).status_code, 422)
         self.assertFalse(any(x['done'] for x in self.s.task_checklist(self.tid)))
 
-    def test_the_prompts_say_to_tick_beside_the_checklist_itself(self):
-        # 2026-11-02: told once deep in the rules, a CLI session ticked about a quarter of its boxes and a general chat one in thirty
-        head = lambda text: next(l for l in text.splitlines() if 'CHECKLIST' in l)
-        self.assertIn(terminal.TICK_HEAD, head(general._prompt(self.s, self.tid)[1]))
-        seed = head(terminal.seed_text(self.s, self.tid, repo=None, cwd=None))
-        self.assertIn(terminal.TICK_HEAD, seed); self.assertIn('taskuary --tick <id>', seed)
-        for i in self.ids.values(): self.s.tick_checklist_item(self.tid, i, True, 't')      # nothing left to tick: nothing said
-        self.assertNotIn(terminal.TICK_HEAD, head(general._prompt(self.s, self.tid)[1]))
 
-    def test_the_checklist_heading_says_only_the_tick_and_the_subagent_rule_rides_in_coding_md(self):
-        # 2026-11-02: the subagent rule began as a line of code on this heading; it is CODING.md's now, where the owner can reword it
+    def test_the_checklist_heading_says_only_the_tick(self):
         head = lambda cli: next(l for l in terminal.seed_text(self.s, self.tid, cli=cli).splitlines() if 'CHECKLIST' in l)
         for cli in ('claude', 'codex', 'gemini', ''): self.assertIn(terminal.TICK_HEAD, head(cli)); self.assertNotIn('subagent', head(cli))
         self.assertFalse(hasattr(terminal, 'SUBAGENT_HEAD'))
-        self.assertIn('hand each to its own subagent in parallel', terminal.rules_text(self.s, profile='coding'))
 
     def test_the_one_road_refuses_what_the_door_refuses(self):
         self.assertEqual(agent_tick(self.s, self.tid, 'nope1234')[1][0], 404)
@@ -119,7 +104,6 @@ class AChatWithNoShellTicksByAMarkTests(unittest.TestCase):
         for said in (tooled, plain):
             self.assertIn(f'-> email to sales@vendor.example, slot {vendor} - to draft', said)
             for shell in ('taskuary --slot', 'taskuary --draft', 'taskuary --reply "'): self.assertNotIn(shell, said)
-        self.assertIn('propose_reply / propose_email', tooled); self.assertIn(selfclose.DRAFT_TOOL_LINE, tooled)
         for mark in (selfclose.DRAFT_OPEN, selfclose.REPLY_OPEN): self.assertNotIn(mark, tooled)
         self.assertIn(selfclose.DRAFT_LINE, plain); self.assertIn(selfclose.REPLY_LINE, plain)
         for tool in ('propose_email', 'propose_reply'): self.assertNotIn(tool, plain)
@@ -137,6 +121,28 @@ class AChatWithNoShellTicksByAMarkTests(unittest.TestCase):
         self.assertEqual(selfclose.tick_markers('Done.\n[[TASKUARY-TICK: ab12cd34]]\n  [[taskuary tick:ef56]]\n[[TASKUARY-TICK: ab12cd34]]'),
                          ('Done.', ['ab12cd34', 'ef56']))
         self.assertEqual(selfclose.tick_markers('Plain [[link]] text'), ('Plain [[link]] text', []))
+
+
+class NeverDoneOverAFailedAct(unittest.TestCase):
+    """HIPAA walk 6: "Summarise the lease, then set up a meeting with Ray next week" was ticked in the same second set_up_meeting answered
+    "No calendar is connected" - the two calls ran side by side - and the phone read "To do - 1 of 1 done". An act that failed in the turn
+    undoes the tick made beside it, and refuses one after it."""
+    def test_a_tick_beside_a_failed_act_is_undone_and_one_after_it_refused(self):
+        import json, time
+        from taskuary import agenttools, conversation
+        s = MemoryStore(); tid, ids = _task(s); item = ids['Check the seat count']
+        conversation.hear(s, tid, turn=True)                                            # ...the turn begins
+        doors = {'tick': lambda t, i, done: {'ok': bool(agent_tick(s, t, i, done)[0]), 'item': i, 'done': done},
+                 'meeting': lambda t, a: {'ok': False, 'says': 'No calendar is connected - connect one.'}}
+        agenttools.call(s, tid, 'tick', {'item': item}, doors)
+        self.assertTrue(next(i for i in s.task_checklist(tid) if i['id'] == item)['done'])
+        agenttools.call(s, tid, 'set_up_meeting', {'with': ['ray@northwind.example'], 'title': 'Lease review'}, doors)
+        self.assertFalse(next(i for i in s.task_checklist(tid) if i['id'] == item)['done'], 'the tick beside the failed act is undone')
+        with self.assertRaises(ValueError) as no: agenttools.call(s, tid, 'tick', {'item': item}, doors)
+        self.assertIn('set_up_meeting failed in this turn', str(no.exception))
+        time.sleep(0.01); conversation.hear(s, tid, turn=True)                         # ...a new turn: the failure is its past
+        agenttools.call(s, tid, 'tick', {'item': item}, doors)
+        self.assertTrue(next(i for i in s.task_checklist(tid) if i['id'] == item)['done'])
 
 
 if __name__ == '__main__':

@@ -5,7 +5,9 @@
 // no line saying why
 import React from "react";
 import { Box, Typography } from "@mui/material";
-import { failedAsk, proposalPresentation, heldLead, proposalFrom, resultOf } from "./reviewProposal.js";
+import { outcomeOf, proposalPresentation, heldLead, proposalFrom, receiptOf } from "./reviewProposal.js";
+import Artifact, { Ask } from "./Artifact.jsx";
+import { answersOf, askFields } from "./questionsCard.js";
 import { BORDER, DIM, FAINT, INK } from "./theme.jsx";
 
 export const PASSED_NOTE = "set aside when you moved on";
@@ -39,19 +41,19 @@ export default function PassedCard({ reviews }) {
   // "✓ Approved", and over "Set aside when you moved on"): its lead - what it does, in words - where it has one, and its result once, not the
   // lead a second time
   const p = proposalPresentation(r), title = p?.lead || p?.title || heldLead(proposalFrom(r) || {}).lead;
-  const done = resultOf(r), failed = failedAsk(r), pressed = done ? "approved" : failed ? "failed" : "dismissed";
-  const same = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
-  const line = done ? (!same(done.what, title) && done.what) || (p?.destination ? `${p.destinationLabel} ${p.destination}` : "") : failed ? String(r.ActError) : "Nothing was done.";
+  // ...and what its press did, in the act's own word and one line (reviewProposal.outcomeOf - the one every pressed card reads)
+  const o = outcomeOf(r);
   return (
-    <Box data-tq-passed={r.ReviewId || ""} data-tq-act-state={pressed} sx={{ mt: 0.5, px: 1.25, py: 0.9, border: `1px solid ${BORDER}`, borderRadius: 1.5,
-      bgcolor: "var(--tq-panel, #fff)" }}>
+    <Artifact data-tq-passed={r.ReviewId || ""} data-tq-act-state={o.mark} sx={{ px: 1.5, py: 1.25 }}>
       <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: INK, lineHeight: 1.3, overflowWrap: "anywhere" }}>
         {rs.length > 1 ? `${title} - ${rs.length} steps` : title}</Typography>
+      {/* ...the agent's questions stay with what he answered (the owner, 2026-11-26: cards stay, a pressed one showing its result where it stands) */}
+      {o.mark === "approved" && <Box sx={{ mt: 0.75 }}>{askFields(proposalFrom(r), answersOf(receiptOf(r))).map((f) => <Ask key={f.key} f={f} />)}</Box>}
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mt: 0.6, flexWrap: "wrap" }}>
-        <PressedButton pressed={pressed} />
-        {!!(line || done?.url) && <Typography role="status" data-tq-passed-line="" sx={{ fontSize: 12, color: DIM, overflowWrap: "anywhere" }}>{line}
-          {done?.url && <>{line ? " · " : ""}<a href={done.url} target="_blank" rel="noreferrer">{done.url.replace(/^https?:\/\//, "").slice(0, 70)}</a></>}</Typography>}
+        <PressedButton pressed={o.mark} label={o.label} />
+        {!!(o.line || o.url) && <Typography role="status" data-tq-passed-line="" sx={{ fontSize: 12, color: DIM, overflowWrap: "anywhere" }}>{o.line}
+          {o.url && <>{o.line ? " · " : ""}<a href={o.url} target="_blank" rel="noreferrer">{o.url.replace(/^https?:\/\//, "").slice(0, 70)}</a></>}</Typography>}
       </Box>
-    </Box>
+    </Artifact>
   );
 }

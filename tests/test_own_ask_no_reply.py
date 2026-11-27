@@ -8,7 +8,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import agenttools, general, selfclose, server, terminal, wrapup
+from taskuary import agenttools, general, server, terminal, wrapup
 from taskuary.store import MemoryStore
 from test_agent_toolbox import hdr
 
@@ -38,16 +38,14 @@ def test_who_is_behind_the_task():
 def test_the_coding_seed_says_there_is_nobody_to_reply_to():
     s = MemoryStore(); own, mailed = own_task(s), mailed_task(s)
     seed = terminal.seed_text(s, own, 'tidy the exports')
-    # ...the standing rules (CODING.md) still name the reply road; the seed's own line about it is this task's, and it says no
-    assert wrapup.OWN_ASK in seed and 'No `taskuary --reply`' in seed and selfclose.SEED_LINE not in seed
+    assert wrapup.OWN_ASK in seed                                               # a fact about the task, never an order about a tool
     assert wrapup.OWN_ASK not in terminal.seed_text(s, mailed, 'fix it')
 
 
-def test_the_general_prompt_says_so_and_drops_the_reply_block():
+def test_the_general_prompt_says_so():
     s = MemoryStore(); own, mailed = own_task(s, 'general'), mailed_task(s, 'general')
     sys_own, sys_mailed = general._prompt(s, own)[0], general._prompt(s, mailed)[0]
-    assert wrapup.OWN_ASK in sys_own and 'REPLYING FOR THE OWNER' not in sys_own
-    assert 'REPLYING FOR THE OWNER' in sys_mailed and wrapup.OWN_ASK not in sys_mailed
+    assert wrapup.OWN_ASK in sys_own and wrapup.OWN_ASK not in sys_mailed
 
 
 def test_a_reply_saved_anyway_reads_back_as_a_fact_never_a_refusal():
@@ -74,9 +72,9 @@ def test_an_automated_notice_has_nobody_to_reply_to_on_every_road():
     assert wrapup.no_correspondent(s, tid) and wrapup.nobody_line(s, tid) == wrapup.NOTICE
     with mock.patch('taskuary.origin.of_task', return_value=('trusted', 'the code host the owner set up')):     # its notices are the owner's own
         assert wrapup.NOTICE in terminal.seed_text(s, tid, 'fix the build')
-        assert wrapup.NOTICE in general._prompt(s, gen)[0] and 'REPLYING FOR THE OWNER' not in general._prompt(s, gen)[0]
+        assert wrapup.NOTICE in general._prompt(s, gen)[0]
     with mock.patch.object(wrapup, 'REFRESH', None): out = wrapup.agent_reply(s, tid, 'Fixed the import test; CI is green.', 'coding')
-    assert not out['ok'] and out['why'].startswith(wrapup.NOTICE) and 'propose_email' in out['why'] and s.list_reviews('pending') == []
+    assert not out['ok'] and out['why'].startswith(wrapup.NOTICE) and s.list_reviews('pending') == []
     names = lambda t: {x['name'] for x in c.post(f'/api/mcp?task={t}', headers=hdr(t),
                                                 json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}).json()['result']['tools']}
     with mock.patch.object(server, 'store', s): assert not names(tid) & set(agenttools.REPLY_TOOLS)
@@ -97,5 +95,5 @@ def test_the_reply_tools_are_not_offered_on_the_owners_own_ask():
     with mock.patch.object(server, 'store', s):
         assert not names(own) & set(agenttools.REPLY_TOOLS) and set(agenttools.REPLY_TOOLS) <= names(mailed)
         r = c.post(f'/api/mcp?task={own}', headers=hdr(own), json={'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                                                                   'params': {'name': 'propose_reply', 'arguments': {'text': 'hi'}}}).json()
-        assert 'unknown tool' in r['error']['message']
+                                                                   'params': {'name': 'propose', 'arguments': {'kind': 'reply', 'text': 'hi'}}}).json()['result']
+        assert r['isError'] and 'nobody is behind this task' in r['content'][0]['text']

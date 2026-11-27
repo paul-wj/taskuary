@@ -434,8 +434,8 @@ class RedditTwoFactor(unittest.TestCase):
 
     def test_the_key_is_sealed_and_never_sent_back_to_the_page(self):
         from taskuary import guard
-        from taskuary.store import SQLiteStore
-        self.assertIn('totp_key', SQLiteStore.SEALED_CONFIG)
+        from taskuary.connectorcatalog import secret_keys
+        self.assertIn('totp_key', secret_keys('reddit'))
         self.assertIn('totp_key', guard.WRITE_ONLY_CONFIG['reddit'])
 
 
@@ -462,7 +462,7 @@ class RedditAndXAreWired(unittest.TestCase):
 
     def test_a_post_he_dismissed_raised_again_is_his_no_not_a_second_card(self):
         # the roads audit, 2026-11-19 (#7): a post, a payment, an email stay cards, but they ask the one rule the shell's, the browser's and
-        # the desktop's gates do (actrule.decide) - the same card raised again after his Dismiss, with no word from him since, is his no
+        # the desktop's gates do (gate.decide) - the same card raised again after his Dismiss, with no word from him since, is his no
         from taskuary import proposals, verdicts
         s = MemoryStore(); tid = Factory(s).task(title='Post the Q3 headline')
         p = {'action': 'run_tool', 'type': 'x_post', 'text': 'Q3 is in.'}

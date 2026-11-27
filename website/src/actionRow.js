@@ -4,6 +4,7 @@
 // Only a change in what the row SHOWS (a label, a disabled flag, a verb arriving or going) wakes the row; a fresh closure does not.
 import React, { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { CHOICES, VERBS, label, liveVerb, verbOfRow } from "./buttons.js";
+import { pressOver, pressedOn } from "./pressResult.js";
 import { t } from "./i18n.js";
 
 // verb: { id, label, group: "decide" | "agent" | "more" | "next" | "back", tone: "p" | "s" | "q", title, disabled, why, run(event, anchorEl) }
@@ -13,7 +14,7 @@ const live = new Map();          // id -> the latest verb (its run closes over t
 const ofs = new Map();           // id -> the card that registered it: the item a button drawn from it was drawn for (press)
 const owners = new Map();        // owner -> { verbs, ref, at }
 const subs = new Set();
-const view = (v) => ({ id: v.id, label: v.label, group: v.group, tone: v.tone || "s", title: v.title || "", disabled: !!v.disabled, why: v.why || "", ...(v.blank ? { blank: v.blank } : {}), promote: v.promote !== false, lead: !!v.lead, ...(v.send ? { send: true } : {}), ...(v.closes ? { closes: true } : {}), ...(v.fill ? { fill: true } : {}), ...(v.beside ? { beside: true } : {}), ...(v.onCard ? { onCard: true } : {}), ...(v.card ? { card: true } : {}), ...(v.steady ? { steady: true } : {}), ...(v.tucked ? { tucked: true } : {}), ...(v.spine ? { spine: v.spine } : {}), ...(v.stage ? { stage: v.stage } : {}), ...(v.laid ? { laid: v.laid } : {}), ...(v.bar ? { bar: true } : {}) });
+const view = (v) => ({ id: v.id, label: v.label, group: v.group, tone: v.tone || "s", title: v.title || "", disabled: !!v.disabled, why: v.why || "", ...(v.blank ? { blank: v.blank } : {}), promote: v.promote !== false, lead: !!v.lead, ...(v.closes ? { closes: true } : {}), ...(v.fill ? { fill: true } : {}), ...(v.beside ? { beside: true } : {}), ...(v.onCard ? { onCard: true } : {}), ...(v.card ? { card: true } : {}), ...(v.tucked ? { tucked: true } : {}), ...(v.spine ? { spine: v.spine } : {}), ...(v.stage ? { stage: v.stage } : {}), ...(v.laid ? { laid: v.laid } : {}), ...(v.bar ? { bar: true } : {}), ...(v.unblocks ? { unblocks: true } : {}) });
 let snap = { list: [], ref: "" }, sig = "";
 // THE WALK'S TWO WAYS, ONE PILL (the owner, 2026-10-27: "We have a Next button - let's have a Back button that goes up the line as well ...
 // on the first one no Back, like no Next on the last one. Combine Next/Back into one big pill called Nav"): Back is the walk's step up the
@@ -46,7 +47,8 @@ export function put(owner, verbs, ref = "", at = null) {
 // ...and from the PRESS that moves the table on (`leaving`, AssistantView.surface): the old item stays up the ~100 ms the pull takes,
 // and its Send under a ring already on the next row read as the next one's. A press that fails gives them back (leaveRow(null)).
 let table = null, leaving = null;
-export const rowTable = (key) => { if ((key || null) === table) return; table = key || null; draw(); };
+// ...and a press's result goes with the item it was pressed on (pressResult): the row held over the next one is not what was pressed there
+export const rowTable = (key) => { if ((key || null) === table) return; table = key || null; pressOver(); draw(); };
 export const leaveRow = (key) => { if ((key || null) === leaving) return; leaving = key || null; draw(); };
 const shows = ({ at }) => !at || ((!table || at === table) && at !== leaving);
 // ...and WHERE THE TABLE'S ITEM LAYS ITS MOVES, said by the item itself (ItemSections, on a desk), not only by its card's verbs: a line said
@@ -172,6 +174,8 @@ export const press = (id, e, anchor, of = null) => {
   const hand = !!e?.isTrusted && (!(v?.group === "next" || v?.group === "back") || /^(setup|about):/.test(String(id)));
   if (hand && Date.now() - (lastAt.get(k) ?? -Infinity) < REPEAT_MS) return undefined;
   if (hand) lastAt.set(k, Date.now());
+  // ...and which button it was, for what the press did to show on it (pressResult)
+  pressedOn(id, by || "", snap.list.find((x) => x.id === id && (!by || x.of === by))?.at || "");
   announce(id);
   const out = v?.run?.(e, anchor);
   // ...and Back the same as Next (2026-11-02): a second Back while the first is out was dropped here, never reaching the walk's own hold
@@ -184,15 +188,15 @@ export const press = (id, e, anchor, of = null) => {
 let lit = "";
 const litSubs = new Set();
 export const lightOnCard = (id) => { if ((id || "") === lit) return; lit = id || ""; litSubs.forEach((f) => f()); };
-export const useLit = () => useSyncExternalStore((f) => { litSubs.add(f); return () => litSubs.delete(f); }, () => lit);
+export const useLit = () => useSyncExternalStore((f) => { litSubs.add(f); return () => litSubs.delete(f); }, () => lit, () => lit);
 export const rowNow = () => snap;          // what the row carries this moment - an Advisor press looks for its real button here
 const subscribe = (f) => { subs.add(f); return () => subs.delete(f); };
-export const useRowVerbs = () => useSyncExternalStore(subscribe, () => snap);
+export const useRowVerbs = () => useSyncExternalStore(subscribe, () => snap, () => snap);
 
 // A PHONE'S TASK VIEW CARRIES THE ROW AT ITS OWN FOOT, in both states: the view is sized once (Expand pins that same box), so the
 // row inside it must be there before and after Expand, or the pane would grow. While one is hosted the dock draws none.
 let hosts = 0;
-export const useHosted = () => useSyncExternalStore(subscribe, () => hosts > 0);
+export const useHosted = () => useSyncExternalStore(subscribe, () => hosts > 0, () => hosts > 0);
 export function useHost(on) {
   useEffect(() => {
     if (!on) return undefined;
@@ -305,7 +309,9 @@ export function rowOf({ list, ref, end: last = false }, pick = null) {
   const by = (g) => list.filter((v) => v.group === g && !v.card);
   // the card's own idea of its move (its filled tone) only says which greyed button the row explains - it never fills one
   const head = by("decide").find((v) => v.tone === "p") || null;
-  const plain = (xs) => xs.map((v) => (v.tone === "p" ? { ...v, tone: "s" } : v));
+  // ...save the press the task waits on (`unblocks`: Trust for a held sender, the repository a start is held for) - no card's idea but the
+  // task's one way on, it stays filled (walk 15 H2: unfilled, Trust fell into More ▾ under "no agent works on this until you do")
+  const plain = (xs) => xs.map((v) => (v.tone === "p" && !v.unblocks ? { ...v, tone: "s" } : v));
   // THE CARD'S MAIN MOVE LIVES UNDER THE DRAFT ONLY (the owner, 2026-10-22: Send under the draft, never the same press twice on
   // screen) - the bar's copy of it (2026-10-19) is gone, and so is the empty slot that kept its width (the owner, 2026-10-25: "we should
   // not have empty space here"). The row does not reshuffle without it: the bar is the same with and without advice, which only tints.
@@ -387,12 +393,12 @@ const TYPE_OF = {
   // a result's Share (Share.jsx) stands in a band of its own at the row's end: it acts on the whole result, never on a reply or the task
   share: "share",
 };
-export const typeOf = (v) => TYPE_OF[String(v?.id || "").split(":").pop()] || "act";
+export const typeOf = (v) => (v?.unblocks ? "act" : TYPE_OF[String(v?.id || "").split(":").pop()] || "act");
 // THE ROW'S LEAD: the lit move, else its first decision, else its first session verb - in view at every width.
 // `pressable`: on the narrowest row the lead is never a greyed one (the owner, 2026-10-28: a phone's one move was a disabled "Send to agent") -
 // the lit move stays (its busy word is its state), any other is the first pressable one, and with none it is the ▾ alone.
 // An empty slot is neither a move nor a menu item: it only holds the Send's width on a wide row.
-// ...and never a `tucked` one unless lit: a phish's Send to agent waits in the ▾ (the owner, 2026-10-30), at every width
+// ...and never a `tucked` one unless lit: a sent reply's Hand it to a person waits in the ▾, at every width
 export const leadOf = (row, pressable = true) => {
   const ok = (v) => !v.slot && !v.tucked && !(pressable && v.disabled);
   return [...row.decide, ...row.agent, ...row.more].find((v) => v.tone === "p" && !v.slot) || row.decide.find(ok) || (pressable ? row.agent.find(ok) : row.agent[0]) || null;
@@ -407,14 +413,16 @@ export function pillsOf(row) {
   const all = [...row.decide, ...row.agent, ...row.more].filter((v) => !v.slot), pin = pinOf(row), of = (t) => all.filter((v) => typeOf(v) === t);
   const head = (vs) => { const up = vs.filter((v) => !v.tucked || v.tone === "p"); return up.find((v) => v.tone === "p") || up.find((v) => v.lead) || up[0]; };
   const cl = of("close").filter((v) => v !== pin), ag = of("agent"), rp = of("reply");
-  const move = [...new Set([pin || head(cl), head(ag), head(rp), ...of("act"), ...rp, ...ag, ...cl].filter(Boolean))];
+  // ...the press the task waits on (`unblocks`) first of all, ahead of Mark done - as on the desk's strip (groupOf)
+  const move = [...new Set([all.find((v) => v.unblocks), pin || head(cl), head(ag), head(rp), ...of("act"), ...rp, ...ag, ...cl].filter(Boolean))];
   const rank = (v) => { const i = CHANGE_FIRST.indexOf(String(v.id).split(":").pop()); return i < 0 ? CHANGE_FIRST.length : i; };
   // ...a result's Share (Share.jsx) keeps its own small band at the row's end: it acts on the whole result, never on a reply or the task
   return { move, share: of("share"), change: of("task").map((v, i) => [v, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([v]) => v), pin, lead: leadOf(row), held: leadOf(row, false) };
 }
 // ...the Change pill's most used first (the owner's list, 2026-10-28: split / merge / not a task / Remind me - Remind me the one pressed most)
 // ...and Watch it beside Remind me (watch.py, the owner, 2026-11-01)
-const CHANGE_FIRST = ["remind", "defer", "watch", "reshape", "split", "nat"];
+// ...and in the desk strip's own order (actionRow.TASK_GROUPS: Pass on is Remind me, Not for me, Watch it - the owner, 2026-11-23: one toolbar, one order)
+const CHANGE_FIRST = ["remind", "defer", "nat", "watch", "reshape", "split"];
 // a pill with `n` of its moves in view: `must` first claims its places, the rest go by the pill's order; drawn in that order
 const pill = (type, vs, n, must) => {
   const can = vs.filter((v) => !v.tucked || v.tone === "p"), keep = new Set(must.filter((v) => vs.includes(v)));
@@ -503,16 +511,15 @@ export const shortParts = (m) => ({ ...m, back: m.backShort ?? m.back, next: m.n
 // The row draws the rest and hands the stage moves here, by pane (putSpineVerbs, useSpineVerbs)
 const CHAT_STAGE = new Set(["reply", "redraft", "chase", "accept_invite", "decline_invite", "propose_time", "find_time", "hand"]);
 const FROM_STAGE = new Set(["nat", "remind", "watch"]);
-// ...a verb may name its pane itself (`stage`): an FYI's Should be a task rides its Came from, where a task's Not a task does
 export const stageOf = (v) => { const k = String(v?.id || "").split(":").pop(), t = typeOf(v);
-  return v?.stage || (CHAT_STAGE.has(k) ? "agent" : FROM_STAGE.has(k) ? "from" : t === "agent" && k !== "diff" ? "agent" : ""); };
+  return (CHAT_STAGE.has(k) ? "agent" : FROM_STAGE.has(k) ? "from" : t === "agent" && k !== "diff" ? "agent" : ""); };
 const NONE = [], ITEM_OWN = new Set(["mine"]);
 let spineVerbs = {}, spineSig = "";
 const spineSubs = new Set(), spineSub = (f) => { spineSubs.add(f); return () => spineSubs.delete(f); }, spineDraw = () => spineSubs.forEach((f) => f());
 export const laidOf = (list) => (list || []).find((v) => v.laid)?.laid || null;
 export const putSpineVerbs = (by) => { const s = JSON.stringify(by); if (s === spineSig) return; spineSig = s; spineVerbs = by; spineDraw(); };
 export const useSpineVerbs = (sec) => useSyncExternalStore(spineSub, () => spineVerbs[sec] || NONE);
-export const useSpineAll = () => useSyncExternalStore(spineSub, () => spineVerbs);
+export const useSpineAll = () => useSyncExternalStore(spineSub, () => spineVerbs, () => spineVerbs);
 // ...the row: Back and Next alone; each pane's stage moves in the move pill's order (`spine`: the word a folded pane shows - Draft reply
 // where nothing is drafted yet); the title bar's the task's own, Mark done first - a live agent's too: the press stops and saves first
 // THE BAR IS NAVIGATION ONLY (the owner, 2026-11-10: "on bottom the only buttons should be nav. all other buttons should be on task no????"):
@@ -526,10 +533,6 @@ export function splitRow(row, on, desk = false) {
   const unbar = (xs) => xs.filter((v) => !v.bar);
   const item = () => { const { move, change, share } = pillsOf(row); return [...unbar(move), ...unbar([...change, ...share]).map((v) => ({ ...v, quiet: true }))]; };
   if (!on) return desk ? { row: barred, by: { item: item() } } : { row, by: {} };
-  // ...an item that lays ONE pane of its own (`only`: an FYI's Came from) takes that pane's moves off the bar - and the rest go to the item's row
-  if (on.only) { const { move, change } = pillsOf(row), here = [...move, ...change].filter((v) => stageOf(v) === on.only), off = (xs) => xs.filter((v) => !here.includes(v));
-    if (desk) return { row: barred, by: { [on.only]: here, item: item().filter((v) => !here.some((h) => h.id === v.id)) } };
-    return { row: { ...row, decide: off(row.decide), agent: off(row.agent), more: off(row.more) }, by: { [on.only]: here } }; }
   // ...and one laid on the desk in a task's three sections (ItemSections: a report, a dashboard, an FYI) puts EVERY move on the pane it is about,
   // as a task's ride its panes (the owner, 2026-10-31: "i thought we moved all buttons to the agent canvas?? report should be white with buttons
   // on it"): the move pill's first, then what was the Change pill and Share, quiet as a task's own moves are (`quiet`: PaneMoves, SpineMoves)
@@ -557,7 +560,7 @@ export function splitRow(row, on, desk = false) {
 // its group's list; a verb not listed goes where its kind says (an agent's verb to Agent, a closing one to Finish), else to More. `change` is
 // the Change ▾ menu. Change THIS table to move a button - the row, its dividers and its fold all read it.
 export const TASK_GROUPS = [
-  ["finish", "Finish", ["done", "reopen", "close-note", "send_close", "approve", "elsewhere"]],
+  ["finish", "Finish", ["closed-result", "done", "reopen", "close-note", "send_close", "approve", "elsewhere"]],
   ["later", "Pass on", ["hand", "remind", "nat", "watch", "defer", "let_go", "not_ours", "not_ours_sender", "not_ours_kind", "block_sender"]],
   ["agent", "Agent", ["run-another", "send-general", "start-agent", "continue", "strong-again", "rerun", "diff", "attach", "email-file", "prepare",
     "reply", "redraft", "palt", "reject", "chase", "email", "copy", "accept_invite", "decline_invite", "propose_time", "find_time"]],
@@ -565,9 +568,10 @@ export const TASK_GROUPS = [
 ];
 const GROUP_BY_TYPE = { agent: "agent", reply: "agent", close: "finish" };
 const verbKey = (v) => String(v?.id || "").split(":").pop();
-export const groupOf = (v) => (v === "change" ? "more" : TASK_GROUPS.find(([, , ks]) => ks.includes(verbKey(v)))?.[0] || GROUP_BY_TYPE[typeOf(v)] || "more");
+// ...and the press the task waits on (`unblocks`) stands first of all, in Finish: the row's one way on is never in More nor folded
+export const groupOf = (v) => (v === "change" ? "more" : v?.unblocks ? "finish" : TASK_GROUPS.find(([, , ks]) => ks.includes(verbKey(v)))?.[0] || GROUP_BY_TYPE[typeOf(v)] || "more");
 const rankIn = (x) => { const k = x.change ? "change" : verbKey(x.v), gi = TASK_GROUPS.findIndex(([g]) => g === x.grp), ks = TASK_GROUPS[gi][2], i = ks.indexOf(k);
-  return [gi, i < 0 ? ks.length : i]; };
+  return [gi, x.v?.unblocks ? -1 : i < 0 ? ks.length : i]; };
 const TASK_PANES = ["head", "from", "agent", "share"];
 // the order, pure: each entry { v, head, grp } or { change, grp: "more" }, by group, then the group's list, then as they came
 export const taskButtons = (by, skip = () => false) => {
@@ -576,8 +580,8 @@ export const taskButtons = (by, skip = () => false) => {
   const change = (by.change || []).filter((v) => !skip(v)), xs = [...all, ...(change.length ? [{ change, grp: "more" }] : [])];
   return xs.map((x, n) => [x, ...rankIn(x), n]).sort((a, b) => a[1] - b[1] || a[2] - b[2] || a[3] - b[3]).map(([x]) => x);
 };
-// what never folds: Mark done (a closed task's Reopen in its place) and the lit move
-export const pinnedMove = (v) => !!v && (isDone(v) || verbKey(v) === "reopen" || v.tone === "p");
+// what never folds: Mark done (a closed task's Reopen in its place, and the result of the press that closed it beside it) and the lit move
+export const pinnedMove = (v) => !!v && (isDone(v) || ["reopen", "closed-result"].includes(verbKey(v)) || v.tone === "p");
 // THE FOLD (the row is ONE line): `drop` moves go into the ▾ from the right - More first, then Agent, then Pass on, Finish last - never a pinned
 // one. Returns the items still in view, in the row's order
 export const foldRow = (items, drop) => { const loose = items.filter((x) => !pinnedMove(x.v)), out = new Set(drop > 0 ? loose.slice(-drop) : []);

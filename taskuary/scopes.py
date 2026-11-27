@@ -104,7 +104,7 @@ ACTIONS = {
     # place it can land is ~/.taskuary/sftp. The four that change something on the far side are writes.
     'smb_read': 'read', 'sftp_list': 'read', 'sftp_get': 'read',
     'smb_write': 'write', 'smb_move': 'write', 'sftp_put': 'write', 'sftp_move': 'write',
-    'sharepoint_save': 'write', 'onedrive_save': 'write',     # a file saved, not a message: no press, and the agent says where (2026-10-25)
+    'sharepoint_save': 'write', 'onedrive_save': 'write',     # a file saved: a write, so an agent's waits for his press (2026-11-25)
     'kb_search': 'read',     # the knowledge base is Taskuary's own index; searching it moves nothing (kb_reindex writes it: default)
     # the handbook is Taskuary's own store and the whole point is that agents fill it, so reading
     # it is free. WRITING it is a write - not because it can reach anything (it cannot leave the
@@ -112,7 +112,7 @@ ACTIONS = {
     # a fact in front of every future agent" is exactly the question this ladder exists to ask.
     'handbook_search': 'read', 'handbook_write': 'write', 'handbook_vote': 'write',
     'hub_search': 'read', 'hub_write': 'write', 'hub_vote': 'write', 'hub_comment': 'write',
-    'aws': 'read', 's3_object': 'read', 'cloudwatch_logs': 'read',
+    'aws': 'read', 's3_object': 'read', 'cloudwatch_logs': 'read',     # aws: its Describe/List/Get operations; any other is his press (reaches)
     'azure': 'read', 'azure_blob': 'read', 'azure_logs': 'read',
     'entra_users': 'read', 'entra_groups': 'read', 'entra_signins': 'read', 'entra_licenses': 'read',
     'prometheus': 'read', 'datadog': 'read',
@@ -123,6 +123,9 @@ ACTIONS = {
     # account, and what comes back is rows. Nothing in YOUR world moves, so it reads.
     'apify': 'read',
     'rest': 'read',          # run_rest is GET-only by construction
+    # Taskuary's own readers and the sheets, lists and files people keep: each only reads (it was named a "quiet write" before)
+    'taskuary': 'read', 'assistant': 'read', 'calendar': 'read', 'google_sheets': 'read', 'sharepoint_list': 'read', 'sharepoint_file': 'read',
+    'stooq': 'read',
     'rss': 'read', 'digest': 'read', 'evening_inbox': 'read', 'automate': 'read',  # Taskuary's own traffic
     # ── write: the everyday work an agent is here to do ───────────────────────────────
     'create': 'write', 'update': 'write', 'comment': 'write', 'reply': 'write',
@@ -163,6 +166,9 @@ REACHES = {
     'github_issue': 'opens an issue on GitHub - everyone watching the repository is told',
     'github_close': 'closes an issue on GitHub - everyone watching it is told',
     'robinhood_order': 'places an order with your money', 'treg_call': 'calls a paid endpoint that can publish or order',
+    # ...and an entry in his books, which his accountant and his payables run on (the card gallery, 2026-11-25: its card is declared now)
+    'quickbooks_bill': 'enters a bill in your QuickBooks books - it is owed from then on',
+    'quickbooks_expense': 'enters an expense in your QuickBooks books',
     # these two reach whatever the far side does with them, so the call itself decides (reaches below)
     'mcp': "runs a tool its server does not mark read-only - it may send, post or comment",
     'graphql': 'runs a GraphQL mutation - it may post a comment or change a record somebody reads',
@@ -173,19 +179,16 @@ REACHES = {
     **{f'{t}_assign': f'assigns a {n} item to somebody - {n} tells them' for t, n in _TRACKERS.items()},
     **{f'{t}_close': f'moves a {n} item to done - {n} tells the people following it' for t, n in _TRACKERS.items()},
 }
-# ...and the writes that reach nobody, named, so every executor is a decision (test_scopes walks reports.REGISTRY): a file saved, a
-# bill posted to the books, the Hub. Each keeps the card's Authority, per the owner's 2026-10-05 ruling. A file is not a message
-# (2026-10-25), so a save to SharePoint or OneDrive runs at write, and the agent says where it put it.
-QUIET_WRITES = frozenset({
-    'quickbooks_bill', 'quickbooks_expense', 'intacct_create', 'intacct_update', 'zoho_invoice_draft',
-    'smb_write', 'smb_move', 'sftp_put', 'sftp_move', 'sharepoint_save', 'onedrive_save',
-    'handbook_write', 'handbook_vote', 'hub_write', 'hub_vote', 'hub_comment', 'kb_reindex',
-    'winrm',                                       # runs on a box the owner named; its reach is that box, and admin gates it
-    'python_script',                               # a script the owner saved, run by a report or a routine of theirs - never an agent's tool
-    # each answers the owner or Taskuary's own store: an agent run's words are drafts, and the Assistant posts to the owner
-    'agent', 'assistant', 'taskuary', 'calendar', 'google_sheets', 'sharepoint_list', 'sharepoint_file',
-    # named in the catalogue, not built (reports.PLANNED): they run nothing yet
-    'netsuite', 'sap', 'workday', 'adp', 'epic', 'cerner', 'pointclickcare', 'stooq'})
+# ...and the AWS card's any-operation call is what its operation is (aws.is_read): SES sends, EC2 terminates, S3 takes an upload
+AWS_ACTS = 'runs an AWS operation that is not a read - it may send, change or delete'
+# ...AND EVERY OTHER WRITE WAITS FOR HIS PRESS TOO (the owner, 2026-11-25: "why would file uploads, QuickBooks bills or Intacct records have
+# their own rules? ... to write to the systems or any connector should require approval mechanically"). What an executor IS is its line in
+# ACTIONS above - a read runs, anything else (an unclassified one included) is a card - so there is no list of quiet writes to keep. The one
+# exception is Taskuary's OWN store: an agent's Hub entry, a vote, the knowledge base re-read, another agent run - nothing leaves the machine.
+OWN_STORE = frozenset({'handbook_write', 'handbook_vote', 'hub_write', 'hub_vote', 'hub_comment', 'kb_reindex', 'agent'})
+# ...and what NO agent's call reaches at all, its press included: code on THIS machine. A script is the owner's, saved by him into a report or a
+# routine (flow_run marks a routine's own step); an agent's proposal of one would put arbitrary code behind a card's words (red team F1)
+NEVER_AGENT = frozenset({'python_script'})
 
 
 def _gql_op(query) -> str:
@@ -195,14 +198,21 @@ def _gql_op(query) -> str:
 
 
 def reaches(action, cfg: dict = None, tool: dict = None) -> str:
-    """'' when an agent's call to this executor reaches nobody, else what it would do, in words for the owner's card. An MCP tool
-    reaches unless its own server marks it read-only (mcp.read_only, fail closed); a GraphQL document unless it is a query."""
+    """'' when an agent's call to this executor runs without his press - a read (ACTIONS), or a write to Taskuary's own store (OWN_STORE) -
+    else what his press would do, in words for his card. An MCP tool waits unless its own server marks it read-only (mcp.read_only, fail
+    closed); a GraphQL document unless it is a query. An executor nobody classified waits (UNKNOWN_NEEDS)."""
     a = (action or '').strip().lower()
     if a == 'mcp':
         from .mcp import read_only
         return '' if read_only(tool or {}) else REACHES['mcp']
+    if a == 'aws':
+        from .aws import is_read
+        return '' if is_read(cfg) else AWS_ACTS
     if a == 'graphql': return '' if _gql_op((cfg or {}).get('query')) in ('query', 'subscription') else REACHES['graphql']
-    return REACHES.get(a, '')
+    if needs(a) == 'read' or a in OWN_STORE or a in NEVER_AGENT: return ''      # ...and his own saved script, which no agent's call reaches
+    if a in REACHES: return REACHES[a]
+    from .reports import card_of
+    return f"writes to your {card_of(a)} connection ({a})"
 
 
 def rank(scope) -> int: return _RANK.get((scope or '').strip().lower(), 0)

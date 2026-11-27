@@ -45,6 +45,15 @@ def held_why(why) -> str:
 def _cap(s: str) -> str: return s[:1].upper() + s[1:]
 
 
+# A SERVICE A CARD COULD NOT READ, said on that card (walk 25, 2026-11-26: a merge card read "GitHub could not be read just now (list indices
+# must be integers or slices, not str)" - Python's own account of an answer it could not take apart). What the service said is his to read;
+# an answer of a shape Taskuary did not expect is said as that, by the failure's type - never its text
+_SHAPE = (TypeError, KeyError, IndexError, AttributeError)
+def unread(name: str, e) -> str:
+    why = 'its answer was not one Taskuary could read' if isinstance(e, _SHAPE) else reason(e)[:160]
+    return f'{name} could not be read just now' + (f' ({why})' if why else '') + ' - open the card again in a moment'
+
+
 # A TURN THE AI PROVIDER ENDED, read off the failure's structure - its HTTP status, its error `type` - never its prose (the owner, 2026-11-19: a
 # failed turn showed the provider's raw error JSON twice). He reads one plain line and what happens next; the raw text is the agent's
 _STATUS = re.compile(r'\b(4\d\d|5\d\d)\b')
@@ -98,7 +107,10 @@ def owner(e: dict) -> str:
     if k == 'signup_failed':
         why = ' '.join(str(e.get('why') or '').split())
         # ...who moves next is said once, by the card's own line (general.AGENT_TOLD): it read "The agent was told. The agent was told and goes on"
+        # ...a status code is no words of the site's (walk 10, 2026-11-23: 'it said "the site answered with an error (HTTP 400)"'): said by its kind
+        if raw(why): return f"No account was made on {e.get('site') or 'the site'}: the site answered the sign-up with an error."
         return f"No account was made on {e.get('site') or 'the site'}" + (f': it said "{why[:200]}"' if why else ': it kept its sign-up form up') + '.'
+    if k == 'signup_held': return f"Make an account on {e.get('site') or 'the site'}" + (f" {e['as']}" if e.get('as') else '')
     if k == 'held':
         return held_why(e.get('why'))
     if k == 'turn_failed': return turn_failed(e.get('raw'))

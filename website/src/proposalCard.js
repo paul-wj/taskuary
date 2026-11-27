@@ -31,14 +31,12 @@ export function describe(p) {
   if (p.kind === "task.create_from_text") {
     const title = String(p.params?.title || "").trim(), x = String(p.params?.text || "").trim();
     // a checkout nobody NAMED is the words' best match - worth a look before it opens, so it says it is a guess
-    const repo = p.params?.kind === "coding" ? (!p.params?.repo ? t("not clear from the words - you pick it when it starts")
-      : p.clear === false ? t("{repo} - a best guess, say which if it is another", { repo: repoLabel(p.params.repo) }) : repoLabel(p.params.repo)) : "";
-    // a general job names its worker
-    const agent = p.params?.kind === "general" ? (p.params?.profile || t("none fits clearly - the default agent, or say which one")) : "";
+    const repo = p.params?.kind === "coding" ? (!p.params?.repo ? "not clear from the words - you pick it when it starts"
+      : p.clear === false ? `${p.params.repo} - a best guess, say which if it is another` : p.params.repo) : "";
     // a title that is only the brief cut short says nothing the brief does not: show the brief, once
-    const cut = !title || x.startsWith(title.replace(/[\s.…]+$/, ""));
-    return { title: p.label || p.kind, target: cut ? x : title, detail: cut ? "" : x,
-             params: [...(agent ? [["agent", agent]] : []), ...(repo ? [["repository", repo]] : [])], confirm: p.label || t("Confirm"), cancel: "Cancel", preview: false };
+    const cut = !t || x.startsWith(t.replace(/[\s.…]+$/, ""));
+    return { title: p.label || p.kind, target: cut ? x : t, detail: cut ? "" : x,
+             params: repo ? [["repository", repo]] : [], confirm: p.label || "Confirm", cancel: "Cancel", preview: false };
   }
   // A REPORT reads the way the report builder does: its name, the prompt as a section of its own, then the settings -
   // not "source: agent / inputs: ... / summary instructions: ..." (the owner, 2026-09-24: "some technical summary")

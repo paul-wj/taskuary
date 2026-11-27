@@ -25,8 +25,9 @@ def seeded():
     s.save_doc('coding', f'# Coding rules\n- {MARK["coding"]}', 'owner')
     s.upsert_agent('coding', 'coding', 'cli', '{}')      # the coding profile is found by its kind (agents.coding_role), as config seeds it
     s.save_doc('triage', f'Classify one inbound work message. Answer JSON only. {MARK["triage"]}', 'owner')
-    # triage reads LEARNED.md's "What you care about" and nothing else (learned_cut), so the marker has to live there
-    s.save_doc('learned', f'## What you care about\n- {MARK["learned"]} [s:3 | ev: rv1 | seen: 2026-08-01]', 'owner')
+    # a learned line is read once he confirms it (memory.in_use) - triage reads the whole memory in use (memory.whole)
+    from taskuary import memory
+    memory.infer(s, f'{MARK["learned"]} answers payroll the same day', 'payroll answers', ['rv1'], confirmed=True)
     # style_doc holds an untouched template out of prompts, so the marker needs real content
     s.save_doc('style', f'### Tone & length\n- {MARK["style"]}: two sentences, answer first, no preamble.', 'owner')
     put_note(s, {'Scope': 'global', 'ScopeKey': None, 'Note': f'{NOTE} always defer to the finance team',
@@ -36,8 +37,7 @@ def seeded():
     put_note(s, {'Scope': 'global', 'ScopeKey': None, 'Note': f'{OFF} a switched-off note',
                   'Source': 'verdict', 'Active': 0, 'CreatedBy': 'owner'})
     # ...as an install that had them holds them after its first start: LEARNED.md lines (and STYLE.md for the writing note), 2026-10-27
-    from taskuary import memorylines
-    memorylines.migrate(s)
+    memory.migrate(s)
     return s
 
 
@@ -62,31 +62,32 @@ class DocsReachThePromptTests(unittest.TestCase):
         self.assertFlows(seen['p'], [MARK['triage'], MARK['soul'], MARK['job'], MARK['learned'], NOTE],
                          forbid=[MARK['coding'], MARK['style']])
 
-    def test_both_reply_paths_get_soul_style_and_writing_notes_but_not_learned_or_verdicts(self):
-        """PW-058/060: a reply is written from SOUL (identity), STYLE (voice) and explicit writing instructions;
-        LEARNED.md and the owner's routing verdicts are triage's and stay out of the draft."""
+    def test_both_reply_paths_get_soul_style_and_writing_notes(self):
+        """PW-058/060: a reply is written from SOUL (identity), STYLE (voice) and explicit writing instructions - and the owner's
+        memory in use as a task reads it (memory.for_task, one road: what he said and what he confirmed)."""
         s = seeded()
         tid = _task(s, 'reply', 'Can you confirm the date?')
         seen = {}
         responder.draft_reply(s, tid, llm=lambda sysm, usr, **k: (seen.update(p=sysm + usr), 'ok')[1])
-        self.assertFlows(seen['p'], [MARK['soul'], MARK['style'], WNOTE], forbid=[MARK['coding'], MARK['learned'], MARK['job'], NOTE])
+        self.assertFlows(seen['p'], [MARK['soul'], MARK['style'], WNOTE], forbid=[MARK['coding'], MARK['job']])
         mid = s.add_message({'ExternalId': 'r2', 'Channel': 'email', 'Subject': 'quick question',
                              'FromEmail': 'a@b.com', 'BodyText': 'Can you confirm the date?', 'Status': 'filed'})
         rid = s.add_review({'MessageId': mid, 'Kind': 'draft', 'Status': 'pending'})
         seen2 = {}
         responder.draft_for_message(s, s.get_message(mid), rid,
                                     llm=lambda sysm, usr, **k: (seen2.update(p=sysm + usr), 'ok')[1])
-        self.assertFlows(seen2['p'], [MARK['soul'], MARK['style'], WNOTE], forbid=[MARK['coding'], MARK['learned'], NOTE])
+        self.assertFlows(seen2['p'], [MARK['soul'], MARK['style'], WNOTE], forbid=[MARK['coding']])
 
-    def test_the_coding_agent_gets_agent_coding_and_the_notes_but_not_soul(self):
+    def test_the_coding_agent_gets_the_notes_and_no_rule_document(self):
         """The notes are the part that was missing: an agent was handed the operator rules and
-        the coding rules, and none of the verdicts the owner had actually given."""
+        the coding rules, and none of the verdicts the owner had actually given. The rule documents
+        no longer ride the seed (the owner, 2026-11-23: an agent gets context, tools and one sentence)."""
         s = seeded()
         # the sender is on the owner's own domain: a stranger's seed carries only the owner's own notes, never a verdict that
         # quotes mail (tests/test_stranger_live_fixes.py)
         s.set_setting('owner_email', 'owner@b.com', 't')
         # PW-184: SOUL stays with triage; JOB.md too - a worker that knows the mission starts helping with the mission instead of the ticket
-        self.assertFlows(terminal.seed_text(s, _task(s)), [MARK['agent'], MARK['coding'], NOTE], forbid=[MARK['soul'], MARK['job']])
+        self.assertFlows(terminal.seed_text(s, _task(s)), [NOTE], forbid=[MARK['soul'], MARK['job'], MARK['agent'], MARK['coding']])
 
     def test_task_context_and_the_handoff_writer_carry_them_too(self):
         s = seeded()
@@ -130,11 +131,13 @@ class EveryScopeIsHonouredTests(unittest.TestCase):
            'body': 'history attached', 'source_name': 'devteam-logs@corp.example'}
 
     def test_all_five_scopes_match_what_they_claim_to(self):
-        for scope, key in (('global', None), ('sender', 'dana@vendor.com'), ('sender_domain', 'vendor.com'),
+        from taskuary import memory
+        for scope, key in (('sender', 'dana@vendor.com'), ('sender_domain', 'vendor.com'),
                            ('subject', 'resident refund request'), ('source', 'devteam-logs@corp.example')):
             with self.subTest(scope=scope):
                 self.assertTrue(ingest.notes_for(self._note(scope, key), self.MSG),
                                 f'a {scope}-scoped note matched nothing')
+        self.assertIn(NOTE, memory.whole(self._note('global', None)))       # a general line rides the whole memory triage reads
 
     def test_and_none_of_them_matches_an_unrelated_message(self):
         other = {'from_email': 'someone@elsewhere.com', 'subject': 'Directors meeting',
@@ -152,7 +155,7 @@ if __name__ == '__main__':
 
 
 class BlankDocsHeal(unittest.TestCase):
-    """CODING.md went blank on a live install and every session ran with no rules. An empty operator
+    """A document went blank on a live install and its reader ran with nothing. An empty operator
     document carries no intent worth keeping: reading it, saving it blank, or restarting all put
     the shipped default back."""
 
@@ -160,15 +163,15 @@ class BlankDocsHeal(unittest.TestCase):
         from fastapi.testclient import TestClient
         from taskuary import server
         c = TestClient(server.app)
-        server.store.save_doc('coding', '   ', 'owner')
-        r = c.get('/api/doc/coding')
-        self.assertIn('CODING.md', r.json()['content'])
-        self.assertEqual(server.store.doc_owner('coding'), 'template')
+        server.store.save_doc('style', '   ', 'owner')
+        r = c.get('/api/doc/style')
+        self.assertIn('STYLE.md', r.json()['content'])
+        self.assertEqual(server.store.doc_owner('style'), 'template')
 
     def test_saving_blank_means_give_me_the_default_back(self):
         from fastapi.testclient import TestClient
         from taskuary import server
         c = TestClient(server.app)
-        r = c.put('/api/doc/coding', json={'content': ''})
+        r = c.put('/api/doc/style', json={'content': ''})
         self.assertTrue(r.json().get('restored'))
-        self.assertIn('CODING.md', server.store.get_doc('coding'))
+        self.assertIn('STYLE.md', server.store.get_doc('style'))

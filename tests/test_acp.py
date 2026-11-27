@@ -193,6 +193,13 @@ class NothingElseChangesTests(unittest.TestCase):
         with mock.patch.object(agents, 'run_cli', side_effect=lambda prof, prompt, *a, **k: (typed.append(prompt), ('ok', 'codex-sess-1', None))[1]):
             brain('SYSTEM v1', 'first'); brain('SYSTEM v1', 'second'); brain('SYSTEM v2', 'third')
         self.assertIn('SYSTEM v1', typed[0]); self.assertEqual(typed[1], 'second'); self.assertIn('SYSTEM v2', typed[2])
+        # ...AND ACROSS A RESTART (the review, 2026-11-23): the conversation picked up by a new process after his Continue or a press was
+        # typed the whole system - the owner block and all - again over a conversation that held it
+        llm._SAID.clear()
+        again = llm.make_cli_llm(s, 'codex', keep='general:1:sx', resume='codex-sess-1')
+        with mock.patch.object(agents, 'run_cli', side_effect=lambda prof, prompt, *a, **k: (typed.append(prompt), ('ok', 'codex-sess-1', None))[1]):
+            again('SYSTEM v2', 'after the restart')
+        self.assertEqual(typed[3], 'after the restart')
 
     def test_a_general_agent_run_with_hands_is_marked_for_the_acp_road(self):
         from taskuary import llm
@@ -270,6 +277,18 @@ class TheAdaptersOwnLinesTests(unittest.TestCase):
         line = say.owner({'kind': 'turn_failed', 'raw': str(e.exception)})
         self.assertTrue(line.startswith('The AI provider refused the request'), line)
         self.assertNotIn('{', line); self.assertNotIn('litellm', line)
+
+    def test_an_error_that_ends_a_turn_fails_it_whatever_was_said_before(self):
+        """Walk 12, 2026-11-23 (gateway budget out mid-turn): the agent said "I'll check the workspace...", made a call, and the adapter's
+        own 422 ended the turn - dropped because words stood before it, so the task read "agent done" with Mark done lit. An adapter line
+        that is the turn's LAST word fails it; one the model went on past (a warning at the start) does not."""
+        c = _stub_turn([_chunk('Warning: Model metadata for `m` not found.'), _chunk("I'll check the workspace for the seat count.", 'item_1'), {'sessionUpdate': 'tool_call', 'toolCallId': 'c1'},
+                        _chunk('unexpected status 422 Unprocessable Entity: Budget has been exceeded! Max budget: 50.0')])
+        with self.assertRaises(acp.ACPAgentError) as e: c.prompt('q')
+        self.assertIn('Budget has been exceeded', str(e.exception)); self.assertNotIn('Warning', str(e.exception))
+        c = _stub_turn([_chunk('Warning: Model metadata for `m` not found.\n\n'), _chunk('Looking.', 'item_1'),
+                        {'sessionUpdate': 'tool_call', 'toolCallId': 'c1'}, _chunk('Done - 212 seats.', 'item_2')])
+        self.assertEqual(c.prompt('q'), ('end_turn', 'Done - 212 seats.'))
 
     def test_another_adapter_keeps_its_unnamed_words(self):
         self.assertEqual(_stub_turn([_chunk('Hello.')], unnamed_own=False).prompt('q'), ('end_turn', 'Hello.'))

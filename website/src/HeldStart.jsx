@@ -2,6 +2,8 @@
 // one plain line why nothing is working on it (origin.hold, the list's `hold`), and one lit action - Trust <sender>. The press records the
 // trust and starts the agent as any task's (server.task_trust); what waited by the box is handed over with it. No "Run anyway": an agent
 // either works a sender's words or it does not.
+// ...ON THE TASK PAGE THE PRESS IS THE ROW'S (`onRow`, taskMoves.js trust): lit where he looks first, never only in a pane that may be folded
+// (walk 14, 2026-11-24) - the chat keeps the line why, one Trust on the page. A chat with no row of its own (the walk, the wall) keeps it here.
 import React, { useState } from "react";
 import { Box, Button, CircularProgress, Typography } from "@mui/material";
 import api from "./api";
@@ -9,12 +11,9 @@ import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { trustLabel } from "./strangerLine.js";
 
-export default function HeldStart({ taskId, hold, onChanged }) {
-  useLocale();
-  const line = String(hold.line || "").match(/^You have not trusted (.+) yet, so (no agent works on this|the agent hears nothing more from this thread) until you do\.$/);
-  const heldLine = line ? t(line[2] === "no agent works on this"
-    ? "You have not trusted {who} yet, so no agent works on this until you do."
-    : "You have not trusted {who} yet, so the agent hears nothing more from this thread until you do.", { who: line[1] }) : hold.line;
+// ...and where the press is the row's, the line says where it stands (walk 15 H2: "until you do" with no button in sight)
+export const heldPointer = (hold) => `Press ${hold.person || "Trust them"}, first on the task's row.`;
+export default function HeldStart({ taskId, hold, onChanged, onRow = false }) {
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const trust = async () => {
     setBusy(true); setErr("");
@@ -23,13 +22,13 @@ export default function HeldStart({ taskId, hold, onChanged }) {
   };
   return (
     <Box data-tq-held-start="" className="tq-aui-summary" sx={{ mt: 1, mx: { xs: 1, sm: 2 } }}>
-      <Typography sx={{ fontSize: 13.5, color: "var(--tq-text, #292824)" }}>{heldLine}</Typography>
-      <Box sx={{ display: "flex", gap: 1, mt: 0.75, flexWrap: "wrap" }}>
+      <Typography sx={{ fontSize: 13.5, color: "var(--tq-text, #292824)" }}>{hold.line}{onRow ? ` ${heldPointer(hold)}` : ""}</Typography>
+      {!onRow && <Box sx={{ display: "flex", gap: 1, mt: 0.75, flexWrap: "wrap" }}>
         <Button size="small" variant="contained" disableElevation disabled={busy} onClick={trust} data-tq-trust-sender=""
           startIcon={busy ? <CircularProgress size={12} color="inherit" /> : null} sx={{ fontSize: 12.5, minHeight: 30, textTransform: "none" }}>
-          {busy ? t("Starting…") : trustLabel(hold.person || "Trust them")}</Button>
-      </Box>
-      {hold.after && <Typography variant="caption" sx={{ display: "block", color: "var(--tq-faint, #8a857b)", mt: 0.5 }} data-tq-trust-after="">{t(hold.after)}</Typography>}
+          {busy ? "Starting…" : hold.person || "Trust them"}</Button>
+      </Box>}
+      {hold.after && <Typography variant="caption" sx={{ display: "block", color: "var(--tq-faint, #8a857b)", mt: 0.5 }} data-tq-trust-after="">{hold.after}</Typography>}
       {err && <Typography variant="caption" sx={{ display: "block", color: "var(--tq-danger, #8a3646)", mt: 0.5 }}>{err}</Typography>}
     </Box>);
 }

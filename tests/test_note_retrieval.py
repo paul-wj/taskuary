@@ -27,9 +27,10 @@ LEDGER = ('sender', DANA, 'Mail like "Quarterly ledger reconciliation" from Dana
                           "people's work - file it, do not open a task.", 'verdict')
 INVOICE = ('sender', DANA, 'Dana asking about invoices always needs a reply, never an agent.', 'verdict')
 SHIPPING = ('sender_domain', 'vendor.com', 'Vendor mail about shipping schedules is not ours.', 'learned')
-GLOBAL = ('global', None, 'Never open tasks from newsletters or digests.', 'verdict')
+GLOBAL = ('global', None, 'Never open tasks from newsletters or digests.', 'owner')      # a general line he said: one he only confirmed rides memory.whole
 STRANGER = ('sender', 'someone@else.com', 'Unrelated note about somebody else entirely.', 'verdict')
 # what the stand-in embedder reads as one subject: the texts below about the ledger, the invoices, shipping
+SAID25 = [('global', None, f'Standing rule number {i}: mail about project {i} is filed.', 'owner') for i in range(25)]
 JOBS = {'ledger': ['ledger'], 'invoices': ['invoice'], 'shipping': ['shipping']}
 
 
@@ -71,8 +72,8 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(notes_for(s, {'from_email': 'nobody@nowhere.com', 'subject': 'hi', 'body': 'x'}),
                          ['Never open tasks from newsletters or digests.'])
         # switching a note off in the UI has to actually silence it
-        from taskuary import learned_cut as lc, memoryedit
-        memoryedit.mark(s, next(k for raw, k in lc.lines(s.get_doc('learned'), lc.CARE) if 'newsletters' in raw), 'forget')
+        from taskuary import memory
+        memory.mark(s, next(n['Key'] for n in memory.notes(s) if 'newsletters' in n['Note']), 'forget')
         self.assertEqual(notes_for(s, {'from_email': 'nobody@nowhere.com', 'subject': 'hi', 'body': 'x'}), [])
 
     def test_a_verdict_is_never_cut_in_half(self):
@@ -88,27 +89,26 @@ class RankingTests(unittest.TestCase):
 
     def test_past_the_twentieth_note_the_owner_is_told(self):
         """The reported gap: note twenty-one simply vanished. It still does not fit - but the
-        count comes back with it, so the funnel can say so instead of implying it applied."""
-        s = _store(*[('sender', DANA, f'Verdict number {i} about Dana.', 'verdict') for i in range(25)])
+        count comes back with it, so the funnel can say so instead of implying it applied. (Lines he said: the learned ones about one
+        sender stop at memory.PER_ABOUT before they reach a prompt.)"""
+        s = _store(*SAID25)
         notes, left = relevant_notes(s, [DANA], 'Dana')
         self.assertEqual((len(notes), left), (NOTE_CAP, 25 - NOTE_CAP))
 
 
     def test_with_ids_each_note_carries_the_id_triage_names_it_by(self):
-        from taskuary import learned_cut as lc
+        from taskuary import memory
         from taskuary.triage import note_id
         s = _store(LEDGER, GLOBAL)
         notes, _ = relevant_notes(s, [DANA], 'ledger', ids=True)
-        cites = {lc.cite_of(k) for _raw, k in lc.lines(s.get_doc('learned'), lc.CARE)} | \
-                {lc.cite_of(k) for h in lc.SECTIONS.values() for _raw, k in lc.lines(s.get_doc('learned'), h)}
+        cites = {memory.cite_of(n['Key']) for n in memory.notes(s)}
         self.assertTrue(notes and all(note_id(n) in cites for n in notes), notes)
         self.assertEqual(note_id('Never open tasks from newsletters.'), '')
 
 
 class ItSaysSoTests(unittest.TestCase):
     def test_the_timeline_says_how_many_notes_were_applied(self):
-        s = _store(*[('sender', DANA, f'Verdict number {i} about Dana, at some length.', 'verdict')
-                     for i in range(25)])
+        s = _store(*SAID25)
         out = ingest_message(s, {'external_id': 'x1', 'channel': 'email', 'from_email': DANA,
                                  'subject': 'Ledger', 'body': 'Attaching the ledger.'},
                              llm=lambda *a, **k: '{"intent": "fyi", "why": "informational"}')
@@ -138,14 +138,14 @@ class ItSaysSoTests(unittest.TestCase):
 
     def test_every_mail_shares_one_prefix_and_its_own_evidence_follows_it(self):
         """The owner, 2026-11-10: "32 million tokens?" - the notes picked for one sender sat in the middle of the system, so the
-        playbooks and workflows under them were new bytes on every mail and no provider cache reached past the owner's memory."""
+        skills and workflows under them were new bytes on every mail and no provider cache reached past the owner's memory."""
         from os.path import commonprefix
         from taskuary.triage import classify_intent
         seen = []
         def llm(system, user, images=None): seen.append(system); return '{"intent": "fyi", "why": "x"}'
         for who, note in ((DANA, 'Dana: ledgers are fyi'), ('erin@northwind.example', 'Erin: rota changes are tasks')):
             classify_intent({'from_email': who, 'subject': 's', 'body': 'b'}, llm=llm, notes=[note], watch=f'watch {who}',
-                            playbooks='- rota: when a rota changes', workflows='- invoices: when an invoice arrives', learned='Alex cares about the rota.')
+                            skills='- rota: when a rota changes', workflows='- invoices: when an invoice arrives', learned='Alex cares about the rota.')
         shared = commonprefix(seen)
         self.assertIn('WORKFLOWS A MAIL STARTS', shared); self.assertIn('when an invoice arrives', shared)
         self.assertNotIn('ledgers are fyi', shared); self.assertGreater(len(shared), 30_000)      # the guide and everything every mail shares (the guide alone is 31,000 since 2026-11-11)

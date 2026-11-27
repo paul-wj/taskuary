@@ -304,7 +304,10 @@
 .tq-day-agenda { min-width: 0; }
 /* the list's pitch is assistantCards' EV_ROW / EV_NOW: it asks for that much room, and the rest scrolls inside */
 .tq-day-evs { position: relative; flex: 1 1 auto; }
-.tq-day-evs > .in { position: absolute; inset: 0; overflow-y: auto; scrollbar-width: thin; }
+/* ...and only a day longer than the card shows scrolls (the owner, 2026-11-23: one meeting drew a scroll bar - its room is the lines' sum,
+   and a scaled screen rounds it a pixel short): a day that fits never draws a bar, whatever the rounding */
+.tq-day-evs > .in { position: absolute; inset: 0; overflow: hidden; }
+.tq-day-evs.scrolls > .in { overflow-y: auto; scrollbar-width: thin; }
 .tq-day-agenda .ev { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; align-items: baseline; height: 22px; }
 .tq-welcome .tq-day-agenda .t { font: 500 11.5px/22px 'IBM Plex Mono', Consolas, monospace; color: var(--tq-text, #262521); white-space: nowrap; }
 .tq-welcome .tq-day-agenda .s { font-size: 13px; line-height: 22px; color: var(--tq-secondary, #6e685f); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -332,6 +335,14 @@
 .tq-welcome .tq-day-row .who { font-size: 12.5px; color: var(--tq-secondary, #4d4a43); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tq-day-row .n { font: 600 16px/1 'IBM Plex Sans', system-ui, sans-serif; font-variant-numeric: tabular-nums; text-align: right; min-width: 24px; }
 .tq-day-row.lvl-task .dot { background: #5f7a5f; }
+/* the open tasks by name, under the Tasks row: one line each - its title, then where it stands - a link that opens it */
+.tq-day-named { display: flex; flex-direction: column; padding: 2px 4px 6px 22px; border-bottom: 1px solid var(--tq-border, #f0ebe3); }
+.tq-day-task { display: block; width: 100%; min-height: 24px; padding: 0; border: 0; background: none; text-align: left; font: inherit; font-size: 12.5px; line-height: 24px;
+  color: var(--tq-text, #262521); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tq-day-task:hover .t, .tq-day-task.more:hover { text-decoration: underline; }
+.tq-day-task:focus-visible { outline: 2px solid var(--tq-success, #7d9a7c); outline-offset: 2px; }
+.tq-day-task .st, .tq-day-task.more { color: var(--tq-secondary, #6e685f); }
+.tq-day-row:has(+ .tq-day-named), .tq-day-named:last-child { border-bottom: 0; }
 .tq-day-row.lvl-reports .dot, .tq-day-row.lvl-ideas .dot { background: #827356; }
 .tq-day-row.lvl-fyi .dot { background: #7b7366; }
 .tq-day-row.lvl-later .dot, .tq-day-row.lvl-watching .dot { background: transparent; border: 1px dashed #7b7366; }
@@ -823,6 +834,13 @@
    the whole of it is the row's hover */
 .tq-pile-row .t b.goal-t { flex-shrink: 3; }
 .tq-pile-steps, .tq-pile-due { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+/* A ROW'S PROFILE (the owner, 2026-11-26: "very subtle", the rail's look unchanged): one line high and wrapping, so the word is drawn whole
+   on the first line or falls to a second that is never shown - and it gives way before the title loses a pixel (the shrink), taking no
+   gap of its own when it is gone (the margin undoes .t's, the word carries it) */
+.tq-pile-profile { flex: 0 1000000 auto; min-width: 0; margin-left: -9px; display: flex; flex-wrap: wrap; align-content: flex-start; height: 16px; overflow: hidden;
+  font: 400 11px/16px 'IBM Plex Sans', system-ui, sans-serif; color: var(--tq-muted, #6e685f); }
+.tq-pile-profile::before { content: ""; flex: 0 0 0; height: 16px; }
+.tq-pile-profile > span { flex: 0 0 auto; padding-left: 9px; white-space: nowrap; }
 .tq-pile-word.keep { flex: 0 1 auto; min-width: 46px; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── the canvas (the canvas redesign, 2026-09-29) ─────────────────────────────────────────────── */
@@ -909,6 +927,9 @@
 .tq-arow-verbs.tight > .tq-cl:not(.tq-cl-next) { flex-shrink: 1; }
 /* ...and there MARK DONE KEEPS ITS WORDS (the owner, 2026-11-15: a phone's bar read "Mark d…"): only the lit move beside it is shortened */
 .tq-arow-verbs.tight .tq-ab[data-tq-verb="done"], .tq-arow-verbs.tight .tq-ab[data-tq-verb$=":done"], .tq-arow-verbs.tight .tq-cl-more { flex-shrink: 0; }
+/* ...AND THE LIT MOVE KEEPS ITS WORDS TOO (walk 16: a phone's held task read "T…" for Trust Paula): the others give up their padding first, and only a move still too long for the line is cut */
+.tq-arow-verbs.tight .tq-cl .tq-ab:not(.p) { padding: 0 9px; min-width: 0; }
+.tq-arow-verbs.tight .tq-ab.p { flex-shrink: 0; max-width: calc(100vw - 180px); }
 /* the unseen copy ActionRow measures: every part in the row's own classes, at its natural width, taking no room */
 .tq-arow-ghost { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .tq-arow-ghost .tq-cl { width: max-content; max-width: none; }
@@ -923,7 +944,8 @@
 .tq-cl-b .tq-ab { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tq-cl .tq-ab { min-height: 30px; min-width: 78px; padding: 0 14px; font-size: 12.5px; }
 .tq-cl .tq-ab.next { min-width: 0; }
-.tq-cl-more { min-width: 30px !important; width: 30px; padding: 0 !important; color: var(--tq-secondary, #6e685f); }
+/* ...the fold is named ("More ▾", the owner 2026-11-23), never a bare ▾: as wide as its word */
+.tq-cl-more { min-width: 30px !important; padding: 0 10px !important; white-space: nowrap; color: var(--tq-secondary, #6e685f); }
 .tq-arow-sep { width: 1px; height: 22px; background: var(--tq-inset, #ddd6cb); flex: 0 0 auto; margin: 0 2px; }
 .tq-arow-why { font-size: 11px; line-height: 1.25; color: var(--tq-warning, #8a6d1f); text-align: center; }
 /* NARROWER THAN 1100px the row stacked one type per line - four lines over the box, a third of a 768px screen taken from the task

@@ -33,8 +33,39 @@ CHANNELS = ('whatsapp', 'telegram')
 LABELS = {'whatsapp': 'WhatsApp', 'telegram': 'Telegram'}
 HANDOFF_KEY = 'assistant_handoff'      # {'channel','chat','connector_id','at'} while the walk is on the phone
 
-_TASK_LINK = re.compile(r'\[([^\]]+)\]\(#task=\d+\)')
+_TASK_LINK = re.compile(r'\[([^\]]+)\]\(#task=(\d+)\)')
 _TASK_ID = re.compile(r'\]\(#task=(\d+)\)')
+
+
+def named_task(say) -> int | None:
+    """The task an answer names: its first [..](#task=N) link, else the one TQ ref it names alone (store.TQ_REF) - a phone reads its words,
+    and an answer about one task that named it by its ref alone left only Next under it (walk 16). None where it names none, or several."""
+    from .store import TQ_REF
+    s = str(say or '')
+    if m := _TASK_ID.search(s): return int(m.group(1))
+    refs = {int(x) for x in TQ_REF.findall(s)}
+    return refs.pop() if len(refs) == 1 else None
+
+
+def unlinked(say) -> str:
+    """An answer's [label](#task=N) links said in words, each with its ref - a phone opens no link, and the label alone ("Gail's Payworth
+    accrual") lost which task it was, so a list of them reached nothing (walk 18)."""
+    from .store import TQ_REF, task_ref
+    return _TASK_LINK.sub(lambda m: m.group(1) if TQ_REF.search(m.group(1)) else f'{m.group(1)} ({task_ref(int(m.group(2)))})', str(say or ''))
+
+
+def named_drafts(store, say) -> list:
+    """The tasks whose card waits on his press (waiting_reviews: a reply draft first) and whom an answer names by that card's person - the
+    stored name of the one it answers, whole or its first name, as a word. Walk 18: "a reply to Omar is drafted and waiting for your
+    approval" offered only Next and Ask, the draft's Send nowhere on the phone. Stored names matched as names, never a reading of the words."""
+    from .triage import person_name
+    s, out = unlinked(say), []
+    for r in store.waiting_reviews():
+        n = person_name(r.get('FromName')) if r.get('TaskId') else ''
+        if n and re.search(rf"\b(?:{re.escape(n)}|{re.escape(n.split()[0])})\b", s) and int(r['TaskId']) not in out: out.append(int(r['TaskId']))
+    return out
+
+
 _locks, _locks_guard = {}, threading.Lock()
 _turns: dict = {}                            # chat -> the Event that cancels its turn in flight
 
@@ -94,14 +125,18 @@ def is_private(store, connector, chat: str) -> bool:
     the shape check; `own_thread` is the one that counts the people in the room, and it is what the
     card offers from. Nothing reaches the assistant on a chat that was not configured there
     (connector_for_chat), so refusing to offer a real group is what keeps one out.
+
+    ON WHATSAPP A DIRECT CHAT IS ALSO SOMEONE ELSE'S (the phone walk, 2026-11-23: a 1:1 with a colleague was offered as his and taken by
+    use_chat - his own lines to her would have been read as asks, and answers about his mail posted to her): only on Telegram is a private
+    chat him alone with the bot. On WhatsApp, group or direct, the chat is his only when it carries the paired account's own number.
     """
     chat = str(chat or '').strip()
     if not chat: return False
-    if not chat.endswith('@g.us'): return True
-    if (connector or {}).get('Type') != 'whatsapp': return False
+    if (connector or {}).get('Type') != 'whatsapp': return not chat.endswith('@g.us')
     from . import messengers
     me = messengers.wa_self_number(store, connector)
-    return bool(me) and chat.split('-', 1)[0] == me
+    num = chat.partition('@')[0].split(':', 1)[0]
+    return bool(me) and (num.split('-', 1)[0] if chat.endswith('@g.us') else num) == me
 
 
 def own_thread(store, connector, row, configured: str = '') -> bool:
@@ -317,7 +352,7 @@ def start_handoff(store, channel: str, actor: str = 'owner') -> dict:
     # a hand-off recorded for a walk that never arrived anywhere
     owner_spoke(store, channel, chat)
     with concierge.delivering(concierge.PHONE):
-        out = concierge.resume(store, actor)                  # the item on the table first, when there still is one
+        out = concierge.resume(store, actor, to=f'{channel}:{chat}')      # the desk's row first, when there still is one
         # the hello, then the card in a bubble of its own - its choices ride the card, not the greeting (F21)
         from . import chatformat
         text = OPENED + chatformat.BREAK + carry_out(store, out, None, actor)
@@ -453,6 +488,8 @@ def push_alerts(store, force: bool = False) -> int:
     """
     if not force and time.monotonic() - _looked[0] < ALERT_EVERY: return 0
     _looked[0] = time.monotonic()
+    try: flush_owed(store)
+    except Exception as e: logger.warning(f'could not pay what a chat is owed: {e}')
     try: keep_promises(store, force=force)
     except Exception as e: logger.warning(f'could not follow up in the chat: {e}')
     h = handoff(store)
@@ -466,7 +503,8 @@ def push_alerts(store, force: bool = False) -> int:
     except Exception as e:
         logger.warning(f'could not look for interruptions to send to {h["channel"]}: {e}'); return 0
     task, _ = general.dock_task(store, 'owner')
-    on_the_table = concierge.current_key(store, task['TaskId'])
+    from . import railwalk
+    with railwalk.seated(f"{h['channel']}:{h['chat']}"): on_the_table = concierge.current_key(store, task['TaskId'])   # the chat's own table
     told = list(h.get('told') or [])
     refs = {i['key']: i.get('ref') or '' for i in p.get('items') or []}
     # ONLY WHAT OUTRANKS THE TABLE (funnel.more_urgent's rule): a reply "waiting for your yes" is what the walk itself
@@ -509,7 +547,6 @@ def push_alerts(store, force: bool = False) -> int:
 # whatsapp?" - "make sure the assistant on the phone never just drops you"). So work handed to an agent FROM a chat is a promise
 # kept in that chat: when the agent stops working - finished, asking, a draft for your yes - the card comes back there.
 PROMISES_KEY = 'phone_promises'
-WORKING = ('working', 'queued')
 PROMISE_HOURS = 12
 PROMISE_LINE = 'I will tell you here if it finishes or needs you while we are talking - after that it waits on the desktop.'
 
@@ -561,45 +598,61 @@ def _run(store, op: dict, actor: str) -> dict:
     return {**done, 'outcome': {**o, 'chat': False, **{k: out.get(k) for k in ('started', 'existing', 'dispatch') if k in out}}}
 
 
+# KEPT BY THE AGENT'S OWN TURN END, NEVER BY SAMPLING THE RAIL (walk 6, H2): the promise was kept by looking at the rail lane every 20 s and
+# arming only when a look caught it "working" - a 9 s turn that began and ended between two looks was never seen, and three phone lines that
+# set an agent going never came back. Now it is made where his words enter a task (general.to_agent, the one door for his line - asking()
+# says whether a phone chat is speaking) and where a start is made here (receipt_text, _ran), and kept by the event that ends the agent's
+# turn (workerstate.record -> turn_ended): its answer, its question, its card for his press, or its failure.
 def promise(store, tid) -> bool:
-    """Work on `tid` was just handed to an agent from the chat speaking now (asking()): follow it up there."""
+    """Work on `tid` was just handed to an agent from the chat speaking now (asking()): follow it up there - once its turn ends."""
     at = asking()
     if not at or not str(tid or '').isdigit(): return False
-    try: lane = (_task_item(store, int(tid)) or {}).get('lane') or ''
-    except Exception: lane = ''
-    keep = [p for p in _promises(store) if int(p['tid']) != int(tid)]
-    keep.append({'tid': int(tid), 'channel': at['channel'], 'chat': at['chat'], 'connector_id': at.get('connector_id'),
-                 'at': time.time(), 'lane': lane, 'armed': lane in WORKING})
-    store.set_setting(PROMISES_KEY, json.dumps(keep), 'assistant')
+    with _LEDGER:
+        keep = [p for p in _promises(store) if int(p['tid']) != int(tid)]
+        keep.append({'tid': int(tid), 'channel': at['channel'], 'chat': at['chat'], 'connector_id': at.get('connector_id'), 'at': time.time()})
+        store.set_setting(PROMISES_KEY, json.dumps(keep), 'assistant')
+    return True
+
+
+def turn_ended(store, tid) -> bool:
+    """The agent on `tid` ended a turn (its answer, a question, a failure): a promise on it is owed now - unless his words are still waiting
+    for its next stop (a turn that ran before they went in is not the one he asked for). Sent at once, on its own thread."""
+    if not str(tid or '').isdigit() or not any(int(p['tid']) == int(tid) for p in _promises(store)): return False
+    if store.waiting_notes(int(tid)): return False
+    with _LEDGER:
+        ps = [{**p, 'ended': True} if int(p['tid']) == int(tid) else p for p in _promises(store)]
+        store.set_setting(PROMISES_KEY, json.dumps(ps), 'assistant')
+    threading.Thread(target=keep_promises, args=(getattr(store, '_store', store),), name=f'taskuary-promise-{tid}', daemon=True).start()
     return True
 
 
 def keep_promises(store, force: bool = False) -> int:
-    """Each promised task whose agent has STOPPED working comes back to its chat as its card - once. It waits until the agent
-    has been seen working (an answered question is still `blocked` for a moment), or until its row is something new."""
+    """Each promised task whose agent's turn has ENDED (turn_ended) comes back to its chat as its card - once. One waits only while a turn of
+    that chat is being answered (its answer would land in the middle of it); the chat clock's next look sends it then."""
     ps = _promises(store)
     if not ps: return 0
     from . import concierge, funnel
-    items = funnel.pile(store).get('items') or []
+    items = None
     keep, kept = [], 0
     for p in ps:
         tid, chat = int(p['tid']), p['chat']
         if time.time() - float(p.get('at') or 0) > PROMISE_HOURS * 3600: continue        # stale: the walk has long moved on
         # ...and the conversation that made it is over: the desktop's rail has the task, the phone hears nothing unasked (2026-10-23)
         if held_back(store, p['channel'], chat, f'the follow-up on TQ-{tid:04d}'): continue
+        if not p.get('ended') or (not force and _busy(store, p['channel'], chat)): keep.append(p); continue
+        # ...ONE NOTICE PER TURN END (walk 10, 2026-11-23: "TQ-0010 is back" twice in one second): two looks read the same promise before
+        # either struck it off, and each sent it - it is claimed off the list first, and a look that finds it gone sends nothing
+        with _LEDGER:
+            cur, mine = _promises(store), (tid, p.get('at'))
+            if mine not in {(int(x['tid']), x.get('at')) for x in cur}: continue
+            store.set_setting(PROMISES_KEY, json.dumps([x for x in cur if (int(x['tid']), x.get('at')) != mine]), 'assistant')
+        if items is None: items = funnel.pile(store).get('items') or []
         it, t = _task_item(store, tid, items), store.get_task(tid) or {}
-        lane = (it or {}).get('lane') or ''
-        if lane in WORKING: keep.append({**p, 'armed': True}); continue
-        # ...and a run that ENDED by its own word with no row left on the pile is over too: a failed or finished agent on a task still
-        # open kept its promise unsaid for twelve hours (F5)
-        from . import workerstate as ws
-        end = None if it else ws.ended(store, tid)
-        done = (t.get('Status') in ('done', 'dropped') or end in ('finished', 'failed')) and not it
-        if not (p.get('armed') or done or (it and lane != p.get('lane'))): keep.append(p); continue
-        if not force and not quiet(store, p['channel'], chat): keep.append(p); continue   # mid-conversation: the next look tries again
         ref = f'TQ-{tid:04d}'
         if it:
-            with concierge.delivering(concierge.PHONE): nxt = concierge.surface(store, it['key'], actor='owner')
+            from . import railwalk
+            # ...put up on THAT chat's table, never the desk's (railwalk.seat)
+            with concierge.delivering(concierge.PHONE), railwalk.seated(f"{p['channel']}:{chat}"): nxt = concierge.surface(store, it['key'], actor='owner')
             text = turn_text(nxt, lead=f'{ref} is back:', store=store)
         else:
             state = agent_state({'kind': 'agentdone', 'tid': tid}, store) if t.get('Status') not in ('done', 'dropped') else ''
@@ -610,9 +663,13 @@ def keep_promises(store, force: bool = False) -> int:
                              extra=again + [(f'Open {ref}', {'t': 'open', 'key': f'task:{tid}'}), (concierge.CHIP_WORDS['next'], {'t': 'next'})])
         send(store, p['channel'], chat, text, p.get('connector_id'))
         kept += 1
-    # ...plus any promise made WHILE this looked (a chat turn on another thread): rewriting the list read above would drop it
-    seen = {(int(p['tid']), p.get('at')) for p in ps}
-    store.set_setting(PROMISES_KEY, json.dumps(keep + [p for p in _promises(store) if (int(p['tid']), p.get('at')) not in seen]), 'assistant')
+    # ...plus any promise made or ended WHILE this looked (a chat turn, a turn end, on another thread): rewriting the list read above would
+    # drop it - each one this look settled is struck off by what it was when read
+    with _LEDGER:
+        seen = {(int(p['tid']), p.get('at')) for p in ps}
+        left = {(int(p['tid']), p.get('at')) for p in keep}
+        now = [p for p in _promises(store) if (int(p['tid']), p.get('at')) not in seen or (int(p['tid']), p.get('at')) in left]
+        store.set_setting(PROMISES_KEY, json.dumps(now), 'assistant')
     return kept
 
 
@@ -714,7 +771,7 @@ def intercept(store, channel: str, chat: str, text: str, *, from_me=False, tasku
 
 
 def _locked_respond(store, channel: str, chat: str, question: str, connector_id: int, message_id=None, poll=False,
-                    arrived=None, spoken=False, closed=None, images=None):
+                    arrived=None, spoken=False, closed=None, images=None, late: str = ''):
     # the thumb goes up BEFORE the lock: it says "heard you", and it must not wait behind the turn
     # already answering (which is exactly when the owner most needs to know they were heard)
     if message_id:
@@ -734,15 +791,30 @@ def _locked_respond(store, channel: str, chat: str, question: str, connector_id:
     # conversation at once instead of on its 30 s tick)
     from . import live
     live.emit(live.CHAT, thinking=True, channel=channel)
+    # ...and OWED from here until this process has answered it: a restart in between leaves it written down, and the next process answers it
+    # (flush_owed) - "is the page finished?" asked three seconds before a restart was never answered (walk 6, H4)
+    owed = f'{channel}:{chat}'
+    _book(store, OWED_KEY, owed, {'words': question, 'mid': message_id, 'cid': connector_id, 'images': list(images or []), 'at': time.time(),
+                                  'boot': STARTED})
     try:
         heard = time.time()
         with lock:
             ev = threading.Event()
             with _locks_guard: _turns[key] = ev
-            try: respond(store, channel, chat, question, connector_id, poll=poll, cancel=ev, heard=spoken, closed=closed, images=images)
+            said = getattr(_SAID, 'n', 0)
+            try:
+                respond(store, channel, chat, question, connector_id, poll=poll, cancel=ev, heard=spoken, closed=closed, images=images, late=late)
+                # ...A TURN THAT SAID NOTHING SAYS SO (walk 10, 2026-11-23: a photo and "what is this?" got a thumb, six model calls and then
+                # silence, with nothing in the log): one line with the way on, and why in the log - never a turn that just stops
+                if getattr(_SAID, 'n', 0) == said and not ev.is_set():
+                    logger.warning(f"{channel}: a turn ended with nothing said ({'a picture and ' if images else ''}{len(question)} chars asked)")
+                    send(store, channel, chat, stuck(store, f"I couldn't answer that{' or say what the picture shows' if images else ''} - nothing came "
+                                                           'back from the AI. Say it again, or go on to the next one.'), connector_id)
             finally:
                 with _locks_guard:
                     if _turns.get(key) is ev: _turns.pop(key, None)
+                rec = ledger(store, OWED_KEY).get(owed) or {}
+                if rec.get('mid') == message_id and rec.get('words') == question: _book(store, OWED_KEY, owed, None)
         # WHERE A SLOW TURN SPENT ITS TIME (2026-09-25: a poll tap took a minute and the log could not say why):
         # from reaching the bridge to being heard here, and from heard to answered
         lag = f'{heard - float(arrived):.1f}s to be heard, ' if arrived else ''
@@ -751,6 +823,7 @@ def _locked_respond(store, channel: str, chat: str, question: str, connector_id:
 
 
 _ASKING = threading.local()                  # the chat a turn came from, for the thread that answers it
+_SAID = threading.local()                    # how many times this thread has spoken to a chat (send): a turn that never did is said so
 
 
 def asking() -> dict | None:
@@ -958,14 +1031,14 @@ def walk(store, actor: str = 'owner', opener: bool = True) -> str:
         spend_morning(store)                                  # the summary IS the day's opener - it is not said twice
         from . import welcome
         welcome.mark_greeted(store)                           # ...on the desk too: one good morning a day, wherever it was said
-        # ...from the TOP of the rail, as the desk's Walk starts (the walk has one owner, 2026-10-30) - one walk, shared with the desk
+        # ...from the TOP of the rail, as the desk's Walk starts (the walk has one owner, 2026-10-30) - this chat's own walk (railwalk.seat)
         from . import railwalk
         out = railwalk.start(store, actor)
         return carry_out(store, out, None, actor=actor, lead=opener)
 
 
 def respond(store, channel: str, chat: str, question: str, connector_id: int, poll: bool = False, cancel=None, heard: bool = False,
-            closed: list = None, images: list = None):
+            closed: list = None, images: list = None, late: str = ''):
     """Answer synchronously; the poller runs this on a serialized background worker. `cancel` is set when a pick
     arrives behind this turn: the model's answer is dropped, never sent after the pick's.
     `images`: the pictures the owner sent with it, kept under attachments/ - shown to the Assistant as the desktop's are, and named
@@ -983,6 +1056,7 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
         store.set_setting(HANDED_KEY, json.dumps({**hb, 'told': True}), 'assistant')
         _ASKING.chat['again'] = True
     if closed is not None: _ASKING.chat['closed'] = closed_note(closed)       # it waited out a closed Taskuary (A10)
+    if late: _ASKING.chat['late'] = late                                        # ...or a restart in the middle of its answer (H4)
     try:
         task, _ = general.dock_task(store, f'owner-{channel}')
         tid = task['TaskId']
@@ -1021,13 +1095,21 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
             builtin = command(question) if not picked else ''
             if builtin:
                 if builtin == 'stop':
-                    for k in (NOTE_KEY, REDRAFT_KEY, AGENT_KEY): store.set_setting(f'{k}:{channel}:{chat}', '', 'assistant')
+                    for k in (NOTE_KEY, REDRAFT_KEY, AGENT_KEY, EDIT_KEY): store.set_setting(f'{k}:{channel}:{chat}', '', 'assistant')
                 forget_offered(store, channel, chat)
                 if builtin == 'stop' and (h := handoff(store)) and h['channel'] == channel and h.get('chat') == chat:
                     end_handoff(store, 'owner', HANDED_BACK)            # the walk was handed here: it goes back, and this chat is told
                     return
                 send(store, channel, chat, (help_text if builtin == 'help' else stop_walk)(store, tid), connector_id)
                 if builtin == 'stop': hung_up(store, channel, chat)          # stopped: nothing more reaches this chat until they write again
+                return
+            # ...the line after Edit is the card's new words, sent with them by the desk's own door (press_card)
+            edit = str(store.get_setting(f'{EDIT_KEY}:{channel}:{chat}') or '')
+            if edit: store.set_setting(f'{EDIT_KEY}:{channel}:{chat}', '', 'assistant')
+            if edit and not picked:
+                forget_offered(store, channel, chat)
+                rid, _, shown = edit.partition(':')
+                send(store, channel, chat, press_card(store, int(rid), 'edit', question, shown or None), connector_id)
                 return
             redo = str(store.get_setting(f'{REDRAFT_KEY}:{channel}:{chat}') or '')
             if redo and not picked:
@@ -1066,13 +1148,6 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
                 return
             if act:
                 send(store, channel, chat, run_act(store, act, item), connector_id)
-                return
-            # ...and on an fyi batch a number names one of the lines we printed: open that one - the item on
-            # the table, its own text and its own options under it - as the desktop's "Talk about it" does
-            key = next((k for k, line in member_lines(item) if picked and line == question), None)
-            if key:
-                nxt = concierge.surface(store, key, actor='owner')
-                send(store, channel, chat, turn_text(nxt, store=store, full=True), connector_id)
                 return
             # MORE, picked: the rest of what the card folds, then the same choices again without it
             if picked and question == MORE:
@@ -1122,6 +1197,7 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
                     logger.debug(f'the phone answered without its opening: {e}'); lead = ''
                 if lead: text = f'{lead}\n\n{text}'
         send(store, channel, chat, text, connector_id)
+    except Undelivered as e: logger.warning(f'{e} - kept, it goes again once the chat takes it')
     except Exception as e:
         if cancel is not None and cancel.is_set():
             logger.info(f'{channel}: a turn gave way to a pick'); return
@@ -1295,13 +1371,19 @@ def carry_out(store, out: dict, item: dict | None, actor: str = 'owner', lead: s
         return _on(store, actor, said, done_with=(item or {}).get('key'))   # Next leaves the table as the desktop's does
     # AN ANSWER THAT NAMES A TASK BRINGS IT UP (the router rule): the desk opens a [TQ-…](#task=N) link the moment the answer lands;
     # the phone stripped it to its words, so "bring up TQ-0035" was answered and nothing came up (F18). Its card and its choices
-    linked = _TASK_ID.search(str(out.get('say') or '')) if not out.get('item') and not prop and not verb else None
+    # ...and so does one that names a waiting draft by its person, with no link (named_drafts); several are each one tap away
+    bare = not out.get('item') and not prop and not verb
+    linked, named = (named_task(out.get('say')), []) if bare else (None, [])
+    if bare and not linked and len(named := named_drafts(store, out.get('say'))) == 1: linked = named[0]
     if linked:
-        nxt = concierge.surface(store, f'task:{int(linked.group(1))}', actor=actor)
+        nxt = concierge.surface(store, f'task:{linked}', actor=actor)
         if nxt.get('item'):
             from . import chatformat
             words = turn_text({**out, 'chips': [], 'options': []}, lead, store)
             return chatformat.BREAK.join(x for x in (words, turn_text(nxt, store=store)) if x)
+    if len(named) > 1:
+        from .store import task_ref
+        said = [turn_text(out, lead, store, table=item, extra=(extra or []) + [(f'Open {task_ref(t)}', {'t': 'open', 'key': f'task:{t}'}) for t in named[:4]])]
     return '\n\n'.join(x for x in said if x)
 
 
@@ -1427,12 +1509,17 @@ def _item_for(store, key: str, item: dict | None) -> dict | None:
     return funnel.next_item(store, key, include_surfaced=True) or funnel.item_for_key(store, key)
 
 
-def stale_tap(store, channel: str, chat: str, connector_id=None, spent: bool = False):
+LOST_TAP = ('That tap was on a list I sent before WhatsApp restarted on this computer, so I could not read which choice it was - nothing ran. '
+            'The choices are below again.')
+
+
+def stale_tap(store, channel: str, chat: str, connector_id=None, spent: bool = False, lost: bool = False):
     """A tap on a poll that is no longer the newest: its choices went with the card it was under, so nothing runs (a stale
     pick must never fire) - but a tap that got no answer read as the assistant freezing (2026-09-29). The current choices
     are the ones under the last message; say so, once, in words. `spent`: a second pick on the newest poll, which answers
     once (the owner, 2026-10-02: "once a poll is answered it should never be allowed to be used again")."""
-    said = ('That list was already used - nothing ran. The choices under my last message are the current ones.' if spent
+    # `lost`: a tap on a poll the bridge sent before it restarted - unreadable; the current choices go again as a poll it can read (H4)
+    said = (LOST_TAP if lost else 'That list was already used - nothing ran. The choices under my last message are the current ones.' if spent
             else 'That was an older list, so nothing ran - the choices under my last message are the current ones.')
     # ...and this line is now the last message - on Telegram it takes the older buttons off (tg_send) - so the current choices come
     # with it, on both channels: an answer with nothing to tap under it is a dead end (F19)
@@ -1458,7 +1545,7 @@ def recovery_rows(store, chips: list, actor: str = 'owner') -> list:
         elif v:
             if table is None:
                 from . import general
-                task, _ = general.dock_task(store, actor)          # the ONE dock the desk and the phone share
+                task, _ = general.dock_task(store, actor)          # the ONE dock the desk and the phone share; the table is this chat's
                 table = (concierge.restore_current(store, task['TaskId']) or {}).get('key') or ''
             if table: yield c['label'], {'t': 'verb', 'verb': v, 'key': table}
 
@@ -1708,8 +1795,8 @@ def _run_act(store, act: dict, item: dict | None, actor: str = 'owner') -> str:
             text, rows = doorway_browse.browse(store, act.get('area') or '', act.get('section'), act.get('open'), act.get('page') or 0)
             return turn_text({'say': text, 'item': None}, store=store, extra=rows)
         if t == 'next':
-            # the desktop's Next: the row directly below the one on this chat's table, after leaving it (railwalk.next) - one walk
-            # with the desk (Q5), so the desk follows
+            # the desktop's Next: the row directly below the one on this chat's table, after leaving it (railwalk.next) - this chat's
+            # own walk: the desk stays where it is (railwalk.seat)
             here = (item or {}).get('key')
             out = concierge.surface(store, actor=actor, from_key=here)
             news, opens = urgent_news(store, out)
@@ -1722,7 +1809,7 @@ def _run_act(store, act: dict, item: dict | None, actor: str = 'owner') -> str:
             # nothing to tap was a dead end (the 2026-10-22 re-walk). A section being walked stays walked
             here = asking() or {}
             if here.get('chat'):                                     # no Continue note waits, and no Redraft instruction
-                for k in (NOTE_KEY, REDRAFT_KEY, AGENT_KEY): store.set_setting(f"{k}:{here['channel']}:{here['chat']}", '', 'assistant')
+                for k in (NOTE_KEY, REDRAFT_KEY, AGENT_KEY, EDIT_KEY): store.set_setting(f"{k}:{here['channel']}:{here['chat']}", '', 'assistant')
             if not act.get('key'): return 'Left it - nothing moved.'
             back = concierge.surface(store, act['key'], actor=actor)
             return carry_out(store, back, back.get('item'), actor) if back.get('item') else stuck(store, 'Left it - nothing moved.')
@@ -1754,6 +1841,13 @@ def _run_act(store, act: dict, item: dict | None, actor: str = 'owner') -> str:
                                             table=bool(item and item.get('key') == key), exact=True, picks={'files': list(act.get('files') or [])})
             return _settle(store, {**prop, 'alts': []}, item, actor)
         if t == 'trust': return _trust(store, int(act['tid']), act.get('key') or f"task:{int(act['tid'])}", actor)
+        if t == 'card' and act.get('verb') == 'edit':
+            # EDIT ASKS FOR THE WORDS: the next typed line replaces the draft and goes with them, as the desk's box and its Send
+            here = asking() or {}
+            if here.get('chat'): store.set_setting(f"{EDIT_KEY}:{here['channel']}:{here['chat']}", f"{int(act['rid'])}:{act.get('shown') or ''}", 'assistant')
+            return turn_text({'say': 'Type the new words - they replace the draft, and it goes with them.', 'item': None}, store=store,
+                             extra=[('Cancel', {'t': 'stay', 'key': (item or {}).get('key') or ''})])
+        if t == 'card': return press_card(store, int(act['rid']), str(act.get('verb') or ''), shown=act.get('shown'))
         if t == 'files': return send_files(store, act, actor)
         if t == 'walk': return walk(store, actor, opener=not act.get('opened'))
         if t == 'script': return script_words(store, act.get('script') or '')
@@ -2000,9 +2094,8 @@ def choices(out: dict) -> list:
 
 
 def member_lines(item: dict | None) -> list:
-    """An fyi batch's members as (key, line): the line the phone prints, numbered, and what a number
-    answers. The desktop opens one member with "Talk about it"; a chat had the four lines and no door
-    into any of them (the owner, 2026-09-20: "how do you dig into one specific one?")."""
+    """An fyi batch's members as (key, line): the line the phone prints. A line is read, never a choice: the batch's one move is Got it
+    (the owner, 2026-11-25 - a number that opened one member, the desktop's old "Talk about it", went)."""
     from . import funnel
     if not item or item.get('kind') != 'fyis': return []
     rows = [(m.get('key'), ' '.join(x for x in (funnel.CHANNEL_MARKS.get(str(m.get('channel') or ''), ''),
@@ -2140,10 +2233,80 @@ def _body(store, item: dict | None) -> tuple[dict, str, bool]:
     return msg, strip_wrapper(str(msg.get('BodyText') or ''), wrapper_of(store.message_verdict(msg.get('MessageId')))).strip(), item.get('kind') == 'report' or msg.get('Channel') == 'report'
 
 
+# ── THE CARD THAT WAITS IS THE ONE THE DESK AND THE AGENT SEE (walk 6, H1) ────────────────────────────────────────────────────────────
+# The phone read a task's draft off the one review id its rail row carried, so a card the row did not carry did not exist for it: the email to
+# Gail waited on the desk, the agent was told it waited, and the phone said "I do not have the text of the message in front of me here".
+# The task's cards are card.py's (the record the page draws and the agent is handed): its front card is read from there, shown in full, and
+# pressed from here by the one press road (card.press -> server.decide), as the desk's.
+def front_card(store, item: dict | None) -> dict:
+    """The review row of the card that waits for his press now on the item's task (card.front_review) - {} when none does: one his press
+    handed to the agent is not his to press again, and a stranger's task has only its Trust."""
+    from . import card
+    try: return card.front_review(store, (item or {}).get('tid'))
+    except Exception as e:
+        logger.debug(f'the phone could not read the line of cards: {e}'); return {}
+
+
+LETTER_KINDS = ('draft', 'draft_reply', 'reply', 'slot')
+
+
+def card_picks(store, item: dict | None) -> list:
+    """The waiting card's own buttons, as picks - Send, Edit (and Don't send on one of the task's emails) on a letter, Approve and Dismiss on
+    an act - each pressed through server.decide like the desk's. [] where the row's own chips already press that card."""
+    rv = front_card(store, item)
+    if not rv or str(rv.get('ReviewId')) == str((item or {}).get('rid') or '-'): return []
+    # ...EACH YES CARRIES THE CARD AS THIS MESSAGE SHOWS IT (verdicts.draft_revision, round 5): a letter saved again before his tap went to
+    # whoever it then named - the desk's press sends what it drew (DecideBody.shown), and the phone's sent nothing to check by
+    from . import verdicts
+    rid, pin = int(rv['ReviewId']), {'shown': verdicts.draft_revision(store, rv)}
+    if rv.get('Kind') == 'action':
+        return [(buttons.label('approve', 'action'), {'t': 'card', 'rid': rid, 'verb': 'approve', **pin}), (DISMISS, {'t': 'card', 'rid': rid, 'verb': 'reject'})]
+    if rv.get('Kind') not in LETTER_KINDS: return []
+    # ...and only the presses its card draws (card.presses): a letter its channel cannot deliver has no Send here either (walk 21: the poll
+    # offered Send under "draft to copy"), and its words are on the card above to copy
+    from . import card
+    if 'approve' not in card.presses(store, rv): return []
+    rows = [(buttons.label('approve'), {'t': 'card', 'rid': rid, 'verb': 'approve', **pin}), (EDIT, {'t': 'card', 'rid': rid, 'verb': 'edit', **pin})]
+    from . import slots
+    if rv.get('Kind') == slots.KIND and (sid := slots.of_review(rv)) and rv.get('TaskId'):
+        rows.append((DONT_SEND, {'t': 'drop', 'tid': int(rv['TaskId']), 'slot': sid}))
+    return rows
+
+
+DISMISS, EDIT, DONT_SEND = 'Dismiss', 'Edit', "Don't send"          # the desk card's own words (ReviewDecision.jsx)
+EDIT_KEY = 'remote_edit'                     # an Edit pick waiting for the new words: the next typed line is them
+
+
+def press_card(store, rid: int, verb: str, words: str = None, shown: str = None) -> str:
+    """His press on a waiting card, from the phone - the one press road (card.press: the desk's own door), so a press reads the same wherever
+    it was made: sent, handed to the agent, refused because the thread moved, or failed and why. Said with the walk's way on. `shown`: the
+    card as the message he tapped drew it (card_picks) - one that reads otherwise now is not pressed, and is his to open and read again."""
+    from . import card, verdicts
+    rv = store.get_review(int(rid)) or {}
+    if shown and verb in ('approve', 'edit') and rv.get('Status') == 'pending' and verdicts.draft_revision(store, rv) != shown:
+        return turn_text({'say': 'This card changed after I showed it - nothing was sent. Open it to read it as it stands now.', 'item': None}, store=store,
+                         extra=([(f"Open TQ-{int(rv['TaskId']):04d}", {'t': 'open', 'key': f"task:{int(rv['TaskId'])}"})] if rv.get('TaskId') else [])
+                         + [(_next_word(), {'t': 'next'})])
+    got = card.press(store, int(rid), verb, words)
+    if not got['ok']: return stuck(store, got['did'])
+    said = got['did'] or 'Done.'
+    tid = rv.get('TaskId')
+    extra = ([(f'Open TQ-{int(tid):04d}', {'t': 'open', 'key': f'task:{int(tid)}'})] if tid else []) + [(_next_word(), {'t': 'next'})]
+    return turn_text({'say': said, 'item': None}, store=store, extra=extra)
+
+
+def _next_word() -> str:
+    from . import concierge
+    return concierge.CHIP_WORDS['next']
+
+
 def _draft_text(store, item: dict | None) -> str:
-    """The reply waiting on a yes - never an `action` review, whose DraftText is the proposal's JSON."""
-    if store is None or not (item or {}).get('rid'): return ''
-    try: rv = store.get_review(int(item['rid'])) or {}
+    """The letter waiting on a yes - the task's front card where it has one (front_card), else the row's own - never an `action` review,
+    whose DraftText is the proposal's JSON."""
+    rv = front_card(store, item)
+    if rv.get('Kind') == 'action' and not (item or {}).get('closeout'): return ''
+    if not rv and (store is None or not (item or {}).get('rid')): return ''
+    try: rv = rv or store.get_review(int(item['rid'])) or {}
     except Exception as e:
         logger.debug(f'the phone could not read the draft: {e}')
         return ''
@@ -2161,6 +2324,7 @@ def _draft_text(store, item: dict | None) -> str:
     return str(rv.get('DraftText') or '').strip() if rv.get('Kind') in ('draft', 'draft_reply') else ''
 
 
+REPORT_EMPTY = 'Its last run came back empty - nothing in it to read.'
 # the one word the phone adds to what the walk offers: the rest of what is folded, as the card's More
 MORE = 'More'
 EXCERPT = 400                                  # a message longer than this shows its opening; More has the rest
@@ -2191,7 +2355,7 @@ def decision_block(store, item: dict | None) -> str:
         # under More, and the `--- raw data ---` dump cut where the desktop cuts it (2026-09-19)
         from . import chatformat
         said = chatformat.blocks(body)
-        if said: parts.append(said[0])
+        if said: parts.append(REPORT_EMPTY if machine(said[0]) else said[0])
     elif body:
         # "THEY WROTE" over their own words; a report credits nobody, a draft puts them behind More
         kin = thread_line(store, msg)
@@ -2451,32 +2615,62 @@ def _says(sub: str) -> str:
 
 
 def agent_state(item: dict | None, store=None) -> str:
-    """The agent's state in the rail's own words. A run that ended by its OWN word says so - "failed - <why>" (owner-approved R2,
-    2026-10-21) or finished - and "is waiting on you" is said only of a run that is: a failed run read "is waiting on you" (F5)."""
+    """The agent's state off the task's one reading (taskstate), in the rail's own words. A run that ended by its OWN word says so - "failed -
+    <why>" (owner-approved R2, 2026-10-21) or finished - and "is waiting on you" is said only of a run that is (F5)."""
     it = item or {}
     kind, lane = it.get('kind'), it.get('lane')
-    # ...and a task whose agent ENDED, whatever its row became: a finished run on a task the rail shows as yours read "No agent yet" (A2)
-    if store is not None and it.get('tid') and lane != 'working' and (kind in ('agent', 'agentdone') or lane in AGENT_CARD_LANES or kind in _TASKISH):
-        from . import funnel, workerstate as ws
-        # ...FAILED whatever the session does, as the desk's R2 reads it: a run that failed with its session still open read "is waiting
-        # on you" (the 2026-10-22 re-walk) - finished stays a reading of a run that is over
-        try: end = 'failed' if ws.ended(store, int(it['tid']), live_too=True) == 'failed' else ws.ended(store, int(it['tid']))
-        except Exception as e:
-            logger.debug(f'the phone could not read how the run ended: {e}'); end = None
-        if end == 'failed':
-            f = funnel.run_failed(store, int(it['tid']), live_too=True) or {}
-            why = str(f.get('sentence') or '').rstrip('.')
-            return f'failed - {why[:1].lower()}{why[1:]}' if why else 'failed'
-        if end == 'finished' and not it.get('asking'): return 'finished'
-    if kind == 'agent':
-        if lane == 'working': return 'working'
-        if it.get('paused'): return 'stopped - its work is saved'
-        sub = it.get('state') if it.get('state') in ('asking', 'approval', 'stalled', 'parked') else 'asking' if it.get('asking') else 'parked'
-        return _says(sub)
-    if kind == 'agentdone': return 'finished'
-    # an agent at work on a task whose card is not an agent's: the header said "agent working" over "No agent yet" (F7)
-    if held(it): return 'working'
-    return {'queued': 'handed over, not started', 'stopped': 'stopped', 'saved': lanes.word('saved')}.get(lane) or ('finished' if it.get('summary') else '')
+    sub = it.get('state') if it.get('state') in ('asking', 'approval', 'stalled', 'parked') else 'asking' if it.get('asking') else 'parked'
+    from . import funnel, taskstate, workerstate as ws
+    st = taskstate.task_state(store, tid=int(it['tid'])) if store is not None and str(it.get('tid') or '').isdigit() else None
+    if st is None or not st.t:
+        # ...a row with no task behind it: its own lane is all there is
+        if kind == 'agent': return 'working' if lane == 'working' else _says(sub)
+        return {'working': 'working', 'queued': 'handed over, not started', 'stopped': 'stopped', 'saved': lanes.word('saved')}.get(lane) or \
+            ('finished' if kind == 'agentdone' or it.get('summary') else '')
+    # THE TASK'S ONE READING (taskstate - walk 6, H1): the phone kept its own, in which a parked session counted as "working", so four finished
+    # tasks read "agent working" on the phone while the desktop chip said "agent done"
+    tid = int(it['tid'])
+    k = st.key
+    if k == 'working': return 'working'
+    # ...FAILED whatever the session does, as the desk's R2 reads it: a run that failed with its session still open read "is waiting on you"
+    try: failed = ws.ended(store, tid, live_too=True) == 'failed'
+    except Exception as e:
+        logger.debug(f'the phone could not read how the run ended: {e}'); failed = False
+    if failed:
+        why = str((funnel.run_failed(store, tid, live_too=True) or {}).get('sentence') or '').rstrip('.')
+        return f'failed - {why[:1].lower()}{why[1:]}' if why else 'failed'
+    if k == 'agentdone' and not it.get('asking'): return 'finished'
+    if kind == 'agent': return 'stopped - its work is saved' if it.get('paused') else _says(sub)
+    if k in ('yours', 'theirs', 'closed', 'dropped', 'held'): return ''        # no agent's state to say: the header says the task's
+    return {'queued': 'handed over, not started', 'stopped': 'stopped'}.get(k) or taskstate.status(store, st.t, key=k)['word']
+
+
+def card_lines(store, item: dict | None) -> list:
+    "The waiting card as the story says it: an act's words, and '1 of 3 · next: the email to Erin' when others wait behind it."
+    rv = front_card(store, item)
+    if not rv: return []
+    from . import cardqueue
+    out, own = [], str(rv.get('ReviewId')) == str((item or {}).get('rid') or '-')      # the row's own card is drawn by move_block
+    if rv.get('Kind') == 'action' or (rv.get('Kind') in LETTER_KINDS and not own):
+        p = cardqueue._p(rv) if rv.get('Kind') == 'action' else {}
+        words = (' '.join(str(p.get('text') or p.get('body') or p.get('command') or '').split()) if p
+                 else str(rv.get('FinalText') or rv.get('DraftText') or '').strip())
+        out += ['', f"{DOT_YOU} **Waits for your press** · {cardqueue.what(store, {'rids': [rv['ReviewId']], 'rows': [rv]})}"] + \
+               ([_quote(_cut(words, 1500))] if words else [])
+    if (n := cardqueue.line(cardqueue.state(store, int(rv['TaskId'])))): out.append(n)
+    return out
+
+
+def status_word(store, item: dict | None) -> str:
+    "The task's status word, as every surface draws it (taskstate.status) - '' for a row with no task behind it."
+    tid = (item or {}).get('tid')
+    if store is None or not str(tid or '').isdigit(): return ''
+    from . import taskstate
+    try:
+        st = taskstate.task_state(store, tid=int(tid))
+        return str(taskstate.status(store, st.t, key=st.key)['word'] or '') if st.t else ''
+    except Exception as e:
+        logger.debug(f'the phone could not read the task state: {e}'); return ''
 
 
 def held(item: dict | None) -> bool:
@@ -2562,9 +2756,11 @@ def story_block(store, item: dict | None, draft: str = '', say: str = '', full: 
     from . import concierge, funnel
     it = item or {}
     kind, ch = it.get('kind'), str(it.get('channel') or '')
-    word = ({'agentdone': lanes.word('agentdone'), 'wrapup': 'reply sent · task still open'}.get(kind)
-            or ('your task' if is_own(it) and kind not in ('agent', 'review', 'action') else '')
-            or funnel.lane_word(it))
+    # ...the task's status in the words the header pill and the rail draw (taskstate.status, one function) - the phone's own read "reply sent
+    # · task still open" on a task that never had a reply (walk 6, H1)
+    word = ((status_word(store, it) if kind not in ('review', 'action') else '')          # ...a card row keeps the rail's own word for it
+            or {'agentdone': lanes.word('agentdone'), 'wrapup': 'reply sent · task still open'}.get(kind)      # ...a row with no task to read
+            or ('your task' if is_own(it) and kind not in ('agent', 'review', 'action') else '') or funnel.lane_word(it))
     # ...and the header reads the run the body reads: "agent waiting on you" sat over "failed - <why>" (F5)
     state = agent_state(it, store)
     if state.startswith('failed') and kind not in ('agentdone', 'wrapup'): word = funnel.LANE_WORDS['stopped'][0]
@@ -2623,6 +2819,8 @@ def story_block(store, item: dict | None, draft: str = '', say: str = '', full: 
             lines.append(_quote(_cut(opening, EXCERPT) if len(opening) > EXCERPT else opening))
     # THE TASK'S TO-DOS (the owner, 2026-10-20: "anything you can do, you can do via the Assistant" - the phone never showed them): the open
     # ones, numbered as task.check takes them, each with its note, and how far the list got; "tick 2" / "note on 2: ..." answer them
+    # ...AN ACT THAT WAITS FOR HIS PRESS, in its own words (a letter rides as the draft, in move_block), and where it stands in the line
+    lines += card_lines(store, it)
     todo = todo_lines(store, it.get('tid'))
     if todo: lines += [''] + todo
     # the agent: its state and what it found, did and concluded - the evidence the move is decided on
@@ -2790,7 +2988,7 @@ def turn_text(out: dict, lead: str = '', store=None, extra: list = None, full: b
     if held_on: out = _recast(out, drop=set(_HAND))
     out, leads = _after_the_run(store, out, item)
     said = decision(store, item) if item else {}             # the one decision: the desk's lit button and line, here too
-    say = _TASK_LINK.sub(r'\1', str(out.get('say') or '')).strip()
+    say = unlinked(out.get('say')).strip()
     mark = funnel.mark_for(item)
     if say and mark: say = f'{mark} {say}'
     state = status_line(item)
@@ -2808,18 +3006,16 @@ def turn_text(out: dict, lead: str = '', store=None, extra: list = None, full: b
         head = '\n'.join(x for x in (task, say, why) if x)
     story = bool(item) and item.get('kind') in STORY_KINDS
     draft = _draft_text(store, item) if story and store is not None else ''
-    if story: head = story_block(store, item, draft, _TASK_LINK.sub(r'\1', str(out.get('say') or '')).strip(), full=full)
+    if story: head = story_block(store, item, draft, unlinked(out.get('say')).strip(), full=full)
     if item.get('kind') == 'fyis':
         # THE ITEMS, one per line, and nothing else: the say line restated them as one run-on sentence and
         # the status line added "fyi - people told you things" under it, and on a phone that read as
         # nothing at all (the owner, 2026-09-18: "don't need random summary, just show the items")
-        # ...each NUMBERED, so a number opens that one (respond): the desktop's "Talk about it" door
         members = member_lines(item)
         # ...and how many of how many: "4 fyi" over a rail holding fourteen read as all of them (F26)
         total = fyi_total(store, item)
-        # ...LED BY GOT IT (the owner, 2026-10-22): the way on is 1, the lines 2 on - numbered in the order the poll and the buttons carry them
-        head = '\n'.join([f"{mark} {len(members)}{f' of {total}' if total > len(members) else ''} fyi · nothing to do", f'1 · {GOT_IT}']
-                         + [f'{i} · {line}' for i, (_k, line) in enumerate(members, 2)])
+        # ...read, not numbered: the way on, Got it, is the first choice under them (the owner, 2026-10-22; the lines stopped opening, 2026-11-25)
+        head = '\n'.join([f"{mark} {len(members)}{f' of {total}' if total > len(members) else ''} fyi · nothing to do"] + [f'• {line}' for _k, line in members])
     if item: head = _placed(head, position(store, item))
     if item and len(item.get('questions') or []) > 1:
         from . import concierge
@@ -2842,7 +3038,7 @@ def turn_text(out: dict, lead: str = '', store=None, extra: list = None, full: b
         hand = {concierge.CHIP_WORDS[v] for v in _HAND}
         out = {**out, 'chips': [c for c in out.get('chips') or [] if not (isinstance(c, dict) and c.get('verb') in _HAND)],
                'options': [o for o in out.get('options') or [] if str(o) not in hand]}
-    words, first = choices(out), len(member_lines(item)) + (2 if item.get('kind') == 'fyis' else 1)
+    words = choices(out)
     prop = out.get('proposal') if (out.get('proposal') or {}).get('status', 'proposed') == 'proposed' else None
     # THE FILES AN AGENT MADE for this task, named on the card and one tap from the phone (A14) - not under a question being asked
     files = task_files(store, item) if item and not out.get('proposal') else []
@@ -2905,11 +3101,9 @@ def turn_text(out: dict, lead: str = '', store=None, extra: list = None, full: b
         # card's button, and on the phone it arrives as a word like any other): two ways to say the
         # same move, numbered separately, is the thing that made the desktop drop a button in the
         # first place.
-        # ...said ONCE, as the card's first line (Got it, 1): whatever the walk named it, it is not offered again under the lines
-        words = [w for w in words if w not in next_words]
+        # ...said ONCE, as the first choice (Got it, 1): whatever the walk named it, it is not offered again under another name
+        words = [GOT_IT] + [w for w in words if w not in next_words]
         _offer([(GOT_IT, {'t': 'next', **_drawn_at(item)})])
-    # ...and what a NUMBER does, said plainly. "Open one" describes a door on a screen that is not
-    # here; on a phone the number is the only way to see what the line is actually about.
     # A plain answer with nothing on the table offered "Reply with one of: 1 · Next" under every reply - three
     # lines of menu for the one word the owner can always type (2026-09-24 audit). The desktop's lone Next is
     # one small button; on a phone it is noise.
@@ -2928,11 +3122,11 @@ def turn_text(out: dict, lead: str = '', store=None, extra: list = None, full: b
     if extra:
         words = words + [label for label, _ in extra]
         _offer(extra)
+    # ...and THE CARD THAT WAITS leads with its own buttons, pressed as the desk presses them (card_picks) - not under a question being asked
+    if item and not out.get('proposal') and not agent_answers(item) and (cp := card_picks(store, item)):
+        _offer(cp); words = [w for w, _a in cp] + words
     words = list(dict.fromkeys(words))         # one Next, never "2 · Next" and "4 · Next" (F14)
-    lead_in = ('Reply with a number to read that message in full, or:' if item.get('kind') == 'fyis'
-               else 'Reply with a number to open one, or:') if first > 1 else 'Reply with one of:'
-    opts = (lead_in + '\n'
-            + '\n'.join(f'{i} · {w}' for i, w in enumerate(words, first))) if words else ''
+    opts = ('Reply with one of:\n' + '\n'.join(f'{i} · {w}' for i, w in enumerate(words, 1))) if words else ''
     shown = move_block(store, item, draft) if story else decision_block(store, item) if store is not None else ''
     return _once('\n\n'.join(x for x in (lead.strip(), head, advice_line(out, said), shown, opts) if x))
 
@@ -3071,16 +3265,91 @@ def bare_number(text: str) -> bool: return str(text or '').strip().lstrip('#').r
 
 
 
-LOST_KEY = 'phone_undelivered'              # :<channel>:<chat> -> the opening of a message that never arrived (A13)
-RETRY_PAUSES = (1.0, 3.0, 9.0)             # a failed Telegram send is tried again after each - a blip passes, a dead bot does not
+# ── WHAT IS OWED TO A CHAT IS WRITTEN DOWN, ON EVERY CHANNEL (walk 6, H4) ──────────────────────────────────────────────────────
+# A question in flight when Taskuary restarted was never answered, and an answer that failed while WhatsApp's link was down was never sent
+# again once it came back: the "did not reach you" note and the retry were Telegram's alone, and which line was being answered lived only in
+# memory. Two durable records per chat, channel-blind: OWED - heard, its answer still being written (a process that died with it owes it, and
+# the next one answers it, saying it is late); LOST - an answer that did not arrive, sent again once the link takes it (flush_owed).
+LOST_KEY = 'phone_undelivered'              # {"<channel>:<chat>": {text, choices, cid, at}} - an answer that never arrived
+OWED_KEY = 'phone_owed'                     # {"<channel>:<chat>": {words, mid, cid, images, at, boot}} - heard, not yet answered
+RETRY_PAUSES = (1.0, 3.0, 9.0)             # a failed send is tried again after each - a blip passes, a dead link does not
+LATE = 'My last message did not reach you - here it is now.'
+_LEDGER = threading.Lock()
+
+
+class Undelivered(RuntimeError):
+    "An answer the chat did not take - kept (LOST_KEY) and sent again; the turn says no error over it, which could not arrive either."
 
 
 def _pause(secs: float): time.sleep(secs)
 
 
-def _deliver(channel: str, out, store, chat: str, body: str, connector_id=None, **kw):
-    """One bubble out - on Telegram tried again with backoff before it counts as lost (A13, 2026-10-22: a failed send was only logged)."""
-    pauses = RETRY_PAUSES if channel == 'telegram' else ()
+def ledger(store, key: str) -> dict:
+    try: d = json.loads(store.get_setting(key) or '{}') or {}
+    except ValueError: d = {}
+    return d if isinstance(d, dict) else {}
+
+
+def _book(store, key: str, chat_key: str, rec: dict | None):
+    "One chat's entry in a ledger written (or, None, struck off) - read and written under one lock: two turns' entries never overwrite."
+    with _LEDGER:
+        d = ledger(store, key)
+        if rec is None and chat_key not in d: return
+        if rec is None: d.pop(chat_key, None)
+        else: d[chat_key] = rec
+        store.set_setting(key, json.dumps(d), 'assistant')
+
+
+def _busy(store, channel: str, chat: str) -> bool:
+    with _locks_guard: return any(k[0] == _sid(store) and k[1] == channel and str(k[3]) == str(chat) for k in _turns)
+
+
+def flush_owed(store) -> int:
+    """Pay what each chat is owed: a question a previous process heard and died answering is answered now, said late; an answer that
+    did not arrive goes again (no retry pauses here - still down, the next look tries again). Run on the chat clock (push_alerts) and the
+    moment WhatsApp's link is back (wabridge.check_link). -> how many went."""
+    n = 0
+    for k, rec in ledger(store, OWED_KEY).items():
+        if rec.get('boot') == STARTED: continue                       # this process is still answering it
+        _book(store, OWED_KEY, k, None)
+        ch, chat = k.split(':', 1)
+        if rec.get('mid') and not _claim(ch, rec['mid']): continue      # ...or a redelivery of it was answered already
+        late = f'Taskuary restarted before I could answer "{_cut(rec.get("words") or "", 80)}" - here is the answer now.'
+        threading.Thread(target=_locked_respond, args=(getattr(store, '_store', store), ch, chat, str(rec.get('words') or ''), rec.get('cid')),
+                         kwargs={'images': rec.get('images') or None, 'late': late}, name=f'taskuary-{ch}-owed', daemon=True).start()
+        n += 1
+    for k, rec in ledger(store, LOST_KEY).items():
+        ch, chat = k.split(':', 1)
+        if _busy(store, ch, chat) or not rec.get('text'): continue     # a turn is answering there: its answer carries the note
+        try: send(store, ch, chat, rec['text'], rec.get('cid'), choices=rec.get('choices') or None, resend=True); n += 1
+        except Exception as e: logger.info(f'{e} - still kept for the next look')
+    return n
+
+
+# NO MACHINE TEXT IS A BUBBLE (walk 6, 2026-11-23: a bubble whose whole text was `{}` - the Assistant's empty answer sent as it was - and a
+# report's empty run shown as `{}` under "read it"). Every word to his chat passes send(), so it is refused there, once, for every producer:
+# a message with no words, or one that is nothing but a machine's data, is said as what happened.
+EMPTY_ANSWER = 'That answer came back empty, so there is nothing to show you - say it again, or go on to the next one.'
+
+
+def machine(text) -> bool:
+    "Is this nothing a person would read - no words at all, or only a JSON object or list?"
+    t = str(text or '').strip()
+    if not re.search(r'\w', t): return True
+    if t[:1] not in '{[' or t[-1:] not in '}]': return False
+    try: return isinstance(json.loads(t), (dict, list))
+    except ValueError: return False
+
+
+def bubble(text) -> str:
+    "`text` as his chat may show it: itself, or - empty, or raw data - the plain line saying what happened (the raw kept in the log)."
+    if not machine(text): return text
+    logger.warning(f'phone: an answer with no words was not sent as it was ({str(text or "")[:200]!r})')
+    return EMPTY_ANSWER
+
+
+def _deliver(channel: str, out, store, chat: str, body: str, connector_id=None, pauses=RETRY_PAUSES, **kw):
+    """One bubble out - tried again with backoff before it counts as lost (A13, 2026-10-22: a failed send was only logged), on every channel."""
     for i in range(len(pauses) + 1):
         try: return out(store, chat, body, connector_id=connector_id, **kw)
         except Exception as e:
@@ -3089,7 +3358,7 @@ def _deliver(channel: str, out, store, chat: str, body: str, connector_id=None, 
 
 
 def send(store, channel: str, chat: str, text: str, connector_id: int = None, page: int = 0, choices: list = None, asked: bool = False,
-         urgent: bool = False):
+         urgent: bool = False, resend: bool = False):
     """Everything we say to the owner leaves through here, so this is where it is SPELLED - and where it is HELD: outside a
     conversation the owner started in this chat (in_session) nothing goes. `asked`: the owner's own press this moment named this
     chat (hello_chat) - the one exception. `urgent`: an urgent item, which goes unasked only when the owner allowed it (urgent_rings).
@@ -3099,9 +3368,14 @@ def send(store, channel: str, chat: str, text: str, connector_id: int = None, pa
     writes one markup and puts chatformat.BREAK wherever a new bubble should start.
 
     Only the opening bubble wears the name. Four of them labelled "Taskuary (2/4):" over a
-    heading that already says what it is read as machinery rather than somebody talking."""
+    heading that already says what it is read as machinery rather than somebody talking.
+
+    `resend`: the kept answer that did not arrive (flush_owed), sent again once - said as late, with no retry pauses."""
     from . import chatformat, messengers
+    _SAID.n = getattr(_SAID, 'n', 0) + 1
     if not asked and held_back(store, channel, chat, f'{len(str(text or ""))} chars', urgent): return
+    from .redact import shown
+    text = bubble(shown(text))                  # a phone is a screen: nothing goes there with a password in it (walk 19)
     out = messengers.tg_send if channel == 'telegram' else messengers.wa_send
     talked(store, channel, chat)
     # A VOICE NOTE IS SAID BACK before it is acted on (A17, 2026-10-22): the owner could not tell what was transcribed - once, on the turn's
@@ -3111,6 +3385,8 @@ def send(store, channel: str, chat: str, text: str, connector_id: int = None, pa
         text, a['again'] = f'Picking the walk up here again.\n\n{text}', False
     if a and a.get('closed') and a.get('channel') == channel and str(a.get('chat')) == str(chat):
         text, a['closed'] = f"{a['closed']}\n\n{text}", ''
+    if a and a.get('late') and a.get('channel') == channel and str(a.get('chat')) == str(chat):
+        text, a['late'] = f"{a['late']}\n\n{text}", ''
     if a and a.get('heard') and a.get('channel') == channel and str(a.get('chat')) == str(chat):
         text, a['heard'] = f'🎤 Heard: "{_cut(a["heard"], 300)}"\n\n{text}', ''
     # every road to this chat passes here, so this is where what we offered is written down -
@@ -3152,10 +3428,11 @@ def send(store, channel: str, chat: str, text: str, connector_id: int = None, pa
     if channel == 'telegram' and tapped:
         on = set(tapped)
         text = '\n'.join(l for l in str(text or '').split('\n') if not ((m := _OFFERED.match(l)) and m.group(2) in on))
-    # A MESSAGE THAT NEVER ARRIVED IS SAID, on the next one that does (A13, 2026-10-22): a failed Telegram send left the phone silent
-    lost_key = f'{LOST_KEY}:{channel}:{chat}'
-    lost = str(store.get_setting(lost_key) or '') if channel == 'telegram' else ''
-    if lost: text = f'My last message did not reach you ("{lost}") - here is where we are now.\n\n{text}'
+    # A MESSAGE THAT NEVER ARRIVED IS SAID, on the next one that does (A13, 2026-10-22) - on every channel (H4)
+    here = f'{channel}:{chat}'
+    lost, kept = ledger(store, LOST_KEY).get(here), {'text': text, 'choices': offered, 'cid': connector_id, 'at': time.time()}
+    if resend: text = f'{LATE}\n\n{text}'
+    elif lost: text = f'My last message did not reach you ("{_cut(str(lost.get("text") or "").split(chr(10))[0], 80)}") - here is where we are now.\n\n{text}'
     msgs = []
     for part in str(text or '').split(chatformat.BREAK):
         shown = chatformat.render(chatformat.json_blocks(part), channel)        # rows as tables, never braces and quotes (F16)
@@ -3166,11 +3443,12 @@ def send(store, channel: str, chat: str, text: str, connector_id: int = None, pa
         # ...and on Telegram, its own buttons under the same last bubble (messengers.tg_send)
         kw = {'poll': [labels[w] for w in tapped]} if last and channel == 'whatsapp' else {'buttons': tapped} if last and channel == 'telegram' else {}
         # the name only where the chat does not already say who is talking: a Telegram bot's own name heads every message (F27)
-        try: _deliver(channel, out, store, chat, ('Taskuary:\n' + msg) if i == 0 and channel != 'telegram' else msg, connector_id, **kw)
-        except Exception:
-            if channel == 'telegram': store.set_setting(lost_key, _cut(lost or msg.split('\n', 1)[0], 80), 'assistant')   # the first one missed
-            raise
-    if lost: store.set_setting(lost_key, '', 'assistant')
+        try: _deliver(channel, out, store, chat, ('Taskuary:\n' + msg) if i == 0 and channel != 'telegram' else msg, connector_id,
+                      pauses=() if resend else RETRY_PAUSES, **kw)
+        except Exception as e:
+            _book(store, LOST_KEY, here, kept)                            # kept whole, to go again once the link takes it (flush_owed)
+            raise Undelivered(f'{channel}: the answer did not arrive - {plain(e)}') from e
+    if lost or resend: _book(store, LOST_KEY, here, None)
     # a SENT line, not only a failed one: "never responds" left nothing to tell a reply that went from one
     # that never did (2026-09-24)
     logger.info(f'{channel}: sent {len(msgs)} message(s), {sum(len(m) for m in msgs)} chars, to the assistant chat'

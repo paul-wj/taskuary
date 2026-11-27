@@ -1,6 +1,7 @@
 """The phone's agent card (2026-10-06): what the agent RETURNED is shown, its question is the agent's line and not the
 owner's, a task the owner asked for is never the Advisor's idea, and a receipt that says "open it" can be opened."""
-import unittest
+import json, unittest
+from taskuary import card
 from unittest import mock
 
 from taskuary import remote_assistant as ra
@@ -66,7 +67,7 @@ class RunEndedTests(unittest.TestCase):
         import json
         from taskuary import funnel, messengers
         self.s.set_setting(ra.PROMISES_KEY, json.dumps([{'tid': self.tid, 'channel': 'whatsapp', 'chat': 'c1', 'at': __import__('time').time(),
-                                                          'lane': 'working', 'armed': True}]), 't')
+                                                          'lane': 'working', 'ended': True}]), 't')
         ra.owner_spoke(self.s, 'whatsapp', 'c1')                      # still talking in the chat that asked
         self.event('failed', 'no AI is connected to run on')
         with mock.patch.object(funnel, 'pile', return_value={'items': [], 'alerts': []}), mock.patch.object(messengers, 'wa_send') as sent:
@@ -83,7 +84,8 @@ class HeldTaskTests(unittest.TestCase):
         tid = s.create_task({'Title': 'Draft the vendor reply', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
         item = {'key': f'task:{tid}', 'kind': 'todo', 'lane': 'yours', 'tid': tid, 'ref': f'TQ-{tid:04d}', 'title': 'Draft the vendor reply',
                 'who': 'owner', 'channel': 'own'}
-        live = mock.Mock(task_id=tid, alive=True, started=1)
+        # a session at work says so in its own word (session.info) - the one the page and the rail read (taskstate)
+        live = mock.Mock(task_id=tid, alive=True, started=1, **{'info.return_value': {'alive': True, 'waiting': False}})
         chips = [{'verb': 'close', 'label': 'Mark done'}, {'verb': 'regular_agent', 'label': 'Send to agent'}, {'verb': 'next', 'label': 'Next'}]
         with mock.patch.dict(terminal.SESSIONS, {'s1': live}):
             text = ra.turn_text({'say': 'x', 'item': item, 'chips': chips}, store=s)
@@ -92,6 +94,75 @@ class HeldTaskTests(unittest.TestCase):
         self.assertIn('· working', text)
         self.assertNotIn('Send to agent', text)
         self.assertIn('Mark done', text)
+
+    def test_a_parked_session_over_a_finished_turn_is_never_working(self):
+        """Walk 6 (H1): "agent working" on four finished tasks while the desktop chip said "agent done" - the phone read a session that was
+        up and parked as an agent at work. It reads the task's one state (taskstate), as the chip does."""
+        from taskuary import terminal
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Board pack for Thursday', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        s._exec("INSERT INTO worker_event (TaskId, Sid, Kind, Text, Source, CreatedAt) VALUES (?, 's1', 'turn_end', ?, 'api', '2026-11-23 08:40:00')",
+                (tid, 'The pack is built and saved.'))
+        item = {'key': f'task:{tid}', 'kind': 'todo', 'lane': 'yours', 'tid': tid, 'ref': f'TQ-{tid:04d}', 'title': 'Board pack for Thursday',
+                'who': 'owner', 'channel': 'own'}
+        parked = mock.Mock(task_id=tid, alive=True, started=1, sid='s1',
+                           **{'info.return_value': {'alive': True, 'waiting': True, 'state': 'parked', 'sid': 's1'}})
+        with mock.patch.dict(terminal.SESSIONS, {'s1': parked}), mock.patch('taskuary.workerstate.on_task', return_value=True):
+            text = ra.turn_text({'say': 'x', 'item': item, 'chips': [{'verb': 'next', 'label': 'Next'}]}, store=s)
+        self.assertNotIn('working', text)
+
+
+class WaitingCardTests(unittest.TestCase):
+    """Walk 6 (H1): the email to Gail waited on the desk and the agent was told it waited; the phone's bubble showed no word of it, its poll
+    had no Send, and asked for the text the phone said "I do not have the text of the message in front of me here". The card that waits is
+    the task's front card (cardqueue), shown in full with its own buttons, pressed through the desk's own door."""
+    def setUp(self):
+        # ...a mailbox that sends: with none the card draws Connect email, and the phone offers no Send either (card.presses)
+        sends = mock.patch('taskuary.capabilities.can_send_draft', return_value=True); sends.start(); self.addCleanup(sends.stop)
+        self.s = MemoryStore()
+        self.tid = self.s.create_task({'Title': 'Board pack for Thursday', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        self.s._exec("INSERT INTO worker_event (TaskId, Sid, Kind, Text, Source, CreatedAt) VALUES (?, 's1', 'turn_end', ?, 'api', '2026-11-23 08:40:00')",
+                     (self.tid, 'The pack is ready; the email to Gail waits for you.'))
+        self.rid = self.s.add_review({'TaskId': self.tid, 'Kind': 'slot', 'Status': 'pending', 'DraftText': 'Hi Gail, the board pack is attached.',
+                                      'Deliver': json.dumps({'channel': 'email', 'to': ['gail@northwind.example'], 'slot': 's1'})})
+        # the rail's row carries no review id - the shape the phone missed
+        self.item = {'kind': 'agentdone', 'tid': self.tid, 'key': f'task:{self.tid}', 'ref': f'TQ-{self.tid:04d}', 'title': 'Board pack for Thursday',
+                     'who': 'You', 'channel': 'own'}
+
+    def test_the_waiting_email_is_in_the_bubble_with_its_own_buttons(self):
+        text = ra.turn_text({'say': 'x', 'item': self.item, 'chips': [{'verb': 'next', 'label': 'Next'}]}, store=self.s)
+        self.assertIn('Hi Gail, the board pack is attached.', text)
+        self.assertIn('gail@northwind.example', text)
+        picks = text.split('Reply with one of:')[1]
+        for w in ('Send', 'Edit', "Don't send", 'Next'): self.assertIn(f'· {w}\n' if w != 'Next' else f'· {w}', picks)
+
+    def test_send_and_edit_press_the_desks_own_door(self):
+        from taskuary import server
+        with mock.patch.object(server, 'press_review', return_value={'ok': True, 'status': 'approved'}) as door:
+            said = ra.run_act(self.s, {'t': 'card', 'rid': self.rid, 'verb': 'approve'}, self.item)
+        self.assertEqual((door.call_args.args[1], door.call_args.args[2].verb), (self.rid, 'approve'))
+        self.assertIn('Sent the email to', said)
+        with mock.patch.object(server, 'press_review', return_value={'ok': True}) as door:
+            out = ra.press_card(self.s, self.rid, 'edit', 'Hi Gail, the pack is attached - page 3 has the chart.')
+        self.assertEqual((door.call_args.args[2].verb, door.call_args.args[2].final_text), ('edit', 'Hi Gail, the pack is attached - page 3 has the chart.'))
+        self.assertIn('with your words', out)
+
+    def test_approve_named_off_the_table_is_the_press_of_its_waiting_card(self):
+        """Walk 9 (42): "approve the next card" on the phone, the email to Gail waiting on a task that was not on the table and whose row
+        carried no review id - approve found "nothing to approve", so the yes went to the agent as a typed line, which greyed the very card
+        he approved. Approve on a task is the press of its front card (card.front_review), through the desk's door (review.approve -> decide -> press_review)."""
+        from taskuary import cardqueue, concierge, general
+        self.assertEqual(card.front_review(self.s, self.tid).get('ReviewId'), self.rid)
+        dock = general.dock_task(self.s, 'owner-whatsapp')[0]['TaskId']
+        prop = concierge.propose_for(self.s, dock, {'verb': 'approve'}, self.item, 'approve the email to Gail', elsewhere=True, table={'ref': 'TQ-0099'})
+        self.assertEqual((prop['kind'], prop['target']), ('review.approve', self.rid))
+
+    def test_a_failed_send_says_why_and_nothing_is_said_sent(self):
+        from taskuary import server
+        with mock.patch.object(server, 'press_review', return_value={'ok': True, 'status': 'pending', 'send_error': 'No mailbox is connected'}):
+            said = ra.press_card(self.s, self.rid, 'approve')
+        self.assertIn('Not sent - No mailbox is connected', said)
+        self.assertNotIn('Sent the', said)
 
 
 if __name__ == '__main__':

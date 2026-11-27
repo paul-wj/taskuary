@@ -14,7 +14,7 @@ does with the screen, this does with typed updates:
   - a prompt is a session/prompt; one that comes while a turn runs goes INTO that turn where the adapter steers (acp.steer), else it is
     queued and sent as one at the turn's end (the general road's batching); Stop is session/cancel;
   - idle past the general agent's period it closes QUIETLY (idle_out) and the next input brings it back on its own conversation (wake);
-  - a permission is acpgate's: Taskuary's rules first, what they hold put to the owner as buttons (permissions.ask);
+  - a permission is gate's: Taskuary's rules first, what they hold put to the owner as buttons (permissions.ask);
   - its "screen" (the Terminal toggle, a Wall cell) is the live output of its commands - Codex streams it, Claude's comes with the
     call's result - and the agent's own words between them; nothing to show is no toggle, never a blank terminal;
   - the files it touches (a call's locations, an edit's diff) are on its card and on the blackboard while it works.
@@ -112,7 +112,6 @@ class ACPCoding:
         self._owed = []                          # ...and what a SECOND stop left unanswered: it rides on his next prompt (_turn)
         self._began = None                       # when the turn now queued began: his press, else the moment it was queued (prompt)
         self.owned = self.woke = self.silent = self.stop_next = False   # his turn; woken once (wake); woken for saying nothing; stop the turn as it goes
-        self.duties = False                                              # told its duties about drafts (selfclose.DRAFTS_ONCE) - once, in _begins
         self.frozen = None                                               # the memory lines this session has been told (general.freeze), from its first turn on
 
     # ── the terminal a Wall cell and the Terminal toggle show ──────────────────────────────────────────────────────────────
@@ -410,7 +409,7 @@ class ACPCoding:
         chatlog.feed(self.store, self.task_id, self.sid, 'acp', u)
 
     def _turn(self, items: list):
-        from . import agents, acpgate
+        from . import agents, gate
         text = '\n\n'.join(t for t, *_ in items)
         self._show(items); self._drawn.difference_update(map(id, items))
         # ...ITS CLOCK IS SET ONCE, HERE (the 0.3.11.50 release run: it read the turn's start, then the CLI's own prompt hook's time, then the
@@ -419,6 +418,8 @@ class ACPCoding:
         self.busy, self.seeding, self.accepted, self.stop_reason, self.turn_at = True, False, True, None, pressed or time.time()
         self.seeded = self.seeded or text
         self.witness.note({'k': 'turn'})
+        from . import selfclose
+        if self.task_id: selfclose.take_marks(self.task_id)      # ...a turn stopped before its end was read leaves no end_turn for this one
         # ...A LINE STOPPED TWICE IS STILL ANSWERED (decided 2026-11-12, "nothing he typed is dropped"): the turn his first stop began for it
         # was stopped too, before a word - his second stop stands, and the line rides on the next turn he starts
         again = text.startswith(STOPPED_ON)
@@ -434,7 +435,7 @@ class ACPCoding:
         # ...his by the lines it took, by the ones its opener carried onto it meanwhile (carries), or by the ones his stop left unanswered
         self.owned, self._again, self._steered = bool(took) or self._carried or self._again, False, []
         self.steps = agents.ACPSteps(self._trace, self.cli, self.held)
-        self.gate = acpgate.answerer({'store': self.store, 'task_id': self.task_id, 'cli': self.cli, 'cwd': self.cwd, 'sid': self.sid},
+        self.gate = gate.answerer({'store': self.store, 'task_id': self.task_id, 'cli': self.cli, 'cwd': self.cwd, 'sid': self.sid},
                                      self._trace, self.held)
         for *_x, d in items:
             if d:
@@ -453,7 +454,8 @@ class ACPCoding:
             else:
                 logger.warning(f'acp coding {self.sid}: the turn failed - {e}')
                 # ...a sentence that already says how to carry on is said as it is (acp's mid-turn death)
-                f = agents.failure_of(self.cli, str(e))          # what it is, read as every road reads it
+                f = agents.prompt_failure(self.cli, e, sid=self.client.session_id)     # what it is, read as every road reads it
+                if isinstance(f, acp_mod.DiedMidTurn): e, f = f, None
                 quota = str(f) if isinstance(f, agents.RateLimited) else ''
                 if quota:
                     self.busy = False
@@ -484,6 +486,14 @@ class ACPCoding:
             ws.record(self.store, self.task_id, self.sid, 'stopped', text=said[:4000], source='acp')
             if again and not str(said or '').strip(): self._owed = [asked[len(STOPPED_ON):].strip()]
             return self._unanswered() or self._idle(said, turn=False)
+        # ...ITS END_TURN AND ask_owner FILED AS A CHAT'S ARE (general.read_summary, summary_ends, file_summary): its summary is the task's, its
+        # question the turn end's below (hooks: Stop) - kept and filed nowhere, its nothing_left was read by nothing
+        if ok and self.store and self.task_id:
+            try:
+                said, summ = general.read_summary(self.store, self.task_id, general.with_marks(self.task_id, said))
+                general.summary_ends(self.store, self.task_id, summ, selfclose.ask_markers(said)[1])
+                general.file_summary(self.store, self.task_id, summ)
+            except Exception as e: logger.warning(f'acp coding {self.sid}: its turn summary was not filed - {e}')     # ...its turn still ends
         # ...and a turn that said nothing takes the chat's road (general.could_not, woke_for_silence): woken once, then its one question
         if ok and (asked := general.could_not(self, said)) != said:
             said = asked; self._record({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': said}})
@@ -511,19 +521,19 @@ class ACPCoding:
     def _begins(self, items: list, text: str) -> tuple:
         """A TURN BEGINS AS A CHAT'S DOES (general.send_prompt): the owner's lines it takes are his in the record (take_kept - the waiting room
         took them only after the turn had begun), every card the conversation moved past is old news (proposals.move_on), and the turn is told
-        what any agent's is (general.turn_facts) - what the owner pressed, a send that failed, the cards set aside. It was told only the passed
+        the events since its cursor (events.take) - what the owner pressed, a send that failed, the cards set aside. It was told only the passed
         cards, and the facts read his new line as answered (the audit, 2026-11-10). -> (the prompt, the lines it took)."""
         from . import proposals
         lines = self._his(*items, turn=True, sid=getattr(self, 'sid', ''))        # the turn begins: what it is told below is heard here, with his lines
         if self.store and self.task_id:
             try:
                 proposals.move_on(self.store, self.task_id)
-                # ...EACH DUTY ONCE, as a chat's agent is told (selfclose.DRAFTS_ONCE in its startup): the rules ride the first turn that has
-                # facts for them, and every turn after carries the facts alone - told each turn, it said "the draft waits on your Send" each turn
-                from .cardqueue import once
-                if (lb := once(general.turn_facts(self.store, self.task_id, resumed=True, rules=False, turn=True), text)):
-                    from . import selfclose
-                    text = f"{'' if getattr(self, 'duties', False) else selfclose.DRAFTS_ONCE + chr(10) * 2}{lb}\n\n{text}"; self.duties = True
+                # ...THE EVENTS SINCE ITS CURSOR, as a chat's agent is told them (events.take) - his lines, and the mail the waiting room
+                # passes in, are this prompt's own words
+                from . import events
+                lb, upto = events.take(self.store, self.task_id, skip=events.IN_BRIEF)
+                if lb: text = f'{lb}\n\n{text}'
+                events.commit(self.store, self.task_id, upto)
             except Exception as e: logger.debug(f'task {self.task_id}: the turn was not told its facts - {e}')
             # ...AND WHAT THE OWNER'S MEMORY LEARNED SINCE THIS SESSION BEGAN, as a chat's kept conversation is told (general.freeze - the one
             # road): its opening brief read the memory once, and a fact told mid-conversation never reached it (the memory round, 2026-11-14)
@@ -627,7 +637,7 @@ class ACPCoding:
         if cmd and not c['shown']: c['shown'] = True; self._out(f'\r\n\x1b[1;33m$\x1b[0m {_crlf(cmd)}\r\n', output=True)
 
     def _trace(self, kind, name, detail=None):
-        "ACPSteps' settled steps: the witness (the Board card), the history (the transcript) and the terminal a Wall cell shows."
+        "ACPSteps' ended steps: the witness (the Board card), the history (the transcript) and the terminal a Wall cell shows."
         d = detail if isinstance(detail, dict) else {}
         if kind == 'tool_call':
             args = d.get('args') or {}
@@ -647,7 +657,10 @@ class ACPCoding:
         elif kind == 'permission': self.history.append(('step', f"{d.get('answer')}: {name} {d.get('why') or ''}".strip()))
 
     def _permit(self, params: dict):
-        try: self.steps.asked(params.get('toolCall'))
+        "The ask onto its call: the trace's copy fills its gaps, the chat's record has it as the call's update (acp.asked_update); the gate answers."
+        try:
+            self.steps.asked(params.get('toolCall'))
+            if (u := acp_mod.asked_update(params)): self._record(u)
         except Exception as e: logger.debug(f'acp coding: an asked step was not read - {e}')
         return self.gate(params)
 

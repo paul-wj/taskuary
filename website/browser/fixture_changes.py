@@ -30,7 +30,7 @@ def install_processing_changes(app, store):
         '/api/fixture/task/chat-saved',
         '/api/fixture/task/closed-asked',
         '/api/fixture/task/closeout-rounds',
-        '/api/fixture/task/playbook-failed',
+        '/api/fixture/task/skill-failed',
         '/api/fixture/general/canvas',
         '/api/fixture/general/rest',
         '/api/fixture/signin/link',
@@ -347,11 +347,9 @@ def install_processing_changes(app, store):
         _JIRA_WIRE.update(reads=[], writes=[], denied=[], auth={'token_present': False})
         _JIRA_MODE['name'] = 'dc-denied' if mode == 'search-denied' else 'dc-success'
         c = store.get_connector_by_type('jira')
-        # reset the Jira card to a fresh card (no secret, no config) but leave it ON with the trigger role, so the card's
-        # own buttons do the real setup - deployment selector, fields, token, Test (unsaved), Save - and the real Sync now is
-        # reachable in its Enable step (a saved-on card the owner is configuring). The browser does every write.
+        # Leave the card enabled for Timeline only: this scenario reads issue details, and the isolated demo runs no triage worker.
         store.reset_connector(c['ConnectorId'])
-        store.save_connector({'ConnectorId': c['ConnectorId'], 'Active': 1, 'Roles': 'trigger'}, 'fixture')
+        store.save_connector({'ConnectorId': c['ConnectorId'], 'Active': 1, 'Roles': 'feed'}, 'fixture')
         # every other connector off: the real Sync must reach only the fictional Jira
         for other in store.list_connectors():
             if other['ConnectorId'] != c['ConnectorId'] and other.get('Active'):
@@ -733,22 +731,22 @@ def install_processing_changes(app, store):
                                '+++ b/app/census/sync.py\n@@ -1,2 +1,4 @@\n def sync(site):\n+    if not site.manager:\n+        continue\n-    pass\n'}, finished=True)
         return {'taskId': tid}
 
-    @app.post('/api/fixture/task/playbook-failed')
-    def playbook_failed(body: dict):
-        """A playbook set up in the owner's own words whose general agent could not start - its run FAILED with the reason, and a
+    @app.post('/api/fixture/task/skill-failed')
+    def skill_failed(body: dict):
+        """A skill set up in the owner's own words whose general agent could not start - its run FAILED with the reason, and a
         restart then cut it off - with a long mail beside it in From. The owner's 2026-10-26 laptop screen: the title said twice, the
         reason at the foot of a scroller inside a scroller, the dock a third of the height. Invented words and people."""
         if body: raise HTTPException(422, 'this fixed fixture accepts only an empty object')
-        from taskuary import general, origin, playbooks, terminal, workerstate as ws
+        from taskuary import general, origin, skills, terminal, workerstate as ws
         text = ('most group chats are fyi, but if a message asks me for something by name, put it on my list and draft a short reply '
                 'I can send as it is')
-        tid = playbooks.setup_task(store, text, None, '', 'owner')['taskId']
+        tid = skills.setup_task(store, text, None, '', 'owner')['taskId']
         para = 'Gail asked the site group who signs the snag list, then the thread moved on to parking and the floor plan. '
         store.add_message({'TaskId': tid, 'Channel': 'email', 'ExternalId': f'fixture-pb-{tid}', 'ConversationId': f'fixture-pb-{tid}',
                            'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example', 'Subject': 'Site ops digest',
                            'BodyText': '\n\n'.join(para * 3 for _ in range(14)), 'SentAt': (datetime.now() - timedelta(hours=4)).isoformat(' '),
                            'Status': 'routed'})
-        why = f'Playbook setup could not start: {origin.no_reviewer(store)}. You can retry in this conversation.'
+        why = f'Skill setup could not start: {origin.no_reviewer(store)}. You can retry in this conversation.'
         sid = f'fixture-pb-{tid}'
         ws.record(store, tid, sid, 'working', source='fixture')
         store.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, why)
@@ -1487,7 +1485,7 @@ def install_processing_changes(app, store):
 
     # ── THE STATE MATRIX (browser/state-matrix, 2026-10-28): the task states the demo world lacks, each one task, invented people ──────────
     MATRIX = ('sent', 'working', 'coding_working', 'asked', 'stopped', 'finished', 'done', 'note', 'deferred', 'todo', 'idea', 'news',
-              'fyi_thread', 'idea_mail', 'habits')
+              'fyi_thread', 'idea_mail')
 
     @app.post('/api/fixture/task/matrix')
     def matrix_state(body: dict):
@@ -1583,19 +1581,6 @@ def install_processing_changes(app, store):
                                   at(minutes=1807))
             from taskuary import funnel
             store.reconcile_processing_membership(); funnel.invalidate(); store._poke('feed-changed')
-        elif s == 'habits':
-            tid = None
-            from taskuary import funnel, habits, learn, learnedgraph as lg
-            day = now.strftime('%Y-%m-%d')
-            def line(k, text, sc, ev): return lg.fmt({'key': k, 'text': text, 'ev': ev, 'score': sc, 'seen': day, 'status': 'proposed'})
-            add = '\n'.join([line('matrix sso', '{{owner_first}} closes sign-in help threads directly; they need no drafted reply', 12,
-                                   [f'rv{i}' for i in range(901, 909)]),
-                              line('matrix fyi', 'Forwarded FYI mail from the Payworth desk needs no reply', 5, ['rv920', 'rv921'])])
-            doc = store.get_doc(learn.DOC) or '# LEARNED\n\n## What you care about\n'
-            if learn.PROP_END not in doc: doc += f'\n## Proposed rules — your call\n{learn.PROP_START}\n{learn.PROP_END}\n'
-            store.save_doc(learn.DOC, doc.replace(learn.PROP_END, add + '\n' + learn.PROP_END, 1), 'reflect')
-            habits.tick(store)
-            store.reconcile_processing_membership(); funnel.invalidate(); store._poke('feed-changed')
         elif s == 'news':
             tid = task('Site ops: who has the gate code', 'general', 'in_progress', Assignee='agent:general', Tags=terminal.SAVED)
             mail(tid, 'Gail Moreno', 'Alex, who has the new gate code for the side door?', ago=120)
@@ -1645,7 +1630,7 @@ def install_processing_changes(app, store):
             return f.message(task_id=tid, subject=subject, body=words, from_name=who, from_email=email, conversation_id=f'email:stress-{n}', sent_at=f.ago(minutes=30), **kw)
         title = None
         if kind in MATRIX or kind in ('failed', 'saved', 'coding_saved'):
-            tid = (matrix_state({'state': kind}) if kind in MATRIX else {'failed': playbook_failed, 'saved': chat_saved, 'coding_saved': coding_saved}[kind]({}))['taskId']
+            tid = (matrix_state({'state': kind}) if kind in MATRIX else {'failed': skill_failed, 'saved': chat_saved, 'coding_saved': coding_saved}[kind]({}))['taskId']
             # ...its own number on its title: the states share theirs, and a row is found by its words
             if tid: title = f"{(store.get_task(tid) or {}).get('Title')} ({n})"; store._exec('UPDATE task SET Title=? WHERE TaskId=?', (title, tid))
             # ...a rail item with no task is found by its own words (the stress world empties the rail first, so they are its only row)

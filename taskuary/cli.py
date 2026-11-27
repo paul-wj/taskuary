@@ -92,7 +92,7 @@ def _open_private(url):
     cmd = _http_browser() if '?k=' in url else None
     if not cmd: return webbrowser.open(url)
     from . import spawn
-    try: spawn.bare(_with_target(cmd, str(launchkey.via_file(url, config.home() / 'launch'))))
+    try: spawn.bare(_with_target(cmd, str(launchkey.via_file(url, config.home() / 'launch'))), outlive=True)     # the owner's own browser
     except OSError: webbrowser.open(url)          # a stale registration - the browser uninstalled: still a window, as before
 
 # STARTED WITH NO BROWSER (a container, a server): the address alone opens a page that is not signed in - it said only "Open Taskuary from
@@ -118,15 +118,27 @@ AGENT_ACTS = ('reply', 'reply_file', 'draft', 'draft_file', 'attach', 'item', 't
               'check_back',                         # ...and a wake of its own later, which a stranger's words never schedule
               'use_repo',                           # ...and which of the owner's checkouts it works in (repochoice)
               'browser',                            # ...and its browser opened on a page, which a link in a stranger's mail never is
+              'hand_over',                          # ...and a step on that page handed to the owner
               'remember')                           # ...and a fact kept in the owner's memory, which a stranger's words never write
 STRANGER_ACTS = AGENT_ACTS[:13]                     # ...the Hub, and the wall's other sessions' words, are not a stranger's to read or write
-OWNER_ACTS = ('prompts', 'backfill_asks', 'evalset', 'demo', 'link')
+OWNER_ACTS = ('prompts', 'evalset', 'demo', 'link')
 NO_TOKEN = ("not sent: this session has no token of its own (TASKUARY_TOKEN) - Taskuary's own is the owner's, and a "
             "session never borrows it. Restart the session from its task.")
 def _flag(a): return '--' + a.replace('_', '-')
 
 def _stranger_task(tid: int) -> bool:
-    "Fail closed: a task whose origin cannot be read counts as a stranger's."
+    """Fail closed: a task whose origin cannot be read counts as a stranger's. READ, NEVER WRITTEN (his live app, 2026-11-23: inside Codex's
+    sandbox the agent's commands cannot write the database, and opening the store runs its schema - so every Codex agent on his own task
+    was refused the browser as "a stranger's task"): the origin the server keeps on the task (origin.of_task writes it), on a read-only open."""
+    import sqlite3
+    from pathlib import Path
+    try:
+        cx = sqlite3.connect(f"file:{Path(config.db_path()).as_posix()}?mode=ro", uri=True, timeout=5)
+        try: r = cx.execute('SELECT Origin FROM task WHERE TaskId=?', (int(tid),)).fetchone()
+        finally: cx.close()
+        if r is not None and r[0]: return r[0] == 'stranger'
+    except Exception: return True
+    # ...an origin never stored yet is worked out as the server would (it writes it), and one that cannot be is a stranger's
     try:
         from . import origin
         from .store import SQLiteStore
@@ -223,14 +235,14 @@ def _history(args, stranger):
 
 
 def _memory(args, stranger):
-    """`taskuary --memory [SECTION]`: LEARNED.md, read through the server on this session's task - on demand, as an agent's brief no
-    longer carries it (the owner, 2026-10-27). The server refuses a stranger's task."""
+    """`taskuary --memory [WHO]`: the owner's memory, looked up through the server on this session's task (memory.lookup). The server
+    refuses a stranger's task."""
     import os, sys
     try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except (AttributeError, OSError): pass
     tid = os.environ.get('TASKUARY_TASK')
     if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no task to read the memory for'); return
-    got = _get('/api/agent/memory', {'task_id': int(tid), 'section': args.memory or ''}, stranger)
+    got = _get('/api/agent/memory', {'task_id': int(tid), 'about': args.memory or args.about or ''}, stranger)
     if not got: return
     r, out = got
     print(out.get('says') or '' if r.status_code == 200 else f"not read: {out.get('detail') or r.text[:200]}")
@@ -277,13 +289,6 @@ def main():
     # "is the triage right?" is a rate, and nothing measured it: build the labelled cases out of
     # the owner's own verdicts, score the configured classifier over them, or export a set that
     # can leave the machine (people and prose removed) - see evalset.py
-    # the rows filed before triage was asked for a summary and a checklist: their ask is the raw
-    # email, footer and quoted thread included, and they have no todos at all
-    ap.add_argument('--backfill-asks', action='store_true',
-                    help='re-derive the ask and the todos for tasks whose summary is a copy of the '
-                         'email. Prints what it WOULD change and writes nothing unless --apply.')
-    ap.add_argument('--apply', action='store_true', help='with --backfill-asks: actually write the changes')
-    ap.add_argument('--include-closed', action='store_true', help='with --backfill-asks: closed tasks too')
     ap.add_argument('--evalset', choices=['build', 'share', 'evaluate', 'ablate', 'jev'], metavar='ACTION',
                     help='triage dataset: build (labelled cases from your verdicts -> ~/.taskuary/eval), '
                          'evaluate (score the configured AI over them), ablate (score with and without memory), '
@@ -351,6 +356,9 @@ def main():
                                                              "kept under Not sent; nothing is sent or deleted.")
     ap.add_argument('--withdraw-draft', metavar='WHY', help='the reply draft waiting on this task no longer answers the newest message - '
                                                            'take it off the table, why in one line. It is kept under Not sent; nothing is sent.')
+    ap.add_argument('--hand-over', metavar='WHAT', help="a step on your browser's page only the owner can do (a sign-in, a code, a robot check, "
+                                                      "paying): Taskuary does it itself where it can, else hands him one card; go on with the job")
+    ap.add_argument('--site', default='', help="with --hand-over: the site's domain, for a sign-in")
     ap.add_argument('--follow-up', action='store_true',
                     help='with --reply: the owner asked you for ANOTHER message after your reply already went - it is saved as a '
                          'follow-up to it. Without this, a second reply to a message already answered (nothing new from them) is refused.')
@@ -364,13 +372,15 @@ def main():
     ap.add_argument('--slot', default='', help='the checklist slot this email fills (the id after --slot in your checklist)')
     ap.add_argument('--to', default='', help='who it goes to: with --draft, when no slot names them; with --reply, the person on this '
                                              'task you are answering or asking (a name or address)')
+    ap.add_argument('--then', default='', help='with --reply or --draft: your own step after his press, if any')
     ap.add_argument('--answers', type=int, metavar='N', help='with --reply: the message number (#N) of the mail it replies to - the one that holds '
                                                          'the ask, or an earlier mail when that is the right next step')
     ap.add_argument('--only', action='store_true', help="with --reply: to that mail's sender alone, nobody copied (something sensitive)")
     ap.add_argument('--cc', action='append', default=None, metavar='ADDRESS', help='who else is copied (repeat for more): with --reply, instead of the thread; with --draft, on that email')
     ap.add_argument('--guessed', action='append', default=None, metavar='ADDRESS', help='with --draft: an address on it you guessed (none on record) - the card says so')
     ap.add_argument('--why-to', default='', metavar='LINE', help='with --reply: one line on why it goes to whom it goes, when it is not the plain reply all')
-    ap.add_argument('--subject', default='', help='the subject line')
+    ap.add_argument('--subject', default='', help="the subject line; with --remember, what the fact is about in a few words (\"meeting hours\") - "
+                                                  'the same subject as a line it corrects, which it then replaces')
     # ...and a BATCH's items (batch.py): one finding per item, as the agent finishes each
     ap.add_argument('--item', type=int, metavar='N', help='in a batch: report on item N (with --result, and --overlap/--settled)')
     ap.add_argument('--result', default='', metavar='TEXT', help="with --item: what it is, whether it is right, what you propose")
@@ -385,8 +395,10 @@ def main():
                     '"2026-11-12") to verify WHAT - a payment that should clear, a reply due by a date; one per task, a new one replaces it')
     ap.add_argument('--remember', metavar='FACT', help="keep a fact the owner told you in this chat that holds beyond this task (who handles "
                     'what now, what they care about), in their words - in their memory at once, for triage, every agent and the Assistant')
-    ap.add_argument('--section', metavar='SECTION', default='', help="with --remember: people, work, care, promises, bring, style, or signature "
-                    '(the block under every email he sends - it becomes his saved signature)')
+    ap.add_argument('--about', metavar='WHO', default='', help='with --remember: the person the fact is about (a name or address), not the owner himself; '
+                                                         'with --memory: look up what is kept about them')
+    ap.add_argument('--signature', action='store_true', help='with --remember: FACT is how the owner signs - the block under every email he sends; '
+                                                             'it becomes his saved signature')
     # ...and the checkout it works in, for a CLI without the use_repo tool (repochoice.py, the owner 2026-11-06)
     ap.add_argument('--use-repo', nargs='+', metavar=('NAME_OR_PATH', 'WHY'), help="work this task in that git checkout - a repository from "
                     'your REPOSITORIES list or a folder - and say why in a few words; the task records it')
@@ -404,8 +416,8 @@ def main():
                                                        "the chat: attach it to --reply for the owner's Send, never send it yourself.")
     ap.add_argument('--form', metavar='JSON', help='with --sign-form: {"fields": {name: value}, "sign": {"field": name} or {"near": "Parent '
                                                    'signature"} or {"page": 1, "box": [x, y, width, height]}, "date": true or a field name}')
-    ap.add_argument('--memory', metavar='SECTION', nargs='?', const='',
-                    help="print what Taskuary has learned about the owner (LEARNED.md) - all of it, or one section: people, care, work, promises, bring")
+    ap.add_argument('--memory', metavar='WHO', nargs='?', const='',
+                    help="print the owner's memory - what they said, the facts, what they confirmed of what was learned - all of it, or about one person")
     ap.add_argument('--guide', metavar='TOPIC', help="print one of Taskuary's how-tos for an agent - browser, number (guides.py)")
     ap.add_argument('--browser', metavar='URL', help="open this task's browser on a page - for an agent whose own shell cannot launch one; then drive it with agent-browser")
     args = ap.parse_args()
@@ -418,11 +430,11 @@ def main():
     agent, stranger = session()
     if stranger is not None: _refuse_outside(args)
     if args.demo:
-        import os, tempfile
-        from . import demo
+        import os
+        from . import demo, spawn
         os.environ[demo.FLAG] = '1'
-        # a throwaway home, so a demo can never be pointed at somebody's real database by accident
-        os.environ.setdefault('TASKUARY_HOME', tempfile.mkdtemp(prefix='taskuary-demo-'))
+        # a throwaway home, so a demo can never be pointed at somebody's real database by accident - and gone when the demo ends (own_temp)
+        if not os.environ.get('TASKUARY_HOME'): os.environ['TASKUARY_HOME'] = spawn.own_temp('taskuary-demo-')
         print(f'demo mode: invented data in {os.environ["TASKUARY_HOME"]}, nothing can reach a real system')
     # --done goes over HTTP, unlike --note. A note is a database row and any process can write
     # one; ENDING a task needs the live session's scrollback, which exists only inside the
@@ -463,9 +475,10 @@ def main():
         who = os.environ.get('TASKUARY_AGENT') or 'agent'
         got = (_post('/api/agent/draft', {'task_id': int(tid), 'text': text, 'to': args.to, 'subject': args.subject, 'slot': args.slot,
                                           'agent': who, 'files': files, 'cc': args.cc or [], 'mailbox': args.sender,
-                                          'guessed': args.guessed or []}, stranger) if drafting
+                                          'guessed': args.guessed or [], 'then': args.then}, stranger) if drafting
                else _post('/api/agent/reply', {'task_id': int(tid), 'text': text, 'agent': who, 'files': files, 'follow_up': args.follow_up,
-                                                'to': args.to, 'answers': args.answers, 'only': args.only, 'cc': args.cc, 'why_to': args.why_to}, stranger))
+                                                'to': args.to, 'answers': args.answers, 'only': args.only, 'cc': args.cc, 'why_to': args.why_to,
+                                                'then': args.then}, stranger))
         if not got: return
         r, out = got
         # ...saying to WHOM it was saved: "reply saved" alone let a question meant for one requester sit as an answer to another (2026-11-02)
@@ -511,6 +524,15 @@ def main():
         print("marked not needed - the draft is put down, kept under Not sent." if out.get('ok')
               else f"not marked: {out.get('why') or out.get('detail') or r.text[:200]}")
         return
+    if args.hand_over:
+        import os
+        tid = os.environ.get('TASKUARY_TASK')
+        if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no page to hand over'); return
+        got = _post('/api/agent/hand-over', {'task_id': int(tid), 'what': args.hand_over, 'site': args.site}, stranger)
+        if not got: return
+        r, out = got
+        print(out.get('says') if out.get('ok') else f"not handed over: {out.get('why') or out.get('detail') or r.text[:200]}")
+        return
     if args.withdraw_draft:
         import os, sys
         try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -542,7 +564,8 @@ def main():
         except (AttributeError, OSError): pass
         tid = os.environ.get('TASKUARY_TASK')
         if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no task the owner told you this on'); return
-        got = _post('/api/agent/remember', {'task_id': int(tid), 'note': args.remember, 'section': args.section, 'agent': os.environ.get('TASKUARY_AGENT') or 'agent'}, stranger)
+        got = _post('/api/agent/remember', {'task_id': int(tid), 'note': args.remember, 'subject': args.subject, 'about': args.about, 'signature': args.signature,
+                                            'agent': os.environ.get('TASKUARY_AGENT') or 'agent'}, stranger)
         if not got: return
         r, out = got
         print(out.get('says') if out.get('ok') else out.get('detail') or f'not kept: {r.text[:200]}')
@@ -693,27 +716,6 @@ def main():
             ref = f" {task_ref(r['TaskId'])}" if r.get('TaskId') else ''
             print(f"  [{r['Kind']}] {r['Agent']}{ref} {bb._ago(r['CreatedAt'])}: {r['Body']}")
         return
-    if args.backfill_asks:
-        import sys
-        from . import ingest, llm as _llm
-        from .store import SQLiteStore
-        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        except (AttributeError, OSError): pass
-        store = SQLiteStore(config.db_path())
-        brain = _llm.build_llm(store, job='summary')
-        if not brain:
-            from . import words
-            print('No AI is connected, so the summaries will only be stripped of their footers '
-                  f"and no todos can be drawn. Connect one under {words.name('ai')}, then choose it under {words.name('sorting')}.")
-        rows = ingest.backfill_asks(store, brain, dry_run=not args.apply, include_closed=args.include_closed)
-        touched = [r for r in rows if r['action'] in ('rewrote', 'would rewrite')]
-        for r in touched:
-            print(f"{r['ref']} {r['title'][:60]}")
-            print(f"    ask:  {(r.get('summary') or '')[:150]}")
-            for i in r.get('checklist') or []: print(f"    todo: {i}")
-        print(f"\n{len(touched)} of {len(rows)} task(s) {'rewritten' if args.apply else 'would be rewritten'}.")
-        if touched and not args.apply: print('Nothing was written. Re-run with --apply to write it.')
-        return
     if args.evalset:
         import sys
         from . import evalset
@@ -749,14 +751,17 @@ def main():
     host, port = args.host or cfg['server']['host'], args.port or cfg['server']['port']
     url = public_url(host, port)
     if args.link:
-        if _busy(host, port) and _is_taskuary(url): print(launchkey.remote_link(url, cfg['server'].get('token') or ''))
+        # ...the owner's, from his own terminal: an agent's session - his own task's too - is handed no address that signs in as him
+        if agent: raise SystemExit("taskuary: --link refused - this is an agent's session, and the address it prints signs in as the owner. "
+                                   "It is his to run in his own terminal.")
+        if _busy(host, port) and _is_taskuary(url): print(launchkey.remote_link(url, config.home()))
         else: print(f'Taskuary is not running at {url} - start it with `taskuary`, then ask again.')
         return
     if _busy(host, port):
         if _is_taskuary(url):
             # don't crash into 'address already in use' - reuse the running instance, signed in with a key it hands us
             print(f'Taskuary is already running at {url} - opening it.')
-            if not args.no_browser: _open_private(launchkey.remote_link(url, cfg['server'].get('token') or ''))
+            if not args.no_browser: _open_private(launchkey.remote_link(url, config.home()))
             return
         from .desktop import free_port
         old, port = port, free_port(host)
@@ -767,7 +772,7 @@ def main():
     if h := instance.holder():
         at = h.get('url') or ''
         print(f'Taskuary is already running on {config.home()}{f" at {at}" if at else ""} - ' + ('opening it.' if at else 'quit it first.'))
-        if at and not args.no_browser: _open_private(launchkey.remote_link(at, cfg['server'].get('token') or ''))
+        if at and not args.no_browser: _open_private(launchkey.remote_link(at, config.home()))
         return
     instance.claim(url)
     print(f'Taskuary {__version__} - {url}  (data: {config.db_path()})')

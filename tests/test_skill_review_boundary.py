@@ -20,14 +20,21 @@ def test_a_skill_publish_proposal_cannot_be_attached_to_an_unrelated_task():
 
 
 def test_changed_draft_digest_cannot_queue_or_execute_old_approval():
+    import pytest
     store = MemoryStore()
     try:
         tid = store.create_task({'Title': 'Generate a method', 'Source': 'manual'}, 'owner')
         gen = state.create(store, 'generation', {'task_id': tid, 'state': 'needs_review', 'draft_digest': 'new', 'base_digest': None})
         stale = {'action': 'publish_skill', 'generation_id': gen['id'], 'digest': 'old', 'base_digest': None}
-        assert proposals.validate(store, {**stale, 'digest': 'new'})[0] is True
+        current = {**stale, 'digest': 'new'}
+        assert proposals.validate(store, current)[0] is True
         ok, reason = proposals.validate(store, stale)
         assert ok is False
         assert state.get(store, 'generation', gen['id'])['draft_digest'] == 'new'
+        made = proposals.queue(store, tid, current)
+        assert made and store.get_review(made['reviewId'])['TaskId'] == tid
+        state.update(store, 'generation', gen['id'], {'draft_digest': 'changed'})
         assert proposals.queue(store, tid, stale) is None
+        with pytest.raises(RuntimeError, match='draft changed'):
+            proposals.execute(store, store.get_review(made['reviewId']))
     finally: store.close()

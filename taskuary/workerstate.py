@@ -125,9 +125,9 @@ def idled(store, tid: int, sid: str):
 
 
 def record(store, tid: int, sid: str, kind: str, request_id: str = None, text: str = '', choices: list = None,
-           source: str = 'api', event_id: str = None) -> bool:
+           source: str = 'api', event_id: str = None, asks: bool = False) -> bool:
     """One event. False when it is a replay (same event id), a duplicate open request, or from a run that
-    is no longer the task's current one (PW-227)."""
+    is no longer the task's current one (PW-227). `asks`: this turn_end is of a turn that asked him a question, recorded right after it."""
     if kind not in KINDS: raise ValueError(f'unknown worker event: {kind}')
     if event_id and store.worker_event_exists(event_id): return False
     # a LIVE run owns the task: another run's word is stale and ignored. With no live run the newest run to
@@ -143,6 +143,11 @@ def record(store, tid: int, sid: str, kind: str, request_id: str = None, text: s
                             'ChoicesJson': json.dumps(list(choices)) if choices else None, 'Source': source, 'EventId': event_id})
     try: store._poke('task-changed', task_id=tid)
     except Exception: pass
+    if kind == 'turn_end':                       # ...and a wait whose answer this turn read is over (waiton.settle)
+        try:
+            from . import waiton
+            waiton.settle(store, tid)
+        except Exception as e: logger.debug(f'task {tid}: its wait was not settled - {e}')
     if kind == 'turn_end' or kind in TERMINAL:   # a batch close that waited for the turn (batch.close_if_settled)
         try:
             from . import batch
@@ -153,6 +158,11 @@ def record(store, tid: int, sid: str, kind: str, request_id: str = None, text: s
             from . import agentchannels
             agentchannels.on_event(store, tid, kind, text, source)
         except Exception as e: logger.debug(f'task {tid}: not said on its channel - {e}')
+    if kind in RESTS or kind in TERMINAL:         # ...and to the phone chat his line set it going from (remote_assistant.promise)
+        try:
+            from . import remote_assistant
+            remote_assistant.turn_ended(store, tid)
+        except Exception as e: logger.debug(f'task {tid}: the phone was not told its turn ended - {e}')
     return True
 
 
@@ -199,6 +209,26 @@ def open_requests(evs: list) -> list:
             and not (e['Kind'] == 'stalled' and e.get('Source') == 'hook' and str(e.get('Text') or '').strip().lower() == 'unknown')]
 
 
+def in_words(e: dict) -> bool:
+    """A question the agent asked in its own words - never a step on a page, a press waiting in an app, or a chooser on its screen, each of
+    which only his press, the page or the screen closes."""
+    from .agentdesktop import READY
+    r = str(e.get('RequestId') or '')
+    return e.get('Kind') == 'input_needed' and e.get('Source') != 'screen' and ask_of(r)['ask'] == 'question' and not r.startswith(READY)
+
+
+def let_go(store, tid: int, why: str, only=None) -> list:
+    """THE AGENT'S QUESTION TO HIM STANDS UNTIL HE ANSWERS IT (a press, his line, his answer outside - line_answers), THE TASK CLOSES, OR THE AGENT
+    TAKES IT BACK (the owner, 2026-11-24) - never because a later turn did not ask it again. Each question in words still open on the task's
+    run - or `only` those of these words (card.asked_about: his press on the card is their answer) - is answered by `why` (concierge.close_task;
+    ask_owner's `withdraw`; general.approved). [the texts let go]."""
+    sid = current_sid(store, int(tid))
+    keep = None if only is None else {' '.join(str(q).split()) for q in only}
+    out = [e for e in open_requests(events(store, int(tid), sid) if sid else []) if in_words(e) and (keep is None or ' '.join(str(e.get('Text') or '').split()) in keep)]
+    for e in out: record(store, int(tid), sid, 'answered', request_id=e['RequestId'], text=why, source='taskuary')
+    return [e['Text'] for e in out]
+
+
 def _public_request(e: dict) -> dict:
     try: choices = json.loads(e['ChoicesJson']) if e.get('ChoicesJson') else []
     except ValueError: choices = []
@@ -221,6 +251,12 @@ def ask_of(rid) -> dict:
     from .signin import PREFIX
     r = str(rid or '')
     return {'ask': 'signin', 'site': r[len(PREFIX):].split('~')[0]} if r.startswith(PREFIX) else {'ask': 'turn' if r.startswith(TURN_PREFIX) else 'question', 'site': ''}
+
+
+def page_step(req) -> bool:
+    """Is this open request a step on a page that is the owner's (a hand-over, a sign-in)? Only his press, the page moving on or the sign-in
+    road closes one - never Taskuary's words about something else (walk 9, 2026-11-23: an Approve's result answered a robot check)."""
+    return bool(req) and ask_of(req.get('request_id') or req.get('RequestId'))['ask'] != 'question'
 
 
 def reconcile_screen_request(store, t, asking: bool) -> dict | None:
@@ -296,6 +332,36 @@ def status(store, tid: int) -> dict:
 RESUMED = 'resumed'
 def own_question(r: dict) -> bool:
     return r.get('kind') == 'input_needed' and bool(r.get('text')) and (r.get('source') in ('screen', 'api', RESUMED) or bool(group_of(r.get('request_id'))))
+
+
+# HIS LINE TYPED UNDER A QUESTION ANSWERS IT (walk 10, 2026-11-23): an API agent's ask_owner stands while its turn goes on, and the line he
+# typed under "Answer the agent's question..." went into that turn - the agent used it, and every later turn was still told "YOUR QUESTION
+# STILL WAITING FOR THE OWNER" over the box still asking. Its own questions (never a sign-in or a step on the page, which only his press or
+# the page closes) are answered by that line, so the screen and the agent read one state
+def line_answers(store, tid: int, text: str, actor: str = 'owner') -> list:
+    "Record the owner's line as the answer to each question the task's agent itself asked and is still asking: the ids answered."
+    sid = current_sid(store, tid)
+    rs = [r for r in (status(store, tid)['requests'] if sid else []) if own_question(r) and r.get('ask') == 'question' and str(r['sid']) == str(sid)]
+    words = ' '.join(str(text or '').split())[:500]
+    for r in rs: record(store, tid, sid, 'answered', request_id=r['request_id'], text=words, source=said_by(actor))
+    return [r['request_id'] for r in rs]
+
+
+def answering(store, tid: int, at: float) -> bool:
+    """IS HIS LINE THAT CAME AT `at` THE ANSWER TO A QUESTION THE AGENT ASKED IN WORDS - a chip he pressed or words he typed under it? Read off the
+    record alone, at any time after: the newest such question before the line, with nothing of his said since it (a line, a prompt in the
+    pane) and no answer to it from an earlier second (a press, the agent taking it back). His answer is no moving on: it greys no card
+    (proposals.bears)."""
+    from .conversation import ep
+    from . import general
+    evs, sec = events(store, int(tid)), int(at)
+    q = next((i for i in range(len(evs) - 1, -1, -1) if in_words(evs[i]) and ep(evs[i]['CreatedAt']) <= at), None)
+    if q is None: return False
+    asked = ep(evs[q]['CreatedAt'])
+    if any(ep(e['CreatedAt']) < sec and (e['Kind'] == 'answered' and e['RequestId'] == evs[q]['RequestId'] or e['Kind'] == 'working' and e.get('Text') != WAKE)
+           for e in evs[q + 1:]): return False
+    return not any(asked < ep(x['CreatedAt']) < sec for x in store.list_comments(int(tid), internal=True)
+                   if x.get('ActorType') in (general.USER_TYPE, general.WAITING_TYPE) and x.get('Actor') == 'owner' and not general.is_brief(x))
 
 
 def left_asking(store, tid) -> list:

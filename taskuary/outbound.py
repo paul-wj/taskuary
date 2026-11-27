@@ -7,7 +7,7 @@ mail nobody connects), a chat answers in the chat.
 
 Nothing sends itself. Every call here is behind a human verdict or an explicit hand-off.
 """
-import base64, json, mimetypes, re, smtplib
+import base64, hashlib, json, mimetypes, re, smtplib
 from pathlib import Path
 
 import requests
@@ -106,6 +106,9 @@ def read_attachments(items) -> list:
         name = str((it or {}).get('name') or path.name or 'attachment')
         if not path.is_file(): raise RuntimeError(f'the file "{name}" is no longer where it was put ({path})')
         data = path.read_bytes()
+        # ...and the file that was attached, by its content (verdicts.attach keeps it): one written over since is not what the card showed
+        if (it or {}).get('sha256') and hashlib.sha256(data).hexdigest() != it['sha256']:
+            raise RuntimeError(f'the file "{name}" changed after it was attached, so nothing was sent - take it off and attach it again')
         total += len(data)
         if total > ATTACH_MAX:
             raise RuntimeError(f'these files come to more than {ATTACH_MAX // (1024 * 1024)}MB, which no mailbox will accept - '
@@ -489,7 +492,6 @@ def can_reply(store, channel) -> bool:
     if not ch or ch in NEVER or no_sender(store, ch): return False
     if ch in SENDABLE and ch not in reply_channels(store): return False
     if _inbox_off(store, ch): return False
-    if ch == 'github': return store.github_replies_ok()
     if ch == 'email' and send_probe(store, ch): return False
     return True
 
@@ -501,7 +503,6 @@ def send_block(store, channel) -> str:
     ch = (channel or '').lower()
     if not ch: return 'this message has no channel to reply on'
     if ch in NEVER: return f'{ch} items cannot be replied to from here'
-    if ch == 'github': return '' if store.github_replies_ok() else 'GitHub replies are off (GitHub card)'
     if _inbox_off(store, ch): return f"replies are off for {INBOX_NAMES[ch]} (the Replies switch on its card)"
     if ch in SENDABLE and ch not in reply_channels(store):
         return f"replies are off for {ch} ({words.name('replies')})"
@@ -529,6 +530,11 @@ def connect_fix(store, kind) -> dict | None:
         # ...its button opens the mailbox's own card - one set up and switched off, else Email's section, where each mailbox has its card
         had = next((str(c.get('Type')).lower() for c in cards if str(c.get('Type') or '').lower() in (*MAILBOXES, *HOSTS)), '')
         return {'says': 'No mailbox is connected', 'label': 'Connect email', 'href': f'#connector={had}' if had else MAIL[1]}
+    # ...and A PICTURE with nothing that can draw it (images.pick: no image card, no AI card whose models include an image model) is the images
+    # section's Connect - "paste this prompt into another app" was the agent's own way round a missing card (the owner, 2026-11-25)
+    if k == 'images':
+        from . import images
+        return None if images.pick(store) else {'says': 'No image model is connected', 'label': 'Connect an image model', 'href': words.href('images')}
     # ...an act's network by the Connections page's own rule (connectorcatalog.signed_in): a LinkedIn card switched on and never signed in
     # had Post to LinkedIn lit over it (the walks, 2026-11-18)
     # ...BY ITS ONE STATE (connectorcatalog.state; the judge's look, 2026-11-20: a LinkedIn card signed in once and since signed out kept "Post to
@@ -538,7 +544,9 @@ def connect_fix(store, kind) -> dict | None:
     if not card: return None
     srcs = store.list_sources() if hasattr(store, 'list_sources') else ()
     mine = [c for c in cards if str(c.get('Type') or '').lower() == k]
-    if any(connectorcatalog.state(c, srcs)['state'] in ('connected', 'failing') for c in mine): return None
+    # ...and one set up and switched off takes it too: his press switches it on (proposals._run, the owner 2026-11-25)
+    if any(connectorcatalog.state(c, srcs)['state'] in ('connected', 'failing') or not c.get('Active') and connectorcatalog.set_up(c, srcs)
+           for c in mine): return None
     name, st = card.get('title') or k, (connectorcatalog.state(mine[0], srcs)['state'] if mine else 'off')
     says = {'signed_out': f'{name} needs you to sign in again', 'not_signed_in': f"{name} isn't signed in"}.get(st, f"{name} isn't connected")
     return {'says': says, 'label': f'Connect {name}', 'href': f'#connector={k}', 'waits': 'the draft waits here - copy it to post it yourself'}
@@ -554,6 +562,10 @@ def review_connect(store, r: dict, memo: dict = None) -> dict | None:
         from . import connectorcatalog
         act = connectorcatalog.action_for(p.get('type')) if p.get('action') == 'run_tool' else None
         k = act['card'] if act else None
+        # ...and any call on a connection switched off: Connect where it is not set up, else his press switches it on
+        if not k and p.get('action') == 'run_tool' and str(p.get('connector_id') or '').isdigit():
+            c = store.get_connector(int(p['connector_id'])) or {}
+            k = None if c.get('Active') else str(c.get('Type') or '').lower() or None
     # ...a bare review row (rv.*) carries no Channel: the mail it answers says it
     else:
         m = store.get_message(r['MessageId']) if r.get('MessageId') and not (r.get('Channel') or p.get('channel')) else None
@@ -572,7 +584,6 @@ def block_fix(store, channel) -> dict | None:
     "its card"), the row gets the way there. None where nothing here lifts it - a Teams chat is answered in Teams."""
     ch = (channel or '').lower()
     if not ch or ch in NEVER: return None
-    if ch == 'github': return None if store.github_replies_ok() else {'label': 'Open the GitHub card', 'href': '#connector=github'}
     if _inbox_off(store, ch): return {'label': f'Open the {INBOX_NAMES[ch]} card', 'href': f'#connector={ch}'}
     if ch in SENDABLE and ch not in reply_channels(store): return dict(zip(('label', 'href'), REPLIES))
     if ch == 'email' and (why := send_probe(store, ch)):
@@ -584,7 +595,7 @@ def block_fix(store, channel) -> dict | None:
     return None
 
 
-GUARD = ("this text still carries a {mark}...] placeholder. Credentials are taken out of PROMPTS "
+GUARD = ("this text still carries a {mark}...] placeholder. Credentials, SSNs and dates of birth are taken out of PROMPTS "
          "(redact.py), never out of the owner's own mail - so a placeholder in something addressed "
          "to a person means a prompt's text was reused as the message. Rewrite it from the thread.")
 
@@ -596,10 +607,12 @@ def _no_placeholder(body, subject=''):
         raise RuntimeError(GUARD.format(mark=redact.MARK))
 
 
-def mailboxes(store) -> list:
+def mailboxes(store, tid=None) -> list:
     """The mailboxes a new email can be sent FROM: each active email source, then any mail card's own address - one row per
-    address, the connector that sends as it beside it (the owner, 2026-10-09: "add from mailbox picker")."""
+    address, the connector that sends as it beside it (the owner, 2026-10-09: "add from mailbox picker"). `tid`: only those the
+    agent on that task may use - its profile's and the untagged ones (workstreams.may_use)."""
     from .channels import _cfg
+    from .workstreams import may_use
     out, seen = [], set()
     cards = {c['ConnectorId']: c for c in store.list_connectors() if c['Active'] and c['Type'] in MAILBOXES}
     def add(address, cid):
@@ -609,7 +622,7 @@ def mailboxes(store) -> list:
     for s_ in store.list_sources():
         if s_.get('Channel') == 'email': add(s_.get('Address'), s_.get('ConnectorId'))
     for cid, c in cards.items(): add(_cfg(c).get('address') or _cfg(c).get('account'), cid)
-    return out
+    return [m for m in out if may_use(store, tid, m['address'])] if tid else out
 
 
 def _box(store, mailbox): return next((m for m in mailboxes(store) if m['address'].lower() == str(mailbox or '').strip().lower()), None) if mailbox else None
@@ -632,9 +645,10 @@ def card_signature(store, mailbox) -> str:
 
 def task_mailbox(store, tid) -> str | None:
     """The mailbox a task's mail came IN on - its newest inbound email's - while a connected card still sends as it. A new
-    message on that task goes out from there by default, not from whichever Outlook card happens to be first."""
+    message on that task goes out from there by default, not from whichever Outlook card happens to be first. Never one of another
+    profile's: a task moved to a profile answers from that profile's own."""
     if not tid: return None
-    have = {m['address'].lower(): m['address'] for m in mailboxes(store)}
+    have = {m['address'].lower(): m['address'] for m in mailboxes(store, tid)}
     for m in reversed(store.list_messages(int(tid))):
         if m.get('Direction') == 'out' or str(m.get('Channel') or '').lower() != 'email': continue
         a = have.get(str(m.get('SourceName') or '').strip().lower())
@@ -648,8 +662,53 @@ def sending_mailbox(store, rv: dict, msg: dict = None) -> str | None:
     try: env = json.loads((rv or {}).get('Deliver') or '{}') or {}
     except (TypeError, ValueError): env = {}
     if env.get('mailbox'): return env['mailbox']
-    if msg and msg.get('Direction') != 'out' and '@' in str(msg.get('SourceName') or ''): return msg['SourceName']
-    return task_mailbox(store, (rv or {}).get('TaskId'))
+    from . import workstreams
+    tid = (rv or {}).get('TaskId')
+    if msg and msg.get('Direction') != 'out' and '@' in str(msg.get('SourceName') or '') and workstreams.may_use(store, tid, msg['SourceName']): return msg['SourceName']
+    return task_mailbox(store, tid) or workstreams.own_mailbox(store, tid)
+
+
+def new_from(store, tid) -> str | None:
+    """THE MAILBOX A NEW EMAIL WITH NO FROM LEAVES FROM (the red team, round 6: it left from the first Outlook card, another profile's): where
+    its task's mail came in, else its task's own profile's, else one every profile shares - never another profile's. None: no mailbox is
+    kept from this task, and the sender's own fallback (send_out's first card) decides, as before. Fixable, with the place a mailbox is
+    connected, when every connected one is another profile's."""
+    from . import workstreams
+    if (box := task_mailbox(store, tid) or workstreams.own_mailbox(store, tid)): return box
+    mine, every = mailboxes(store, tid), mailboxes(store)
+    if not tid or len(mine) == len(every): return None
+    if mine: return mine[0]['address']
+    name = workstreams.names(store).get(workstreams.of_task(store, int(tid)))
+    raise Fixable((f"this task is under the profile {name}, and no connected mailbox is {name}'s or every profile's" if name else
+                   "this task is under no profile, and every connected mailbox is one profile's own") + ', so it has no mailbox to leave from', *MAIL)
+
+
+def reply_from(m: dict) -> str | None:
+    "The mailbox a reply to message `m` leaves from - the one it came in on (reply_to_message); None for a chat's line."
+    box = str((m or {}).get('SourceName') or '').strip()
+    return box if str((m or {}).get('Channel') or '').lower() == 'email' and '@' in box else None
+
+
+def leaves_from(store, rv: dict) -> str | None:
+    """THE MAILBOX A CARD'S SEND LEAVES FROM, as the send itself takes it (verdicts.send) - what its card and its agent are told, so neither
+    says another (walk 25: "goes from alex@northwind.example" over a reply leaving from Harbor's). A new email's own pick, else its
+    task's (new_from); a reply's is where the mail it answers came in. None: a chat's line, an act, or no mailbox known before the send."""
+    try: env = json.loads((rv or {}).get('Deliver') or '{}') or {}
+    except (TypeError, ValueError): env = {}
+    if not isinstance(env, dict) or env.get('kind') not in (None, '', 'reply') or (rv or {}).get('Kind') == 'action': return None
+    if new_mail(env):
+        if str(env.get('channel') or 'email').lower() != 'email': return None
+        try: return env.get('mailbox') or new_from(store, rv.get('TaskId'))
+        except Fixable: return None
+    mid = rv.get('AnswersMid') or rv.get('MessageId')
+    return reply_from(store.get_message(mid)) if mid else None
+
+
+def shown_from(store, rv: dict, many: bool = None) -> str | None:
+    """leaves_from, for the card - only where he has two mailboxes to tell apart: with one, its card is as it was. `many`: that count,
+    asked once by a caller drawing many cards (a page's read asks the database a bounded number of times, never once per card)."""
+    if many is None: many = len(mailboxes(store)) > 1
+    return leaves_from(store, rv) if many else None
 
 
 def send_out(store, channel: str, to, subject: str, body: str, cc: list = None, attachments: list = None,
@@ -1151,8 +1210,8 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
         if not chat: raise RuntimeError('this chat message has no room id to answer in')
         return chatservers.send(store, ch, chat, body, _source_connector_id(store, ch, chat))
     if ch == 'github':
-        # the answer is a PUBLIC comment on the issue/PR - so it goes only with the owner's
-        # explicit say-so (the GitHub card's 'Reply to issue/PR authors' switch)
+        # the answer is a PUBLIC comment on the issue/PR - so it goes only with the owner's explicit say-so: his Send on its card (the owner,
+        # 2026-11-25: "it should find a way around it" - a card switch over it left his Send dark and "Open the GitHub card" two presses away)
         # the CONVERSATION names the item bare ('gh:owner/repo#N'); the row's own id never is - the item is a revision
         # ('gh:owner/repo#N@<hash>', ingest.rev_id) and a comment 'gh:owner/repo#N:c<id>', so parsing it refused every reply (#205)
         ref = str(msg.get('ConversationId') or '') if str(msg.get('ConversationId') or '').startswith('gh:') else ext
@@ -1160,10 +1219,6 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
         repo, _, num = ref[3:].rpartition('#')
         if not (ref.startswith('gh:') and repo and num.isdigit()):
             raise RuntimeError('this github item carries no issue/PR reference to comment on')
-        # ...asked of the card that reaches this repo: two GitHub accounts are two cards, each with its own switch
-        if not store.github_replies_ok(repo):
-            raise Fixable("replying on GitHub is off - its card's 'Reply to issue/PR authors' lets Taskuary post comments",
-                          'Open the GitHub card', '#connector=github')
         connector_id = _source_connector_id(store, 'github', repo)
         c = store.get_connector(connector_id, with_secret=True) if connector_id else \
             store.get_connector_by_type('github', with_secret=True)

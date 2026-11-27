@@ -561,21 +561,20 @@ def _read_media(path: str):
 
 def _unheard(store, channel: str, chat: str, c, e, message_id=None):
     """Say in the chat that a voice note could not be heard - instead of the note simply never arriving. The note gets its thumb like
-    any message the doorway took, the place that fixes it is named once (the reason already names it when no connector is set up),
-    and the choices under the last card come with the line - the note answered nothing, so they still stand (F22)."""
+    any message the doorway took, and the place that fixes it is named once (the reason already names it when no connector is set up).
+    NOTHING ELSE MOVES (the owner, 2026-11-25: "you have to hit send after a voice note, so if it errors or nothing records, nothing
+    happens"): the note answered nothing, so the card it came under still stands where it was - its choices are never sent again."""
     from . import remote_assistant, words
     logger.warning(f'{channel}: a voice note to Taskuary was not transcribed - {e}')
     if message_id:
         try: react(store, channel, chat, message_id, connector_id=c.get('ConnectorId'))
         except Exception as e3: logger.debug(f'{channel}: no thumb on the voice note - {e3}')
-    why, place = str(e)[:200].strip().rstrip('.'), words.name('voice')
+    why, place = remote_assistant.plain(e).strip().rstrip('.'), words.name('voice')      # a gateway's raw JSON stays in the log (H12)
     # ...the place named ONCE, however the reason spells it: "add one under Connections > Voice" got "under Connections → AI — voice" again
     told = place in why or place.split(' → ')[0] in why
     said = f"I could not hear that voice note - {why}." + (' Type it instead.' if told else f" Type it, or add a voice connector under {place}.")
-    try: live = json.loads(store.get_setting(f'{remote_assistant.OFFERED_KEY}:{channel}:{chat}') or '[]') or []
-    except ValueError: live = []
     remote_assistant.owner_spoke(store, channel, chat)          # the owner sent it: this is their conversation, and it is answered
-    try: remote_assistant.send(store, channel, chat, said, c.get('ConnectorId'), **({'choices': live} if live else {}))
+    try: remote_assistant.send(store, channel, chat, said, c.get('ConnectorId'))
     except Exception as e2: logger.warning(f'{channel}: could not say so either - {e2}')
 
 
@@ -683,7 +682,8 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
         closed = q['older'] if q and m.get('id') == q['newest'] else None
         # A TAP ON AN OLDER LIST of the Assistant's (poll.mjs stale): nothing runs - its choices are gone - but it is answered
         if m.get('stalePoll'):
-            if jid == assistant_chat: remote_assistant.stale_tap(store, 'whatsapp', jid, c['ConnectorId'], spent=bool(m.get('spentPoll')))
+            if jid == assistant_chat: remote_assistant.stale_tap(store, 'whatsapp', jid, c['ConnectorId'], spent=bool(m.get('spentPoll')),
+                                                                 lost=bool(m.get('lostPoll')))
             took.append(m.get('id')); continue
         text, heard = (m.get('text') or '').strip(), False
         # A VOICE NOTE IN A CONTROL CHAT is the owner talking to Taskuary, so it is heard BEFORE the interceptors,
@@ -780,6 +780,9 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
             'sent_at': datetime.fromtimestamp(m.get('ts') or 0).strftime('%Y-%m-%d %H:%M:%S'),
             'source_name': where(m, jid),
             **({'mail_meta': meta} if meta else {}),
+            # ...and the line it quotes (ingest.with_parent): the stored one by its id, else the words the bridge carried
+            **({'reply_to': {**({'ext': f"whatsapp:{jid}:{m['quotedId']}"} if m.get('quotedId') else {}), 'text': m.get('quoted') or ''}}
+               if m.get('quoted') or m.get('quotedId') else {}),
             'images': images_for_triage(store, atts), **files_for_triage(atts),
             **({'file_reason': f'voice note - not transcribed: {why[:160]}'} if not transcribed else {})}, llm=llm)
         n += r['status'] != 'duplicate'

@@ -118,6 +118,15 @@ test("the card's buttons leave the card on the canvas and come back on the Tasks
   assert.match(read("ActionRow.jsx"), /data-tq-next/);
 });
 
+test("Decline says what goes out with it: the text in the box exactly as edited, or nothing when the box is empty", () => {
+  const src = fs.readFileSync(path.join(process.cwd(), "src", "ReviewDecision.jsx"), "utf8");
+  assert.match(src, /sends the text above exactly as you have it/);
+  assert.match(src, /The box is empty, so nothing is sent/);
+  assert.match(src, /`\$\{co\.alt\.label\} & send your text`/, "the label says it sends the owner's text only when there is text");
+  assert.match(src, /reply_text: verb !== "reject" && sendable && words.trim()\(\) \? value : null/, "an empty box sends no reply - Decline only closes the pull request");
+  assert.equal((src.match(/title=\{altTitle\}|title: altTitle/g) || []).length, 1, "the row's Decline IS the card's (one list, `moves`): one sentence");
+  assert.doesNotMatch(src, /disabled: busy \|\| \(sendable && !words.trim()\(\)\), run: \(\) => decideBoth\(co\.alt/, "Decline is not disabled by an empty box");
+});
 
 test("Next is the FIRST control of the row, then the types; no task number or waiting words on it (2026-10-13)", () => {
   const src = fs.readFileSync(path.join(process.cwd(), "src", "ActionRow.jsx"), "utf8");
@@ -208,7 +217,7 @@ test("...and beside it next to the way back into a session", () => {
 });
 
 test("the task page registers Close with a note with Mark done, not as a decision of its own", () => {
-  const page = fs.readFileSync(path.join(process.cwd(), "src", "TaskPage.jsx"), "utf8");
+  const page = fs.readFileSync(path.join(process.cwd(), "src", "taskMoves.js"), "utf8");
   assert.match(page, /id: "close-note", group: "more"/);
 });
 
@@ -264,7 +273,7 @@ test("one name per button: the bar says the label itself, no short bar word (but
   const mod = await import("../src/actionRow.js");
   assert.equal(mod.shortLabel, undefined, "no second, shorter name for the bar");
   const src = fs.readFileSync(path.join(process.cwd(), "src", "ActionRow.jsx"), "utf8");
-  assert.match(src, />\{v\.label\}<\/button>/);
+  assert.match(src, /><PressLabel v=\{v\} \/><\/button>/);
   assert.doesNotMatch(src, /\bSHORT\b|shortLabel/);
   const view = fs.readFileSync(path.join(process.cwd(), "src", "AssistantView.jsx"), "utf8");
   assert.doesNotMatch(view, /tq-compose-hint|Enter sends · Shift\+Enter/);           // no hint under the box
@@ -307,8 +316,10 @@ test("the draft's own Send is never on the bar and leaves no empty slot; advised
   const later = rowOf({ ref: "", list }, { verb: "defer", label: "Remind me" });
   assert.deepEqual(later.more.filter((x) => x.tone === "p").map((x) => x.id), ["remind"], "an advised Remind me is filled where it stands");
   assert.deepEqual(ids(later), ids(quiet)); assert.equal(later.lit, "");
-  // ...and the draft's own buttons under it are outlined while the row carries the item, but the one the Advisor lit
-  assert.match(fs.readFileSync(path.join(process.cwd(), "src", "ReviewDecision.jsx"), "utf8"), /const solid = toRow && lit !== no\("approve"\) \? "outlined" : "contained";/);
+  // ...and the draft's own press named by what it does is filled on its card, whatever the row carries (the card gallery, 2026-11-25: the row
+  // draws no card's press, so Comment and Approve stood outlined) - unless the Advisor lit another of its buttons
+  assert.match(fs.readFileSync(path.join(process.cwd(), "src", "ReviewDecision.jsx"), "utf8"), /lit=\{lit\} press=\{presses\}/);
+  assert.match(fs.readFileSync(path.join(process.cwd(), "src", "Artifact.jsx"), "utf8"), /const filled = v\.id === lit \|\| \(!anyLit && v\.tone === "p"\);/);
 });
 
 // issue 263 / the UI audit (2026-10-21): two mounted copies of one card registered under one name, cleared each other's verbs on

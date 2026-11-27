@@ -61,6 +61,26 @@ class FileRoutesTests(unittest.TestCase):
             self.assertIn(quote(n) if quote(n) != n else f'"{n}"', cd)        # the file's own name, RFC 5987 where it is not plain
             self.assertEqual(self.client.head(url).status_code, 200, n)       # what the page asks before it saves
 
+    def test_a_file_is_read_by_the_page_s_cookie_and_never_by_a_token_in_its_address(self):
+        """The red team, 2026-11-24 (T8c): Download put the owner token in the file's address (?download=true&token=...), where history,
+        a referer and a log kept it. A browser's <img src> or link carries no header, so the page is handed a same-site, script-proof cookie
+        by its first call, and the file is read by that alone."""
+        url, tok = self.rows()['plain.txt']['url'], server.cfg['server'].get('token') or ''
+        bare = TestClient(server.app, headers={'X-Taskuary-Token': ''})
+        self.assertEqual(bare.get(url, params={'download': 'true', 'token': tok}).status_code, 401)
+        page = TestClient(server.app)                                          # ...the page's own call, with its header, hands it the cookie
+        got = page.get('/api/tasks')
+        cookie = got.headers.get('set-cookie') or ''
+        self.assertIn(f'{server.FILE_COOKIE}=', cookie); self.assertIn('HttpOnly', cookie); self.assertIn('SameSite=strict', cookie)
+        # ...a value keyed by the owner token that opens file reads alone - never the token itself (red team #3), which a cookie jar would hold
+        self.assertNotIn(tok, cookie)
+        bare.cookies.set(server.FILE_COOKIE, tok)
+        self.assertEqual(bare.get(url, params={'download': 'true'}).status_code, 401)
+        bare.cookies.set(server.FILE_COOKIE, got.cookies[server.FILE_COOKIE])
+        self.assertEqual(bare.get(url, params={'download': 'true'}).status_code, 200)
+        self.assertEqual(TestClient(server.app, headers={'X-Taskuary-Token': got.cookies[server.FILE_COOKIE]}).get('/api/tasks').status_code, 401)
+        self.assertEqual(TestClient(server.app, headers={'X-Taskuary-Token': ''}).get(url).status_code, 401)   # ...and nothing else opens it
+
     def test_open_is_inline_for_what_the_page_draws_and_attachment_for_the_rest(self):
         rows = self.rows()
         def get(n, **q): return self.client.get(rows[n]['url'], params=q)
@@ -89,6 +109,29 @@ class FileRoutesTests(unittest.TestCase):
         self.assertFalse(got['more'])
         (self.dir / 'broken.docx').write_bytes(b'not a zip')
         self.assertEqual(self.client.get(f'/api/task-outputs/{self.tid}/broken.docx', params={'preview': 'true'}).status_code, 422)
+
+    def test_a_deck_previews_as_its_slides_in_the_decks_own_order(self):
+        """The card gallery, 2026-11-25: a .pptx an agent handed over stood as a bare name with nothing under it. A deck previews on the road a
+        document does - each slide its title as a heading, then its lines and its table - in the order the presentation lists them."""
+        A, P, R = 'http://schemas.openxmlformats.org/drawingml/2006/main', 'http://schemas.openxmlformats.org/presentationml/2006/main', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        para = lambda t: f'<a:p><a:r><a:t>{t}</a:t></a:r></a:p>'
+        shape = lambda t, ph='': f'<p:sp><p:nvSpPr><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:txBody>{para(t)}</p:txBody></p:sp>'
+        slide = lambda *parts: f'<p:sld xmlns:p="{P}" xmlns:a="{A}"><p:cSld><p:spTree>{"".join(parts)}</p:spTree></p:cSld></p:sld>'
+        table = '<p:graphicFrame><a:tbl><a:tr><a:tc><a:txBody>' + para('Vendor') + '</a:txBody></a:tc><a:tc><a:txBody>' + para('Cost') + '</a:txBody></a:tc></a:tr></a:tbl></p:graphicFrame>'
+        with zipfile.ZipFile(self.dir / 'launch.pptx', 'w') as z:
+            # ...the file numbered 1 is shown second: he moved it, and the presentation's own list says so
+            z.writestr('ppt/slides/slide1.xml', slide(shape('Why now', '<p:ph type="title"/>'), shape('Invoices in one place'), table))
+            z.writestr('ppt/slides/slide2.xml', slide(shape('Ledger portal launch', '<p:ph type="ctrTitle"/>'), shape('Northwind')))
+            z.writestr('ppt/slides/slide3.xml', slide(shape('No title on this one')))
+            z.writestr('ppt/presentation.xml', f'<p:presentation xmlns:p="{P}" xmlns:r="{R}"><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"/>'
+                                               '<p:sldId id="258" r:id="rId3"/></p:sldIdLst></p:presentation>')
+            z.writestr('ppt/_rels/presentation.xml.rels', '<Relationships>' + ''.join(f'<Relationship Id="rId{i}" Target="slides/slide{i}.xml"/>' for i in (1, 2, 3)) + '</Relationships>')
+        row = self.rows()['launch.pptx']
+        self.assertEqual(row['preview'], 'document')
+        got = self.client.get(row['url'], params={'preview': 'true'}).json()
+        self.assertEqual(got['blocks'], [{'text': '1. Ledger portal launch', 'heading': True}, {'text': 'Northwind'},
+                                         {'text': '2. Why now', 'heading': True}, {'text': 'Invoices in one place'}, {'rows': [['Vendor', 'Cost']]},
+                                         {'text': 'Slide 3', 'heading': True}, {'text': 'No title on this one'}])
 
     def test_a_long_document_previews_its_start(self):
         W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -146,6 +189,22 @@ class FileRoutesTests(unittest.TestCase):
         self.assertIn('was moved or deleted', self.client.get(f'/api/attachments/{kept}').json()['detail'])
         self.assertIn('never saved', self.client.get(f'/api/attachments/{never}').json()['detail'])
 
+    def test_a_stored_type_never_reaches_a_header_as_written(self):
+        """Red team F4: a mail's ContentType "image/png, text/html" was served inline verbatim - a browser read it as a page on this origin,
+        where the owner token is - and a CR/LF in one broke the response. A file goes out as the type its name says, or one well-formed
+        type, sandboxed when opened as a page, never sniffed."""
+        d = config.home() / 'attachments' / '79'; d.mkdir(parents=True, exist_ok=True); self.addCleanup(shutil.rmtree, d, True)
+        page = b'<script>fetch("/api/connectors")</script>'
+        for n in ('photo.png', 'photo'): (d / n).write_bytes(page)
+        for n, ct in (('photo.png', 'image/png, text/html'), ('photo', 'image/png, text/html'), ('photo', 'text/html\r\nSet-Cookie: x=1'),
+                      ('photo.png', 'image/png\r\nX-Evil: 1')):
+            aid = self.store.add_attachment({'MessageId': 79, 'Name': n, 'ContentType': ct, 'Size': len(page), 'Inline': 0, 'Path': str(d / n)})
+            got = self.client.get(f'/api/attachments/{aid}')
+            self.assertEqual(got.status_code, 200, (n, ct))
+            t = got.headers['content-type']
+            self.assertNotIn('html', t, (n, ct)); self.assertNotIn(',', t); self.assertNotIn('x-evil', got.headers); self.assertNotIn('set-cookie', got.headers)
+            self.assertEqual((got.headers['x-content-type-options'], got.headers['content-security-policy']), ('nosniff', 'sandbox'))
+
     def test_a_mail_attachment_previews_on_the_road_an_agents_file_does(self):
         "The owner, 2026-11-16: a Word, Excel, CSV or text attachment only downloaded, while the same file an agent made opened in place."
         from openpyxl import Workbook
@@ -188,18 +247,13 @@ class FileRoutesTests(unittest.TestCase):
                 self.assertEqual(got.status_code, 422, bad)
 
     def test_a_terminal_agent_is_told_where_its_files_go(self):
-        "By its environment and its standing rules - never the seed, which a real TUI types under a budget (test_terminal)."
+        "By its environment - never the seed, which a real TUI types under a budget (test_terminal)."
         from taskuary import terminal
         env = terminal.session_env('coding', self.tid)
         self.assertEqual(env[outputs.ENV], str(outputs.folder(self.tid)))
         self.assertTrue(outputs.folder(self.tid).is_dir())
         self.assertNotIn(outputs.ENV, terminal.session_env('coding', None))          # a bare shell has no task folder
         self.assertNotIn(outputs.ENV, terminal.session_env('coding', self.tid, stranger=True))
-        older = terminal.with_fence_rule('Rules from before files had a folder.')     # an owner's AGENT.md copy from before it hears it
-        self.assertIn(f'${outputs.ENV}', older)
-        self.assertEqual(terminal.with_fence_rule(older), older)
-        template = (Path(outputs.__file__).parent / 'templates' / 'agent.md').read_text(encoding='utf-8')
-        self.assertIn(f'${outputs.ENV}', template)
 
     def test_the_desktop_window_saves_downloads(self):
         from taskuary import desktop
@@ -225,9 +279,10 @@ class FileRoutesTests(unittest.TestCase):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
         base = f'http://127.0.0.1:{srv.server_address[1]}'
+        own = mock.patch.dict(desktop.SERVING, {'url': base}); own.start(); self.addCleanup(own.stop)      # ...it plays this window's own server
         with tempfile.TemporaryDirectory() as d:
             dl = Path(d) / 'Downloads'
-            got = desktop.save_download(f'{base}/api/task-outputs/7/chart.png?download=true&token=t', folder=dl)
+            got = desktop.save_download(f'{base}/api/task-outputs/7/chart.png?download=true', folder=dl)
             self.assertEqual((got['name'], got['folder']), ('chart.png', str(dl)))      # the whole folder: "Downloads" alone said not which
             self.assertEqual((dl / 'chart.png').read_bytes(), b'png-bytes')
             self.assertEqual(desktop.save_download(f'{base}/api/task-outputs/7/chart.png', folder=dl)['name'], 'chart (1).png')
@@ -246,6 +301,35 @@ class FileRoutesTests(unittest.TestCase):
         self.assertEqual(desktop.safe_name('..\\..\\x:y.txt'), 'x_y.txt')
         self.assertEqual((desktop.safe_name('..'), desktop.safe_name('')), ('download', 'download'))
 
+    def test_the_window_saves_only_its_own_servers_files_under_a_name_that_shows_what_it_is(self):
+        """Red team #3: save_download carries the owner's header, and the page hands it any address a link names - an agent's link to
+        /api/settings?download=true saved his settings into Downloads, another loopback port got his token, and `invoice\u202efdp.html` and
+        `run.url` landed under names that drew as a PDF or reach out when the folder is opened."""
+        import http.server, tempfile, threading
+        from taskuary import desktop
+        seen = []
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                seen.append((self.path, self.headers.get('X-Taskuary-Token')))
+                name = {'bidi': 'invoice\u202efdp.html', 'run': 'run.url', 'doc': 'Q3 report.docx'}.get(self.path.rsplit('/', 1)[-1].split('?')[0], 'x.txt')
+                self.send_response(200); self.send_header('Content-Disposition', f"attachment; filename*=UTF-8''{__import__('urllib.parse').parse.quote(name)}")
+                self.end_headers(); self.wfile.write(b'bytes')
+        srv, other = (http.server.ThreadingHTTPServer(('127.0.0.1', 0), H) for _ in range(2))
+        for x in (srv, other): threading.Thread(target=x.serve_forever, daemon=True).start(); self.addCleanup(x.shutdown)
+        base = f'http://127.0.0.1:{srv.server_address[1]}'
+        own = mock.patch.dict(desktop.SERVING, {'url': base}); own.start(); self.addCleanup(own.stop)
+        with tempfile.TemporaryDirectory() as d:
+            dl = Path(d) / 'Downloads'
+            for url in (f'{base}/api/settings?download=true', f'{base}/api/tasks', f'{base}/api/task-outputs/../settings',
+                        f'{base}/api/task-outputs/%2e%2e/%2e%2e/settings', f'http://127.0.0.1:{other.server_address[1]}/api/task-outputs/7/doc',
+                        'http://169.254.169.254/api/task-outputs/7/doc'):
+                self.assertEqual(desktop.save_download(url, folder=dl), {'error': 'Only a file from Taskuary itself can be saved here.'}, url)
+            self.assertEqual(seen, [])                                                   # ...none of them was even asked, the header never sent
+            names = [desktop.save_download(f'{base}/api/task-outputs/7/{k}', folder=dl).get('name') for k in ('bidi', 'run', 'doc')]
+            self.assertEqual(names, ['invoicefdp.html', 'run.url.txt', 'Q3 report.docx'])
+            self.assertEqual(sorted(p.name for p in dl.iterdir()), sorted(names))
+
     # -- the desktop road against the REAL server: what the window's Download leaves on disk ---------------------------------------
     def _serve(self):
         "The app itself on a loopback port, as the desktop window reaches it - not a stand-in that answers what a test expects."
@@ -256,7 +340,10 @@ class FileRoutesTests(unittest.TestCase):
             if srv.started: break
             time.sleep(0.05)
         self.addCleanup(setattr, srv, 'should_exit', True)
-        return f'http://127.0.0.1:{srv.servers[0].sockets[0].getsockname()[1]}', server.cfg['server'].get('token') or ''
+        from taskuary import desktop
+        base = f'http://127.0.0.1:{srv.servers[0].sockets[0].getsockname()[1]}'
+        own = mock.patch.dict(desktop.SERVING, {'url': base}); own.start(); self.addCleanup(own.stop)
+        return base, server.cfg['server'].get('token') or ''
 
     def test_the_desktop_download_saves_each_real_file_whole_from_the_real_server(self):
         """A PDF, a workbook, a 12 MB ZIP and a published page an agent made: the window's Download (desktop.save_download, the page's
@@ -276,10 +363,10 @@ class FileRoutesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             dl = Path(d) / 'Downloads'
             for n in ('Collections – Q3.pdf', 'Collections by payer.xlsx', 'Quarter pack.zip'):
-                got = desktop.save_download(f"{base}{rows[n]['url']}?download=true&token={tok}", folder=dl)
+                got = desktop.save_download(f"{base}{rows[n]['url']}?download=true", folder=dl)         # ...the window's own header carries the token
                 self.assertEqual((got.get('name'), got.get('folder')), (n, str(dl)), got)
                 self.assertEqual((dl / n).read_bytes(), (self.dir / n).read_bytes(), n)
-            got = desktop.save_download(f"{base}/api/task-artifacts/{art['ArtifactId']}?download=true&token={tok}", folder=dl)
+            got = desktop.save_download(f"{base}/api/task-artifacts/{art['ArtifactId']}?download=true", folder=dl)
             self.assertEqual(got.get('name'), 'Budget coverage.html', got)
             self.assertEqual((dl / 'Budget coverage.html').read_bytes(), page.read_bytes())
             # the bridge the window calls it through (pywebview's js_bridge_call): what the page is handed back is the same line
@@ -288,7 +375,7 @@ class FileRoutesTests(unittest.TestCase):
             said = []
             win = type('Window', (), {'_functions': {'save_download': desktop.save_download}, '_js_api': None, 'evaluate_js': lambda s, js: said.append(js)})()
             with mock.patch.object(desktop, 'downloads_dir', lambda: dl):      # the page passes the address alone: Downloads is the window's
-                js_bridge_call(win, 'save_download', [f"{base}{rows['Quarter pack.zip']['url']}?download=true&token={tok}"], 'p1')
+                js_bridge_call(win, 'save_download', [f"{base}{rows['Quarter pack.zip']['url']}?download=true"], 'p1')
                 for _ in range(400):
                     if said: break
                     __import__('time').sleep(0.05)
@@ -319,6 +406,7 @@ class FileRoutesTests(unittest.TestCase):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
         base = f'http://127.0.0.1:{srv.server_address[1]}'
+        own = mock.patch.dict(desktop.SERVING, {'url': base}); own.start(); self.addCleanup(own.stop)      # ...it plays this window's own server
         with tempfile.TemporaryDirectory() as d:
             dl = Path(d) / 'Downloads'
             for how in ('short', 'moved'):

@@ -12,10 +12,18 @@ import sqlite3
 from datetime import datetime, timedelta
 from unittest import mock
 
-from taskuary import evening, problems, reports
+import pytest
+
+from taskuary import evening, problems, reports, scopes
 from taskuary.msauth import LAPSED
 from taskuary.reports import REGISTRY
 from taskuary.store import MemoryStore
+
+
+@pytest.fixture(autouse=True)
+def stand_ins_read():
+    "The stand-in sources here read: declared so, as every real one is (scopes.ACTIONS) - an undeclared one would wait as a write (flow.held_writes)."
+    with mock.patch.dict(scopes.ACTIONS, {'_ok': 'read', '_down': 'read'}): yield
 
 
 def _ago(hours=1): return (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
@@ -172,7 +180,7 @@ def test_a_mail_home_is_read_as_before():
     head, body = evening.brief(s, 8)
     assert head == 'the last 8 hours of Outlook and your Taskuary work'
     line = next(l for l in body.splitlines() if 'subject=Renewal decision' in l)
-    assert 'state=open priority' in line and 'where=' not in line          # a mail row reads as it always did
+    assert 'state=on TQ-' in line and 'where=' not in line          # a mail row on a task reads where its task stands
 
 
 def test_the_seeded_prompt_names_no_channel_and_an_unedited_old_one_is_healed():

@@ -3,7 +3,7 @@
 import { t } from "./i18n.js";
 const WORDS = {
   workflow: ["workflow", "workflows"], report: ["report", "reports"], brain: ["", "AI brains"], card: ["card", "cards"],
-  draft: ["reply draft waiting", "reply drafts waiting", true], rule: ["rule", "rules"], playbook: ["playbook", "playbooks"],
+  draft: ["reply draft waiting", "reply drafts waiting", true], rule: ["rule", "rules"], skill: ["skill", "skills"],
   source: ["source it reads", "sources it reads", true],
 };
 

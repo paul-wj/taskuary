@@ -1,32 +1,77 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+// The card gallery, 2026-11-25: a pull request's card showed its body alone under "On this task" - which title, repository and branch it opens
+// are the server's reading for the press (ci.pr_plan), drawn as the card's own rows
+test("a pull request card says its title, its repository and its branch", async () => {
+  const { proposalPresentation: show, reviewText: words } = await import("../src/reviewProposal.js");
+  const review = { Kind: "action", Reason: "the agent proposes to open a DRAFT pull request for this task - the rounding fix",
+    DraftText: JSON.stringify({ action: "open_pr", title: "Keep cents in totals", body: "Rounds to two places.", why: "the rounding fix",
+      pr: { title: "[TQ-0021] Keep cents in totals", repo: "northwind/ledger", branch: "fix-rounding", base: "master" } }) };
+  const p = show(review);
+  assert.deepEqual([p.destinationLabel, p.destination], ["In", "northwind/ledger"]);
+  assert.deepEqual(p.rows, [{ label: "Title", now: "[TQ-0021] Keep cents in totals" }, { label: "Branch", now: "fix-rounding → master" }]);
+  assert.equal(words(review), "Rounds to two places."); assert.equal(p.bare, false);
+  // ...and with no branch or repository known yet it says its title alone - never a place it does not know
+  const bare = show({ ...review, DraftText: JSON.stringify({ action: "open_pr", pr: { title: "[TQ-0021] Fix the rounding", repo: "", branch: "", base: "master" } }) });
+  assert.deepEqual([bare.destination, bare.rows.length, bare.bare], ["", 1, true]);
+});
+
+// The card gallery, 2026-11-25: a settings card he approved read "✓ Approved" and nothing else; a tracker move "✓ Approved · Where NW-12 · jira
+// move" - while a declared act's card said "✓ Commented". Every pressed card reads one function for what its press did
+test("a pressed card says what its press did in the act's own word, from one function", async () => {
+  const { outcomeOf } = await import("../src/reviewProposal.js");
+  const pressed = (p, result, Reason = "") => ({ Kind: "action", Status: "approved", Reason, DraftText: JSON.stringify(p), FinalText: JSON.stringify({ ...p, result }) });
+  const set = outcomeOf(pressed({ action: "settings", changes: [{ name: "poll_minutes", value: 10, was: "15" }, { name: "email_signature", value: "Alex Doyle\nNorthwind - Finance", was: null }] },
+    { changed: ["poll_minutes = 10"] }));
+  assert.deepEqual(set, { mark: "approved", label: "✓ Changed", url: "", line: "Poll minutes: 15 → 10 · Email signature: Alex Doyle Northwind - Finance" });
+  const move = outcomeOf(pressed({ action: "run_tool", type: "jira_move", item: "NW-12", status: "Done" }, { headline: "1 row", url: "https://jira.example/alex/1" },
+    "the agent proposes to move NW-12 in Jira to Done"));
+  assert.deepEqual(move, { mark: "approved", label: "✓ Done", url: "https://jira.example/alex/1", line: "" }, "its title says where - never the raw tool's name under it");
+  assert.equal(outcomeOf({ Kind: "action", Status: "rejected", DraftText: JSON.stringify({ action: "settings", changes: [] }) }).label, "✗ Dismissed");
+  assert.deepEqual(outcomeOf({ Kind: "action", Status: "superseded", ActError: "Jira refused the move.", DraftText: "{}" }), { mark: "failed", label: "✗ Failed", line: "Jira refused the move.", url: "" });
+});
+
 import { heldActsLine, proposalPresentation, reviewStatusLabel, resultOf, reviewText } from "../src/reviewProposal.js";
 
-const playbook = {
+const skill = {
   Kind: "action",
   Title: "Pto",
   DraftText: JSON.stringify({
-    action: "write_playbook",
+    action: "save_skill",
     slug: "run-manual-pto-import",
-    text: "# Run manual PTO import\nwhen: files are waiting\n",
+    text: "---\nname: run-manual-pto-import\ndescription: Run the manual PTO import. Use when files are waiting.\n---\n# Run manual PTO import\n\n1. Load the files.\n",
   }),
 };
 
-test("a playbook review is a save process, not a reply", () => {
-  const shown = proposalPresentation(playbook);
-  assert.equal(shown.kind, "playbook");
-  assert.equal(shown.title, "Playbook · Run manual PTO import");
-  assert.equal(shown.destination, "Reports → Playbooks → run-manual-pto-import.md");
+test("a skill review is a save process, not a reply", () => {
+  const shown = proposalPresentation(skill);
+  assert.equal(shown.kind, "skill");
+  assert.equal(shown.title, "Skill · Run manual PTO import");
+  assert.equal(shown.destination, "Reports → Skills → run-manual-pto-import");
   assert.equal(shown.approveLabel, "Approve");          // one word for every proposal (buttons.json approve.states.action)
   assert.match(shown.context, /nothing will be sent/);
 });
 
-test("a playbook proposed as new names the file its title files it under", () => {
-  // playbooks.write files slug "new" under slugify(title): the card said new.md over a playbook saved as send-our-w-9-....md
-  const review = { Kind: "action", DraftText: JSON.stringify({ action: "write_playbook", slug: "new",
-    text: "# Send our W-9 to a customer who asks\nwhen: a customer asks for our W-9\n" }) };
-  assert.equal(proposalPresentation(review).destination, "Reports → Playbooks → send-our-w-9-to-a-customer-who-asks.md");
+test("a skill proposed as new names the folder its title files it under", () => {
+  // skills.write files slug "new" under its own name: the card said new.md over a skill saved as send-our-w-9-...
+  const review = { Kind: "action", DraftText: JSON.stringify({ action: "save_skill", slug: "new",
+    text: "# Send our W-9 to a customer who asks\n\nFind the newest signed copy.\n" }) };
+  assert.equal(proposalPresentation(review).destination, "Reports → Skills → send-our-w-9-to-a-customer-who-asks");
+  // ...and one with no heading in its body is titled by its frontmatter's name
+  const named = { Kind: "action", DraftText: JSON.stringify({ action: "save_skill", slug: "w9", text: "---\nname: w9\ndescription: Send the W-9.\n---\nFind the newest signed copy.\n" }) };
+  assert.equal(proposalPresentation(named).title, "Skill · w9");
+});
+
+test("the agent's own skill card asks him its one question, and names the skill under it", () => {
+  const offer = "Make a skill for this kind of email, so the next agent can use it?";
+  const review = { Kind: "action", DraftText: JSON.stringify({ action: "save_skill", slug: "renewal-uplift", offer,
+    text: "---\nname: renewal-uplift\ndescription: Answer a renewal uplift.\n---\n# Renewal uplift\n\nCompare it with last year.\n" }) };
+  const p = proposalPresentation(review);
+  assert.equal(p.title, offer);
+  assert.match(p.context, /^Skill · Renewal uplift · nothing will be sent/);
+  assert.equal(p.destination, "Reports → Skills → renewal-uplift");
+  assert.equal(p.approveLabel, "Approve");
 });
 
 test("a workflow's write waiting for the yes reads as what it writes and where, never its JSON", () => {
@@ -43,8 +88,18 @@ test("a workflow's write waiting for the yes reads as what it writes and where, 
   assert.doesNotMatch(reviewText(other), /"action"/);
 });
 
-test("the editable review body is the playbook markdown, not its action envelope", () => {
-  assert.equal(reviewText(playbook), "# Run manual PTO import\nwhen: files are waiting\n");
+test("a step's card shows every field its press runs - a script beside harmless words is drawn, never hidden behind them", () => {
+  const review = { Kind: "action", DraftText: JSON.stringify({ action: "run_tool", type: "winrm", connector_id: 3, text: "Check the disk space",
+    script: "Remove-Item C:\\ -Recurse", url: "https://box.example", path: "C:\\logs" }) };
+  const shown = proposalPresentation(review), rows = Object.fromEntries(shown.rows.map((r) => [r.label, r.now]));
+  assert.equal(reviewText(review), "Check the disk space");     // ...the box holds the words alone: an edit sends them, never a field's line
+  assert.equal(rows.Script, "Remove-Item C:\\ -Recurse");       // ...the script it runs stands beside them, read off
+  assert.equal(rows.Url, "https://box.example");                 // ...a second place too: the Where line names only the first
+  assert.equal(shown.destination, "C:\\logs · winrm");
+});
+
+test("the editable review body is the skill markdown, not its action envelope", () => {
+  assert.match(reviewText(skill), /^---\nname: run-manual-pto-import\n[\s\S]*# Run manual PTO import\n\n1\. Load the files\.\n$/);
   assert.equal(reviewText({ Kind: "draft", DraftText: "Thanks." }), "Thanks.");
 });
 
@@ -66,15 +121,17 @@ test("a verdict is shown in the words the owner used, never the column value", (
   assert.equal(reviewStatusLabel(null), "");
 });
 
-// the ledger's facts about a kind of work reach its playbook as a proposal: the card shows the page, and says where it goes (build step 5)
-test("an amend_playbook proposal shows the page and saves to its playbook", () => {
-  const review = { Kind: "action", DraftText: JSON.stringify({ action: "amend_playbook", slug: "vendor-onboarding", text: "# Vendor onboarding\nwhen: x\n\n- ask first" }) };
-  assert.equal(reviewText(review), "# Vendor onboarding\nwhen: x\n\n- ask first");
+// the ledger's facts about a kind of work reach its skill as a proposal: the card shows the page, and says where it goes (build step 5)
+test("a change to a skill he has shows the page and says it adds what was learned", () => {
+  const review = { Kind: "action", DraftText: JSON.stringify({ action: "save_skill", slug: "vendor-onboarding", block: "## From the ledger\n- 2 of 6 came open again",
+    text: "# Vendor onboarding\n\n- ask first" }) };
+  assert.equal(reviewText(review), "# Vendor onboarding\n\n- ask first");
   const p = proposalPresentation(review);
-  assert.equal(p.kind, "playbook");
-  assert.equal(p.title, "Playbook · Vendor onboarding");
-  assert.match(p.destination, /vendor-onboarding\.md/);
-  assert.match(p.context, /ledger/);
+  assert.equal(p.kind, "skill");
+  assert.equal(p.title, "Skill · Vendor onboarding");
+  assert.match(p.destination, /vendor-onboarding$/);
+  assert.match(p.context, /learned/);
+  assert.match(proposalPresentation(skill).context, /Skill proposal/, "a new one is a proposal, not a change");
 });
 
 // the owner, 2026-10-25: "browser acts that can't be undone (submit, pay, delete, send) wait as a proposal the owner presses" - the card
@@ -167,7 +224,21 @@ test("a held shell step leads with what it does and why, its command folded", ()
   assert.equal(gate.lead, "Delete build in ledger"); assert.equal(gate.leadWhy, "Held before it ran - it can't be undone.");
   const card = readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
   assert.match(card, /\$\{cmdOpen \? "Hide" : "Show"\} the \$\{proposal\.foldWord \|\| "command"\}/);
-  assert.match(card, /\.\.\.\(\(proposal\?\.folded && !cmdOpen\) \|\| proposal\?\.bare \? \{ display: "none" \} : \{\}\)/, "the command's box stays folded until asked for");
+  assert.match(card, /hidden: \(proposal\?\.folded && !cmdOpen\) \|\| proposal\?\.bare/, "the command's box stays folded until asked for");
+});
+
+// WALK 15 (S12): a held Submit on a post's form was "Publish your Ask HN post ..." over `agent-browser click @e12` - the agent said "check it on
+// the card before you press" and the card had no words of the post. It carries what the press sends: the boxes the agent filled (`fields`)
+test("a held press that sends a form shows the post it sends - title, words, picture - and keeps the command folded", () => {
+  const p = { action: "browser_act", sid: "s1", args: ["click", "@e12"], command: "agent-browser click @e12", what: "publish your Ask HN post",
+    fields: [{ k: "title", t: "text", v: "Ask HN: How do small finance teams track seat usage?" }, { k: "url", t: "text", v: "" },
+      { k: "text", t: "textarea", v: "Invoices bill for a number of seats.\n\nHow do you count the ones in use?" },
+      { k: "pic", t: "file", v: "C:\\fakepath\\seats.png" }, { k: "agree", t: "checkbox", v: "on" }] };
+  const b = proposalPresentation({ Kind: "action", DraftText: JSON.stringify(p) });
+  assert.deepEqual(b.post, { title: "Ask HN: How do small finance teams track seat usage?", lines: [],
+    body: "Invoices bill for a number of seats.\n\nHow do you count the ones in use?", picture: "seats.png" });
+  assert.equal(b.folded, true, "the command stays in its fold");
+  assert.equal(proposalPresentation({ Kind: "action", DraftText: JSON.stringify({ ...p, fields: [] }) }).post, null, "a press with no form: no post");
 });
 
 // THE CARD ROUND, 2026-11-12 (every card kind drawn in the chat and read): the chat draws no reason line, so a held press in the agent's
@@ -191,7 +262,8 @@ test("every card says what it does in words: a held browser or desktop act leads
   assert.equal(proposalPresentation(land).bare, true); assert.equal(reviewText(land), "");
   const note = act({ action: "comment_issue", body: "Fixed in the totals branch." }, "the agent proposes to post a PUBLIC comment on the linked issue/PR");
   assert.equal(reviewText(note), "Fixed in the totals branch."); assert.equal(proposalPresentation(note).bare, false);
-  assert.equal(proposalPresentation(note).readOnly, true, "its box is what goes: the server takes no edit of it (proposals._edited)");
+  // ...its words are his to change while it waits, and what he left is what is posted (proposals.execute); its press says what it does
+  assert.ok(!proposalPresentation(note).readOnly); assert.equal(proposalPresentation(note).approveLabel, "Comment");
 });
 
 test("a break-out card says the new task and what moves to it, and its result names the task", () => {
@@ -199,8 +271,9 @@ test("a break-out card says the new task and what moves to it, and its result na
     moves: "Erin Blake: can we renew the Trainly seats before Friday?" };
   assert.equal(reviewText({ Kind: "action", DraftText: JSON.stringify(p) }),
     "Erin's ask about seats, apart from the invoice\n\nErin Blake: can we renew the Trainly seats before Friday?");
-  const card = proposalPresentation({ Kind: "action", DraftText: JSON.stringify(p), Reason: "the agent proposes to move 1 message to a task of its own" });
-  assert.deepEqual([card.title, card.destinationLabel, card.destination, card.readOnly], ["Move this part to a task of its own", "Its own task", "Renew the Trainly seats", true]);
+  // ...the new task named once, in its lead (proposals.break_out_words) - no row under it saying it again (the owner, 2026-11-24)
+  const card = proposalPresentation({ Kind: "action", DraftText: JSON.stringify(p), Reason: 'the agent proposes to move 1 message to a task of its own, "Renew the Trainly seats"' });
+  assert.deepEqual([card.lead, card.destination, card.readOnly], ['Move 1 message to a task of its own, "Renew the Trainly seats"', "", true]);
   const done = { ...p, result: { task: 9, ref: "TQ-0009", said: "TQ-0009 is the new task: Renew the Trainly seats" } };
   assert.deepEqual(resultOf({ Kind: "action", Status: "approved", FinalText: JSON.stringify(done) }),
     { said: "Approved · moved to its own task", what: "TQ-0009 is the new task: Renew the Trainly seats", url: "", command: "" });
@@ -218,7 +291,7 @@ test("a save-as-routine card shows the script whole and read-only, with when it 
   // ...SAID IN WORDS, the script folded (design round 4, 2026-11-19: an ops manager was asked to approve 60 lines of Python)
   const said = proposalPresentation({ ...rv, DraftText: JSON.stringify({ ...p, why: "lists the invoices that carry a late fee", steps: ["Read", "Run the script", "Read what it found"] }) });
   assert.deepEqual([said.lead, said.leadWhy, said.folded, said.foldWord], ["Lists the invoices that carry a late fee",
-    "Runs daily 07:00, on this computer: Read, then run the script, then read what it found. Nothing is saved or run until you approve.", true, "script"]);
+    "Runs daily 07:00, on this computer: Read, then run the script, then read what it found.", true, "script"]);
   const done = { ...p, result: { source: 7, link: "#report=7", said: 'Saved the routine "Late fees" - it runs daily 07:00.' } };
   assert.deepEqual(resultOf({ Kind: "action", Status: "approved", FinalText: JSON.stringify(done) }),
     { said: "Approved · saved the routine", what: 'Saved the routine "Late fees" - it runs daily 07:00.', url: "", command: "" });
@@ -236,15 +309,16 @@ test("an act whose press failed is a settled card with its error, never a waitin
 });
 
 // EVERY APPROVAL SAYS IN WORDS WHAT IT WILL DO (design round 5, 2026-11-19; round 4 did routines): a step in a connected system, a part moved to
-// a task of its own and a routine's change lead with what Approve does - the server's words for it - as a held step and a routine do
+// a task of its own and a routine's change lead with what Approve does - the server's words for it - as a held step and a routine do; said once,
+// never "nothing happens until you approve" under it (the owner, 2026-11-24: "we don't need it a bunch of times")
 test("every card leads with what its Approve does, in words", () => {
   const card = (p, Reason) => proposalPresentation({ Kind: "action", DraftText: JSON.stringify(p), Reason });
   const tool = card({ action: "run_tool", type: "sharepoint", path: "/Shared/Q3.xlsx" }, "the agent proposes to write the Q3 totals to Q3.xlsx on SharePoint");
-  assert.deepEqual([tool.lead, tool.leadWhy], ["Write the Q3 totals to Q3.xlsx on SharePoint", "Nothing runs until you approve."]);
+  assert.deepEqual([tool.lead, tool.leadWhy], ["Write the Q3 totals to Q3.xlsx on SharePoint", ""]);
   const out = card({ action: "break_out", title: "Book the caterer" }, 'the agent proposes to move the caterer emails to a task of its own, "Book the caterer"');
-  assert.deepEqual([out.lead, out.leadWhy], ['Move the caterer emails to a task of its own, "Book the caterer"', "Nothing moves until you approve."]);
+  assert.deepEqual([out.lead, out.leadWhy], ['Move the caterer emails to a task of its own, "Book the caterer"', ""]);
   const fix = card({ action: "repair_workflow", title: "Late fees" }, 'the agent proposes to change the routine "Late fees"');
-  assert.equal(fix.lead, 'Change the routine "Late fees"');
+  assert.equal(fix.lead, "Change routine: Late fees");
 });
 
 // THE HYDROGEN WALK, 2026-11-19: "Where x" under a post card - a post says its network as he knows it (proposals.queue's `network`)
@@ -252,4 +326,12 @@ test("a post card says where it goes by its network's name", async () => {
   const { toolWhere } = await import("../src/reviewProposal.js");
   assert.equal(toolWhere({ action: "run_tool", type: "x_post", network: "X", text: "The portal launches Monday." }), "X");
   assert.equal(toolWhere({ action: "run_tool", type: "linkedin_post", network: "LinkedIn" }), "LinkedIn");
+});
+
+test("a write that names a thing with its id says it once, by name, the id beside it", () => {
+  // walk 22 (2026-11-25): a bill's approval card read "vendor id: 58 / account id: 7 / amount: 120"
+  const r = { Kind: "action", DraftText: JSON.stringify({ action: "run_tool", type: "quickbooks_bill", vendor: "Payworth", vendor_id: "58", account: "Software subscriptions", account_id: "7", amount: 120 }) };
+  assert.equal(reviewText(r), "vendor: Payworth (id 58)\naccount: Software subscriptions (id 7)\namount: 120");
+  const bare = { Kind: "action", DraftText: JSON.stringify({ action: "run_tool", type: "quickbooks_bill", vendor_id: "58", amount: 120 }) };
+  assert.equal(reviewText(bare), "vendor id: 58\namount: 120", "an id with no name beside it is still on the card");
 });

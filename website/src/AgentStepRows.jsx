@@ -21,14 +21,27 @@ import ToolIcon from "@mui/icons-material/BuildOutlined";
 import ThoughtIcon from "@mui/icons-material/LightbulbOutlined";
 import { Md } from "./md.jsx";
 import { stepLabel } from "./agentSteps.js";
+import { askOn } from "./chatStream.js";
 import "./agentStepRows.css";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { stepsOf } from "./agentSteps.js";
 
+// THE PERMISSIONS WAITING ON HIM, BY THE CALL THEY ARE ABOUT (GeneralWorkspace provides it on a coding chat): {byCall, answer(p, kind), busy}
+export const PermitCtx = React.createContext(null);
+const AskBar = ({ asked }) => {
+  const permit = React.useContext(PermitCtx), busy = permit?.busy?.[asked.p.id];
+  return <div className="tq-aui-step-ask" role="group" aria-label="The agent asks permission" data-tq-permission={asked.p.id}>
+    <span className="tq-aui-step-ask-q">Waits for your answer{asked.p.why ? ` - ${asked.p.why}` : ""}</span>
+    {asked.options.map((o) => <button key={o.kind} type="button" className={`tq-chip${o.kind === "allow_once" ? " tq-chip-on" : ""}`} disabled={!!busy}
+      data-tq-permission-answer={o.kind} onClick={() => permit.answer(asked.p, o.kind)}>{busy === o.kind ? "…" : o.label}</button>)}
+    {permit?.err?.[asked.p.id] && <span className="tq-aui-asking-err" role="alert">{permit.err[asked.p.id]}</span>}
+  </div>;
+};
+
 // A SMALL MARK BY KIND (the owner, 2026-11-05: "look how other chat libraries show intermediately the tool calls"): a search, a web page, a
 // file, a command, the browser - read at a glance down the column, the words beside it say which
-const ICON = { web: SearchIcon, page: WebIcon, read: FileIcon, edit: WriteIcon, list: FolderIcon, search: FindIcon, run: CommandIcon, mail: MailIcon,
+const ICON = { web: SearchIcon, page: WebIcon, read: FileIcon, skill: FileIcon, edit: WriteIcon, list: FolderIcon, search: FindIcon, run: CommandIcon, mail: MailIcon,
   task: TaskIcon, data: DataIcon, plan: PlanIcon, helper: HelperIcon, sync: SyncIcon, tool: ToolIcon, thought: ThoughtIcon };
 export const iconOf = (step) => (step.kind === "page" && step.browser ? BrowserIcon : ICON[step.kind] || null);
 const Mark = ({ step }) => { const I = iconOf(step); return I ? <I aria-hidden className="tq-aui-step-icon" /> : <span className="tq-aui-tool-dot" />; };
@@ -53,7 +66,9 @@ export const StepRow = ({ step }) => {
   if (step.kind === "note" || step.kind === "error") return <div className={`tq-aui-note tq-aui-note-${step.kind}`}>{summary}</div>;
   // ...and the one at work now says what it is doing, with a quiet spinner where its word was
   // ...one still at work while later ones finished runs alongside them, and says so (agentSteps `alongside`)
+  // ...and the files the agent named for it that its title does not (agentSteps.agentWords), as quiet chips beside its words
   const head = <><Mark step={step} /><Label step={step} />
+    {(step.chips || []).map((c) => <span key={c} className="tq-aui-step-chip" data-tq-step-chip="">{c}</span>)}
     {!!step.outcome && <span className="tq-aui-step-outcome" data-tq-step-outcome=""> - {step.outcome}</span>}
     {step.times > 1 && <span className="tq-aui-step-outcome" data-tq-step-times=""> ({step.times} times)</span>}
     {step.status === "running" ? <>{step.alongside && <em data-tq-step-alongside="">still working in parallel</em>}
@@ -66,10 +81,18 @@ export const StepRow = ({ step }) => {
   // ...a helper's own steps open under its row (agentSteps `kids`), never interleaved with the main agent's
   if (step.kids?.length) return <details className={`${cls} tq-aui-step-helper`} data-tq-helper=""><summary>{head}</summary>
     <div className="tq-aui-helper-steps"><AgentSteps data={{ steps: step.kids }} /></div></details>;
-  return step.detail
+  // ...A PERMISSION IT WAITS ON IS ON ITS ROW, open, the agent's options as buttons (chatStream.askOn) - answered, the row reads how it went
+  const asked = askOn(step, React.useContext(PermitCtx)?.byCall);
+  if (asked) return <div className={cls}><div className="tq-aui-step-line">{head}</div><AskBar asked={asked} /></div>;
+  // ...A COMMAND AT WORK IS THE ROW IT WILL BE WHEN DONE (the owner, 2026-11-23: "on everything mode it flashes black for the commands then closes
+  // quickly"): its newest output (agentSteps.tailOf) waits behind the row's own disclosure, as the whole of it does once it ends - one <details>
+  // all its life, so nothing opens or shuts by itself and a row he opened stays open as it finishes
+  const body = step.tail ? [step.raw, `→ ${step.tail}`].filter(Boolean).join("\n") : step.detail;
+  return body
     ? <details className={cls}><summary>{head}</summary>
       {failed && <div className="tq-aui-step-why" data-tq-step-why="">{step.why || whyFailed(step.detail, step.own)}{step.status === "recovered" ? " It tried again another way, and that worked." : ""}</div>}
-      {failed ? <details className="tq-aui-step-raw"><summary>Raw output</summary><pre>{step.detail}</pre></details> : <pre>{step.detail}</pre>}</details>
+      {failed ? <details className="tq-aui-step-raw"><summary>Raw output</summary><pre>{body}</pre></details>
+        : <pre {...(step.tail ? { "data-tq-step-tail": "" } : {})}>{body}</pre>}</details>
     : <div className={cls}><div className="tq-aui-step-line">{head}</div></div>;
 };
 export const AgentSteps = ({ data }) => {

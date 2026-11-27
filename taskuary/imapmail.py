@@ -424,9 +424,14 @@ def sent_window(c, days: int, cap: int = 300, progress=None) -> list:
         except Exception: pass
 
 
-def _quoted(name: str) -> str:
-    """A folder with a space in it ('Sent Items', '[Gmail]/Sent Mail') must reach SELECT quoted."""
-    return f'"{name}"' if any(ch in name for ch in ' ()') else name
+_ATOM = re.compile(r'[^\x00-\x20\x7f(){%*"\\\]]+')
+
+def _quoted(s: str, bare: bool = True) -> str:
+    """One IMAP astring (RFC 3501 s.9): a bare atom where it can be (`bare`), else a quoted string with its \\ and " escaped - a folder with a space in it
+    ('Sent Items'), and a value a sender wrote (their address, a Message-ID): a quoted local part '" OR ALL TO "@evil.example' was
+    spliced in as three more search keys and matched every sent mail (the red team, 2026-11-24, T1b)."""
+    s = re.sub(r'[\r\n\0]', '', str(s or ''))
+    return s if bare and _ATOM.fullmatch(s) else '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
 def sent_history(store, days: int, cap: int = 300, progress=None) -> list:
@@ -965,5 +970,7 @@ def send_smtp(store, c, to: list, subject: str, body: str, in_reply_to: str = No
                 raise RuntimeError(f'{GOOGLE_REFUSED} for {user} - press Sign in with Google on the Gmail card again.') from e
         else: S.login(user, c['Secret'])
         S.sendmail(user, list(to) + cc + bcc, m.as_string())
+    # ...and the Message-ID it went with: the app's own record of the send (channels.record_sent), so an answer to it finds its task
     return {'channel': 'email', 'to': to, 'cc': cc, 'bcc': bcc, 'mailbox': user, 'threaded': bool(in_reply_to),
-            'attached': [f['name'] for f in (attachments or [])]}
+            'attached': [f['name'] for f in (attachments or [])], 'message_id': m['Message-ID'],
+            'refs': list(references or ([in_reply_to] if in_reply_to else []))}

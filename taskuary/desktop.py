@@ -7,6 +7,43 @@ exe with `pyinstaller taskuary.spec` (see the spec at the repo root).
 """
 import http.client, io, os, socket, sys, threading, time, urllib.parse, webbrowser
 from pathlib import Path
+
+# A LAUNCHER'S RUN IS NEVER A START OF THE APP (another user's computer, 2026-11-25: three times in an hour the app went silent a second
+# after an agent's command). The launchers put on an agent's PATH - the browser's gate (gate.folder) and the `taskuary` command
+# (terminal.own_command) - run `<this interpreter> -m <module>`, and in the packaged app the interpreter is Taskuary.exe, whose script
+# is this one: each agent-browser command started the desktop app - its log, its sweep of old unpack folders, and the start that found
+# one running and asked it to bring its window forward - and never ran the command. It runs the module, as an interpreter would, and
+# nothing else of the app: only the launchers' own modules
+RUNS = ('taskuary.gate', 'taskuary.cli')
+def as_module(argv: list):
+    "`-m <module> args...` as the interpreter runs it: its exit code - None for any other start, which is the app's."
+    if len(argv) < 2 or argv[0] != '-m': return None
+    if argv[1] not in RUNS: print(f'Taskuary runs only {", ".join(RUNS)} with -m, not {argv[1]}', file=sys.stderr); return 2
+    try:
+        import pyi_splash                                  # the packaged app's splash, up before any of this ran: never for a command
+        pyi_splash.close()
+    except Exception: pass
+    _inherit_std()
+    import runpy
+    sys.argv = [argv[1], *argv[2:]]
+    try: runpy.run_module(argv[1], run_name='__main__', alter_sys=True)
+    except SystemExit as e: return e.code if isinstance(e.code, int) else 0 if e.code is None else 1
+    return 0
+
+
+def _inherit_std():
+    "A windowed exe has no sys.stdout: the streams its caller handed it are taken up, so what the command says reaches the agent's shell."
+    if os.name != 'nt' or all(getattr(sys, n) is not None for n in ('stdin', 'stdout', 'stderr')): return
+    import ctypes, msvcrt
+    k = ctypes.WinDLL('kernel32'); k.GetStdHandle.restype = ctypes.c_void_p
+    for n, h, mode in (('stdin', -10, 'r'), ('stdout', -11, 'w'), ('stderr', -12, 'w')):
+        if getattr(sys, n) is not None or not (oh := k.GetStdHandle(h)) or oh == ctypes.c_void_p(-1).value: continue
+        try: setattr(sys, n, open(msvcrt.open_osfhandle(oh, os.O_RDONLY if mode == 'r' else 0), mode, encoding='utf-8', errors='replace',
+                                  closefd=False, buffering=1 if mode == 'w' else -1))
+        except OSError: pass
+
+
+if __name__ == '__main__' and (_rc := as_module(sys.argv[1:])) is not None: sys.exit(_rc)
 # Every import serving() needs is HERE. It runs on a thread while uvicorn imports taskuary.server
 # on another, and an import on both sides at once deadlocks on the import lock - which is how the
 # app came to start and then never open its port at all (2026-09-09).
@@ -278,6 +315,14 @@ def allow_downloads(webview) -> bool:
 # downloads lands in the same folder (downloads_to_folder).
 _BAD = set('<>:"/\\|?*')
 LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
+SERVING: dict = {}          # the address this window's own server answers on (start_server): the one save_download asks
+# ...A NAME THAT RUNS WHEN IT IS OPENED, OR WHEN ITS FOLDER IS (red team #3): a link an agent wrote can name what the server sends back, and
+# `run.url` or a `.scf` in Downloads reaches out the moment Explorer draws its icon. What the system runs by name (PATHEXT, and its default
+# where there is none) and the shell's own shortcut files are saved as text: the bytes are kept, nothing is started by a double-click.
+_RUNS = frozenset({'.com', '.exe', '.bat', '.cmd', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msc', '.ps1', '.psm1', '.scr', '.pif', '.cpl',
+                   '.hta', '.msi', '.msp', '.reg', '.jar', '.lnk', '.url', '.scf', '.library-ms', '.searchconnector-ms', '.settingcontent-ms',
+                   '.appref-ms', '.application', '.website', '.desktop', '.command', '.inf'}
+                  | {e.strip().lower() for e in os.environ.get('PATHEXT', '').split(';') if e.strip()})
 
 
 def _known_downloads():
@@ -306,9 +351,13 @@ def downloads_dir() -> Path:
 
 
 def safe_name(name: str, fallback: str = 'download') -> str:
-    "A file name only: no folder in it, nothing Windows refuses - a name off the wire never picks where it lands."
-    n = ''.join('_' if c in _BAD or ord(c) < 32 else c for c in str(name or '').replace('\\', '/').split('/')[-1]).strip().rstrip('. ')
-    return n if n and n not in ('.', '..') else fallback
+    """A file name only: no folder in it, nothing Windows refuses - a name off the wire never picks where it lands. No control or bidi mark
+    (`invoice\u202efdp.html` drew as invoicelmth.pdf), and one that would run when opened is saved as text (_RUNS)."""
+    import unicodedata
+    n = ''.join('_' if c in _BAD or ord(c) < 32 else c for c in str(name or '').replace('\\', '/').split('/')[-1]
+                if unicodedata.category(c) not in ('Cf', 'Cc') or ord(c) < 32).strip().rstrip('. ')
+    if not n or n in ('.', '..'): return fallback
+    return f'{n}.txt' if os.path.splitext(n)[1].lower() in _RUNS else n
 
 
 def free_name(folder: Path, name: str) -> Path:
@@ -345,16 +394,32 @@ def _claim(folder: Path, name: str):
     raise FileExistsError(f'no free name for {name} in {folder}')
 
 
+class _NoRedirect(__import__('urllib.request').request.HTTPRedirectHandler):
+    "A file route answers with the file; a redirect is followed nowhere, the owner's header on it."
+    def redirect_request(self, *a, **k): return None
+
+
 def save_download(url: str, folder: Path = None) -> dict:
     """Fetch one of this app's own files and save it in Downloads: {'name', 'folder', 'path'}, or {'error'} in the server's words.
-    Only this machine's server is asked - the page's address for the file, which carries the owner token it was shown with."""
-    u = urllib.parse.urlsplit(str(url or ''))
-    if u.scheme not in ('http', 'https') or (u.hostname or '') not in LOOPBACK: return {'error': 'Only a file from Taskuary itself can be saved here.'}
-    import json, urllib.request as ureq, urllib.error as uerr
+    Only this machine's server is asked - the page's address for the file, with the owner token in the request's header."""
+    import json, posixpath, urllib.request as ureq, urllib.error as uerr
+    from taskuary import config, guard              # absolute: the exe runs this file as __main__, where a relative import has no package
+    u, own = urllib.parse.urlsplit(str(url or '')), urllib.parse.urlsplit(SERVING.get('url') or f"http://127.0.0.1:{config.load()['server'].get('port') or 7787}")
+    # ...and only a FILE of it (red team #3): the owner's header rides on this, so an agent's link to /api/settings?download=true saved his
+    # settings into Downloads. The file routes the page saves from (guard.FILE_READS), on this window's own port, nothing climbing out of them
+    path = urllib.parse.unquote(u.path)
+    try: port = u.port
+    except ValueError: port = None
+    if u.scheme not in ('http', 'https') or (u.hostname or '') not in LOOPBACK or port != own.port \
+            or not path.startswith(guard.FILE_READS) or posixpath.normpath(path) != path or '\\' in path:
+        return {'error': 'Only a file from Taskuary itself can be saved here.'}
     folder = Path(folder) if folder else downloads_dir()
     try: folder.mkdir(parents=True, exist_ok=True)
     except OSError as e: return {'error': f'The Downloads folder could not be opened - {e.strerror or e}.'}
-    opener = ureq.build_opener(ureq.ProxyHandler({}))       # loopback: a system proxy must not see the token
+    # loopback: a system proxy must not see the token - and no redirect takes it anywhere else (_NoRedirect)
+    opener = ureq.build_opener(ureq.ProxyHandler({}), _NoRedirect())
+    # ...which rides in its header, as the page's own calls carry it - a file's address carries none (server.FILE_COOKIE)
+    if tok := str(config.load()['server'].get('token') or ''): opener.addheaders = [('X-Taskuary-Token', tok)]
     name = urllib.parse.unquote(u.path.rsplit('/', 1)[-1])
     try:
         with opener.open(url, timeout=60) as r:
@@ -550,7 +615,7 @@ def already_serving(host='127.0.0.1', port=None):
     return url if serving(url, secs=3) else ''      # something else on that port is not ours to open
 
 
-def show_running(url: str, token: str) -> int:
+def show_running(url: str) -> int:
     """NEVER TWO TASKUARYS OPEN (the owner, TQ-1397). Started again, Taskuary used to open a window of its own onto the one running - a
     second Taskuary.exe, which outlived that server's exit by seconds and held the install folder, so the next installer aborted and
     the old version came back (TQ-1251, TQ-1397). Now the running one is asked to bring its window to the front, and this start ends;
@@ -559,12 +624,14 @@ def show_running(url: str, token: str) -> int:
     try:
         conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=5)
         try:
-            conn.request('POST', '/api/window', headers={'X-Taskuary-Token': token or '', 'Content-Length': '0'})
+            conn.request('POST', '/api/window', headers={'Content-Length': '0'})       # ...no token: it is in that server's memory alone
             shown = conn.getresponse().status == 200
         finally: conn.close()
     except (OSError, http.client.HTTPException): shown = False
     from taskuary import launchkey
-    if not shown: webbrowser.open(launchkey.remote_link(url, token))
+    if not shown:
+        from taskuary import config
+        webbrowser.open(launchkey.remote_link(url, config.home()))
     print(f'Taskuary is already running at {url} - ' + ('brought its window to the front.' if shown else 'opened it in the browser.'))
     return 0
 
@@ -589,6 +656,7 @@ def start_server(host='127.0.0.1', port=None):
         probe = '127.0.0.1' if host in ('0.0.0.0', '::') else host
         with socket.socket() as s: port = want if s.connect_ex((probe, int(want))) != 0 else free_port(host)
     server = Server(server_config(app, host, port))
+    SERVING['url'] = f'http://{host}:{port}'
     server.thread = threading.Thread(target=server.run, daemon=True); server.thread.start()   # kept: quitting joins it
     for _ in range(200):
         if server.started: break
@@ -672,7 +740,7 @@ def main():
     # ...on ITS port: a start given --port asked the configured one (7787) instead, so a scratch copy started beside the owner's brought
     # the owner's window to the front, or opened it in his browser (2026-11-16)
     running = already_serving(port=port) or held_elsewhere()
-    if running: splash(); return show_running(running, config.load()['server'].get('token') or '')
+    if running: splash(); return show_running(running)
     allow_downloads(webview)
     held, booted = {}, threading.Event()
     # MAXIMIZED, on whatever screen it is: a fixed 1280x840 was taller than a laptop's work area, so every launch - an update's

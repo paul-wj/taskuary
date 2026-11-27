@@ -11,11 +11,12 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import config, quickbooks as qb, scopes, server
+from taskuary import config, guard, quickbooks as qb, scopes, server
 from taskuary.store import MemoryStore
 
 c = TestClient(server.app)
-AGENT = {'X-Taskuary-Token': config.load()['server']['agent_token']}
+AGENT = {'X-Taskuary-Token': config.load()['server']['agent_token'],          # ...a session's call, proving the task it is on (guard.unproven)
+         guard.TASK_HDR: guard.task_proof(config.load()['server'], 999995)}
 
 
 def _resp(status, body):
@@ -110,6 +111,37 @@ class ReadsAndWrites(unittest.TestCase):
                 qb.create_bill(self.cfg, 'Nobody', 10, 'Office Supplies')
         with self.assertRaisesRegex(qb.QuickBooksError, 'positive'): qb._money('-3')
 
+    def test_a_bills_card_names_the_vendor_and_account_and_one_the_books_do_not_have_is_never_raised(self):
+        """Walk 22, 2026-11-25: the approval card for a bill read "vendor id: 58 / account id: 7 / amount: 120" - nothing he could check. A write
+        is read against its system as its card is raised (reports.CHECKS): each thing it names stands by NAME, its id kept as what runs; a
+        vendor the books do not have is answered to the agent with why, and no card stands. Books that cannot be reached refuse nothing."""
+        from taskuary import proposals
+        s = self.s; tid = s.create_task({'Title': 'Post the Payworth bill', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        def fake(method, url, **kw):
+            q = (kw.get('params') or {}).get('query', '')
+            if "FROM Vendor WHERE Id = '58'" in q: return _resp(200, {'QueryResponse': {'Vendor': [{'Id': '58', 'DisplayName': 'Payworth'}]}})
+            if "FROM Vendor WHERE Id = '99'" in q: return _resp(200, {'QueryResponse': {}})
+            if "FROM Account WHERE Name = 'Software subscriptions'" in q: return _resp(200, {'QueryResponse': {'Account': [{'Id': '7', 'Name': 'Software subscriptions'}]}})
+            raise AssertionError(f'unexpected call {method} {url} {q}')
+        bill = {'action': 'run_tool', 'type': 'quickbooks_bill', 'vendor_id': 58, 'account': 'Software subscriptions', 'amount': 120}
+        with mock.patch.object(qb.requests, 'request', side_effect=fake), mock.patch.object(qb, 'token', return_value='at'):
+            why = []; made = proposals.queue(s, tid, bill, refused=why); self.assertTrue(made, why)
+            p = json.loads(s.get_review(made['reviewId'])['DraftText'])
+            self.assertEqual((p['vendor'], p['vendor_id'], p['account'], p['account_id'], p['amount']), ('Payworth', '58', 'Software subscriptions', '7', 120.0))
+            # ...and its card says it in plain words, from the fields its catalogue declares (the card gallery, 2026-11-25: "Write quickbooks bill
+            # on QuickBooks Online", "Where: quickbooks bill" and "amount: 200" in one box): its title, money as money, each thing by name and id
+            from taskuary import connectorcatalog as cat
+            act = cat.action_for('quickbooks_bill')
+            self.assertEqual(cat.head(act, p), 'Bill for Payworth - $120.00 on QuickBooks')
+            self.assertEqual([(f['label'], cat.shown(f, p)) for f in act['fields'] if cat.shown(f, p)],
+                             [('Vendor', 'Payworth (id 58)'), ('Amount', '$120.00'), ('Account', 'Software subscriptions (id 7)'), ('Date', p['date'])])
+            self.assertTrue(s.get_review(made['reviewId'])['Reason'].startswith('the agent proposes to bill for Payworth - $120.00 on QuickBooks'))
+            no = []
+            self.assertIsNone(proposals.queue(s, tid, {**bill, 'vendor_id': 99, 'memo': 'another'}, refused=no))
+            self.assertIn('no vendor with id 99', no[0])
+        with mock.patch.object(qb, 'token', side_effect=qb.QuickBooksError('QuickBooks refused the token (401)')):
+            self.assertTrue(proposals.queue(s, tid, {**bill, 'memo': 'while the books are away'}), 'not reached is not refused')
+
     def test_a_bill_already_posted_under_the_doc_number_is_not_posted_again(self):
         """A timeout after Intuit committed, then a re-approval, used to book the bill twice (audit 2026-09-02)."""
         def fake(method, url, **kw):
@@ -139,7 +171,7 @@ class TheLadder(unittest.TestCase):
         # ...and a bill past the card's Authority waits for the owner's press on a task: with none named, the refusal says how to name it
         r = c.post('/api/tools/run', json={'type': 'quickbooks_bill', 'vendor': 'Acme', 'amount': 5, 'account': 'x'}, headers=AGENT)
         self.assertEqual(r.status_code, 422, r.text)
-        self.assertIn('write', r.text); self.assertIn('task_id', r.text)
+        self.assertIn('task_id', r.text)
 
     def test_the_status_route_hands_the_card_its_redirect_uri(self):
         s = server.store; card = _card(s)
@@ -150,3 +182,14 @@ class TheLadder(unittest.TestCase):
         # a callback nobody started is refused, whatever it carries
         r = c.get('/api/quickbooks/callback', params={'code': 'x', 'state': f"tq-{card['ConnectorId']}-nonce", 'realmId': '123'})
         self.assertIn('not one Taskuary issued', r.text)
+
+    def test_an_agent_is_never_handed_a_connect_link(self):
+        """Red team F6: authorize was a GET any session could read, so an agent took the state, signed in to a company of its own through its
+        own browser, and the callback re-pointed the card - the owner's bills posted there. Only the owner is handed a Connect link."""
+        s = server.store; card = _card(s); owner = {'X-Taskuary-Token': config.load()['server']['token']}
+        for kind in ('quickbooks', 'zoho', 'linkedin'):
+            cid = card['ConnectorId'] if kind == 'quickbooks' else s.get_connector_by_type('zoho_invoice' if kind == 'zoho' else kind)['ConnectorId']
+            r = c.get(f'/api/connectors/{cid}/{kind}/authorize', headers=AGENT)
+            self.assertEqual(r.status_code, 403, (kind, r.text)); self.assertNotIn('tq-', r.text)
+        r = c.get(f"/api/connectors/{card['ConnectorId']}/quickbooks/authorize", headers=owner)
+        self.assertEqual(r.status_code, 200, r.text); self.assertIn('state=tq-', r.json()['url'])

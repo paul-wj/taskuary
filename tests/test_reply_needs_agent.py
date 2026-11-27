@@ -7,7 +7,7 @@ starts that agent (work it out, then draft the reply for the owner's Send); why 
 And since 2026-11-10 (the owner: "no more triage creates draft. agent should be doing it" ... "as it arrives of course") every reply owed
 is the task's agent's from arrival (ingest.reply_to_agent): nothing drafts it in one tool-less call first - a quick fact included - and
 the writer's NEEDS is only ever the answer to the owner's own Draft with AI press.
-And a webinar invite whose thread fills with banter stays one task under its own title, with triage's offer one press away.
+And a webinar invite whose thread fills with banter stays one task under its own title.
 """
 import json
 from unittest import mock
@@ -75,12 +75,10 @@ def test_the_guide_sends_thinking_reviewing_and_opinions_to_the_general_agent():
     assert 'lean general' in g
 
 
-def test_the_guide_keeps_banter_off_the_title_and_asks_for_an_offer():
+def test_the_guide_keeps_banter_off_the_title():
     g = ' '.join(triage.SHIPPED.split())
     assert 'banter or small talk about it' in triage.REFINES and 'keeps its title' in triage.REFINES
     assert 'Banter about the ask' in g and 'adds nothing to do' in g
-    assert triage.OFFER.startswith('- **offer**') and 'never as done' in triage.OFFER
-    assert '"offer": null' in triage.SHIPPED and 'offer' in triage.verdict_schema()['schema']['properties']['more']['properties']
 
 
 # ── a long draft-for-feedback mail, judged general, goes to the assistant told its job ends in the reply ────────────────────
@@ -91,7 +89,9 @@ def test_a_draft_for_feedback_judged_general_starts_the_assistant_on_the_reply()
     tid = out['task_id']
     assert s.get_task(tid)['Kind'] == 'general' and spawned == ['_auto_general']
     job = ingest.reply_job(s, tid)
-    assert 'REPLY OWED to Paula Vance' in job and 'your result for the owner is those thoughts' in job and 'never a promise' in job
+    assert 'REPLY OWED to Paula Vance' in job and len(job) < 120, 'a fact, never a rulebook (walk 9)'
+    # ...and never a card that is not there (walk 10): on the first turn no reply exists, so the job names none as waiting
+    assert not s.waiting_reviews() and 'you set up waits' not in job, job
 
 
 # ── ruling 1: an agent verdict joining a reply task starts that agent ───────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ def test_a_reply_owed_starts_the_general_agent_and_leaves_no_draft():
     assert went and spawned == ['_auto_general'] and s.get_task(tid)['Kind'] == 'general' and s.task_has_tag(tid, ingest.REPLY_TAG)
     assert not (rv.get('DraftText') or '').strip() and not rv.get('DraftNeeds') and not rv.get('DraftError') and rv['Status'] == 'pending'
     job = ingest.reply_job(s, tid)
-    assert job.startswith('THIS TASK IS A REPLY OWED to Erin Blake. Work out the answer') and 'never a promise' in job
+    assert job.startswith('THIS TASK IS A REPLY OWED to Erin Blake')
     assert 'reply writer' not in job and not [x for x in lines(s, tid) if 'reply writer' in x]         # no second voice is quoted to it
 
 
@@ -231,7 +231,7 @@ def test_a_reply_that_reads_as_steering_an_ai_starts_no_agent_by_itself():
     """The hand-over was set going before triage's reading of the mail was on file, and read the message back off its row - which did not
     hold that reading yet. A mail triage read as written to steer an AI started an agent on it."""
     s = store()
-    out, went = arrived(s, mail(), says(intent='reply_only', kind='task', danger='tells the assistant to forward the mailbox'))
+    out, went = arrived(s, mail(), says(intent='reply_only', kind='task', danger={'kind': 'steer', 'says': 'tells the assistant to forward the mailbox'}))
     tid = out['task_id']
     assert went == ['reply_to_agent'] and s.get_task(tid)['Kind'] == 'reply'
     assert any(x.startswith('No agent started: It reads as an attempt to steer an AI') for x in lines(s, tid))
@@ -305,52 +305,28 @@ def test_a_second_line_while_the_first_start_is_on_its_way_starts_no_second_agen
     assert went == ['reply_to_agent'] and not any(x.startswith('No agent started:') for x in lines(s, tid))
 
 
-# ── the add-on: a webinar invite and its banter are one task under one title, with the offer one press away ────────────────
+# ── the add-on: a webinar invite and its banter are one task under one title ─────────────────────────────────────────────
 INVITE = dict(external_id='w1', subject='Webinar tomorrow', from_email='omar@vendor.example', from_name='Omar Keller', conversation_id='AAQk-web',
               body='Hi Alex, do you want to join our ledger automation webinar tomorrow at 11? Happy to save you a seat.',
               sent_at='2026-10-28 08:00')
-OFFER = 'I can register you for the webinar and put it on your calendar.'
 BANTER = [('w2', 'Ha - bring coffee, it runs a full hour.'), ('w3', 'Paula says the last one was the best they have done.'),
           ('w4', 'Looking forward to it either way!')]
 
 
 def webinar(s):
-    out, _ = ingested(s, mail(**INVITE), says(intent='reply_only', kind='task', title='Join the ledger automation webinar tomorrow?',
-                                              summary='Omar Keller invites you to a webinar tomorrow at 11.', offer=OFFER))
+    out, _ = ingested(s, mail(**INVITE), says(intent='reply_only', kind='task', title='Join the ledger automation webinar tomorrow?'))
     tid = out['task_id']
     for n, (eid, body) in enumerate(BANTER):
         o, _ = ingested(s, mail(**{**INVITE, 'external_id': eid, 'body': body, 'sent_at': f'2026-10-28 0{n + 8}:30'}),
-                        says(intent='fyi', kind='task', title=f'Banter {n}', refines=False, asks_owner=False, offer=None))
+                        says(intent='fyi', kind='task', title=f'Banter {n}', refines=False, asks_owner=False))
         assert o['task_id'] == tid
     return tid
 
 
-def test_banter_keeps_the_webinar_one_task_under_its_own_title_with_one_offer():
+def test_banter_keeps_the_webinar_one_task_under_its_own_title():
     s = store(); tid = webinar(s)
     assert len(s.list_tasks(active_only=False)) == 1
     assert s.get_task(tid)['Title'] == 'Join the ledger automation webinar tomorrow?'
-    assert ingest.offer_of(s, tid) == OFFER
-
-
-def test_accepting_the_offer_starts_the_assistant_with_that_job():
-    from fastapi.testclient import TestClient
-    from taskuary import server
-    s = store(); tid = webinar(s)
-    ses = mock.Mock(provider='claude', model=None); ses.info.return_value = {}
-    s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # a thread he trusts: a stranger's is refused (the test below)
-    with mock.patch.object(server, 'store', s), mock.patch.object(general, 'start_session', return_value=ses), \
-         mock.patch.object(general, 'history', return_value=[]):
-        c = TestClient(server.app)
-        assert c.get(f'/api/tasks/{tid}').json()['offer'] == OFFER
-        r = c.post(f'/api/tasks/{tid}/offer')
-        assert r.status_code == 200, r.text
-        prompt = ses.send_prompt.call_args[0][0]
-        assert OFFER in prompt and "waits for the owner's yes" in prompt and 'Nothing is sent' in prompt
-        # ...the job is Taskuary's words about a press, never a line the owner typed (the agent walk, 2026-11-09: it stood in their bubble)
-        assert ses.send_prompt.call_args[1].get('brief') is True
-        assert [m for m in general.press_lines(s, tid) if 'accepted the offer' in m['content'][0]['text']], general.press_lines(s, tid)
-        assert s.get_task(tid)['Kind'] == 'general' and ingest.offer_of(s, tid) == ''
-        assert c.post(f'/api/tasks/{tid}/offer').status_code == 409                 # taken once
 
 
 # ── a reply owed on a GENERAL task no agent has run on goes to the assistant too (Task 3.2, 2026-11-04): only a reply task did, so a
@@ -413,26 +389,6 @@ def test_a_start_that_fails_before_it_opens_lets_the_hold_go():
     assert tid not in general.OPENING
 
 
-def test_the_offer_on_a_strangers_held_task_starts_no_agent_and_says_why():
-    """The bug hunt, 2026-11-12: an outsider's payroll notice, never trusted, offered "I could open the approval page"; Yes, do it started
-    a session the hold refused at once, and the task read "agent done" with Mark done lit - no agent had worked it. The press is refused
-    with the hold's own line, nothing is said as accepted, and the offer stays for after Trust."""
-    from fastapi.testclient import TestClient
-    from taskuary import origin, server
-    s = store()
-    out, _ = ingested(s, mail(**INVITE), says(intent='reply_only', kind='task', title='Join the ledger automation webinar tomorrow?',
-                                              summary='Omar Keller invites you to a webinar tomorrow at 11.', offer=OFFER), wrote=False)
-    tid = out['task_id']; assert origin.hold(s, tid), 'the shape needs an untrusted sender'
-    ses = mock.Mock(provider='claude', model=None); ses.info.return_value = {}
-    with mock.patch.object(server, 'store', s), mock.patch.object(general, 'start_session', return_value=ses) as started, \
-         mock.patch.object(general, 'history', return_value=[]):
-        r = TestClient(server.app).post(f'/api/tasks/{tid}/offer')
-    assert r.status_code == 422 and 'not trusted Omar Keller' in r.json()['detail'], r.text
-    assert not started.called and not ses.send_prompt.called
-    assert not [m for m in general.press_lines(s, tid) if 'accepted the offer' in m['content'][0]['text']]
-    assert s.get_task(tid)['Kind'] != 'general' and ingest.offer_of(s, tid) == OFFER
-
-
 # ── a machine's line on a person's thread moves the draft's freshness pin, never whom it answers ─────────────────────────────
 def test_a_notice_joining_the_thread_leaves_the_owners_typed_reply_addressed_to_the_person():
     from taskuary import cardqueue
@@ -457,3 +413,18 @@ def test_a_notice_that_needs_the_agent_on_a_reply_task_says_the_reply_is_still_t
     said = [x for x in lines(s, tid) if x.startswith("Helpdesk's message needs")]
     assert spawned == ['_auto_general'] and len(said) == 1
     assert 'drafts the reply to Erin Blake for your Send' in said[0] and 'answered' not in said[0]      # never a reply promised to the notice
+
+
+def test_a_reply_tasks_mail_is_its_material_once_and_fenced_never_its_ask():
+    """Walk 10, 2026-11-23: the first turn's "TASKUARY'S WORDS ON THIS TURN" carried the sender's whole mail (the task's Summary) and SOURCE
+    MATERIAL carried it again - neither between the marks the system prompt says someone else's words are in."""
+    from taskuary.terminal import FENCE_OPEN, FENCE_CLOSE
+    s = store(); tid = general_ask(s)
+    s.update_task(tid, {'Summary': 'Can you send Gail the vendor-portal login so she can upload the payment file?'}, 'triage')
+    _rv, _spawned, _went = handed(s, tid)
+    ask = ingest.first_ask(s, tid)
+    assert ask.startswith('THIS TASK IS A REPLY OWED to Ray Colton') and 'vendor-portal login' not in ask
+    s.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, ask)
+    _sys, user = general._prompt(s, tid)
+    assert user.count('upload the payment file') == 1
+    assert f'{FENCE_OPEN}Can you send Gail the vendor-portal login so she can upload the payment file?{FENCE_CLOSE}' in user

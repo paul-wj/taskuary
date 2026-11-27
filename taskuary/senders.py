@@ -126,16 +126,22 @@ def trust_offer(store, tid: int, msgs=None) -> dict | None:
     """The two presses that lift a stranger's hold, worded for the channel (the owner, 2026-10-26: "we should have button on untrusted
     user to either trust user or trust domain and then we won't have issue again"): {'person': 'Trust Erin', 'org': 'Trust everyone at
     vendor.example' | 'Trust <workspace>' | None} - no organisation button where there is none to name, rather than one that fails."""
-    m = whom(store, store.list_messages(tid) if msgs is None else msgs, int((store.get_task(tid) or {}).get('TrustedThrough') or 0))
-    if not m: return None
+    t = store.get_task(tid) or {}; held = start_held(t)
+    m = whom(store, store.list_messages(tid) if msgs is None else msgs, int(t.get('TrustedThrough') or 0), held=held)
+    # ...a machine's mail names nobody to vouch for (can_hold): a no-reply invoice's task starts on his press, never on a Trust of its address
+    # - unless its own start was held for that sender: then the Trust is its way on
+    if not m or (m.get('Channel') == 'email' and not can_hold(m, held)): return None
     meta, ch = _chat_meta(m), (m.get('Channel') or '').lower()
     if ch in ALERTS: return {'person': 'Trust alerts from this source', 'org': None}
+    from .triage import person_name
+    from .waiton import person
     if ch in TRACKERS:
-        n, org = str(m.get('FromName') or '').split(), f"Trust everyone from {str(m.get('SourceName') or 'this project')[:60]}"
+        n, org = person_name(m.get('FromName')).split(), f"Trust everyone from {str(m.get('SourceName') or 'this project')[:60]}"
         return {'person': f'Trust {n[0]}' if n and _author(m) else org, 'org': org if _author(m) else None}
     # a Slack line's name is a user id (U0...): its profile's real name when the poller recorded one, else "them"
-    words = str(meta.get('name') or ('' if ch == 'slack' else m.get('FromName')) or '').split()
-    first = words[0] if words and '@' not in words[0] else ''
+    # ...and the name as the person is called (waiton.person): Outlook's "Blake, Erin at Vendor" read "Trust Blake," (the owner, 2026-11-25)
+    words = (person_name(meta['name']) if meta.get('name') else '' if ch == 'slack' else person(m, store)).split()
+    first = words[0] if words else ''
     # a From that failed verification may be forged: vouching for the person is the owner's call, a whole organisation never rides on it
     o = {} if auth(m) == 'fail' else sender_org(store, m)
     org = (f"Trust {o['name']}" if o.get('name') else 'Trust their Slack workspace') if o.get('team') else \
@@ -165,10 +171,7 @@ _VERIFIED = {'pass': 'pass - the receiving mail server verified the From domain 
              'fail': 'FAILED - the receiving mail server could not verify the From domain: it may be forged'}
 
 
-def org_domain(dom: str) -> str:
-    "The organisation's own domain under a mail host: mail.aiprovider.example -> aiprovider.example; a country's co.uk kept whole."
-    p = (dom or '').lower().strip('.').split('.')
-    return '.'.join(p[-3:] if len(p) > 2 and len(p[-1]) == 2 and len(p[-2]) <= 3 else p[-2:])
+from .mailauth import org_domain
 
 
 def sender_check(store, msg: dict, now=None) -> dict:
@@ -210,11 +213,12 @@ def sender_check(store, msg: dict, now=None) -> dict:
 # chat or what to do (2026-10-16). Each is now a whole sentence naming the person and the channel; the caller adds what
 # the owner can do next, and an allow-sentence reads after "Starting by itself:".
 class Said(str):
-    "A trust verdict's sentence. `.stranger` marks the first-time-sender rule, which ingest tags as a hold - by flag, not by its words."
-    stranger = False
+    """A trust verdict's sentence. `.stranger` marks the first-time-sender rule, which ingest tags as a hold - by flag, not by its words;
+    `.unverified`: the hold is the mail server's, which could not vouch for the From (origin.hold says so)."""
+    stranger = unverified = False
 
-def _said(text: str, stranger: bool = False) -> Said:
-    s = Said(text); s.stranger = stranger
+def _said(text: str, stranger: bool = False, unverified: bool = False) -> Said:
+    s = Said(text); s.stranger, s.unverified = stranger, unverified
     return s
 
 _CH = {'whatsapp': 'WhatsApp', 'imessage': 'iMessage', 'google_chat': 'Google Chat', 'rocketchat': 'Rocket.Chat', **INBOX_NAMES}
@@ -224,7 +228,8 @@ NOBODY = 'so no agent starts on their words by itself'
 
 def _person(msg: dict, addr: str = '') -> str:
     "'Erin Blake (erin@vendor.example)', else the address - whoever the message says wrote it."
-    name = ' '.join(str(msg.get('from_name') or '').split())
+    from .triage import person_name
+    name = person_name(msg.get('from_name')) or ' '.join(str(msg.get('from_name') or '').split())
     if name and '@' not in name: return f'{name} ({addr})' if addr else name
     return addr or name or 'This sender'
 
@@ -237,20 +242,17 @@ def known(store, msg: dict, exclude_mid=None, deep: bool = False, memo: dict = N
     return False, o['said']
 
 
-# AN UNVERIFIED FROM STARTS NOTHING BY ITSELF (M1, 2026-11-08): a 'none' verdict - a domain with no DMARC record, a mail no check
+# AN UNVERIFIED FROM IS NOBODY HE KNOWS UNTIL HE SAYS SO (M1, 2026-11-08): a 'none' verdict - a domain with no DMARC record, a mail no check
 # vouched for - fell through to the address rules, so a forged From of a past correspondent started a full agent. On a mailbox whose
-# server does verify (it has stamped a pass or a fail here before), a 'none' waits for the owner's press; the task's trust is unchanged.
-def verifies(store, mailbox: str) -> bool:
+# server does verify (it has stamped a pass or a fail here before), a 'none' from someone he only wrote to is a stranger's: the task is
+# held with its one Trust press, and that press is the proof (walk 19: a second gate after Trust started nothing and said nothing).
+def verifies(store, mailbox: str, memo: dict = None) -> bool:
     "Has this mailbox's server ever stamped a verdict on mail here (mailauth)?"
-    return bool(mailbox) and store._one("SELECT 1 x FROM message WHERE lower(SourceName)=lower(?) AND Channel='email' "
-                                        "AND json_extract(MailMetaJson, '$.auth') IN ('pass', 'fail') LIMIT 1", (mailbox,)) is not None
-
-def start_known(store, msg: dict, mid=None) -> tuple:
-    "known() for the unattended start and for passing a line into a live agent: and a mail's From must be verified where it can be."
-    ok, why = known(store, msg, exclude_mid=mid, deep=True)
-    if not ok or str(msg.get('channel') or '') != 'email' or auth(msg) != 'none' or not verifies(store, msg.get('source_name') or ''): return ok, why
-    return False, _said(f"The mail server could not verify that {str(msg.get('from_email') or 'this sender')[:80]} sent this (no DMARC or "
-                        "DKIM pass), so it waits for your press.")
+    if memo is not None and ('verifies', mailbox) in memo: return memo[('verifies', mailbox)]
+    v = bool(mailbox) and store._one("SELECT 1 x FROM message WHERE lower(SourceName)=lower(?) AND Channel='email' "
+                                     "AND json_extract(MailMetaJson, '$.auth') IN ('pass', 'fail') LIMIT 1", (mailbox,)) is not None
+    if memo is not None: memo[('verifies', mailbox)] = v
+    return v
 
 
 def _known(store, msg: dict, exclude_mid=None, deep: bool = False, memo: dict = None) -> tuple:
@@ -279,30 +281,40 @@ def _known(store, msg: dict, exclude_mid=None, deep: bool = False, memo: dict = 
     who = _person(msg, addr)
     # before any rule that reads the address: a forged From would otherwise borrow a colleague's trust, or the owner's own
     if auth(msg) == 'fail':
-        return False, _said(f'{addr} failed sender verification (DMARC/DKIM), so the From address may be forged and no agent starts on it by itself.')
-    if addr in own_addresses(store): return True, _said('It came from your own address.')
-    # a public mail domain is everybody's: an owner on gmail.com made every stranger there 'your own domain'
-    if _domain(addr) in own_domains(store) - PUBLIC_MAIL:
+        return False, _said(f'{addr} failed sender verification (DMARC/DKIM), so the From address may be forged and no agent starts on it by itself.', True, True)
+    # ...the owner's addresses and domains read once across a memo's lines, as its settings are
+    once = (lambda k, f: f()) if memo is None else (lambda k, f: memo[k] if k in memo else memo.setdefault(k, f()))
+    # ...HIS ADDRESS AND HIS DOMAIN ARE HIS ONLY ON THE RECEIVING SERVER'S WORD (the red team, 2026-11-24, F3): a From typed as his own domain,
+    # with no DMARC or an unverified pass, ran its task with his full power. Unverified it is anyone's until he says so - his press, or his
+    # trust in the organisation; a public mail domain is everybody's (an owner on gmail.com made every stranger there 'your own domain')
+    if addr in once('own', lambda: own_addresses(store)) or _domain(addr) in once('domains', lambda: own_domains(store)) - PUBLIC_MAIL:
+        if auth(msg) != 'pass':
+            if _vouched(store, (msg.get('source_name') or '').strip().lower(), addr, memo) == 'you vouched for them': return True, _said(f'You vouched for {who}.')
+            if (o := org_of(store, _domain(addr))): return True, _said(f"Everyone at {o.get('domain') or _domain(addr)} is trusted - you said so.")
+            return False, _said(f'{who} writes from your own domain, but the mail server did not verify that they sent it (no DMARC or DKIM '
+                                f'pass), {NOBODY}.', True, True)
+        if addr in once('own', lambda: own_addresses(store)): return True, _said('It came from your own address.')
         return (True, _said(f'{addr} is on your own domain.')) if on('trust_own_domain') else \
                (False, _said(f'{who} is on your own domain, but trusting your own domain is switched off in Settings, {NOBODY}.'))
     if (o := org_of(store, _domain(addr))):
         return True, _said(f"Everyone at {o.get('domain') or _domain(addr)} is trusted - you said so.")
+    mailbox = (msg.get('source_name') or '').strip().lower()
+    if (r := _vouched(store, mailbox, addr, memo)) in OWNER_SAID: return True, _said(f'You vouched for {who}.')      # his press: proof enough
     if not on('trust_sent_history'):
         return False, _said(f'{who} is new here, and checking your Sent Items for people you know is switched off in Settings, {NOBODY}.', True)
-    mailbox = (msg.get('source_name') or '').strip().lower()
     sent = _said(f'You have written to {addr} before - it is in your Sent Items.')
-    if (r := _vouched(store, mailbox, addr, memo)): return True, sent if r == 'in your Sent Items' else _said(f'You vouched for {who}.')
-    if store.wrote_to_locally(mailbox, addr, exclude_mid, memo=memo): return True, _said(f'You have written to {addr} before.')
-    if deep:
-        try: hit = wrote_to(store, mailbox, addr)
+    if not r and store.wrote_to_locally(mailbox, addr, exclude_mid, memo=memo): r, sent = True, _said(f'You have written to {addr} before.')
+    if not r and deep:
+        try: r = wrote_to(store, mailbox, addr)
         except Exception as e:
             logger.warning(f'could not check Sent Items of {mailbox} for {addr}: {e}')
             return False, _said(f'Taskuary could not check the Sent Items of {mailbox or "this mailbox"} ({str(e)[:120]}), '
                                 f'so it cannot tell whether you know {who}, and no agent starts on their words by itself.')
-        if hit:
-            store.remember_trust(mailbox, addr, 'in your Sent Items')
-            return True, sent
-    return False, _said(f'{who} is not on your domain and you have never written to them, {NOBODY}.', True)
+        if r: store.remember_trust(mailbox, addr, 'in your Sent Items')
+    if not r: return False, _said(f'{who} is not on your domain and you have never written to them, {NOBODY}.', True)
+    if auth(msg) == 'none' and verifies(store, mailbox, memo):
+        return False, _said(f'The mail server could not verify that {who} sent this (no DMARC or DKIM pass), {NOBODY}.', True, True)
+    return True, sent
 
 
 def _vouched(store, where: str, who: str, memo: dict = None):
@@ -542,9 +554,12 @@ def outsider(store, msg: dict, memo: dict = None, deep: bool = False, mid=None) 
     if not (mostly or n_att or meta.get('attached')): return None
     src = msg.get('source_name') or msg.get('SourceName')
     sender = _person({'from_name': msg.get('from_name') or msg.get('FromName')}, str(msg.get('from_email') or msg.get('FromEmail') or ''))
+    # ...a quoted header has no server to verify it: it is the word of the sender whose own From was judged first (known), so its address is
+    # read as that sender wrote it - verified as they are
     def bad(name, addr):
         addr = addr or _by_name(store, name)
-        return not (addr and _known(store, {'channel': 'email', 'from_email': addr, 'from_name': name, 'source_name': src}, deep=deep, memo=memo)[0])
+        return not (addr and _known(store, {'channel': 'email', 'from_email': addr, 'from_name': name, 'source_name': src, 'auth': 'pass'},
+                                        deep=deep, memo=memo)[0])
     def hit(name, addr, what):
         who = _person({'from_name': name}, addr) if (name or addr) else 'someone Taskuary cannot name'
         return {'name': name, 'addr': addr, 'said': _said(f'{sender} {what} {who}, who is not someone you work with here, {NOBODY}.', True)}
@@ -562,14 +577,50 @@ def row_msg(row: dict) -> dict:
             'source_name': row.get('SourceName'), 'conversation_id': row.get('ConversationId'), 'direction': row.get('Direction'),
             'status': row.get('Status'), 'MailMetaJson': row.get('MailMetaJson'), 'body': row.get('BodyText'), 'own_text': row.get('OwnText')}
 
-def whom(store, rows, through: int = 0) -> dict | None:
-    """Who the trust presses name: the first line since `through` whose sender is not trusted, or - its sender trusted - the outsider
-    it forwards or quotes (their address on the line, so vouch and trust_org act on THEM, never the colleague); else the opener."""
+# ONLY A PERSON'S WORDS SENT TO THE TASK HOLD IT (walk 17, K1): a vendor's automated "Ticket closed", filed onto his renewal task as context,
+# held the whole task for "Trust" and his Send on the agent's own card woke nobody; a no-reply invoice asked Trust for an address nobody
+# writes from. A filed line is kept for the chain and handed to no agent; a machine's notice (its stored class) has nobody to vouch for. A
+# line triage read as an attempt on an AI (Danger aimed at the agent) holds whatever sent it - a scam on HIM is a warning on the page, never
+# a Trust press (walk 18: a no-reply invoice whose fraud caution asked him to "Trust Payworth", the opposite of the caution)
+# ...BUT A START THAT WAS HELD FOR A MACHINE'S MAIL SAYS SO, WITH ITS TRUST (the owner's live task, 2026-11-26: a vendor portal's no-reply invite
+# became a task whose start was held for its sender, and the task showed the mail and nothing else - no reason, no press): where the task's
+# own start was refused for its sender (`held`: ingest.HOLD_TAG) the machine's line holds it like a person's - unless it carries a warning
+# aimed at HIM (walk 18's fraud caution stays a warning). AND A CALENDAR INVITE HOLDS NOTHING, whoever sent it (the owner, 2026-11-26: "for
+# calendar invites it should just show accept/decline button no trust no?"): what it is comes from the mail system (counsel.is_invite), its
+# answer is the calendar's own card for his press, and no agent starts on it by itself (ingest.invite_agent asks auto_start_ok)
+def can_hold(m: dict, held: bool = False) -> bool:
+    "Can this stored line hold its task for a Trust press: a person's words routed to it, or any line read as an attempt on an AI."
+    from .categories import automated
+    from .counsel import is_invite
+    if steers(m): return True
+    if m.get('Status') == 'filed' or is_invite(m): return False
+    return not automated(m) or (held and not m.get('Danger'))
+
+
+def start_held(t: dict | None) -> bool:
+    "Was this task's own start refused for its sender (ingest.not_started's tag), and not let go since?"
+    from .ingest import HOLD_TAG
+    return HOLD_TAG in [x for x in re.split(r'[\s,]+', str((t or {}).get('Tags') or '')) if x]
+
+
+def steers(m: dict) -> bool:
+    "Did triage or ranking read this stored line as written to steer an AI (message.Danger aimed at the agent) - never a scam aimed at him."
+    return bool(m.get('Danger')) and m.get('DangerAim') == 'agent'
+
+def whom(store, rows, through: int = 0, memo: dict = None, held: bool = False) -> dict | None:
+    """THE HELD SENDER - who the hold's line, its Trust buttons and the press itself name (origin.hold, trust_offer, vouch, trust_org): the
+    first line since `through`, on any channel, whose sender is not trusted, or - its sender trusted - the outsider it forwards or quotes
+    (their address on the line, so vouch and trust_org act on THEM, never the colleague); else the opener."""
     from .ingest import is_ours
-    memo, first = {}, next((m for m in rows if not is_ours(m)), None)
+    memo, first = {} if memo is None else memo, next((m for m in rows if not is_ours(m)), None)
     for m in rows:
-        if is_ours(m) or int(m.get('MessageId') or 0) <= through: continue
-        if m.get('Channel') != 'email': return first           # a chat, tracker or alert names its opener, as it always did
+        if is_ours(m) or int(m.get('MessageId') or 0) <= through or not can_hold(m, held): continue
+        # ...A LINE ON ANY OTHER CHANNEL IS ITS OWN SENDER'S, judged as the hold judges it (HIPAA walk 6, H8: a colleague's trusted chat line
+        # past the mark returned the opener - "Trust Gail" under a printer's quote that joined her task, a press that vouched for her)
+        if m.get('Channel') != 'email':
+            from .origin import of_message
+            if of_message(store, m, memo, {})[0] == 'stranger': return m
+            continue
         d = row_msg(m)
         if not _known(store, d, m.get('MessageId'), memo=memo)[0]: return m
         if d['channel'] == 'email' and (o := outsider(store, d, memo, mid=m.get('MessageId'))):
@@ -581,7 +632,8 @@ def wrote_to(store, mailbox: str, addr: str) -> bool:
     """Has THIS mailbox ever sent addr anything? Asked of the mail server that holds the history
     Taskuary does not. True/False is an answer; a failure RAISES, because 'could not check' is not
     'no' (PW-080) - the caller says so and leaves the task for a manual start."""
-    if not (mailbox and addr): return False
+    # ...a quoted local part ('" OR ALL TO "@evil.example') is no address he writes to - and no search either server gets to misread
+    if not (mailbox and addr) or not re.fullmatch(r'[^\s"\\<>()@]+@[^\s"\\<>()@]+', addr): return False
     src = next((s for s in store.list_sources(active_only=False)
                 if s.get('Channel') == 'email' and (s.get('Address') or '').lower() == mailbox.lower()), None)
     c = store.get_connector(src['ConnectorId'], with_secret=True) if src and src.get('ConnectorId') else None
@@ -604,13 +656,13 @@ def _graph_wrote_to(c, mailbox, addr) -> bool:
 
 
 def _imap_wrote_to(c, addr) -> bool:
-    from .imapmail import _login
+    from .imapmail import _login, _quoted
     M, _user = _login(c)
     try:
         for f in _SENT_FOLDERS:
-            typ, _ = M.select(f'"{f}"', readonly=True)
+            typ, _ = M.select(_quoted(f), readonly=True)
             if typ != 'OK': continue
-            typ, data = M.search(None, 'TO', f'"{addr}"')
+            typ, data = M.search(None, 'TO', _quoted(addr, False))
             return typ == 'OK' and bool(data and data[0])
     finally:
         try: M.logout()

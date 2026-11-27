@@ -55,12 +55,12 @@ test("the fold goes from the right - More, then Agent, then Pass on - and never 
 });
 
 test("one look: every task-row button is the same class, the lit one alone adds the fill, and the row is drawn once where BUTTONS_AT says", () => {
-  const page = readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
-  assert.match(page, /className=\{`tq-ab row\$\{v\.tone === "p" \? " p" : ""\}`\}/);
-  assert.match(page, /<MovesLine items=\{items\} tucked=\{tucked\} sec="task" name="Task" even \/>/);
-  assert.match(page, /import \{ ROW_LOOK \} from "\.\/ButtonBar\.jsx";/);
-  assert.match(page, /const EVEN_ROW = \{ \.\.\.ROW_LOOK,/);
-  assert.match(page, /export const BUTTONS_AT = "strip";/);
+  const page = readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8"), row = readFileSync(new URL("../src/TaskRow.jsx", import.meta.url), "utf8");
+  assert.match(row, /className=\{`tq-ab row\$\{v\.tone === "p" \? " p" : ""\}`\}/);
+  assert.match(row, /<MovesLine items=\{items\} tucked=\{tucked\} sec="task" name="Task" even act=\{act\} \/>/);
+  assert.match(row, /import \{ ROW_LOOK \} from "\.\/ButtonBar\.jsx";/);
+  assert.match(row, /const EVEN_ROW = \{ \.\.\.ROW_LOOK,/);
+  assert.match(row, /export const BUTTONS_AT = "strip";/);
   assert.match(page, /const buttonsHere = \(k\) => BUTTONS_AT === "strip" && k === \(isOpen\("agent"\) \? "agent"/);
   assert.match(page, /\{!task \? <SpineMoves sec=\{sec\.key\} name=\{sec\.name\} \/> : BUTTONS_AT === "spine" && sec\.key === "from" \? <TaskButtons spine \/> : null\}/);
 });
@@ -85,4 +85,65 @@ test("every dialog's actions are the one ButtonBar: one button size, left, no ba
   assert.doesNotMatch(read("NewSheet.jsx"), />Cancel<\/Button>/);
   // ...and the Assistant's box steps aside while New is the page: one input on a screen
   assert.match(read("AssistantView.jsx"), /\{!chatApart && !newOpen && composeBox\}/);
+});
+
+// A HELD TASK'S ONE WAY ON IS THE ROW'S FIRST MOVE, FILLED (walk 15 H2): Trust went through the row as an unlisted verb, lost its fill and
+// sat in More ▾ while the chat said "no agent works on this until you do"
+test("held for a sender: Trust stands first on the row, filled, and never folds - on the desk's strip and the phone's row alike", async () => {
+  const { taskMoves } = await import("../src/taskMoves.js"), { rowOf, splitRow, pillsOf, phoneRow } = await import("../src/actionRow.js");
+  const w = { label: (k) => k, hint: () => "", doneHint: "", natTitle: "", repo: "Choose where the code is", repoHint: "" }, run = new Proxy({}, { get: () => () => {} });
+  const verbs = taskMoves({ trust: { label: "Trust PhishGuard" }, repo: {} }, run, w);
+  const row = taskButtons(splitRow(rowOf({ list: verbs, ref: "" }), { open: "agent" }).by), first = row[0];
+  assert.equal(first.v.id, "trust");
+  assert.equal(first.v.tone, "p", "filled");
+  assert.equal(first.grp, "finish");
+  assert.ok(foldRow(row, 99).shown.some((x) => x.v?.id === "trust"), "never folded into More");
+  const phone = rowOf({ list: verbs, ref: "" });
+  assert.equal(pillsOf(phone).lead?.id, "trust", "the phone's lead");
+  assert.equal(phoneRow(phone).shown[0]?.id, "trust", "first on the phone's row too");
+  // ...a start held for its repository is the same: the task's one way on
+  const held = taskMoves({ repo: { held: true, can: true } }, run, w), r2 = taskButtons(splitRow(rowOf({ list: held, ref: "" }), { open: "agent" }).by);
+  assert.deepEqual([r2[0].v.id, r2[0].v.tone], ["repo", "p"]);
+});
+
+// A WATCHED TASK IS SOMEBODY ELSE'S TO HANDLE (the owner, 2026-11-25: "Trust <name>" stood lit on a thread a colleague is answering): its Trust
+// is no move owed - it waits unlit, and the watch's own move stands on the row
+test("watched, though held for a sender: nothing filled, Stop watching on the row, Trust unlit", async () => {
+  const { taskMoves } = await import("../src/taskMoves.js"), { rowOf, splitRow, pillsOf } = await import("../src/actionRow.js");
+  const w = { label: (k, s) => (k === "watch" && s === "on" ? "Stop watching" : k), hint: () => "", doneHint: "", natTitle: "", repo: "", repoHint: "" };
+  const run = new Proxy({}, { get: () => () => {} });
+  const verbs = taskMoves({ trust: { label: "Trust Gail" }, watching: true, repo: {} }, run, w);
+  const row = taskButtons(splitRow(rowOf({ list: verbs, ref: "" }), { open: "agent" }).by);
+  assert.ok(!row.some((x) => x.v?.tone === "p"), "nothing lit as owed");
+  assert.ok(!row.some((x) => x.v?.unblocks), "Trust unblocks no work of his");
+  const phone = rowOf({ list: verbs, ref: "" });
+  assert.ok(phone.decide.some((x) => x.label === "Stop watching"), "the watch's move stands on the row, out of More");
+  assert.ok(phone.more.some((x) => x.id === "trust"), "Trust waits in More");
+  assert.notEqual(pillsOf(phone).lead?.id, "trust", "nor leads the phone's row");
+});
+
+test("a task he made himself offers no Watch it; one he is watching can still stop it", async () => {
+  const { taskMoves } = await import("../src/taskMoves.js");
+  const w = { label: (k) => k, hint: () => "", natTitle: "" }, ids = (s) => taskMoves(s, {}, w).map((v) => v.id);
+  assert.ok(!ids({ own: true }).includes("watch"));
+  assert.ok(ids({ own: false }).includes("watch"));
+  assert.ok(ids({ own: true, watching: true }).includes("watch"));
+});
+
+// WALK 25 (2026-11-26): a calendar invite's task said "Accept, decline or propose a new time" and lit Mark done, Close with a note, Remind me,
+// Not for me, Watch it - Accept and Decline sat inside More ▾ at 1280 px, on all three roads. The owner: "for calendar invites it should just
+// show accept/decline button". They are the row's first moves, lit, and no fold takes them
+test("a calendar invite: Accept and Decline stand first on the row, lit, and never fold; Mark done is not the lit one", async () => {
+  const { calMoves, taskMoves } = await import("../src/taskMoves.js"), { rowOf, splitRow } = await import("../src/actionRow.js");
+  const w = { label: (k) => k, hint: () => "", doneHint: "", natTitle: "", repo: "", repoHint: "" }, run = new Proxy({}, { get: () => () => {} });
+  const verbs = [...calMoves({ invite: true }, run, w), ...taskMoves({ invite: true, repo: {} }, run, w)];
+  const row = taskButtons(splitRow(rowOf({ list: verbs, ref: "" }), { open: "from" }).by);
+  assert.deepEqual(row.slice(0, 2).map((x) => [x.v.id, x.v.tone, x.grp]), [["accept_invite", "p", "finish"], ["decline_invite", "p", "finish"]]);
+  const folded = foldRow(row, 99).shown.map((x) => x.v?.id);
+  assert.ok(folded.includes("accept_invite") && folded.includes("decline_invite"), "never folded into More");
+  assert.notEqual(row.find((x) => x.v?.id === "done").v.tone, "p", "Mark done is not what the invite asks");
+  // ...while an agent works the task they stand greyed with why, and a thread asking for a time lights nothing
+  assert.ok(calMoves({ invite: true }, run, w, { disabled: true, why: "an agent is working on it" }).every((v) => v.disabled && v.why));
+  assert.deepEqual(calMoves({ invite: false, meet: true }, run, w).map((v) => [v.id, v.tone]), [["find_time", "s"]]);
+  assert.deepEqual(calMoves(null, run, w), []);
 });

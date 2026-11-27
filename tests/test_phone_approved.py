@@ -98,8 +98,9 @@ class FyiLeadsWithGotItTests(PhoneCase):
         for s in ('FW: Quarterly newsletter', 'Office closed Monday'): self.f.filed_fyi(subject=s)
         self.ph.ready()
 
-    def test_the_batch_leads_with_got_it_and_its_lines_are_numbered_as_the_poll_carries_them(self):
-        """The owner, 2026-10-22: the batch leads with Got it too - 1 is Got it, the lines 2 on, so a typed number is the poll's own."""
+    def test_the_batch_leads_with_got_it_and_its_lines_are_read_not_picked(self):
+        """The owner, 2026-10-22: the batch leads with Got it - 1 is Got it, a typed number the poll's own. Its lines are read in the text and
+        are no choice (2026-11-25: one move - a number that opened a line, the desktop's old "Talk about it", went)."""
         got = self.ph.walk()
         text, btns = got[-1]
         self.assertEqual(btns[0], 'Got it', btns)
@@ -107,8 +108,8 @@ class FyiLeadsWithGotItTests(PhoneCase):
         self.assertEqual([w for _n, w in numbered], btns[:len(numbered)], text)          # the text's numbers ARE the poll's order
         self.assertEqual([int(n) for n, _w in numbered], list(range(1, len(numbered) + 1)))
         self.assertEqual(btns.count('Got it'), 1)
-        two = text_of(self.ph.type('2'))                                                   # 2 is the first line: it opens
-        self.assertIn(numbered[1][1].split(' - ', 1)[1], two)
+        self.assertIn('Quarterly newsletter', text)
+        self.assertFalse([b for b in btns if 'Quarterly newsletter' in b or 'Office closed' in b], btns)
 
     def test_the_batch_is_passed_with_got_it_and_never_sent_to_an_agent(self):
         got = self.ph.walk()
@@ -116,14 +117,10 @@ class FyiLeadsWithGotItTests(PhoneCase):
         self.assertIn('Got it', btns); self.assertNotIn('Next', btns); self.assertNotIn('Send to agent', btns)
         self.assertNotIn('Got it', self.ph.tap('Got it')[-1][1])            # passed: the walk moved on
 
-    def test_one_fyi_opened_leads_with_got_it_and_can_still_go_on_your_list(self):
-        batch = self.ph.walk()
-        one = self.ph.tap(next(b for b in batch[-1][1] if 'Quarterly newsletter' in b))
-        btns = one[-1][1]
-        self.assertEqual(btns[0], 'Got it', btns)
-        self.assertNotIn('Send to agent', btns); self.assertIn('Make it a task', btns); self.assertIn('Not for me', btns)   # an FYI's Put it on my list (2026-10-29)
-        self.assertNotIn('Make it a task:', text_of(one))                    # no "then" line for a verb that does not lead
-        self.assertRegex(text_of(self.ph.tap('Make it a task')), r'TQ-\d{4} is on your list\.')
+    def test_an_fyi_offers_no_make_it_a_task_and_no_not_for_me(self):
+        """The owner, 2026-11-25: an FYI's one move - Make it a task and Not for me went, on the phone as on the desk."""
+        btns = self.ph.walk()[-1][1]
+        self.assertNotIn('Make it a task', btns); self.assertNotIn('Not for me', btns)
 
 
 class ReportLeadsWithNextTests(PhoneCase):
@@ -244,6 +241,9 @@ class AfterTheRunTests(PhoneCase):
         from types import SimpleNamespace as NS
         from taskuary import terminal, workerstate as ws
         p = self.f.running('Fix the export', agent='claude')
+        # ...its sender trusted: an agent ran on it, which a stranger's held task never does (origin.hold)
+        from taskuary import origin
+        self.s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (p.mid, p.tid))
         if live:
             rows = [{'taskId': p.tid, 'sid': 'sF', 'agent': 'claude', 'label': 'claude', 'waiting': True, 'idle': 300,
                      'started': self.f.ago(minutes=10), 'state': 'asking', 'tail': ['Which database should I use?']}]
@@ -301,7 +301,7 @@ class AfterTheRunTests(PhoneCase):
     def test_the_follow_up_of_a_failed_agent_leads_with_try_again(self):
         tid = self._ended('failed', live=True)
         self.s.set_setting(ra.PROMISES_KEY, json.dumps([{'tid': tid, 'channel': 'whatsapp', 'chat': self.ph.chat, 'connector_id': self.ph.cid,
-                                                          'at': time.time(), 'lane': 'working', 'armed': True}]), 't')
+                                                          'at': time.time(), 'lane': 'working', 'ended': True}]), 't')
         got = self.ph.push(lambda: ra.keep_promises(self.s, force=True))
         self.assertEqual(got[-1][1][0], 'Try again', got[-1][1])
 
@@ -574,6 +574,23 @@ class TelegramFirstContactTests(PhoneCase):
         self.assertIn(ra.PICKED, said); self.assertEqual(btns, ['Walk me through my tasks', 'More…'])
 
 
+class WhatsAppPickTests(PhoneCase):
+    """Walk 6: the WhatsApp card chose the Taskuary chat by writing the connector's setting itself - around use_chat's check that the owner is
+    alone in it - and the chat picked was told nothing. It goes the one road Settings takes, and says hello as Telegram does."""
+    def test_picking_the_chat_on_the_card_says_hello_and_a_group_is_refused(self):
+        from fastapi import HTTPException
+        from taskuary import server
+        from tests.phone_transcript import _Sync
+        ra.use_chat(self.s, 'whatsapp', '')
+        with mock.patch.object(server.threading, 'Thread', _Sync), \
+             mock.patch.object(ra, 'candidates', return_value=[{'to': self.ph.chat, 'name': 'Alex Doyle (you)'}]):
+            got = self.ph._took(lambda: server.set_assistant_doorway(server.DoorwayBody(channel='whatsapp', chat=self.ph.chat)))
+            self.assertEqual(len(got), 1); self.assertIn(ra.PICKED, got[0][0])
+            with self.assertRaises(HTTPException):
+                server.set_assistant_doorway(server.DoorwayBody(channel='whatsapp', chat='120363000000000001@g.us'))
+        self.assertEqual(ra.chat_of(self.s.get_connector(self.ph.cid)), self.ph.chat)
+
+
 class WhileClosedTests(PhoneCase):
     """A10: messages sent while Taskuary was closed were each answered and acted on when it opened - an hour-old "next" included - and
     nothing said the app had been closed. Only the newest is acted on; the older ones get their thumb and are named, not acted on."""
@@ -611,7 +628,8 @@ class WhatsAppWhileClosedTests(WhileClosedTests):
 
 class TelegramSendRetryTests(PhoneCase):
     """A13: a failed Telegram send was only logged - the phone got nothing and never knew. It is tried again with backoff; still failing, the
-    next message that gets through says so first."""
+    next message that gets through says so first. H4 (walk 6): the same on WhatsApp, and what did not arrive goes again by itself once the
+    link takes it; a question heard when Taskuary restarted is answered by the next process, said late."""
     channel = 'telegram'
 
     def _flaky(self, fails):
@@ -620,7 +638,42 @@ class TelegramSendRetryTests(PhoneCase):
             if method == 'sendMessage' and left[0]:
                 left[0] -= 1; raise RuntimeError('telegram sendMessage: Bad Gateway')
             return self.ph._tg(tok, method, **p)
-        return mock.patch('taskuary.messengers.tg', side_effect=tg)
+        def wa(c, path, body=None, *a, **k):
+            if path == '/send' and left[0]:
+                left[0] -= 1; raise RuntimeError('bridge /send failed (503): WhatsApp is not connected')
+            return self.ph._wa(c, path, body, *a, **k)
+        return mock.patch('taskuary.messengers.tg', side_effect=tg) if self.channel == 'telegram' else mock.patch('taskuary.messengers._wa', side_effect=wa)
+
+    def test_what_did_not_arrive_goes_by_itself_once_the_link_is_back_and_once(self):
+        with self._flaky(99), mock.patch.object(ra, '_pause', create=True):
+            self.assertEqual(self.ph.tap('Next'), [])
+            self.assertEqual(self.ph.push(lambda: ra.flush_owed(self.s)), [], 'still down: kept for the next look')
+        got = self.ph.push(lambda: ra.flush_owed(self.s))
+        self.assertTrue(got and got[0][0].lstrip('Taskuary:\n').startswith(ra.LATE), got)
+        self.assertIn('Visitor parking', text_of(got))
+        self.assertTrue(got[-1][1], 'with its choices to tap')
+        self.assertEqual(self.ph.push(lambda: ra.flush_owed(self.s)), [], 'sent once')
+        self.assertNotIn('did not reach you', text_of(self.ph.type('help')))
+
+    def test_a_question_heard_when_taskuary_restarted_is_answered_by_the_next_one(self):
+        # the process that heard "help" died before answering: its OWED entry is all that is left of it
+        ra._book(self.s, ra.OWED_KEY, f'{self.channel}:{self.ph.chat}',
+                 {'words': 'help', 'mid': 'in-before', 'cid': self.ph.cid, 'at': time.time() - 30, 'boot': ra.STARTED - 60})
+        got = self.ph.push(lambda: ra.flush_owed(self.s))
+        said = text_of(got)
+        self.assertIn('Taskuary restarted before I could answer "help"', said)
+        self.assertIn('What you can do here', said)
+        self.assertEqual(ra.ledger(self.s, ra.OWED_KEY), {}, 'paid')
+        self.assertEqual(self.ph.push(lambda: ra.flush_owed(self.s)), [], 'answered once')
+
+    def test_a_question_being_answered_is_written_down_until_it_is(self):
+        seen = []
+        real = ra.respond
+        def respond(store, channel, chat, question, *a, **k):
+            seen.append(ra.ledger(store, ra.OWED_KEY).get(f'{channel}:{chat}', {}).get('words')); return real(store, channel, chat, question, *a, **k)
+        with mock.patch.object(ra, 'respond', side_effect=respond): self.ph.type('help')
+        self.assertEqual(seen, ['help'])
+        self.assertEqual(ra.ledger(self.s, ra.OWED_KEY), {})
 
     def setUp(self):
         super().setUp()
@@ -636,9 +689,22 @@ class TelegramSendRetryTests(PhoneCase):
         with self._flaky(99), mock.patch.object(ra, '_pause', create=True):
             self.assertEqual(self.ph.tap('Next'), [])
         got = self.ph.type('help')
-        self.assertTrue(got[0][0].startswith('My last message did not reach you ("'), got[0][0])
+        self.assertTrue(got[0][0].split('Taskuary:\n', 1)[-1].startswith('My last message did not reach you ("'), got[0][0])
         self.assertIn('What you can do here', text_of(got))
         self.assertNotIn('did not reach you', text_of(self.ph.type('help')))             # said once
+
+
+class WhatsAppSendRetryTests(TelegramSendRetryTests):
+    channel = 'whatsapp'
+
+    def test_a_tap_on_a_poll_sent_before_the_bridge_restarted_is_told_with_the_choices_again(self):
+        before = self.ph.choices()
+        self.ph.queue.append({'id': 'in-lost', 'jid': self.ph.chat, 'text': '', 'fromMe': True, 'poll': True, 'stalePoll': True,
+                              'lostPoll': True, 'ts': time.time()})
+        got = self.ph._took(self.ph._poll)
+        self.assertEqual(len(got), 1)
+        self.assertIn(ra.LOST_TAP, got[0][0])
+        self.assertEqual(got[0][1], before, 'the current choices, as a poll the bridge can read')
 
 
 class UrgentMidWalkTests(PhoneCase):

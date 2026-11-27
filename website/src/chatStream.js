@@ -9,7 +9,7 @@ import { baseName, describeCall, isWork, present, stepsOf } from "./agentSteps.j
 import { editHunks, stat } from "./diffView.js";
 import { isSignin } from "./browserSplit.js";
 import { liveTerminal } from "./taskLayout.js";
-import { filesOf, viewOf } from "./viewSpec.js";
+import { asks, filesOf, SHOW, viewOf } from "./viewSpec.js";
 import { plural } from "./timeWords.js";
 
 // ── a coding session's steps -> trace events, the one currency ───────────────────────────────────
@@ -20,50 +20,45 @@ const argsOf = (s) => (s.args && Object.keys(s.args).length ? s.args
 const OVER = ["completed", "failed"];
 // ...and a call put to the owner (permissions.calls) is neither: `held` waits on his answer, `refused` was never run - drawn as either, it read
 // "Deleted ledger-archive" over the card that asked for it, and after his Reject too (the stress round, 2026-11-18)
-const ASKED = { held: "Taskuary held this for the owner - it waits for your answer on its card.", refused: "Not run - nobody allowed it." };
-const runs = (s, running, last) => running && !ASKED[s.status] && (s.status ? !OVER.includes(s.status) : last);
+const ASKED = { held: "Taskuary held this for the owner - it waits for your answer on its card.", refused: "Not run - nobody allowed it.", rejected: "Not run - you said no." };
+// ...and HIS ANSWER ON ITS ROW is the one record of it (chatlog.asked_answered - no press line besides): his no reads as his, never "nobody"
+const askedOf = (s) => (ASKED[s.status] ? s.status : String(s.answer || "").startsWith("reject") && s.status !== "completed" ? "rejected" : "");
+const runs = (s, running, last) => running && !askedOf(s) && (s.status ? !OVER.includes(s.status) : last);
 // ...and one ACP still called pending or running when nothing runs any more NEVER FINISHED - a permission left open when Taskuary restarted, a
 // session that died mid-call: drawn done, "Edited totals.py" read as made (the stress round, 2026-11-10)
-const ended = (s, output) => (ASKED[s.status] ? { result: ASKED[s.status], is_error: true, state: s.status } : s.status && !OVER.includes(s.status) ? { result: output || "It never finished.", is_error: true }
+const ended = (s, output, a = askedOf(s)) => (a ? { result: ASKED[a], is_error: true, state: a === "held" ? a : "refused" } : s.status && !OVER.includes(s.status) ? { result: output || "It never finished.", is_error: true }
   : { result: output, is_error: s.status === "failed" });
+// A TURN WITH ITS FAILED LINE SAYS THE FAILURE ONCE (chatlog.read's rule, on the steps the open chat patched in as they came - walk 19: "No AI is
+// connected" stood twice, the error step pushed live and the turn's own line under it)
+export const turnSteps = (t) => (t?.fail ? (t.steps || []).filter((s) => s.k !== "error") : t?.steps || []);
 export const eventsOf = (steps, running, tail = true) => steps.flatMap((s, i) => {
   const id = s.id || `t${i}`, output = String(s.output || "").trim();
   if (s.k === "tool") return [{ type: "tool_call", name: s.name, detail: { tool_call_id: id, args: argsOf(s), output,
       ...(s.parent ? { parent: s.parent } : {}), ...(s.edit ? { edit: s.edit } : {}), ...(s.file ? { file: s.file } : {}),
-      ...(s.outcome ? { outcome: s.outcome } : {}), ...(s.why ? { why: s.why } : {}), ...(s.times > 1 ? { times: s.times } : {}) } },
+      ...(s.outcome ? { outcome: s.outcome } : {}), ...(s.why ? { why: s.why } : {}), ...(s.times > 1 ? { times: s.times } : {}), ...(s.did ? { did: s.did } : {}),
+      // ...the agent's own words for it - its title, its kind, its files (agentSteps.agentWords) - and the options of a permission it waits on
+      ...(s.title ? { title: s.title } : {}), ...(s.tool_kind ? { tool_kind: s.tool_kind } : {}), ...(s.paths?.length ? { paths: s.paths } : {}), ...(s.ask?.length ? { ask: s.ask } : {}), ...(s.call ? { call: s.call } : {}) } },
     ...(runs(s, running, tail && i === steps.length - 1) ? [] : [{ type: "tool_result", name: id, detail: { tool_call_id: id, ...ended(s, output) } }])];
   if (s.k === "plan") return [{ type: "tool_call", name: "TodoWrite", detail: { tool_call_id: id, args: { todos: s.items || [] } } },
     { type: "tool_result", name: id, detail: { tool_call_id: id, result: "" } }];
-  if (s.k === "said") return [{ type: "progress", name: "text", detail: s.text }];
-  if (s.k === "thought") return [{ type: "progress", name: "thinking", detail: s.text }];
+  if (s.k === "said") return [{ type: "progress", name: "text", detail: s.text, ...(s.id ? { id: s.id } : {}) }];
+  if (s.k === "thought") return [];                    // ...a model's private reasoning is never a step (conversation._said)
   if (s.k === "error") return [{ type: "error", ...(s.name ? { name: s.name } : {}), detail: { result: s.text } }];      // ...by the call it came from
   return s.text ? [{ type: "progress", name: "note", detail: s.text }] : [];
 });
 
 // ── a tool call that is an EDIT, and one that is a PLAN ─────────────────────────────────────────
-// AN EDIT IS ITS OWN ROW, its diff behind it: what the call carries - a log's own record of it (`edit`), else the before/after the tool was
-// handed (Claude's old_string/new_string, a MultiEdit's edits, a Write's content, a patch) - so a general agent editing in a checkout gets them too
+// AN EDIT IS ITS OWN ROW, its diff behind it: THE CALL'S OWN DIFF (the owner, 2026-11-23: adopt the open-source model) - an ACP agent's `diff`
+// content, a trace road's said as one where its input is the edit (conversation.acp_of_trace), a log's own record (`edit`) - never one guessed
+// here from the arguments it was handed
 const FILE_KEYS = ["file_path", "path", "filePath", "absolute_path"];
-const fileOfCall = (e) => {
-  const d = e.detail || {}, a = d.args || {};
-  if (d.file) return d.file;
-  for (const key of FILE_KEYS) if (a[key]) return a[key];
-  return "";
-};
-const argEdit = (name, a) => {
-  if (Array.isArray(a.edits) && a.edits.length) return { parts: a.edits.map((x) => ({ old: String(x?.old_string ?? ""), new: String(x?.new_string ?? "") })) };
-  if (a.old_string != null || a.new_string != null) return { parts: [{ old: String(a.old_string ?? ""), new: String(a.new_string ?? "") }] };
-  if (typeof a.content === "string" && /write|create/i.test(String(name || ""))) return { whole: true, parts: [{ old: "", new: a.content }] };
-  if (typeof a.patch === "string" || typeof a.input === "string" && /\*\*\* (Update|Add) File|^@@/m.test(a.input)) return { patch: a.patch ?? a.input };
-  return null;
-};
 // ...but an edit that FAILED or never ran is no edit made: drawn "Edited totals.py (+1 −1)" from the diff it asked to make, it read as done -
 // it is its step, drawn failed (the stress round, 2026-11-10)
 export function editOf(e, res, running = false) {
   if (e?.type !== "tool_call" || res?.detail?.is_error) return null;
   const d = e.detail || {}, a = d.args || {};
   if (!d.edit && describeCall(e.name, a).kind !== "edit") return null;
-  const edit = d.edit || argEdit(e.name, a), file = fileOfCall(e);
+  const edit = d.edit || null, file = d.file || FILE_KEYS.map((k) => a[k]).find(Boolean) || "";
   // ...a log's own edit row stands even with no diff kept; a trace's call is a row of its own only when it carries one
   return edit || d.file ? editRow({ name: e.name, edit, file, running: running && !res }) : null;
 }
@@ -87,10 +82,11 @@ export function planOf(e) {
 }
 
 // ── THE ONE MAPPER: trace events -> a turn's parts ──────────────────────────────────────────────
-// in order: its words, a fold of the work it did, each edit with its diff, each view it showed, its plan. `answer`: the words the turn
-// filed as its answer, which its trail does not say twice (agentSteps.stepsOf). A call's result is its own wherever it came - a run of steps cut by an edit keeps the results
-// that arrived after the edit, so nothing it started is left spinning
-export function turnParts(events, { answer = "", keepStart = false, live = false } = {}) {
+// in order: its words, a fold of the work it did, each edit with its diff, each view it showed, its plan - THE SAME WHILE IT WORKS AND ONCE IT
+// IS FILED (the owner, 2026-11-23: words stay where they were said): nothing is moved, merged or taken out when the turn ends; the answer's
+// own repeat of its words is the server's to leave out (chatlog.read `tail`). A call's result is its own wherever it came - a run of steps
+// cut by an edit keeps the results that arrived after the edit, so nothing it started is left spinning
+export function turnParts(events, { keepStart = false, live = false } = {}) {
   const evs = (events || []).filter(Boolean), results = new Map(), parts = [], special = new Set();
   for (const e of evs) if (e.type === "tool_result") results.set(e.detail?.tool_call_id || e.name, e);
   let run = [], first = true;
@@ -98,9 +94,9 @@ export function turnParts(events, { answer = "", keepStart = false, live = false
     if (!run.length) return;
     const ids = new Set(run.filter((e) => e.type === "tool_call").map((e) => e.detail?.tool_call_id));
     const got = [...ids].map((id) => results.get(id)).filter(Boolean);
-    for (const st of stepsOf([...run, ...got], { answer, keepStart: keepStart && first })) {
-      if (st.kind === "said") parts.push({ type: "said", text: st.summary });
-      else { const w = parts.at(-1)?.type === "work" ? parts.at(-1) : (parts.push({ type: "work", steps: [] }), parts.at(-1)); w.steps.push(st); }
+    for (const st of stepsOf([...run, ...got], { keepStart: keepStart && first })) {
+      if (st.kind === "said") parts.push({ type: "said", text: st.summary, id: st.id });
+      else { const w = parts.at(-1)?.type === "work" ? parts.at(-1) : (parts.push({ type: "work", steps: [], id: st.id }), parts.at(-1)); w.steps.push(st); }
     }
     run = []; first = false;
   };
@@ -108,44 +104,100 @@ export function turnParts(events, { answer = "", keepStart = false, live = false
     if (e.type === "tool_result") continue;
     // ...and a VIEW the agent showed (agenttools `show`) is its own part, drawn as the UI it describes (ViewSpec.jsx)
     // ...and the FILES it showed with it (viewSpec.filesOf): the pictures themselves, over any view the same call drew
-    const res = results.get(e.detail?.tool_call_id), ps = [filesOf(e, res), editOf(e, res, live) || planOf(e) || viewOf(e, res)].filter(Boolean);
-    if (ps.length) { flush(); special.add(e.detail?.tool_call_id); parts.push(...ps); } else run.push(e);
+    // ...each part by the call it is of (its row's own id in the log), never by where it falls: one drawn later never re-keys those after it
+    const cid = e.detail?.tool_call_id, res = results.get(cid), ps = [filesOf(e, res), editOf(e, res, live) || planOf(e) || viewOf(e, res)].filter(Boolean)
+      .map((p, j) => ({ ...p, id: j ? `${cid}:${j}` : cid }));
+    if (ps.length) { flush(); special.add(cid); parts.push(...ps); } else run.push(e);
   }
   flush();
-  // ...an edit that failed and was then made is no failure (agentSteps' `recovered`): Claude's first try at a string not found, its second made.
-  // Match structured paths: translated summaries and shared basenames cannot identify the edited file.
-  const files = new Map(evs.filter((e) => e.type === "tool_call" && e.detail?.tool_call_id)
-    .map((e) => [e.detail.tool_call_id, fileOfCall(e)]));
-  parts.forEach((p, i) => p.type === "work" && p.steps.forEach((s) => {
-    const file = s.status === "error" && s.kind === "edit" && files.get(s.id);
-    if (file && parts.slice(i + 1).some((q) => q.type === "edit" && q.file === file)) s.status = "recovered";
-  }));
-  // ...AND WHAT IT SAID ON ITS WAY TO ITS NEXT CALLS IS ITS WORKING, ONCE THE TURN IS FILED (the walk, 2026-11-21: "Python 3.10 exists under the
-  // user path; check libraries." and "Good. Now the reply with both files attached." stood in the chat as its answer): words whose next part
-  // is a fold of calls go into that fold, a row of its working, in the order said - as acp.prompt files only what it said after its last
-  // call as the answer. Words before a view, a file or an edit introduce it and stand; a turn still at work keeps every word where it stands
-  if (answer && !live) for (let i = parts.length - 2; i >= 0; i -= 1) {
-    if (parts[i].type !== "said" || parts[i + 1].type !== "work") continue;
-    const t = String(parts[i].text || ""), note = { id: `note-${i}`, kind: "thought", summary: t.length > 140 ? `${t.slice(0, 139)}…` : t, detail: t.length > 140 ? t : "", status: "done" };
-    parts.splice(i, 2, { ...parts[i + 1], steps: [note, ...parts[i + 1].steps] });
-    if (parts[i - 1]?.type === "work") parts.splice(i - 1, 2, { ...parts[i - 1], steps: [...parts[i - 1].steps, ...parts[i].steps] });
-  }
-  const lastPlan = parts.map((p) => p.type).lastIndexOf("plan");
-  return parts.filter((p, i) => p.type !== "plan" || i === lastPlan).map((p, i) => ({ ...p, id: `p${i}` }));
+  // ...an edit that failed and was then made is no failure (agentSteps' `recovered`): Claude's first try at a string not found, its second made
+  // ...and so is a view that failed and was then drawn, whatever it was titled the second time (walk 21: "could not show you" over the chart)
+  const made = (s, q) => (s.kind === "edit" ? q.type === "edit" && q.summary.startsWith(s.summary) : SHOW.test(String(s.tool || "")) && q.type === "view");
+  parts.forEach((p, i) => p.type === "work" && p.steps.forEach((s) => { if (s.status === "error" && parts.slice(i + 1).some((q) => made(s, q))) s.status = "recovered"; }));
+  // ...and its plan is the one row the agent keeps replacing (chatlog: one per plan, in place) - never a filter keeping the last of several
+  return parts.map((p, i) => ({ ...p, id: p.id || `p${i}` }));
 }
+// A VIEW NAMED IS ONE VIEW, AND IT STAYS UP TO DATE IN THE CHAT (the owner, 2026-11-26: the renderer draws a view again from new input, and
+// never keeps an old one above): ANY view - a chart, a table, an availability - the agent shows again under the same `id` (viewspec.check) is
+// drawn once, at its newest call, as it now is; its earlier places draw nothing, and a turn that held only one of them draws nothing at all.
+// Read off the turns' own steps, so a reload and the phone draw the same. {id: {at: "<turn>:<call>" of the newest, spec, was}}; `was` is the
+// spec it replaces, so the new draw can move from it (ViewSpec `was`); one he can answer is its own each time
+export function viewHomes(turns) {
+  const homes = new Map();
+  for (const t of turns || []) {
+    const shows = []; turnSteps(t).forEach((s, i) => { if (s.k === "tool" && SHOW.test(String(s.name || ""))) shows.push(s.id ? s : { ...s, id: `t${i}` }); });
+    const evs = eventsOf(shows, false), res = new Map(evs.filter((e) => e.type === "tool_result").map((e) => [e.detail.tool_call_id, e]));
+    for (const e of evs) { const v = e.type === "tool_call" ? viewOf(e, res.get(e.detail.tool_call_id)) : null, id = v && !asks(v.spec.elements) && v.spec.id;
+      if (id) homes.set(id, { at: `${t.id}:${e.detail.tool_call_id}`, spec: v.spec, was: homes.get(id)?.spec }); }
+  }
+  return homes;
+}
+// ...the spec a turn's view part draws: its own - or null where a newer one of its name stands below
+export const viewAt = (homes, turn, p) => { const h = p.spec.id ? homes?.get(p.spec.id) : null;
+  return !h || h.at === `${turn}:${String(p.id).replace(/:1$/, "")}` ? p.spec : null; };
 // what a turn did, counted for its fold's line: "6 steps" - its edits each one
 export const workCount = (parts) => workRows(parts).length;
+// ONE LAYOUT, AT WORK AND FILED (the owner, 2026-11-23: "the live layout IS the finished layout"): a turn's parts in the order they came, what it
+// said and showed standing where it said it, each run of work between them one fold of its own - keyed by its first part, so a run that grows,
+// and the turn's end, leave every fold where it was and as he left it (open or shut). A grouping that wraps rows, never one that moves them
+export const SHOWN_PARTS = ["said", "view", "files"];
+export const runsOf = (parts) => (parts || []).reduce((out, p) => {
+  if (SHOWN_PARTS.includes(p.type)) out.push({ id: p.id, parts: [p] });
+  else if (out.at(-1)?.fold) out.at(-1).parts.push(p);
+  else out.push({ id: p.id, fold: true, parts: [p] });
+  return out;
+}, []);
+// A PERMISSION ASKED IS ON ITS CALL'S ROW (the owner, 2026-11-23: "just permissions to push something" in the row, Zed-style - action cards
+// stay cards): the request waiting on him (permissions.pending, by the call it names) drawn on that row, each option by the agent's own name
+// for it where it gave one; the requests no row in the list names stand as their card, as before
+export const askOn = (step, byCall) => {
+  const p = step?.call && byCall?.get?.(step.call);
+  if (!p) return null;
+  const named = new Map((step.ask || []).map((o) => [o.kind, o.name]));
+  return { p, options: (p.options || []).map((o) => ({ kind: o.kind, label: named.get(o.kind) || o.label })) };
+};
+export const asksOff = (perms, items) => {
+  const calls = new Set((items || []).flatMap((x) => (x.kind === "turn" ? (x.steps || []).map((s) => s.call).filter(Boolean) : [])));
+  return (perms || []).filter((p) => !p.call || !calls.has(p.call));
+};
+// THE ROWS THE SERVER PUSHED AS IT WROTE THEM (chatlog.pushed - a message as it streams, a call as it moves): each patched into its turn in
+// place, by its own id, or added at the turn's foot where it is new - the list's next read is the same rows, so nothing moves when it lands
+export const patchSteps = (list, pushed, tid) => {
+  const by = new Map();
+  for (const p of pushed || []) if (p?.step?.id && String(p.tid) === String(tid)) by.set(p.turn, [...(by.get(p.turn) || []), p.step]);
+  if (!list?.items || !by.size) return list;
+  let hit = false;
+  const items = list.items.map((x) => {
+    const ss = x.kind === "turn" && by.get(x.id);
+    if (!ss) return x;
+    const steps = [...(x.steps || [])];
+    for (const s of ss) { const i = steps.findIndex((y) => y.id === s.id); if (i >= 0) steps[i] = s; else steps.push(s); }
+    hit = true;
+    return { ...x, steps };
+  });
+  return hit ? { ...list, items } : list;
+};
+// A FINISHED TURN RIGHT AFTER A TURN IS DRAWN UNDER ITS HEAD - the work going on (a second turn of its session, a wake, its answer filed after) - never
+// one after a failure (Try again's turn stands under the failure it is past), never one at work (its own head, its clock and Stop)
+export const folds = (prev, x) => prev?.kind === "turn" && prev.state !== "failed" && x?.kind === "turn" && x.state !== "working" && x.state !== "starting";
+// ...AND THAT HEAD'S CLOCK IS ALL OF IT (the owner, 2026-11-23: "ran 1m 15s" over steps that went on for five minutes): every turn drawn under it,
+// run for run - each to its last step (chatlog.run_of) - so a wake hours later adds its own minutes, never the hours between. Seconds
+export const ranUnder = (items, i) => {
+  let s = 0;
+  for (let j = i; j < (items || []).length && (j === i || folds(items[j - 1], items[j])); j += 1) s += Number(items[j].ran) || 0;
+  return s;
+};
 // ...a helper's own steps among them (walk 5: "4 steps" stood five minutes while the helper under one of them did all the work)
 const withKids = (ss) => ss.filter(isWork).flatMap((s) => [s, ...withKids(s.kids || [])]);
 const workRows = (parts) => (parts || []).flatMap((p) => (p.type === "edit" ? [p] : p.type === "work" ? withKids(p.steps) : []));
 // ...AND ITS ONE LINE SAYS THE ROWS IT OPENS ON (the real-Claude walk, 2026-11-19: "3 steps - ran 2 commands, used a tool" opened on two rows,
 // and "1 step - used a tool" named nothing): counted from those rows, in their own words - the first few, then how many more
-const FEW = 3;
+const FEW = 3, LEADS = "skill";
 const lower = (t) => String(t || "").replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase());
 // ...and rows of one kind say it once, counted (walk 5: "read 3 web pages, read 4 web pages" - two runs of reads cut by a sentence)
 const KIND_SAID = { read: (k) => `read ${plural(k, "file")}`, page: (k) => `read ${plural(k, "web page")}`, run: (k) => `ran ${plural(k, "command")}`,
   edit: (k) => `changed ${plural(k, "file")}`, search: (k) => `searched files ${k} times`, web: (k) => `searched the web ${k} times`, mail: () => "searched your mail" };
-const calls = (r) => String(r.id || "").split("+").length;
+const calls = (r) => r.n || 1;
 // ...ONE COUNTING UNIT (the judge's walk, 2026-11-19: "1 step - ..., and 2 more" - the head counted rows, the tail counted calls): every
 // number is of calls - a row folding three calls is three steps - and "and N more" is the steps the named words did not cover
 const callsOf = (r) => (r.type === "edit" ? 1 : calls(r));
@@ -154,8 +206,12 @@ export const foldLine = (parts) => {
   if (!n) return "";
   const kinds = [], by = new Map();
   for (const r of rows) { const k = r.type === "edit" ? "edit" : r.kind; if (!by.has(k)) { by.set(k, []); kinds.push(k); } by.get(k).push(r); }
+  // ...AND THE SKILL IT USED LEADS (walk 25, 2026-11-26: which skill did a job was said by one AI in its own words and by the others not at
+  // all): his skill read by name (agentSteps `skill`) is named first, wherever in the turn it was read - never lost in "and 3 more"
+  kinds.sort((x, y) => (y === LEADS) - (x === LEADS));
+  // ...and a row that is its command (agentSteps `code`) is counted, never quoted: the line read "1 step - ran $p = '..\..\attachments…'" (walk 18)
   const words = kinds.flatMap((k) => { const rs = by.get(k), c = rs.reduce((t, r) => t + callsOf(r), 0);
-    return rs.length > 1 && KIND_SAID[k] ? [[KIND_SAID[k](c), c]] : rs.map((r) => [lower(r.summary), callsOf(r)]); }).filter(([w]) => w);
+    return (rs.length > 1 || rs.some((r) => r.code)) && KIND_SAID[k] ? [[KIND_SAID[k](c), c]] : rs.map((r) => [lower(r.summary), callsOf(r)]); }).filter(([w]) => w);
   const said = words.slice(0, words.length > FEW ? FEW - 1 : FEW), more = n - said.reduce((t, [, c]) => t + c, 0);
   return `${plural(n, "step")}${said.length ? ` - ${said.map(([w]) => w).join(", ")}${more > 0 && words.length > said.length ? `, and ${more} more` : ""}` : ""}`;
 };
@@ -166,12 +222,34 @@ export const isPastCard = (c) => ["superseded", "passed", "withdrawn", "rejected
 // reviews that still have a card of their own in the list, whatever earlier versions of them stand above it
 export const standing = (items) => new Set((items || []).flatMap((x) => (x.kind === "card" ? [x] : x.kind === "turn" ? x.cards || [] : []))
   .filter((c) => !isPastCard(c)).map((c) => c.review));
+// A CARD THAT WAITS IS THE LAST THING IN THE CHAT (taskuary/chatlog.py waits_last - THE SAME FUNCTION, both read against
+// tests/fixtures/waits_last.json; the owner, 2026-11-26: "if text goes after the card it makes the card look useless"): what the agent says or
+// does after a card while it waits is drawn ABOVE it - the card stands at the foot of the newest row before his next line, never across that
+// line; once settled it stays under the row he last saw it wait under (`under`). The server's list comes so; this holds it for whatever the
+// page merges in. The same list back where nothing moves
+const cardsIn = (x) => (x.kind === "card" ? [x] : x.kind === "turn" ? x.cards || [] : []);
+export const waitsLast = (items) => {
+  const at = new Map(items.map((x, i) => [x.id, i])), to = new Map(), moved = new Map();
+  // ...at one foot in the order they were raised, whatever was set down first
+  const seq = (a, b) => (a.review || 0) - (b.review || 0) || String(a.id).localeCompare(String(b.id));
+  for (let i = items.length - 1, foot = -1; i >= 0; i -= 1) {
+    const x = items[i];
+    if (x.kind === "line") { foot = -1; continue; }
+    if (x.kind !== "card" && foot < 0) foot = i;
+    for (const c of cardsIn(x)) { const j = c.status === "pending" ? foot : at.get(c.under) ?? -1; if (i < j && j <= foot) to.set(c, j); }
+  }
+  if (!to.size) return items;
+  for (const x of items) for (const c of cardsIn(x)) if (to.has(c)) moved.set(to.get(c), [...(moved.get(to.get(c)) || []), c]);
+  return items.flatMap((x, i) => (x.kind === "card" && to.has(x) ? []
+    : x.kind === "turn" ? [{ ...x, cards: [...(x.cards || []).filter((c) => !to.has(c)), ...(moved.get(i) || [])].sort(seq) }] : [x, ...(moved.get(i) || []).sort(seq)]));
+};
+// ...and whether the page holds no card of a review he said no to (GeneralWorkspace `one`): then, and only then, the plain "you said no" note
+export const noCard = (review, nodes, posts) => !(nodes || []).some((n) => n.rid === review) && !(posts || []).some((p) => p.ReviewId === review);
 export const hasParts = (parts) => (parts || []).some((p) => p.type !== "said" || p.text);
 
-export const PARTS = "agent_parts";
-export const partsMessage = (parts) => (parts.length ? [{ type: "data", name: PARTS, data: { parts } }] : []);
-// WHICH SOURCE a task's chat reads: a coding task, or any task with a coding CLI live on it, is its sessions (codingchat.py); every other is
-// the general agent's conversation (general.py). The one component draws either - this picks, nothing in the page does
+// WHICH AGENT a task's chat is typed to: a coding task, or any task with a coding CLI live on it, is its CLI's; every other the general agent's.
+// The chat itself is the same either way (the owner, 2026-11-25: "exactly the same") - one list, one payload; this picks only the default
+// detail (chatDetail.detailFor) and where Stop and the box go
 export const chatSource = (task, term) => (task?.Kind === "coding" || liveTerminal(term) ? "coding" : "general");
 // WHAT WAITS BY THE BOX, WHEN MANY DO (decided 2026-11-12): the NEWEST lines and the count - the strip scrolled from the oldest, so the line he
 // had just typed stood out of sight under a dozen older ones. A line that failed to go in is kept where it is wherever it stands
@@ -203,6 +281,53 @@ export const continues = (messages, i) => { for (let j = i - 1; j >= 0; j--) { c
    short of its end, never to follow again. */
 export const AT_END = 56;
 export const heldAtEnd = (held, { top, was, gap, own }) => gap < AT_END || (held && !(own && top < was - 1));
+// ...AND AWAY FROM ITS END, WHAT HE WAS READING STAYS WHERE IT WAS (walk 12, recorded: the browser pane opened and shut beside the chat, every line
+// re-wrapped to the new width, the chat grew from 997 to 1502 px and back, and what he read jumped ~500 px each time). The row at the top of the
+// view - the deepest one still taller than the view gives way to its child - is marked with its offset, and after a change of size the view is
+// moved by however far that row went
+export const anchorOf = (view, root, depth = 5) => {
+  if (!view || !root) return null;
+  const top = view.getBoundingClientRect().top, h = view.clientHeight;
+  let el = null, rows = [...root.children];
+  for (let d = 0; d < depth && rows.length; d += 1) {
+    const hit = rows.find((r) => r.getBoundingClientRect().bottom > top);
+    if (!hit) break;
+    el = hit;
+    if (hit.getBoundingClientRect().height <= h) break;
+    rows = [...hit.children];
+  }
+  return el ? { el, off: el.getBoundingClientRect().top - top } : null;
+};
+// ...AND AT ITS END A FOLD IS NOT A MOVE OF ITS OWN (walk 17, recorded: on "✓ Sent" the pressed card folded before the next one was drawn, and
+// the chat flicked up 400 px and back down within 0.2 s): held at its end, the chat keeps the height it had for SHRINK_HOLD ms, so the fold and
+// what comes under it are one move. `tall`: its height before; `now`: its own height now - the height to keep, or 0
+export const SHRINK_HOLD = 500;
+export const shrinkHeld = (held, tall, now) => (held && now < tall - 1 ? tall : 0);
+export const anchorShift = (view, a) => (a?.el?.isConnected ? a.el.getBoundingClientRect().top - view.getBoundingClientRect().top - a.off : 0);
+/* A CHAT OPENS AT THE START OF ITS NEWEST REPLY (the owner, 2026-11-24): opened at its very bottom, a long answer was read from its last lines up.
+   The top of the newest row - the turn its trailing cards belong to - goes to the top of the view, or the end where that is nearer (a short
+   reply, a chat that fits). -> the scrollTop to open at. Held there for OPEN_HOLD ms while rows measure themselves in, unless he moves first */
+export const OPEN_HOLD = 1000;
+export const openAt = (view, root) => {
+  const end = view.scrollHeight - view.clientHeight;
+  if (end <= 0 || !root) return Math.max(0, end);
+  const rows = [...root.querySelectorAll("[data-tq-item]")].filter((r) => !r.parentElement?.closest("[data-tq-item]"));
+  let i = rows.length - 1;
+  while (i > 0 && rows[i].hasAttribute("data-tq-row-cards")) i -= 1;
+  if (i < 0) return end;
+  const top = rows[i].getBoundingClientRect().top - view.getBoundingClientRect().top + view.scrollTop;
+  return Math.max(0, Math.min(end, Math.round(top)));
+};
+/* ...AND HELD AT ITS END IT FOLLOWS WHAT IS DRAWN UNDER IT NO FURTHER THAN THAT (the card gallery, 2026-11-25: a view taller than the window was
+   drawn a beat after its chat opened, and the chat, held at its end, went down to the view's foot - its title and the reply's head off the top).
+   A turn at work is followed to its last word, as it was; in a chat at rest the top of the newest reply never leaves the view by the chat's own
+   doing - once he has read past it, the end is followed as before. -> the scrollTop to stand at */
+export const endAt = (view, root) => {
+  const end = Math.max(0, view.scrollHeight - view.clientHeight);
+  if (root?.querySelector?.('[data-tq-turn="working"], [data-tq-turn="starting"]')) return end;
+  const top = openAt(view, root);
+  return view.scrollTop > top + 1 ? end : top;
+};
 
 // THE CHAT'S OWN LIST ON THE PAGE (GeneralWorkspace): what is drawn is the server's list (conversation.items), with two things of the page's -
 // THE LIST ASKED LAST: the one this view last read, or one read ahead with its task as he came back to it (taskDetail.prefetchTask) - an older
@@ -285,7 +410,7 @@ export const waitingChips = (pending, came = "") => {
 // first, then the archive" at one beat; with the fold opened, "Reading budget.md" stood as a row and again on the line under it at every tool
 // beat). One structural test, for a thought and a step alike: is the row that holds those words drawn open right now - a turn's rows stand open
 // while it has no work to fold (TurnWorkView), and inside a fold he opened or the dock's trail (`open`); shut in the fold, the line names it
-export const workingLine = (parts, label, { starting = false, later = false, ask = "", doing = "", open = false } = {}) => {
+export const workingLine = (parts, label, { starting = false, later = false, ask = "", thinking = "", open = false } = {}) => {
   if (ask) return ask;
   // the newest thing the turn did: its last step, or an edit made after it (an edit is a part of its own, editRow)
   const newest = (parts || []).flatMap((p) => (p.type === "work" ? (p.steps || []).map((st) => ({ st, row: String(label(st) || "") }))
@@ -295,11 +420,10 @@ export const workingLine = (parts, label, { starting = false, later = false, ask
   // ...an edit being made, or a step at work, is the newest thing at work, in its own words (editRow `running`, stepLabel)
   if (newest?.edit?.running) return say(newest.edit.summary, "Working…");
   if (newest?.st?.status === "running") return say(newest.row.split(/\r?\n/)[0].trim(), "Working…");
-  if (doing && thinkingLine(doing)) return `Writing: ${thinkingLine(doing)}`;
-  if (!newest) return starting && !later ? "Waiting for the agent to start" : "Thinking…";
-  // ...and WHAT IT IS THINKING, where its newest step is a thought (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else):
-  // that thought's latest words, as it writes them (agents.ACPSteps._thinking) - never a bare word for minutes. An edit made after it is newer
-  return newest.st?.kind === "thought" ? say(thinkingLine(newest.st.detail || newest.st.summary), "Thinking…") : "Thinking…";
+  // ...and WHAT IT IS THINKING, while that is the newest thing it does (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else):
+  // the thought's latest words, as it writes them (chatlog._now `thinking`) - the one place a thought reads, never a step row (conversation._said)
+  if (thinking && thinkingLine(thinking)) return thinkingLine(thinking);
+  return !newest && starting && !later ? "Waiting for the agent to start" : "Thinking…";
 };
 const flat = (t) => String(t || "").replace(/\s+/g, " ").replace(/[.…]+$/, "").trim();
 // a thought as one short line: its last sentence, cut at a word

@@ -26,16 +26,6 @@ def answered(s, tid, did, on_you=()):
 
 
 # ── the brief ───────────────────────────────────────────────────────────────────────────────
-def test_the_brief_carries_the_ladder_the_work_line_and_the_override():
-    s = MemoryStore(); system = general._prompt(s, task(s))[0]
-    # the override rides only for an AGENT.md copy that still tells a worker to run --done: the shipped one no longer does (2026-11-09)
-    assert general.GENERAL_OVER not in system
-    s.save_doc('agent', (s.doc('agent') or '') + '\n- When the work is over, run `taskuary --done "<one sentence>"`.', 'owner')
-    system = general._prompt(s, task(s))[0]
-    for want in (general.WORK_LINE, general.GENERAL_OVER, 'more than twice', 'three genuinely different ways', 'one line per way you tried',
-                 'A TURN THAT ASKS STILL DOES THE WORK', 'CHECK EACH STEP', 'DONE MEANS THE GOAL IS MET AND CHECKED'):
-        assert want in system, want
-    assert '"answer_is_result"' in selfclose.SUMMARY_LINE and 'true only when the goal is met and you checked it' in selfclose.SUMMARY_LINE
 
 
 def test_the_windows_are_large():
@@ -54,17 +44,17 @@ def test_a_long_task_is_compacted_and_still_names_its_earlier_decisions():
         s.add_comment(tid, 'owner', general.USER_TYPE, f'question {i}'); answered(s, tid, f'answer {i}')
     s.add_comment(tid, 'owner', general.USER_TYPE, 'Where did we land?')
     before = len(s.list_comments(tid, internal=True))
-    with mock.patch.object(general, 'MAX_CONTEXT', 30_000), mock.patch('taskuary.learn.learn_from') as lf:
+    with mock.patch.object(general, 'MAX_CONTEXT', 30_000), mock.patch('taskuary.learning.learn_from') as lf:
         user = general._prompt(s, tid)[1]
     assert 'EARLIER IN THIS CONVERSATION, COMPACTED' in user
     assert 'Go with the three-year term, not the two.' in user                                  # the owner's decision
     assert 'C:/tasks/renewal/terms.docx' in user and 'confirm the 6% uplift with Erin Blake' in user      # ...what was done, what was left
-    assert user.rstrip().endswith('Do not repeat the task context.') and 'Where did we land?' in user
+    assert user.rstrip().endswith('Where did we land?')
     assert len(user) <= 30_000 + 200
     # ...nothing new is stored, and nothing goes around LEARNED.md: the chat keeps every turn, compaction is only what the model reads
     assert len(s.list_comments(tid, internal=True)) == before and len(general.chat_rows(s, tid)) == 63
     lf.assert_not_called()
-    assert not [n for n in s.doc_names() if n not in ('soul', 'job', 'agent', 'coding', 'digest', 'learned', 'triage', 'style', 'counsel',
+    assert not [n for n in s.doc_names() if n not in ('soul', 'agents', 'job', 'agent', 'coding', 'digest', 'learned', 'triage', 'style', 'counsel', 'advisor',
                                                       'researcher', 'analyst', 'coordinator', 'marketer', 'trader', 'assistant')]
 
 
@@ -80,8 +70,8 @@ def test_older_mail_is_compacted_by_id():
                           'Subject': 'renewal', 'BodyText': f'mail {i} body', 'SentAt': f'2026-11-0{i + 1} 09:00:00'}) for i in range(4)]
     s.add_comment(tid, 'owner', general.USER_TYPE, 'Sum it up')
     with mock.patch.object(general, 'SOURCE_MAILS', 2): user = general._prompt(s, tid)[1]
-    assert 'EARLIER MAIL ON THIS TASK, COMPACTED - 2 older messages' in user and f'[m{ids[0]}] Gail Moreno' in user and general.READ_WHOLE in user
-    assert f'[m{ids[3]}] · email\nmail 3 body' in user
+    assert 'EARLIER MAIL ON THIS TASK, COMPACTED - 2 older messages' in user and f'[m{ids[0]}] ⟦Gail Moreno' in user and general.READ_WHOLE in user
+    assert f'[m{ids[3]}] · email\n⟦mail 3 body⟧' in user          # the mail itself, fenced as material
 
 
 def test_the_thread_a_task_was_built_from_is_in_its_material():
@@ -101,13 +91,13 @@ def test_the_thread_a_task_was_built_from_is_in_its_material():
     ask = row('a1', 'Erin Blake', '2026-11-04 09:00:00', 'Alex - can you confirm the final October figure to Payworth?', TaskId=tid, Status='sent')
     s.add_comment(tid, 'owner', general.USER_TYPE, 'Answer her')
     user = general._prompt(s, tid)[1]
-    src = user[user.index('SOURCE MATERIAL'):user.index('CONVERSATION\n')]
+    src = user[user.index('SOURCE MATERIAL'):]               # his one line leads the prompt: no CONVERSATION follows it
     assert f'[m{g1}]' in src and '48,210.55' in src and f'[m{g2}]' in src and '50,114.55' in src           # the figures are in the material...
     assert src.index(f'[m{g1}]') < src.index(f'[m{g2}]') < src.index(f'[m{ask}]')                          # ...in the order they were written
     assert src.count('48,210.55') == 1                                                                 # each mail's own words, once
     assert f'[m{other}]' not in user and 'Trainly' not in user
     with mock.patch.object(general, 'SOURCE_MAILS', 1): few = general._prompt(s, tid)[1]                  # one window: the oldest are the lines
-    assert 'COMPACTED - 2 older messages' in few and f'- [m{g1}] Gail Moreno' in few and f'[m{ask}]' in few
+    assert 'COMPACTED - 2 older messages' in few and f'- [m{g1}] ⟦Gail Moreno' in few and f'[m{ask}]' in few
     with mock.patch('taskuary.origin.of_task', return_value=('stranger', '')), mock.patch('taskuary.origin.stranger_file', return_value='f.md') as wrote:
         general._prompt(s, tid)
     assert '50,114.55' not in '\n'.join(wrote.call_args[0][2])

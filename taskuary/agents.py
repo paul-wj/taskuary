@@ -31,13 +31,15 @@ def shutdown_cli_children():
     with _CLI_CHILDREN_LOCK:
         children = list(_CLI_CHILDREN)
         _CLI_CHILDREN.clear()
+    failed = []
     for child in children:
         try:
-            if child.poll() is None:
-                if getattr(child, '_taskuary_tree', False): spawn.stop_tree(child)
-                else: child.kill()
-        except Exception:
-            pass
+            if child.poll() is None: spawn.end(child)
+        except Exception as e:
+            logger.warning(f'agent child {getattr(child, "pid", "?")}: shutdown cleanup failed - {e}')
+            failed.append(child)
+    if failed:
+        with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.update(failed)
     return len(children)
 
 
@@ -178,6 +180,14 @@ def _resolve_cmd(name: str) -> list:
     return [path]
 
 
+# THE OWNER'S OWN SECRETS IN THE SERVER'S ENVIRONMENT ARE NO SESSION'S (red team #2, T3): a trusted session inherited every variable the app
+# was started with - a vendor's API key, a database password, a package registry's token - for its agent to print. By the variable's name, its
+# grammar: one that names a credential goes, unless it is how an AI or the code host its work pushes to signs in (the CLI, git, gh) or Taskuary's own
+_SECRET_ENV = re.compile(r'(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|APIKEY|_KEY|CREDENTIALS?|_PAT|_AUTH)$', re.I)
+_SIGN_IN_ENV = re.compile(r'^(ANTHROPIC|CLAUDE|OPENAI|CODEX|GEMINI|GOOGLE|AWS|AZURE|VERTEX|CLOUD_ML|COPILOT|GH|GITHUB|GITLAB|GLAB|TASKUARY)_', re.I)
+def ambient(base) -> dict: return {k: v for k, v in dict(base).items() if not _SECRET_ENV.search(k) or _SIGN_IN_ENV.match(k)}
+
+
 def child_env(base: dict = None, home: str = None, windows: bool = None) -> dict:
     """The environment a CLI is entitled to expect.
 
@@ -194,12 +204,13 @@ def child_env(base: dict = None, home: str = None, windows: bool = None) -> dict
     of this test managed to fail on the platform it was pretending to be.
     """
     import ntpath                    # a Windows path, split as one wherever this runs
-    env = dict(os.environ if base is None else base)
-    # ...and NO CLI KEEPS A MEMORY OF ITS OWN (the recorded walk, 2026-11-11: an agent saved a "playbook" into Claude Code's memory folder,
+    env = ambient(os.environ) if base is None else dict(base)       # ...the profile's own variables (spawn_env) stay as he set them
+    # ...and NO CLI KEEPS A MEMORY OF ITS OWN (the recorded walk, 2026-11-11: an agent saved a "skill" into Claude Code's memory folder,
     # where no card held it and no other agent reads it). It was switched off for chat agents only; a coding agent in a pane, over ACP, or a
     # one-shot with tools still wrote there. Every CLI Taskuary starts takes its environment from here, so here it is off for all of them
     from .clis import NO_MEMORY
     env.update(NO_MEMORY)
+    env['PYTHONUTF8'] = '1'          # ...and a Python it runs reads and writes UTF-8, never the code page (shellgate.PS_UTF8 says what broke)
     if home is None:
         try: home = str(Path.home())
         except (RuntimeError, OSError): return env      # nothing better to say than nothing
@@ -292,6 +303,19 @@ def failure_of(name: str, said: str, cmd0: str = '', resume=None, raw=None, err:
     if _SIGNED_OUT.search(f'{said}\n{err}'): return RuntimeError(signed_out_msg(name, said, cmd0))
     if resume and gone('\n'.join(map(str, raw)) or said): return Gone(resume)
     return None
+
+
+def prompt_failure(name: str, e, cmd0: str = '', sid=None) -> Exception | None:
+    """WHAT AN ACP TURN'S ERROR IS, on the chat and the coding road alike: what failure_of reads (a limit, a sign-in) - else, where its agent
+    answered the prompt itself with an error that names no provider's status or refusal, the turn stopped part-way (MID_TURN), its text the
+    log's. Walk 16: a Codex adapter whose app-server died answered with that server's stderr, and its first line - a deprecation warning the
+    run had gone on past - stood on the rail as the cause. None: none of these."""
+    from . import say
+    from .failures import refused
+    if f := failure_of(name, str(e), cmd0): return f
+    if getattr(e, 'method', '') != 'session/prompt' or say.provider_said(str(e)) or refused(str(e)): return None
+    logger.warning(f'acp: {name} answered its turn with an error - {str(e)[:600]}')
+    return acp_mod.DiedMidTurn(MID_TURN, sid)
 
 
 def raise_failure(name: str, said: str, cmd0: str = '', resume=None, raw=None, part_way=None):
@@ -719,21 +743,10 @@ BRAIN_SETTING = {'coding': 'default_brain', 'general': 'assistant_ai', 'triage':
 class NoAI(ValueError): "Nothing connected can run this - the reason a start shows, naming no AI the person does not have."
 
 
-def role_brain(store, role: str) -> str:
-    """The CLI key set for one profile's work (profile_brains) - his own taken at its word, as resolve_brain takes a card's; one an update
-    moved there only while it is connected. '' when none."""
-    try: over = json.loads(store.get_setting('profile_brains') or '{}')
-    except (TypeError, ValueError): over = {}
-    k = str(over.get(str(role or '')) or '').strip() if role and isinstance(over, dict) else ''
-    return k if k and (picked(store, 'profile_brains') or k in dict(connection_brains(store))) else ''
-
-
-def resolve_brain(store, kind: str = 'general', cli_only: bool = False, role: str = None) -> str:
-    """'cli:<key>', 'connector:<id>' or '' - see above. `cli_only` for a run that cannot exist without a terminal; `role` a profile
-    whose own brain (profile_brains) the owner set. THE PICK EVERY ROAD READS: triage's (llm.effective_pick), the Assistant's
+def resolve_brain(store, kind: str = 'general', cli_only: bool = False) -> str:
+    """'cli:<key>', 'connector:<id>' or '' - see above. `cli_only` for a run that cannot exist without a terminal. THE PICK EVERY ROAD READS: triage's (llm.effective_pick), the Assistant's
     (concierge.default_pick), the general agent's (general._selected), a coding pane's (brain_for, brain_chain, cli_connections.brain_of)
     and the router's fixed answer (brainroute._fixed) - two of them read a blank slot two ways, and a job ran on a CLI Settings did not name."""
-    if role and (r := role_brain(store, role)): return f'cli:{r}'
     name = BRAIN_SETTING.get(kind, 'assistant_ai')
     v = '' if stale(store, name) else str(store.get_setting(name) or '').strip()
     # ...a CLI's key, or an AI card the owner chose for coding (the owner, 2026-11-09: "coding tasks should run on hipaa, why not")
@@ -758,7 +771,7 @@ def resolve_brain(store, kind: str = 'general', cli_only: bool = False, role: st
 def resolved_command(store, kind: str = 'coding') -> dict:
     "The command fields of the CLI resolve_brain names for a run that needs one - {} when none is connected."
     p = resolve_brain(store, kind, cli_only=True)
-    return brain_command(store, '', want=p[4:]) if p else {}
+    return brain_command(store, want=p[4:]) if p else {}
 
 
 def with_cmd(profile: dict, store=None, kind: str = 'coding') -> dict:
@@ -779,14 +792,14 @@ def ready_brains(store) -> list:
     return sorted(keys, key=lambda k: tests.get(k) is not True)
 
 
-def agent_row(store, name: str) -> dict | None:
+def agent_row(store, name: str, model: str = None) -> dict | None:
     """The row a `cli:<name>` pick runs. A BRAIN IS A CLI TOOL OR AN AI CONNECTION, NEVER A PROFILE (the owner, 2026-10-15:
     "there is no such profile or brain.. it's models or cli tools only"): `cli:claude` is the Claude Code connection, whatever
     profiles exist. A profile name here is a pick saved before brains named tools (`cli:<profile>`) - still run, by its row, so an
     old chat keeps working until migrate_brain_settings rewrites it."""
     if not name: return None
     from . import config, harness
-    if harness.card_id(name) is not None: return harness.row(store, name)      # an API card's agent, on its harness CLI (harness.py)
+    if harness.card_id(name) is not None: return harness.row(store, name, model or '')     # an API card's agent, on its harness CLI (harness.py)
     from .cli_connections import with_defaults
     conn = (config.load().get('cli_connections') or {}).get(str(name))
     if conn: return {'Name': name, 'Kind': 'general', 'Runner': 'cli', 'Config': json.dumps(with_defaults(conn))}
@@ -831,14 +844,6 @@ def availability_failure(error) -> bool:
         cli_quota(text) or _UNAVAILABLE.search(text) or _SIGNED_OUT.search(text) or _DENIED.search(text) or _NO_HOME.search(text))
 
 
-def profiles(store) -> dict:
-    out = {}
-    for a in store.list_agents():
-        try: out[a['Name']] = json.loads(a.get('Config') or '{}')
-        except ValueError: out[a['Name']] = {}
-    return out
-
-
 def cli_of(profile: dict, fallback: str = '') -> str:
     """The executable family behind a worker profile.
 
@@ -876,59 +881,6 @@ def coding_options(store) -> list[dict]:
     return out
 
 
-# The workers Taskuary ships, besides `coding`. A profile IS an agent row and its rules document is
-# the `doc` row of the same name - which is what the coding profile already was, so this adds no new storage and
-# no migration. `purpose` is the one line triage is shown when it picks; `kind` is deliberately never
-# 'coding', because that is what the coding-specific paths key on.
-DEFAULT_PROFILES = {
-    # researcher and analyst split on WHOSE information it is, not on how hard the question is: the
-    # first pair of purpose lines both read as "find out something", and "look into last month's
-    # spend" could have gone either way (the owner, 2026-09-10: "sharpen analyst vs researcher").
-    'researcher': {'kind': 'research', 'purpose': 'Information from outside - the web, vendors, public filings, documents, what other '
-                                                  'companies do. Reads and reports with sources; queries none of our systems'},
-    'analyst':    {'kind': 'analysis', 'purpose': 'Our own figures - the databases, the ledger, the bank feeds, our reports. '
-                                                  'Queries them, reconciles them, explains what the numbers say'},
-    'coordinator': {'kind': 'coordination', 'purpose': 'meetings, chasing people, scheduling and follow-ups'},
-    'marketer':   {'kind': 'marketing', 'purpose': 'copy, positioning and campaigns - drafts, never sends'},
-    'trader':     {'kind': 'markets', 'purpose': 'markets and positions - proposes, never places an order'},
-    # the GENERAL assistant's own profile, like CODING.md for coding (the owner, 2026-10-14): general work triage gives no other
-    # role runs on ASSISTANT.md - it ran on AGENT.md alone, the one worker with no profile of its own
-    'assistant':  {'kind': 'general', 'purpose': 'general work no other profile owns - writing, planning, follow-ups, looking '
-                                                 'things up in our connections'},
-}
-
-
-def cli_inheritance(cfg: dict) -> dict:
-    """What a new profile inherits of a CLI: nothing. A profile is instructions layered on whichever brain runs its work (the
-    owner, 2026-10-15) - its row takes that brain's command when it is synced (cli_connections.sync). Kept for its callers."""
-    return {}
-
-
-def seed_profiles(cfg: dict) -> list:
-    """Add any shipped profile this install does not have yet to the CONFIG, and never touch one it
-    already has. Returns the names added, so the caller knows whether to save.
-
-    It goes in config.toml rather than straight into the database because that is what the Agents page
-    reads and writes (`put_agent` saves both): a profile seeded only into the database routed work and
-    seeded documents while being invisible and un-editable on the page that exists to configure it.
-    A profile carries no CLI: it runs on the brain its work uses."""
-    have = cfg.setdefault('agents', {})
-    added = []
-    for name, prof in DEFAULT_PROFILES.items():
-        # ...and a shipped purpose still worded as it once shipped takes the wording it ships with now, once: an install seeded before the
-        # design walk (2026-11-20) kept "OUTSIDE information" and "OUR OWN figures" in capitals on its Agents page. One the owner wrote stays
-        if name in have and str(have[name].get('purpose') or '') in SHIPPED_BEFORE.get(name, ()): have[name]['purpose'] = prof['purpose']; added.append(name)
-        if name in have: continue
-        have[name] = {'kind': prof['kind'], 'purpose': prof['purpose']}
-        added.append(name)
-    return added
-SHIPPED_BEFORE = {
-    'researcher': ('OUTSIDE information - the web, vendors, public filings, documents, what other companies do. Reads and reports with sources; '
-                   'queries none of our systems',),
-    'analyst': ('OUR OWN figures - the databases, the ledger, the bank feeds, our reports. Queries them, reconciles them, explains what the '
-                'numbers say',)}
-
-
 def drop_cli_clones(cfg: dict, store) -> list:
     """Remove the coding workers named after a CLI - codex, copilot, devin, opencode... - leaving
     the one coding profile. Returns the names dropped, so the caller knows whether to save.
@@ -936,7 +888,7 @@ def drop_cli_clones(cfg: dict, store) -> list:
     There is ONE coding profile and one rules document; a brain is chosen per session from the CLI
     connections. An older setup minted a coding worker per installed CLI, each pointing at the shared
     document and differing only in which CLI ran it. That minting stopped on 2026-09-14 (adopt_installed's
-    docstring), but the rows it had already written stayed on the Manage profiles page - five
+    docstring), but the rows it had already written stayed on the page that listed them - five
     profiles for one document (the owner, 2026-09-17: one coding document for every CLI).
 
     Only a row that IS such a clone goes: coding kind, named after a known CLI, using the shared
@@ -969,50 +921,20 @@ def drop_cli_clones(cfg: dict, store) -> list:
     return gone
 
 
-def profile_purpose(name: str, prof: dict, kind: str = 'coding') -> str:
-    return str(prof.get('purpose') or DEFAULT_PROFILES.get(name, {}).get('purpose')
-               or ('writes and changes code, in a repository' if kind == 'coding' else '')).strip()
-
-
-def profile_document(store, name: str, prof: dict = None) -> str:
-    """The job owns the instructions; changing its CLI does not create CODEX.md."""
-    row = store.get_agent(name) or {}
-    if prof is None:
-        try: prof = json.loads(row.get('Config') or '{}')
-        except ValueError: prof = {}
-    explicit = str(prof.get('rules_doc') or '').strip()
-    if explicit and re.fullmatch(r'[a-z0-9][a-z0-9_-]*', explicit): return explicit
-    kind = prof.get('kind') or DEFAULT_PROFILES.get(name, {}).get('kind') or row.get('Kind')
-    return 'coding' if kind == 'coding' else name           # the coding rules, CODING.md, shared by every coding profile
-
-
-def profile_template(store, name: str) -> str:
-    """A shipped role, or useful starter instructions for a new named worker."""
-    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name): return ''
-    folder = Path(__file__).parent / 'templates'
-    source = folder / f'{name}.md'
-    if source.is_file(): return source.read_text(encoding='utf-8')
-    row = store.get_agent(name)
-    if not row: return ''
-    try: prof = json.loads(row.get('Config') or '{}')
-    except ValueError: prof = {}
-    purpose = profile_purpose(name, prof, row.get('Kind') or 'coding') or 'Complete the task assigned by the owner.'
-    return (folder / 'profile.md').read_text(encoding='utf-8').replace('PROFILE_NAME', name.upper()).replace('PROFILE_PURPOSE', purpose)
-
-
-def ensure_profile_document(store, name: str) -> str:
-    doc = profile_document(store, name)
-    if not str(store.get_doc(doc) or '').strip():
-        starter = profile_template(store, doc)
-        if starter.strip(): store.save_doc(doc, starter, 'template')
-    return doc
-
-
 # The kinds that mean "works a repository". `cli` is the legacy spelling older databases use.
 CODING_KINDS = ('coding', 'cli')
 # Work that can still be dispatched. An allowlist rather than a list of endings, so a status added
 # later cannot quietly make a repair start rewriting finished tasks (the store also has `dropped`).
 LIVE_STATUSES = ('open', 'in_progress')
+
+
+def ensure_coding(cfg: dict) -> bool:
+    """The coding agent's row - where its checkouts are kept (cwd_map) - is always there: nothing on screen makes or removes one.
+    True when it had to be added, so the caller saves config.toml."""
+    have = cfg.setdefault('agents', {})
+    if any(str(p.get('kind') or 'coding').lower() in CODING_KINDS for p in have.values()): return False
+    have['coding'] = {'kind': 'coding'}
+    return True
 
 
 def coding_role(store) -> str:
@@ -1022,12 +944,6 @@ def coding_role(store) -> str:
     rows = sorted((a for a in store.list_agents() if str(a.get('Kind') or '').lower() in CODING_KINDS and a.get('Active', 1)),
                   key=lambda a: (a['Name'] != 'coding', a['Name']))
     return rows[0]['Name'] if rows else ''
-
-
-def default_agent(store) -> str:
-    """The profile a task runs under when nobody picked one - the coding profile (coding_role). Kept as a name for its callers;
-    it no longer reads a setting, and never answers with a brain."""
-    return coding_role(store)
 
 
 def default_brain(store) -> str:
@@ -1090,10 +1006,9 @@ def default_pick(store) -> str:
     return f"connector:{c['ConnectorId']}" if c else ''
 
 
-def brain_for(store, role: str) -> str:
-    """The CLI that runs one role's coding pane - the one resolver's (resolve_brain), the role's own brain (profile_brains) first. A
-    profile never PINS a brain: this is a setting keyed BY a profile, and what it names is a brain - never a model, never an effort."""
-    return resolve_brain(store, 'coding', cli_only=True, role=role)[4:]
+def brain_for(store) -> str:
+    "The CLI that runs a coding pane - the one resolver's (resolve_brain)."
+    return resolve_brain(store, 'coding', cli_only=True)[4:]
 
 
 def brain_chain(store, first: str = None, cfg: dict = None) -> list:
@@ -1202,8 +1117,8 @@ def layer_profiles(cfg: dict, store) -> bool:
     layered on top of any brain tool"; the coding profile is just a profile). Once, at start:
 
     - the coding brain is named outright (default_brain) from the legacy `default_agent` profile, and that setting goes;
-    - a profile's own `provider` leaves it: one on another CLI than the default becomes that role's brain override
-      (profile_brains), so nothing runs anywhere new, and the rest simply run on the default brain;
+    - a profile's own `provider` leaves it, and so does the per-role brain override an older version kept: every agent runs on
+      the brain Settings names;
     - the shipped coding profile's old name becomes `coding` - its config, its row, its document (now CODING.md), the tasks and
       transcripts that name it, the settings that do. Only when no `coding` exists yet, so an owner's own is never overwritten.
     Returns whether config.toml changed (the caller saves it)."""
@@ -1214,22 +1129,14 @@ def layer_profiles(cfg: dict, store) -> bool:
         key = default_brain(store)
         if key and key in (cfg.get('cli_connections') or {}): store.set_setting('default_brain', key, 'migration')
     if str(store.get_setting('default_agent') or '').strip(): store.set_setting('default_agent', '', 'migration')
-    dflt = str(store.get_setting('default_brain') or '').strip()
-    try: over = json.loads(store.get_setting('profile_brains') or '{}')
-    except ValueError: over = {}
-    over = over if isinstance(over, dict) else {}
-    moved = dict(over)
-    for name, prof in agents.items():
-        provider = str(prof.pop('provider', '') or '')
-        if provider.startswith('cli:') and provider[4:] != dflt and name not in moved: moved[name] = provider[4:]
+    for prof in agents.values(): prof.pop('provider', None)
+    if store.get_setting('profile_brains'): store.set_setting('profile_brains', '', 'migration')
     if 'coder' in agents and 'coding' not in agents:
         agents['coding'] = agents.pop('coder')
-        if 'coder' in moved: moved['coding'] = moved.pop('coder')
         _rename_coding_profile(store)
     for prof in agents.values():
         if str(prof.get('rules_doc') or '') == 'coder': prof['rules_doc'] = 'coding'
     if 'coding' in agents: _retire_old_name(store)
-    if moved != over: store.set_setting('profile_brains', json.dumps(moved) if moved else '', 'migration')
     return json.dumps(agents, sort_keys=True, default=str) != before
 
 
@@ -1248,9 +1155,9 @@ def _rename_coding_profile(store) -> None:
     # the store seeds an untouched CODING.md from the template when it opens - BEFORE this runs - so "already there" is not
     # the owner's; only their own edits on either side decide, and an edited CODER.md wins over a fresh template copy
     doc, now = store.get_doc_row('coder'), store.get_doc_row('coding')
-    if doc and (not now or now.get('UpdatedBy') == 'template'):
-        if doc.get('UpdatedBy') == 'template': ensure_profile_document(store, 'coding')     # an untouched copy takes the new template
-        else: store.save_doc('coding', doc['Content'], doc.get('UpdatedBy') or 'owner')
+    # (an untouched copy has nothing to carry: the store seeded CODING.md from the template already)
+    if doc and (not now or now.get('UpdatedBy') == 'template') and doc.get('UpdatedBy') != 'template':
+        store.save_doc('coding', doc['Content'], doc.get('UpdatedBy') or 'owner')
     if doc: store.delete_doc('coder')
     _retire_old_name(store)
 
@@ -1278,7 +1185,6 @@ def _retire_old_name(store) -> None:
     # fails the same way until it is fixed" over a task Start would now run (2026-10-16). It goes; the task reads not started.
     try: store._exec("DELETE FROM dispatchq WHERE State='failed' AND LastError LIKE 'unknown agent: coder%'")
     except Exception: pass
-    if str(store.get_setting('default_profile') or '') == 'coder': store.set_setting('default_profile', 'coding', 'migration')
     # ...and the reports that name it: one with agent `coder` failed "no CLI agent named 'coder'" after the rename, and one whose
     # brain was `cli:coder` would have too (2026-10-16). The agent becomes `coding`; the brain, the tool coding runs on.
     tool = str(store.get_setting('default_brain') or '').strip()
@@ -1293,12 +1199,12 @@ def _retire_old_name(store) -> None:
         if now != was: store.save_source({'SourceId': src['SourceId'], 'ConfigJson': json.dumps(now)}, 'migration')
 
 
-def brain_command(store, role: str, cfg: dict = None, want: str = None) -> dict:
-    """The COMMAND a role's brain runs - cmd, args, resume flags, timeout, gears.
+def brain_command(store, cfg: dict = None, want: str = None) -> dict:
+    """The COMMAND the brain runs - cmd, args, resume flags, timeout, gears.
 
-    `want` is the owner's own pick at the dialog and outranks everything below it.
+    `want` is the owner's own pick at the dialog and outranks the default.
 
-    Empty unless a brain was CHOSEN - `want`, `default_brain`, or this role's override. Blank means the
+    Empty unless a brain was CHOSEN - `want` or `default_brain`. Blank means the
     owner has not moved to the brain layer yet, and `brain_for` would then be guessing from the
     legacy `default_agent` profile; overriding an explicit profile command with a guess is how
     "start a session with codex" would have quietly run claude.
@@ -1308,12 +1214,7 @@ def brain_command(store, role: str, cfg: dict = None, want: str = None) -> dict:
     from . import config
     from .cli_connections import COMMAND_FIELDS, with_defaults
     settings = store.get_settings()
-    try: over = json.loads(settings.get('profile_brains') or '{}')
-    except ValueError: over = {}
-    # the owner picking a brain at the dialog outranks both the role's override and the default
-    key = str(want or '').strip() \
-        or (str(over.get(str(role or '')) or '').strip() if isinstance(over, dict) else '') \
-        or str(settings.get('default_brain') or '').strip()
+    key = str(want or '').strip() or str(settings.get('default_brain') or '').strip()
     if not key: return {}
     cfg = config.load() if cfg is None else cfg
     conn = (cfg.get('cli_connections') or {}).get(key)
@@ -1322,20 +1223,11 @@ def brain_command(store, role: str, cfg: dict = None, want: str = None) -> dict:
     return {k: full[k] for k in COMMAND_FIELDS if k in full}
 
 
-def routed_role(store, kind: str, profile: str) -> str:
-    """Which ROLE a verdict lands on - never which brain runs it.
-
-    Coding has exactly one role and triage does not choose it, so whatever it named is discarded:
-    TQ-0588 drew `copilot` and TQ-0586 drew `analyst`, and neither may reach a coding task. The
-    role is still WRITTEN rather than left implied, because `Assignee` does a third job beyond
-    naming a worker and seeding its document: an `agent:` prefix is what puts the row in the pipe's
-    `queued` lane - "handed to an agent, not started yet" (processing_unread, processing_all). An
-    unstamped coding task reads as one that needs the owner.
-
-    General is nobody's: a general agent working a TASK has one goal, to walk the owner through their work, so the
-    task is left unassigned and runs on the assistant (general._prompt) - whatever profile was named, and whatever
-    `default_profile` an older version saved (the owner, 2026-11-04). Profiles are for routines and workflows, which
-    stamp their own (workflows.run, flow.py). `kind: task` leaves the job on the owner's list, so no worker at all."""
+def routed_role(store, kind: str) -> str:
+    """Which ROLE a verdict lands on - never which brain runs it. Coding has exactly one, the coding agent's row (coding_role): it
+    is WRITTEN rather than left implied, because an `agent:` Assignee is what puts the row in the pipe's `queued` lane - "handed to an
+    agent, not started yet" (processing_unread, processing_all). General work is nobody's: it runs on the assistant (general._prompt).
+    `kind: task` leaves the job on the owner's list, so no worker at all."""
     return coding_role(store) if str(kind or '') == 'coding' else ''
 
 
@@ -1389,25 +1281,21 @@ def result_text(raw) -> str:
 
 
 class ACPSteps:
-    """ACP session/update as the SAME trace events the argv road emits - tool_call with its arguments, tool_result with its output,
-    progress for what it said and thought - so a general agent on any CLI reads alike on the canvas (website/src/agentSteps.js).
+    """ACP session/update as the trace events the argv road emits - tool_call with its arguments, tool_result with its output, progress for
+    what it said and thought - for what reads a run's TRACE: the pane, the Board's witness, the transcript, a stopped turn's account.
 
-    An update is not a step. Claude's adapter announces a call with NO input and a generic title ("Read File", "Terminal") and then
-    streams its input in a run of tool_call_updates; Codex's announces a web search with an empty query and fills it at the end, and
-    streams a command's output as terminal deltas. Traced update by update that read "Read File" with no file, then the same call
-    again. So a call is held until its input SETTLES - a permission asked for it, a status that says it runs or ran, the next thing
-    the agent does - and traced once, by the tool's own name (Claude's `Read`, `Bash`, `mcp__taskuary__my_task`; Codex's command)
-    with its full input, exactly as stream-json names it. Words and thoughts arrive a token at a time and are traced as whole
-    paragraphs. `flush` at the end of the turn closes whatever is still open, so no step spins after the turn is over."""
+    THE CHAT NEVER READS THIS (the owner, 2026-11-23: adopt the open-source model): it draws the agent's own updates, each call's row patched in
+    place as they come (chatlog.feed, road 'acp'). So nothing is held back to look right there. A call is traced once, when it has ended - by
+    the tool's own name (Claude's `Read`, `Bash`, `mcp__taskuary__my_task`; Codex's command) with the input it ended on, its result beside it -
+    and its title, as it goes, is the run's live line. Words and thoughts arrive a token at a time and are traced as whole paragraphs. `flush`
+    at the end of the turn ends whatever is still open, so nothing spins after the turn is over."""
 
     def __init__(self, trace, name: str, held: dict = None):
         self.trace, self.name, self.held = trace, name, held if held is not None else {}
-        self.calls, self.said, self.thought, self.plans, self.live_at, self.mid = {}, [], [], 0, -1e9, None
+        self.calls, self.said, self.thought, self.live_at, self.mid = {}, [], [], -1e9, None
 
-    # ...AND WHAT IT IS THINKING OR WRITING IS SAID AS IT GROWS (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else - "it
-    # is a chat: the owner must see what the agent is doing at all times"): about once a second the newest words of the thought or the answer
-    # it is writing go out as a `live` snapshot - a thought kept as the one open thought they update (sessionrecord.trace_steps), the words
-    # as the turn's line of what it is doing (conversation: `doing`) - and the whole paragraph still goes once it is done (_words)
+    # ...AND WHAT IT IS THINKING IS SAID AS IT GROWS (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else): about once a
+    # second the newest words of the thought go out as a `live` snapshot - the working line's (chatlog._now); a thought is never a row
     LIVE_EVERY, LIVE_N = 1.0, 600
     def _live(self, name: str, parts: list):
         if (now := time.monotonic()) - self.live_at < self.LIVE_EVERY: return
@@ -1427,10 +1315,11 @@ class ACPSteps:
     # ── tool calls ──────────────────────────────────────────────────────────────────────────
     def _merge(self, u: dict) -> dict:
         iid = str(u.get('toolCallId') or f'acp-{len(self.calls)}')
-        c = self.calls.setdefault(iid, {'id': iid, 'raw': {}, 'out': [], 'shown': False, 'done': False})
+        c = self.calls.setdefault(iid, {'id': iid, 'raw': {}, 'out': [], 'done': False})
         if isinstance(u.get('rawInput'), dict) and u['rawInput']: c['raw'] = dict(u['rawInput'])
-        for k in ('title', 'kind', 'name', 'status'):
+        for k in ('kind', 'name', 'status'):
             if u.get(k): c[k] = u[k]
+        if u.get('title') and u['title'] != c.get('title'): c['title'] = u['title']; self.trace('live', self.name, f"→ {u['title']}"[:400])
         if (tn := ((u.get('_meta') or {}).get('claudeCode') or {}).get('toolName')): c['tool'] = tn
         if (par := parent_of(u)): c['parent'] = par
         if u.get('locations'): c['locations'] = u['locations']
@@ -1450,69 +1339,53 @@ class ACPSteps:
             act = raw.get('action') or {}
             if act.get('type') in ('openPage', 'findInPage'): return 'fetch', {'url': act.get('url') or raw.get('query') or ''}
             return 'web search', {'query': raw.get('query') or act.get('query') or ''}
-        if raw.get('server') and raw.get('tool'):              # codex MCP: {server, tool, arguments}
-            return f"mcp__{raw['server']}__{raw['tool']}", dict(raw.get('arguments') or {})
+        if raw.get('server') and raw.get('tool'):              # codex MCP: {server, tool, arguments} - use_tool's as the tool it ran
+            from .agenttools import as_called
+            tool, a = as_called(raw['server'], raw['tool'], dict(raw.get('arguments') or {}))
+            return f"mcp__{raw['server']}__{tool}", dict(a or {})
         paths = [l.get('path') for l in c.get('locations') or [] if isinstance(l, dict) and l.get('path')]
         if paths and not any(raw.get(k) for k in ('path', 'file_path', 'absolute_path', 'filePath')): raw['path'] = paths[0]
         if len(paths) > 1 and kind == 'move': raw.setdefault('to', paths[1])
         if c.get('title'): raw.setdefault('title', c['title'])
         return c.get('tool') or c.get('name') or kind or c.get('title') or 'tool', raw
 
-    @staticmethod
-    def _settled(c: dict) -> bool: return any(v not in (None, '', [], {}) for k, v in c['raw'].items() if k not in ('type', 'id', 'cwd'))
-
-    def _show(self, c: dict):
-        if c['shown']: return
-        c['shown'] = True
-        name, args = self._call(c)
-        self.trace('tool_call', name, {'tool_call_id': c['id'], 'args': args, **({'parent': c['parent']} if c.get('parent') else {})})
-        self.trace('live', self.name, f"→ {c.get('title') or name}"[:400])
-
     def _finish(self, c: dict, failed: bool = None):
         if c['done']: return
-        self._show(c); c['done'] = True
+        c['done'] = True
+        name, args = self._call(c)
+        self.trace('tool_call', name, {'tool_call_id': c['id'], 'args': args, **({'parent': c['parent']} if c.get('parent') else {})})
         out = ''.join(c['out']).strip() or c.get('text') or c.get('raw_out') or ''
         bad = (c.get('status') == 'failed' or c.get('exit') not in (None, 0)) if failed is None else failed
         if c['id'] in self.held: out, bad = self.held[c['id']], True          # Taskuary's own answer, not the adapter's "user refused"
         self.trace('tool_result', c['id'], {'result': out, 'is_error': bool(bad)})
 
-    def _settle_others(self, but=None):
-        for c in self.calls.values():
-            if c['id'] != but and not c['shown'] and self._settled(c): self._show(c)
-
     def asked(self, tc: dict):
-        "A permission request for a call: its input is final, so it is traced now - before the answer is."
+        """A permission request's copy of the call (a ToolCallUpdate, the spec's): it fills what the call's own updates left out - Codex asks
+        for a read it announced with no input - never what they said (it asks with its own kind, the command wrapped in powershell)."""
         if not isinstance(tc, dict) or not tc.get('toolCallId'): return
-        # ...what the call announced, not the ask's copy, which only fills gaps: Codex asks with its own kind ("execute" for a file
-        # it announced as a read) and the command wrapped in `powershell.exe -Command '...'`
-        if (c := self.calls.get(str(tc['toolCallId']))):
-            tc = {k: v for k, v in tc.items() if k in ('toolCallId', 'locations') or (k == 'rawInput' and not c['raw']) or not c.get(k)}
-        self._words(); self._show(self._merge(tc))
+        c = self.calls.get(str(tc['toolCallId'])) or {}
+        self._merge({k: v for k, v in tc.items() if k in ('toolCallId', 'locations') or (k == 'rawInput' and not c.get('raw')) or not c.get(k)})
 
     def __call__(self, u: dict):
         kind = u.get('sessionUpdate')
         if kind == 'agent_message_chunk':
-            # ...ONE MESSAGE IS ONE STEP, as the answer (acp.prompt) and the coding chat (conversation.acp_steps) split them (design round 6,
-            # D2: a line he typed cut the message at "The Q", the next began "Paula's address" - one step ran them together, the answer did not)
+            # ...ONE MESSAGE IS ONE STEP, as the answer (acp.prompt) and the chat (conversation.acp_steps) split them
             if self.thought or (self.said and u.get('messageId') != self.mid): self._words()
             self.mid = u.get('messageId')
-            self._settle_others(); self.said.append(acp_mod._text_of(u.get('content'))); self._live('writing', self.said); return
+            self.said.append(acp_mod._text_of(u.get('content'))); return
         if kind == 'agent_thought_chunk':
             if self.said: self._words()
-            self._settle_others(); self.thought.append(acp_mod._text_of(u.get('content'))); self._live('thinking', self.thought); return
+            self.thought.append(acp_mod._text_of(u.get('content'))); self._live('thinking', self.thought); return
         if kind in ('tool_call', 'tool_call_update'):
             self._words()
             c = self._merge(u)
-            self._settle_others(but=c['id'])
-            st = u.get('status')
-            if st in ('completed', 'failed'): self._finish(c)
-            elif (st == 'in_progress' or (kind == 'tool_call_update' and c.get('out'))) and self._settled(c): self._show(c)
+            if u.get('status') in ('completed', 'failed'): self._finish(c)
             return
         if kind == 'plan':
-            self._words(); self._settle_others()
+            self._words()
             steps = [str((e or {}).get('content') or '') for e in u.get('entries') or []]
             if any(steps):
-                iid = f'plan-{self.plans}'; self.plans += 1
+                iid = f'plan-{sum(1 for k in self.calls if k.startswith("plan-"))}'; self.calls[iid] = {'id': iid, 'done': True}
                 self.trace('tool_call', 'update_plan', {'tool_call_id': iid, 'args': {'plan': [s for s in steps if s]}})
                 self.trace('tool_result', iid, {'result': ''})
 
@@ -1520,7 +1393,7 @@ class ACPSteps:
         "The turn is over: what it said is traced, and every call still open ends - done at a normal end, failed at any other."
         self._words()
         for c in list(self.calls.values()):
-            if c['shown'] or self._settled(c) or c.get('title'): self._finish(c, failed=None if c.get('status') in ('completed', 'failed') else stop not in (None, 'end_turn'))
+            if not c['done'] and (c['raw'] or c.get('title')): self._finish(c, failed=None if c.get('status') in ('completed', 'failed') else stop not in (None, 'end_turn'))
 
 
 def acp_tracer(trace, name: str, held: dict = None) -> ACPSteps: return ACPSteps(trace, name, held)
@@ -1530,7 +1403,7 @@ def acp_tracer(trace, name: str, held: dict = None) -> ACPSteps: return ACPSteps
 ACP_SETTING = 'acp_cli'
 _FELL_BACK: set = set()
 # THE STORE AND TASK A RUN IS FOR, beside run_cli's arguments rather than in them: the ACP road's permission answers need both
-# (acpgate - the send filter's verdicts, a step held on this task), and run_cli's signature is the one every caller and test fake
+# (gate - the send filter's verdicts, a step held on this task), and run_cli's signature is the one every caller and test fake
 # shares. make_cli_llm sets it around its call; a run with none reads the switch's default and holds nothing on a task.
 _RUN = contextvars.ContextVar('taskuary_run', default=(None, None))
 
@@ -1652,14 +1525,14 @@ def acp_launch(profile: dict) -> dict:
     except FileNotFoundError as e: raise acp_mod.ACPStartError(f"{ad['pkg']} cannot launch: {e}") from e
     cli = (_resolve_cmd(name) or [name])[-1]
     env = {k: v.replace('{cli}', cli) for k, v in ad['env'].items()}
-    args = list(profile.get('args') or clis_mod.preset_args(name) or [])
+    args = _own_settings(profile, name, list(profile.get('args') or clis_mod.preset_args(name) or []))
     meta = None
     if family == 'claude':
         opts = claude_acp_options(args)
         if opts: meta = {'claudeCode': {'options': opts}}
     elif family == 'codex':
-        from .harness import OWNER_CLI_OFF          # ...his own Codex starts with ChatGPT's apps and plugins off - only those - his -c keys after
-        env['CODEX_CONFIG'] = json.dumps({**{f'features.{k}': False for k in OWNER_CLI_OFF}, **codex_acp_config(args)})
+        from .harness import OWNER_CLI_OFF, OFF_KEYS          # ...his own Codex starts with ChatGPT's apps and plugins off and no bundled skills - his -c keys after
+        env['CODEX_CONFIG'] = json.dumps({**{f'features.{k}': False for k in OWNER_CLI_OFF}, **OFF_KEYS, **codex_acp_config(args)})
     return {'cmd': cmd, 'env': env, 'mode': ad['mode'], 'meta': meta, 'adapter': ad['pkg'], 'unnamed_own': bool(ad.get('unnamed_own'))}
 
 
@@ -1875,13 +1748,13 @@ def _acp_gears(client, profile: dict, name: str, trace):
 
 STOP_GRACE = 2.0                 # seconds a stopped turn has to honour session/cancel before its process is closed
 NO_GOES_ON = 8                   # turns one prompt may go on for after a no of ours ended its turn (run_acp) - a loop of nos ends, as Cancelled
-NO_THEN = 'Go on with the rest of the work, or end your turn now if nothing is left that does not need it.'
+NO_THEN = 'Go on with the rest of the job.'
 def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
     """One headless turn over ACP. Returns (result, session_id, diff) - run_cli's own contract, so
     nothing upstream can tell which road a run took.
 
     The session id is RETURNED by session/new rather than scraped out of a vendor's temp directory, the progress arrives as typed
-    events, and every tool call the agent asks to make is answered by acpgate - Taskuary's rules, not a bypass flag. A kept
+    events, and every tool call the agent asks to make is answered by gate - Taskuary's rules, not a bypass flag. A kept
     conversation (keep_alive: a general agent's task, the Assistant) holds its connection between turns in clipool, as the argv
     road holds its claude process, so a turn after the first pays no start-up. ACPStartError means nothing ran: run_cli falls back.
     """
@@ -1892,7 +1765,7 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         return _run_acp_omp(profile, prompt, trace, resume=resume, cancel=cancel, extra_env=extra_env, store=store)
     launch, cwd, keep = acp_launch(profile), _long(profile.get('cwd')), profile.get('keep_alive')
     env, base = {**spawn_env(profile, extra_env), **launch['env']}, {**spawn_env(profile), **launch['env']}
-    from . import acpgate, clipool
+    from . import clipool, gate as gate_
     sig = _acp_sig(launch, cwd, env)
     opener = lambda: acp_mod.Conversation(_acp_open(name, launch, cwd, env, resume, profile.get('timeout'), trace, fresh_if_gone=True, base=base), sig)
     conv = clipool.take(keep, sig, opener, resume) if keep else opener()      # ...its turn read opening from its start where none was up (general.cold)
@@ -1911,9 +1784,17 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     steps = ACPSteps(trace, name, held)
     ctx_store, task_id = _RUN.get()
     gstore = store if store is not None else ctx_store
-    gate = acpgate.answerer({'store': gstore, 'task_id': task_id, 'cli': _cli_name(name), 'cwd': cwd,
+    gate = gate_.answerer({'store': gstore, 'task_id': task_id, 'cli': _cli_name(name), 'cwd': cwd,
                              'sid': client.session_id}, trace, held, told)
-    client.on_update, client.permit = steps, lambda params: (steps.asked(params.get('toolCall')), gate(params))[1]
+    # ...THE AGENT'S OWN UPDATES ARE THE CHAT'S RECORD (the owner, 2026-11-23): a run for a task's chat (a trace that takes them: general's
+    # `visible.acp`) hands each one in as it comes, before its trace's echo - drawn as the agent sent it, one row per call patched in place
+    # ...and a permission asked is the call's own update too (its toolCall): onto its row, the agent's options with it, before the answer
+    raw = getattr(trace, 'acp', None)
+    def permit(params):
+        steps.asked(params.get('toolCall'))
+        if callable(raw) and (u := acp_mod.asked_update(params)): raw(u)
+        return gate(params)
+    client.on_update, client.permit = (lambda u: (raw(u), steps(u))) if callable(raw) else steps, permit
     with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(client.p)
     over = threading.Event()             # this turn has ended, however it ended
     if cancel is not None:
@@ -1976,7 +1857,7 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         # ...AND A TURN THAT FAILED KEEPS THE CONVERSATION IT WAS ON (the HIPAA walk, 2026-11-21): a gateway's 429 ended a first turn, and its
         # try again opened a fresh Codex thread that learned it all again and wrote the workbook a second time. The try resumes this one
         kept = Unfinished(str(e), client.session_id); kept.__cause__ = e
-        if f := failure_of(name, str(e), launch['cmd'][0]): raise f from kept
+        if f := prompt_failure(name, e, launch['cmd'][0], client.session_id): raise f from kept
         raise e from kept
     finally:
         over.set(); asked.set()
@@ -1986,15 +1867,18 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
             for w in rest: _tell(gstore, int(task_id), w)
         steps.flush(stop if ok else 'error')
         client.on_update, client.permit = None, None
-        with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
-        if not keep: client.close()
-        elif not ok: clipool.drop(keep, conv)          # a turn that failed part-way is never sent again on that connection (MID_TURN)
+        if not keep:
+            client.close()
+            with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
+        else:
+            with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
+            if not ok: clipool.drop(keep, conv)          # a turn that failed part-way is never sent again on that connection (MID_TURN)
 
 
 def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
     """Run one foreground-only OMP turn and verify its continuation and outcome in the native journal."""
     import tempfile
-    from . import acpgate, sessionfiles
+    from . import gate as task_gate, sessionfiles
     name = profile['cmd']
     cmd = _resolve_cmd(name) + list(profile.get('acp') or [])
     if any(a == '--session-dir' or str(a).startswith('--session-dir=') for a in cmd[1:]):
@@ -2023,17 +1907,18 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
         except PermissionError as e:
             raise FileNotFoundError(denied_msg(name, cmd[0], e)) from e
         ctx_store, task_id = _RUN.get()
-        gate = acpgate.answerer({'store': store if store is not None else ctx_store, 'task_id': task_id,
-                                 'cli': 'omp', 'cwd': cwd, 'sid': None}, trace, held)
+        gate_ctx = {'store': store if store is not None else ctx_store, 'task_id': task_id,
+                    'cli': 'omp', 'cwd': cwd, 'sid': None}
+        gate = task_gate.answerer(gate_ctx, trace, held)
         def permit(params):
             tc = params.get('toolCall') or {}
-            raw = tc.get('rawInput')
-            # OMP marks bash as execute and sends the exact command. Native file operations stay denied.
-            if tc.get('kind') != 'execute' or not isinstance(raw, dict): return None
-            command = raw.get('command')
-            if not isinstance(command, str) or not command.strip(): return None
             steps.asked(tc)
             options = [o for o in params.get('options') or [] if o.get('kind') != 'allow_always']
+            raw = tc.get('rawInput')
+            # OMP marks bash as execute and sends the exact command. Native file operations stay denied.
+            if tc.get('kind') != 'execute' or not isinstance(raw, dict): return acp_mod.pick(options, False)
+            command = raw.get('command')
+            if not isinstance(command, str) or not command.strip(): return acp_mod.pick(options, False)
             return gate({**params, 'options': options})
         client.permit = permit
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(client.p)
@@ -2057,6 +1942,7 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
                     if not caps.get('loadSession'): raise RuntimeError(f'{name} cannot reload this session')
                     client.load_session(resume, cwd)
                 else: client.new_session(cwd)
+                gate_ctx['sid'] = client.session_id
                 native_file = sessionfiles.omp_acp_file(client.session_id, env, cmd, spawn.cwd_for(cwd))
                 if not native_file:
                     raise RuntimeError('Oh My Pi ACP session cannot be verified in its native session store.')
@@ -2094,7 +1980,6 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
             try: steps.flush(stop if ok else 'error')
             except Exception as e: logger.debug(f'acp: omp trace flush failed - {e}')
             finished.set()
-            with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
             if cancel_thread:
                 cancel_thread.join(15)
                 if cancel_thread.is_alive():
@@ -2103,6 +1988,7 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
             except Exception as e:
                 if prompt_started: raise OmpTurnError(e, client.session_id) from e
                 raise
+            with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
     finally:
         try: os.remove(overlay)
         except OSError: pass
@@ -2139,25 +2025,25 @@ def _claude_gateway_env(env: dict) -> dict:
     return {k: saved[k] for k in _CLAUDE_GATEWAY_ENV + _CLAUDE_MODEL_ENV if k not in env and isinstance(saved.get(k), str)}
 
 
-def _claude_omits_user_settings(profile: dict) -> bool:
-    cmd = profile.get('cmd') or ''
-    if _cli_name(cmd) != 'claude': return False
-    args = profile.get('args') or ()
-    for i in range(len(args) - 2, -1, -1):
-        if args[i] == '--setting-sources': return 'user' not in args[i + 1].split(',')
-    return bool(_own_settings(profile, cmd))
+def _claude_omits_user_settings(profile: dict, name: str, args: list) -> bool:
+    if _cli_name(name) != 'claude': return False
+    for i in range(len(args) - 1, -1, -1):
+        arg = str(args[i])
+        if arg.startswith('--setting-sources='): return 'user' not in arg.partition('=')[2].split(',')
+        if arg == '--setting-sources': return i + 1 < len(args) and 'user' not in str(args[i + 1]).split(',')
+    return profile.get('user_settings') is False
 
 
 def spawn_env(profile: dict, extra_env: dict = None) -> dict:
     "A headless CLI's environment: the process's own, or - for a stranger's task (profile strict_env) - only what terminal.STRICT_ENV lets through."
     from .terminal import strict_ok          # lazy: terminal imports this module
-    base = {k: v for k, v in os.environ.items() if not profile.get('strict_env') or strict_ok(k)}
-    # ...and the profile's own (an API card's harness: its CODEX_HOME and its key - in the environment, never on disk; harness.row)
-    base.update(profile.get('env') or {}); base.update(extra_env or {})
-    if not profile.get('strict_env') and _claude_omits_user_settings(profile):
-        base.update(_claude_gateway_env(base))
-    return child_env(base)
-
+    base = {k: v for k, v in ambient(os.environ).items() if not profile.get('strict_env') or strict_ok(k)}
+    # ...and the profile's own (an API card's harness: its CODEX_HOME and its relay token - in the environment, never on disk; harness.row)
+    env = {**base, **(profile.get('env') or {}), **(extra_env or {})}
+    name = str(profile.get('cmd') or '')
+    args = list(profile.get('args') or clis_mod.preset_args(name) or [])
+    if _claude_omits_user_settings(profile, name, args): env.update(_claude_gateway_env(env))
+    return child_env(env)
 
 
 def sees_images(family: str, args, resume=None) -> bool:
@@ -2242,7 +2128,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     # trust prompt, so every one of those died before the model was reached (issue #34). The flag
     # only relaxes WHERE codex may run; the sandbox flags decide what it may do.
     if is_codex and '--skip-git-repo-check' not in args: args.append('--skip-git-repo-check')
-    cmd = _resolve_cmd(name) + args + _model_args(profile, name) + _own_settings(profile, name)
+    cmd = _resolve_cmd(name) + _own_settings(profile, name, args) + _model_args(profile, name)
     # A CONVERSATION KEPT OPEN: the Assistant and the general agent name theirs (`keep_alive`), and claude's
     # stream-json input serves every turn from one process instead of starting the CLI per call (clipool).
     keep = profile.get('keep_alive')
@@ -2288,12 +2174,8 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         # rides here just as it does in a PTY; merge it over the real process environment so PATH,
         # login homes, and every configured CLI keep working.
         env = spawn_env(profile, extra_env)
-        tree = family == 'omp'
         p = spawn.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, encoding='utf-8', errors='replace', cwd=cwd, shell=False,
-                        env=env, **({'start_new_session': True} if tree and os.name != 'nt' else {}))
-        p._taskuary_tree = tree
-        if tree and isinstance(getattr(p, 'pid', None), int) and p.pid > 0: spawn.track_tree(p)
+                        text=True, encoding='utf-8', errors='replace', cwd=cwd, shell=False, env=env)
         if mark_started: mark_started()
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(p)
     except PermissionError as e:
@@ -2305,9 +2187,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     limit = profile.get('timeout')
     cancel_thread = None
     def stop():
-        try:
-            if family == 'omp': spawn.stop_tree(p)
-            else: p.kill()
+        try: spawn.end(p)
         except Exception as e:
             stop_errors.append(e)
             try: p.kill()
@@ -2474,7 +2354,8 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         if family == 'omp' and p.poll() is None:
             try: stop()
             except Exception: pass
-        with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(p)
+        if not stop_errors:
+            with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(p)
         for f in [prompt_file, *pic_files]:              # the prompt and its pictures can carry mail: never left in the temp folder
             if not f: continue
             try: os.remove(f)
@@ -2583,13 +2464,40 @@ def cli_has_flag(name: str, flag: str) -> bool:
     return _FLAGS[(exe, flag)]
 
 
-def _own_settings(profile: dict, name: str) -> list:
-    """Leave out user-wide Claude settings and their hooks for the Assistant and tool-less runs. Gateway environment is
-    carried separately by spawn_env. Explicit settings sources are left intact; older Claude runs as before."""
-    if profile.get('user_settings') is not False or _cli_name(name) != 'claude': return []
-    args = list(profile.get('args') or [])
-    if '--setting-sources' in args or not cli_has_flag(name, '--setting-sources'): return []
-    return ['--setting-sources', 'project,local']
+ROOTS = 'sandbox_workspace_write.writable_roots'
+def codex_roots(args: list, *dirs) -> list:
+    "`args` with `dirs` among Codex's writable roots: one `-c` key holding them all (a second would replace the first), each once."
+    args, kv = list(args), f'{ROOTS}='
+    i = next((n for n, a in enumerate(args) if str(a).startswith(kv) and n and args[n - 1] in ('-c', '--config')), -1)
+    had = _toml_value(str(args[i])[len(kv):]) if i >= 0 else []
+    roots = list(dict.fromkeys([*(had if isinstance(had, list) else []), *(Path(d).as_posix() for d in dirs)]))
+    val = f"{kv}[{','.join(repr(r) for r in roots)}]"
+    if i >= 0: args[i] = val
+    else: args += ['-c', val]
+    return args
+
+
+def _own_settings(profile: dict, name: str, args: list) -> list:
+    """THE ASSISTANT READS NONE OF THE OWNER'S USER-LEVEL CLAUDE SETTINGS (the owner, 2026-10-21): their user-wide hooks POST to this app
+    on every prompt and every stop - 0.3-0.5 s a turn, measured - and its headless, tool-less brain has no use for them. Only a profile
+    that asks (user_settings False: the Assistant's, and every one-shot with no hands - triage, summaries, judges, reports: llm.make_cli_llm);
+    coding and general agents keep theirs. `args` as they run, with that applied - on the argv road and the ACP road alike.
+    ...AND NONE OF HIS OWN CLAUDE.md (walk 6, 2026-11-23: every triage call carried the laptop user's ~/.claude/CLAUDE.md, its "override any
+    default behavior" and his real name among it - --setting-sources leaves that file in, and the ACP road was handed neither): kept out in
+    the one --settings Claude reads (hooks.not_his), merged into one the run already carries. A claude without the flag runs as before."""
+    args = list(args)
+    # ...AND A CODEX SANDBOX MAY WRITE WHERE ITS BROWSER KEEPS ITS SOCKETS (his live app, 2026-11-23: after a restart every agent-browser command
+    # of a Codex task failed "Socket directory ~/.agent-browser is not writable" - Codex runs commands as its own restricted user, and only a
+    # daemon started before it could be reached): the folder is a writable root of every Codex run, on the argv road and the ACP road alike
+    if _cli_name(name) == 'codex':
+        from . import browserview
+        args = codex_roots(args, browserview.home())
+    if profile.get('user_settings') is not False or _cli_name(name) != 'claude': return args
+    if '--setting-sources' not in args and cli_has_flag(name, '--setting-sources'): args += ['--setting-sources', 'project,local']
+    from . import hooks
+    i = args.index('--settings') if '--settings' in args[:-1] else -1
+    f = hooks.not_his_file(args[i + 1] if i >= 0 else '')
+    return (args[:i] + ['--settings', f] + args[i + 2:] if i >= 0 else args + ['--settings', f]) if f else args
 
 
 def _keeps(profile: dict, family: str, args: list) -> bool:
@@ -2612,7 +2520,7 @@ def warm_cli(profile: dict, resume: str = None, extra_env: dict = None, store=No
     if profile.get('keep_alive') and _acp_road(profile, store) and (ok := _warm_acp(profile, resume, extra_env, store, swap)) is not None: return ok
     if not _keeps(profile, _cli_name(name), args): return False
     from . import clipool
-    try: return clipool.warm(profile['keep_alive'], _resolve_cmd(name) + args + _model_args(profile, name) + _own_settings(profile, name),
+    try: return clipool.warm(profile['keep_alive'], _resolve_cmd(name) + _own_settings(profile, name, args) + _model_args(profile, name),
                              cwd=profile.get('cwd'), env=spawn_env(profile, extra_env), resume=resume, swap=swap)
     except PermissionError as e: raise FileNotFoundError(denied_msg(name, name, e)) from e
 
@@ -2715,7 +2623,7 @@ def task_context(store, task_id: int) -> str:
 # A VERDICT note is written by Taskuary and quotes the mail it was given on - its subject, its sender (server._learn_promotion
 # and its siblings). On a stranger's task that is the stranger's text, and under "learned from the owner - FOLLOW these" the
 # reviewer and the agent read it as the owner's (task 10 live check: a stranger's subject line rode into the first prompt).
-OWNER_SOURCES = ('manual', 'writing', 'owner')     # 'owner': a LEARNED.md line in the owner's own hand (memorylines.notes)
+OWNER_SOURCES = ('manual', 'writing', 'owner')     # 'owner': a line the owner said (memory.notes)
 
 def memory_block(store, messages: list, owner_only: bool = False) -> str:
     """The standing notes an agent working this thread has to follow - the ones that bear on

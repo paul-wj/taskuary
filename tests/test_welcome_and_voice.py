@@ -55,7 +55,7 @@ class VoiceTests(unittest.TestCase):
         for said in ('calmer than before they read it', "I've got it", 'device code', "nothing goes out until you say so"): self.assertIn(said, t)
         self.assertLessEqual(len(t), counsel.BUDGET)
         st = MemoryStore(); counsel.migrate(st)
-        self.assertIn('calmer than before', counsel.for_brief(st)); self.assertIn('calmer than before', counsel.for_worker(st))
+        self.assertIn('calmer than before', counsel.for_brief(st))
 
     def test_the_last_stock_release_is_replaced_and_an_owner_copy_gains_the_rule_once(self):
         old = (Path(counsel.__file__).parent / 'templates' / 'history' / 'counsel-0.3.7.10.md').read_text(encoding='utf-8')
@@ -79,6 +79,7 @@ class VoiceTests(unittest.TestCase):
         lines = [v for k, v in concierge.RECEIPTS.items()] + [concierge.ALL_DONE, welcome.goodbye(store())]
         lines += [concierge.brain_trouble(Exception(e)) for e in ("maximum context length", '429 rate limit', '401 invalid key',
                                                                    'connection timed out', 'something odd')]
+        lines.append(concierge.brain_trouble(concierge.TurnOut('no answer within 3 minutes')))     # the turn's clock ran out (concierge._Timed)
         lines += [concierge.fallback(None, False, ITEMS), concierge.fallback(None, False, ITEMS, brain=True), concierge.waiting_line(ITEMS)]
         lines += [concierge.fallback({**i, 'mid': n, 'channel': 'email', 'why': 'a notice'}, True) for n, i in enumerate(ITEMS, 1)]
         lines += [concierge.fallback({'kind': 'report', 'title': 'Weekly AR', 'bad': True, 'when': ago(1)}, False)]
@@ -321,11 +322,11 @@ class RepeatsTests(unittest.TestCase):
         for n in range(5):
             mid = mail(s, 'Payworth Billing', 'billing@payworth.example', 'Invoice 114', ago(days=5 - n), f'Reminder {n}', conv=f'p{n}', tid=tid)
             if n: s.add_route(mid, tid, 'attach', 1.0, f'triage: asked - the same as {ref}, joined to it', [], 'triage',
-                              verdict={'intent': 'asked', 'summary': 'All they need is the signed W-9. Nothing else is missing.'})
+                              verdict={'intent': 'asked'})
         got = concierge.repeats(s, tid)
         self.assertEqual(got['n'], 5)
         self.assertEqual(got['line'], 'Payworth Billing wrote five times about the same thing - every one is kept here. '
-                                      'All they need now: All they need is the signed W-9.')
+                                      'All they need now: Payworth needs a W-9 before paying invoice 114.')     # the task's ask
 
     def test_a_single_message_or_a_plain_conversation_is_not_a_repeat(self):
         s = store()

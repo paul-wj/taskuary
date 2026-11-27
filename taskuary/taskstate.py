@@ -57,14 +57,14 @@ def asking(store, task: dict, session=None) -> dict | None:
     """WHAT THE AGENT ASKS THE OWNER, as every chat draws it - the general payload and the coding one alike (the audit, 2026-11-10: a coding agent's
     [[TASKUARY-ASK]] over ACP was recorded and drawn nowhere): its live run's open request, else - an agent at rest, idled out or after a restart -
     its saved question, `resting`: typing answers it as the next turn. A step handed over on a page that has closed since says so (browsergate)."""
-    from . import acpcoding, browsergate, general
+    from . import acpcoding, browsergate, general, pagestep
     tid = task['TaskId']
-    if (s := session or workerstate._live(tid)): return browsergate.shown_ask(workerstate.asking_of(store, s))
+    if (s := session or workerstate._live(tid)): return pagestep.shown(store, tid, browsergate.shown_ask(workerstate.asking_of(store, s)))
     rests = general.handles(task) or acpcoding.idled(tid, store)
     # ...a task he closed asks nothing (walk 5, 2026-11-22: "Answer the agent's question..." stood in the box of a task he had marked done) - his
     # typing reopens it, as a new line
     if task.get('Status') in ('done', 'dropped'): return None
-    return browsergate.shown_ask({**q, 'resting': True}) if rests and (q := open_question(store, tid)) else None
+    return pagestep.shown(store, tid, browsergate.shown_ask({**q, 'resting': True})) if rests and (q := open_question(store, tid)) else None
 
 
 def browser_acts(store, tid: int) -> list:
@@ -72,7 +72,7 @@ def browser_acts(store, tid: int) -> list:
     from . import cardqueue, proposals
     held = cardqueue.held(store, tid)
     return [r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' ORDER BY ReviewId", (tid,))
-            if proposals._action(r) in proposals.HELD_ACTS and r['ReviewId'] not in held]
+            if proposals._action(r) in proposals.HELD_ACTS and proposals._action(r) != 'page_step' and r['ReviewId'] not in held]
 
 
 def needs_owner(ask: dict | None, acts: list = (), sid: str = '') -> bool:
@@ -96,18 +96,82 @@ def _chat_resting(store, t: dict) -> str | None:
     return turn_outcome(store, t['TaskId'])
 
 
+# WHERE A TASK STANDS, SAID ONCE (the owner, 2026-11-24 - walks 11-16): the rail's lane, the header's chip, the phone, the day's brief, the
+# Advisor, the Assistant's facts, triage's open work and Send and close each put "who moves next" together from their own mix of status, title,
+# cards, questions, check-backs and sent mail, and drifted - "agent done" over a sent question, a brief repeating a title, a live button over a
+# question answered. Each reads this now. ONE status, "waiting for input": his - a card waiting for his press or the agent's question to him,
+# nothing else (the owner, 2026-11-25: a turn's `on_you` steps with nothing asked read "waiting for your input", walk 21) - or somebody else's (a sent mail or question awaiting their answer). Their answer or a check-back come due moves it back to the agent.
+def standing(store, tid, key: str = None) -> dict:
+    """{waits_on: 'you'|'them'|'agent'|None, who, what: [...], since, next, closed, them, check} for task `tid` - `who` the person it waits on
+    ('them'), `what` what is awaited (the cards, the question, the mail), `since` from when, `next` the check-back's time or None; `them` every
+    answer awaited from others, `check` the check-back {at, what}, whoever's move it is now, and `ask` the agent's own question to him while
+    it stands. `key`: the task's state already read
+    (TaskState.base), else it is read here. ONE READ OF A PAGE ASKS IT ONCE (cardqueue.fresh): the rail, the header, Send and close and the
+    rulebook each ask it of the same task within one read (tests/test_big_task_opens_fast)."""
+    from . import cardqueue
+    return cardqueue.fresh(store, ('standing', int(tid), key), lambda: _standing(store, tid, key))
+def _standing(store, tid, key: str = None) -> dict:
+    from datetime import datetime
+    from . import card, checkback, waiton, watch
+    t = store.get_task(int(tid)) or {}
+    out = {'waits_on': None, 'who': '', 'what': [], 'since': None, 'next': None, 'closed': not t or t.get('Status') in ('done', 'dropped'),
+           'them': [], 'check': None, 'rids': [], 'watch': ''}
+    if out['closed']: return out
+    out['watch'] = watch.line(store, t)          # ...what a watch on it waits for, whoever's move it is now
+    cb, w = checkback.of_task(t), waiton.on_them(store, t)
+    out.update(next=cb['at'] if cb else None, them=w, check=cb)
+    if (key or TaskState(store, tid=int(tid)).base) == 'working' or retrying(store, tid): return {**out, 'waits_on': 'agent'}
+    say = {card.ANSWER: "the agent's question: {}", card.ON_PAGE: 'a step on the page: {}', card.LAND: '{} question'}
+    mine = [c for c in card.waiting(store, tid) if c['state'] == 'pending' and c['what']]
+    # ...each card with the buttons it draws where it has no Send (card.presses): a Copy-only draft read "ready for your Send" in the brief
+    what = [say.get(c['kind'], '{}').format(c['what']) + (f' ({card.press_words(c)})' if c['kind'] == card.SEND and 'approve' not in c['presses'] else '')
+            for c in mine]
+    if what: return {**out, 'waits_on': 'you', 'what': what, 'since': min((str(c['at']) for c in mine if c.get('at')), default=None),
+                     'rids': [r for c in mine for r in c['rids'] if isinstance(r, int)], 'trust': bool(mine) and mine[0]['kind'] == card.TRUST,
+                     'ask': next((c['what'] for c in mine if c['kind'] == card.ANSWER), '')}
+    if cb and str(cb['at']) <= f'{datetime.now():%Y-%m-%d %H:%M:%S}': return {**out, 'waits_on': 'agent', 'what': [f"its check-back: {cb['what']}"], 'since': cb['at']}
+    # ...their line came in and its agent has not read it to a turn's end: the agent's move, the wait still standing (waiton.settle)
+    if (a := next((x for x in w if x['answered']), None)):
+        return {**out, 'waits_on': 'agent', 'what': [f"{a['who']}'s reply to read"], 'since': a['answered'].get('CreatedAt')}
+    if w: return {**out, 'waits_on': 'them', 'who': w[0]['who'], 'what': [x['what'] for x in w], 'since': w[0]['since']}
+    return out
+
+
+def said(st: dict) -> str:
+    """Where it stands in one line, for a reader that reads words (the brief, the Advisor, the Assistant, triage): "waiting for Erin's input:
+    an answer from Erin Blake (since 11-24 10:02) · checks back Fri 9 AM"."""
+    from . import remind, waiton
+    if st['closed']: return 'closed - no input awaited from anyone'       # ...its questions and waits let go with the close
+    head = waiton.word(st['waits_on'], st['who']) or ('with its agent' if st['waits_on'] == 'agent' else
+                                                      st.get('watch') or 'no input awaited from anyone')
+    what = '; '.join(' '.join(str(x).split())[:120] for x in st['what'][:3])
+    # ...and an answer awaited from somebody else while his comes first, so their reply is known for the one it answers (triage's same_as)
+    also = '' if st['waits_on'] == 'them' else ''.join(f" · also {waiton.word('them', x['who'])}: {x['what']}" for x in st['them'][:2])
+    return head + (f': {what}' if what else '') + (f" (since {str(st['since'])[5:16]})" if st['since'] else '') + also + \
+        (f" · checks back {remind.when(st['next'])}" if st['next'] else '')
+
+
+def _held(k: str, st: dict) -> str:
+    """The state key as where it stands says it: never "agent done" while anybody's input is awaited (walks 14-16: "agent done" right after
+    the send that asked Erin something, and over the agent's own question to him)."""
+    if st['waits_on'] == 'you' and k in ('agentdone', 'theirs'): return 'held' if st.get('trust') else 'blocked'     # ...a stranger's Trust is no agent's ask
+    if st['waits_on'] == 'them' and k in ('agentdone', 'yours', 'answered'): return 'theirs'
+    if st['waits_on'] == 'you' and k == 'answered': return 'yours'
+    # ...and never while the next move is its agent's - their answer to read, a check-back come due - and nothing runs it (walk 18: "agent
+    # done" over Erin's reply that reached no agent): waiting to start, the task's line saying why
+    if st['waits_on'] == 'agent' and k in ('agentdone', 'theirs', 'yours', 'answered'): return 'queued'
+    return k
+
+
 def turn_outcome(store, tid: int) -> str | None:
     """HOW THE LAST TURN ENDED, off the stored turn - one reading for a chat at rest and one whose session is still up: 'agentdone' only for a
     turn that did the work (the Neon walk, 2026-11-19: a green "agent done" and "Finished at 11:53 PM" over a turn that failed, and over one
-    that refused and left him "Enable local shell access"). A failed turn is 'stopped', its reason on it; one whose own summary left
-    something on him is 'blocked'. None: it never answered."""
-    from .general import ASSISTANT_TYPE, failed_line, turn_summaries
+    that refused and left him "Enable local shell access"). A failed turn is 'stopped', its reason on it. Its card or its question to him
+    is read before it (standing), never the steps its summary listed. None: it never answered."""
+    from .general import ASSISTANT_TYPE, failed_line
     last = store._one('SELECT CommentId, Body FROM comment WHERE TaskId=? AND ActorType=? ORDER BY CommentId DESC LIMIT 1', (int(tid), ASSISTANT_TYPE))
     if not last: return None
-    if failed_line(last['Body'])[1]: return 'stopped'
-    sm = turn_summaries(store, int(tid)).get(last['CommentId']) or {}
-    if not sm.get('nothing_left') and any(str(s).strip() for s in sm.get('on_you') or []): return 'blocked'
-    return 'agentdone'
+    return 'stopped' if failed_line(last['Body'])[1] else 'agentdone'
 
 
 class TaskState:
@@ -210,7 +274,16 @@ class TaskState:
 
     @cached_property
     def key(self) -> str:
-        """Its state key, for the Tasks list, the Board, the page and the stage (stages.facts).
+        "Its state key, for the Tasks list, the Board, the page and the stage (stages.facts) - `base` as where it stands says it (standing)."
+        k = _held(self.base, standing(self.store, self.tid, self.base)) if self.base in ('agentdone', 'theirs', 'yours', 'answered') else self.base
+        # ...A WATCHED TASK WITH NOTHING OWED IS WATCHED, never "on you" (the owner, 2026-11-25): somebody else handles it (watch.py) - a card,
+        # the agent's question or anybody's answer awaited still reads as it does
+        from . import watch
+        return 'watching' if k in ('yours', 'held') and watch.watching(self.t) else k
+
+    @cached_property
+    def base(self) -> str:
+        """Its state key from the agent's facts, before where it stands has its say (key).
         ...and where it still reads less than `left` does, it reads what it always read - the owner's to settle, not this record's
         (the spine audit, 2026-11-09): only the LATEST run's status where the rail takes any run that stopped, a bare transcript only
         under an `agent:` assignee and whether or not its session finished, and no word about mail that came after the agent."""
@@ -279,7 +352,11 @@ class TaskState:
         if (chat := _chat_resting(store, t)): return chat
         if str(t.get('Assignee') or '').startswith('agent:') or _general_waiting(store, t): return 'queued'
         if st == 'waiting': return 'theirs'
-        return 'yours'
+        # ...AND A TASK NO AGENT WORKS WHOSE ONE ASK HE ANSWERED IS ANSWERED, never "on you" (walk 25, 2026-11-26: Accept pressed on an invite,
+        # the calendar told, and the header read "on you" over "asked 3 minutes ago"): his own answer is the newest word on it - the one fact
+        # the row's lit move reads too (rulebook.answered). They write again, and it is his again
+        from . import rulebook
+        return 'answered' if self.inbound and rulebook.answered(store, {'tid': tid}, self.inbound) else 'yours'
 
 
 def never_ran(store, t: dict, session: dict) -> bool:
@@ -325,10 +402,7 @@ def done_for_now(store, t: dict, session: dict) -> bool:
     # coding agent is
     # ...and never one that has not run a turn at all (never_ran, 2026-11-17: a held task's session, its first turn refused, read "agent done -
     # type to carry on" on the rail over a chat no agent had worked)
-    # ...and never one whose turn left a step on him (turn_outcome 'blocked'): the header read "agent waiting on you" off it while the rail,
-    # reading this, said "Finished; nothing since" (the walk, 2026-11-21) - one answer for both
-    if handles(t) and (session.get('mode') or 'assistant') == 'assistant':
-        return last not in ('stopped', 'failed') and not never_ran(store, t, session) and turn_outcome(store, tid) != 'blocked'
+    if handles(t) and (session.get('mode') or 'assistant') == 'assistant': return last not in ('stopped', 'failed') and not never_ran(store, t, session)
     return last == 'turn_end' and not landing.asked(store, tid)
 
 
@@ -359,7 +433,7 @@ def retrying(store, tid) -> bool:
 def status(store, t: dict, session=None, queued=None, key: str = None) -> dict:
     """{key, word, hint, mark, spins} for task `t` - what every surface draws as its status. `key`: the state already read for this very
     reading (state), else it is read here."""
-    from . import lanes
+    from . import lanes, waiton
     from .general import handles, is_dock
     k = key or state(store, t, session, queued)
     words = lambda x: {'key': x, 'word': lanes.word(x), 'hint': lanes.hint(x), 'mark': lanes.MARK.get(x, '')}
@@ -376,6 +450,10 @@ def status(store, t: dict, session=None, queued=None, key: str = None) -> dict:
     from . import capabilities
     if w and w.get('Kind') != 'action' and not capabilities.can_send_draft(store, w['ReviewId']): return {**words('unsendable'), 'spins': False}
     out = {**words(k), 'spins': k == 'working'}
+    # ...and whose input it waits for, by name (standing): "waiting for Erin's input"
+    if k == 'theirs': out['word'] = waiton.word('them', standing(store, t['TaskId'], k)['who'])
+    # ...and what a watch waits for, in its one line (watch.line): the chip's hover says it, as the rail's row does
+    if k == 'watching': out['hint'] = standing(store, t['TaskId'], k)['watch'] or out['hint']
     if handles(t) and not is_dock(t):
         if k in CHAT_READY: out = {**out, 'word': lanes.word('chat_ready'), 'hint': lanes.hint('chat_ready')}
         elif k in CHAT_DONE: out = {**words('chat_done'), 'spins': False}

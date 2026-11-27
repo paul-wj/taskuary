@@ -6,7 +6,7 @@ old, a finished turn woken again, Resume's words on a carry-on nobody pressed, "
 import json, shutil
 from unittest import mock
 
-from taskuary import agenttools, channels, config, general, hooks, ingest, outputs, server, wrapup
+from taskuary import agenttools, channels, config, general, hooks, ingest, outputs, proposals, server, wrapup
 from taskuary.store import MemoryStore
 from test_carry_on import ingested, mail, store
 from test_freshness_walk import reads, stamp, teams_task
@@ -27,10 +27,8 @@ def test_a_draft_this_call_superseded_reads_as_replaced():
     assert 'not_replaced' in agenttools.replaced(s, doors, tid, [], {'ok': True, 'review_id': old + 1}, '999', 'x')
 
 
-def test_propose_reply_offers_no_replaces():
-    d, schema = agenttools.TOOLS['propose_reply'][1:3]
-    assert 'replaces' not in schema['properties'] and 'replaces' not in d
-    assert 'replaces' in agenttools.TOOLS['propose_email'][2]['properties'] and 'replaces' in agenttools.TOOLS['propose'][1]
+def test_the_review_tool_says_replaces():
+    assert 'replaces' in agenttools.TOOLS['propose'][2]['properties'] and 'replaces' in agenttools.TOOLS['propose'][1]
 
 
 # ── F2, F9, F10: the turn's words ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -94,17 +92,6 @@ def test_real_work_joining_a_watch_row_starts_its_agent():
 
 
 # ── F5: a draft written for the newest message is said so ──────────────────────────────────────────────────────────────────────────
-def test_a_draft_for_the_newest_message_is_not_called_earlier():
-    s = MemoryStore()
-    tid = s.create_task({'Title': 'Northwind app feedback', 'Kind': 'general', 'Status': 'open'}, 'router')
-    mid = s.add_message({'TaskId': tid, 'ExternalId': 'wa1', 'ConversationId': 'wa:ops', 'Channel': 'whatsapp', 'FromName': 'Ray Colton',
-                         'SentAt': '2026-11-08 09:00:00', 'BodyText': 'Keep posting here?', 'Status': 'routed'})
-    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Noted the first bug.')
-    s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'DraftText': 'Yes, keep posting here.'})
-    said = general.latest_block(s, tid)
-    assert 'written for this message - keep it or improve it' in said and 'BEFORE the newest message' not in said
-
-
 def test_a_draft_the_thread_moved_past_is_never_called_written_for_the_newest_message():
     # the owner, 2026-11-10: the agent drafted on a chat, the owner answered there from the phone, a minute later the sender asked something
     # new - the join re-pinned the old draft to the new line (its freshness marker), and the woken agent was told that draft was "written for
@@ -124,9 +111,9 @@ def test_a_draft_the_thread_moved_past_is_never_called_written_for_the_newest_me
         try: ingest.ingest_message(s, wa('w2', 'great - and can you bring the budget sheet?', stamp(-60)), llm=llm)
         finally: general.OPENING.discard(tid)
     assert [c[0][0].__name__ for c in spawn.call_args_list] == ['_replan_general']           # the agent is woken to answer it
-    said = general.latest_block(s, tid)
-    assert 'THE NEWEST MESSAGE - from Erin Blake' in said and 'budget sheet' in said
-    assert 'THE DRAFT WAITING NOW (' in said and 'written for this message' not in said and 'BEFORE the newest message' in said
+    from taskuary import events
+    said = events.take(s, tid)[0]          # ...each as it happened: the draft, then her new line under it - never "written for" the newer one
+    assert said.index(f'Card rv{rid} ') < said.index('budget sheet'), said
 
 
 # ── F6, F11: the to-do list and the owner's reminder ───────────────────────────────────────────────────────────────────────────────
@@ -150,8 +137,8 @@ def test_remind_sets_the_owners_reminder_not_the_agents_check_back():
     assert 'remind tool' in agenttools.TOOLS['check_back'][1]
 
 def test_where_the_agent_reads_what_is_learned_it_is_told_how_a_rule_is_kept():
-    "Asked to save a playbook, the agent on the real CLI read the learned facts, then wrote a file in the CLI's own memory folder - no card."
-    assert '`propose` write_playbook' in agenttools.TOOLS['owner_memory'][1] and 'never written to a file of your own' in agenttools.TOOLS['owner_memory'][1]
+    "Asked to save a skill, the agent on the real CLI read the learned facts, then wrote a file in the CLI's own memory folder - no card."
+    assert '`propose` save_skill' in agenttools.TOOLS['owner_memory'][1] 
 
 
 # ── F7: a finished turn is never woken ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -169,6 +156,18 @@ def test_no_calendar_gives_the_connect_link():
     with mock.patch.object(server, 'store', s), mock.patch('taskuary.calendar.reachable', return_value=False):
         said, bad = call(tid, 'calendar')
     assert not bad and '[Connect a calendar](' in said
+
+
+def test_the_calendar_switched_off_is_his_card_to_switch_it_on():
+    # it answered "No calendar is connected" over a connected one, its Connect link no way past a switch: the call raises the card, once
+    s = MemoryStore(); tid = own_task(s, 'general'); s.set_setting('calendar_enabled', '0', 'owner')
+    with mock.patch.object(server, 'store', s), mock.patch('taskuary.calendar.reachable', return_value=True):
+        said, bad = call(tid, 'calendar'); again, _ = call(tid, 'calendar')
+    assert not bad and 'not connected' not in said and 'switched off' in said and "the owner's to press" in said
+    cards = s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,))
+    assert len(cards) == 1 and json.loads(cards[0]['DraftText'])['changes'][0]['name'] == 'calendar_enabled'
+    proposals.execute(s, cards[0], 'owner')
+    assert s.get_setting('calendar_enabled') == '1'
 
 
 def test_a_file_sent_in_the_chat_lands_in_the_task_folder():
@@ -238,8 +237,9 @@ def test_the_owners_line_over_a_waiting_draft_wakes_the_agent_and_nothing_else_t
     assert [w for w, _ in went] == ['_replan_general'] and 'yes 3pm, same room' in went[0][1] and 'you already answered on WhatsApp' in went[0][1]
     rv = s.get_review(rid)
     assert rv['Status'] == 'pending' and rv['DraftText'] == 'Hi Erin - yes, 3pm stands, and the room is booked till 4.'     # the agent's to keep or withdraw
-    lb = general.latest_block(s, tid)
-    assert 'WHAT THE OWNER REPLIED ON THE THREAD THEMSELVES' in lb and 'yes 3pm, same room' in lb and 'THE DRAFT WAITING NOW (' in lb
+    from taskuary import events
+    lb = events.take(s, tid)[0]
+    assert "The owner's own message on the thread" in lb and 'yes 3pm, same room' in lb and f'Card rv{rid} ' in lb
 
 
 def test_the_owners_line_while_a_turn_works_is_its_next_turn():
@@ -254,7 +254,8 @@ def test_the_owners_line_while_a_turn_works_is_its_next_turn():
 def test_a_line_with_no_draft_and_no_turn_at_work_stays_context_for_the_next_turn():
     # the owner, 2026-11-08: "it should show what i sent ... even if it does not trigger as a prompt"
     s = MemoryStore(); tid, rid = chat_task(s); s.decide_review(rid, 'sent', None, 'owner')
-    assert say_on_chat(s) == [] and 'yes 3pm, same room' in general.latest_block(s, tid)
+    from taskuary import events
+    assert say_on_chat(s) == [] and 'yes 3pm, same room' in events.take(s, tid)[0]
 
 
 def test_where_no_agent_may_take_the_line_the_one_read_still_settles_the_draft():
@@ -282,8 +283,6 @@ def test_a_draft_rewritten_in_a_later_turn_is_that_turns_card_and_the_old_one_it
     assert s.get_review(old)['Status'] == 'closed_unsent' and s.get_review(old)['DecideNote'] == wrapup.REPLACED
     turn = s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Replaced the waiting draft with the short one.')
     assert s.snap_draft(new, turn)
-    [d] = general.draft_turns(s, tid)
-    assert (d['review'], d['turn']) == (new, f'comment-{turn}')
 
 
 def test_a_draft_the_agent_keeps_after_the_owner_prompted_is_raised_again_as_the_new_turn_s_card():
@@ -303,26 +302,6 @@ def test_a_draft_the_agent_keeps_after_the_owner_prompted_is_raised_again_as_the
     assert wrapup.agent_reply(s, tid, 'Two real flaws - and one small one.', 'assistant')['review_id'] == new
 
 
-def test_a_draft_made_before_the_owner_s_line_is_not_the_card_of_the_turn_that_answered_it():
-    # the recorded walk, 2026-11-10: a reply drafted on arrival stood under the mail; the owner typed a line, the agent answered it and left the
-    # draft alone - and the card jumped from above his line to under that answer's Next steps. The first answer after a draft wrote it only
-    # when no line came in between: an answer after his line was his line's
-    s = MemoryStore(); tid = s.create_task({'Title': 'Vendor review', 'Status': 'in_progress'}, 't')
-    mid = s.add_message({'TaskId': tid, 'ExternalId': 'm1', 'Channel': 'email', 'FromName': 'Paula Vance', 'FromEmail': 'paula@vendor.example',
-                         'SentAt': '2026-11-10 08:00:00', 'BodyText': 'Your review of the tool?', 'Status': 'routed'})
-    rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'A long review of every flaw.'})
-    s._exec("UPDATE review SET CreatedAt='2026-11-10 08:01:00' WHERE ReviewId=?", (rid,))
-    for at, who, kind, words in (('2026-11-10 09:00:00', 'owner', general.USER_TYPE, 'make it shorter and attach the sheet'),
-                                 ('2026-11-10 09:00:30', 'assistant', general.ASSISTANT_TYPE, 'Ok.')):
-        s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (at, s.add_comment(tid, who, kind, words)))
-    [d] = general.draft_turns(s, tid)
-    assert (d['review'], d['turn']) == (rid, None), 'it stands by its time, under the mail it answers'
-    # ...and one written while a turn worked is still that turn's, its answer stamped when the turn ends
-    s._exec("UPDATE review SET CreatedAt='2026-11-10 09:00:10' WHERE ReviewId=?", (rid,))
-    [d] = general.draft_turns(s, tid)
-    assert d['turn'] is not None and d['turn'].startswith('comment-')
-
-
 # ── a coding agent on a chat, after a restart: the owner answers outside, then the sender writes again (the owner, 2026-11-13: "why does it
 # say ready to send when there is no email and the ai never processed the final prompt" - "if a new message comes in, it's like typing,
 # which should restart the agent"). The live order: the agent drafted a reply at 21:11; Taskuary restarted at 21:24 (the session ended,
@@ -339,7 +318,7 @@ def test_after_a_restart_the_owners_outside_answer_and_the_next_line_reach_the_c
     general.IDLED.pop(tid, None); acpcoding.IDLED.pop(tid, None)          # the restart: nothing in memory but the store
     reopened = []
     run = lambda f, *a, **k: f(*a, **k)
-    with mock.patch('taskuary.ingest._spawn', side_effect=run), mock.patch.object(senders, 'start_known', return_value=(True, '')), \
+    with mock.patch('taskuary.ingest._spawn', side_effect=run), mock.patch.object(senders, 'known', return_value=(True, '')), \
          mock.patch.object(senders, 'wrote_to', return_value=True), mock.patch('taskuary.ingest.has_room', return_value=True), \
          mock.patch.object(origin, 'hold', return_value=None), mock.patch.object(waitroom, 'reopen_coding', side_effect=lambda store, t, notes, said, actor='router': reopened.append(said) or 'resumed'):
         channels.ingest_own_message(s, {'external_id': 'wa:own', 'conversation_id': conv, 'channel': 'whatsapp', 'source_name': 'Ray Colton',

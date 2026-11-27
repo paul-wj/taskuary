@@ -29,9 +29,11 @@ import AltRouteIcon from "@mui/icons-material/AltRoute";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import AiDefaults from "./AiDefaults.jsx";
+import { RecentRoutes, TodayUsage } from "./RouteRules.jsx";
 import AgentPermissions from "./AgentPermissions.jsx";
 import SharedLinks from "./SharedLinks.jsx";
 import SavedSignins from "./SavedSignins.jsx";
+import SignupsUse from "./SignupsUse.jsx";
 import HandSignature from "./HandSignature.jsx";
 import SendFilter from "./SendFilter.jsx";
 import AboutYou from "./AboutYou.jsx";
@@ -49,7 +51,6 @@ import { mailboxChoices, mailboxValue } from "./ruleMailbox.js";
 import { ABOUT_SECTIONS, AUDIT_SECTIONS, onePage, secId, pageId, scrollToSection, sectionOffset, SCROLL_TOP } from "./settingsMap.js";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import DocsView, { OPERATOR_DOCS } from "./DocsView.jsx";
-import RoleStart from "./RoleStart.jsx";
 import LinesSetting from "./LinesSetting.jsx";
 import TrustedSenders from "./TrustedSenders.jsx";
 import DetailSlider, { chatDefaultsChanged } from "./DetailSlider.jsx";
@@ -87,8 +88,6 @@ const ACTION_LABEL = { skip: "Skip — hide it completely", ignore: "Ignore — 
 // "ignore" because it is the gentlest of the three - the old default, "draft", was honoured nowhere
 // (policy.py) and a rule saved with it looked set and never fired
 const NEW_POLICY = { Name: "", Kind: "keyword", Pattern: "", Action: "ignore", Reason: "", SortOrder: 100, Active: true };
-// settings whose value is JSON: checked on the page before it is sent
-const JSON_KNOBS = new Set(["profile_brains"]);
 
 // THE EMAIL SIGNATURE, CHECKED (the owner, 2026-10-16: "pull the signature from the email and use that in emails ... have a setting so
 // they can check it that it looks good"): the exact block, a preview under an email, and Read it from my sent mail - which fills the
@@ -157,6 +156,23 @@ function SignatureSetting({ value, save }) {
     </Box>
   );
 }
+// THE POST SIGNATURE (the owner, 2026-11-26: "It should be static"): the lines Taskuary puts under every post's words as its card is made
+// (signatures.post_signed) - saved as typed, like the email one above, with a post drawn under it so he sees how one will end
+function PostSignatureSetting({ value, save }) {
+  const [text, setText] = useState(value);
+  useEffect(() => { setText(value); }, [value]);
+  useEffect(() => { if (text === value) return undefined; const t = setTimeout(() => save(text.trim()), 800); return () => clearTimeout(t); }, [text]);  // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Box data-tq-post-signature="" sx={{ display: "flex", flexDirection: "column", gap: 1, width: "100%", maxWidth: 460 }}>
+      <TextField multiline minRows={2} value={text} onChange={(e) => setText(e.target.value)} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
+        inputProps={{ style: { fontSize: 12.5 }, "aria-label": "Post signature" }} onBlur={() => text !== value && save(text.trim())} />
+      <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)", px: 1.5, py: 1, fontSize: 12.5, whiteSpace: "pre-line", color: INK }}>
+        {"We opened the new portal to every team today.\n\n"}{text.trim() || <span style={{ color: DIM }}>(nothing is added under a post)</span>}
+      </Box>
+    </Box>
+  );
+}
+
 // one mailbox's own signature, saved on the card that sends as it (outbound.card_signature) - blank: the default above
 function MailboxSignature({ box, save }) {
   const [text, setText] = useState(box.signature || "");
@@ -167,14 +183,6 @@ function MailboxSignature({ box, save }) {
       inputProps={{ style: { fontSize: 12.5 } }} onBlur={() => text.trim() !== (box.signature || "") && save(box.address, text.trim())} />
   );
 }
-const jsonProblem = (v) => {
-  if (!v) return "";
-  try {
-    const o = JSON.parse(v);
-    if (!o || typeof o !== "object" || Array.isArray(o)) return 'Write it as {"role": "brain"} pairs inside curly braces.';
-    return Object.values(o).every((x) => typeof x === "string") ? "" : 'Each role needs a brain name in quotes, e.g. {"researcher": "codex"}.';
-  } catch { return 'That is not valid JSON yet — check the quotes and braces, e.g. {"researcher": "codex"}. Not saved.'; }
-};
 
 import schema from "../../taskuary/settings_schema.json";
 import MorningDigest from "./MorningDigest.jsx";
@@ -195,7 +203,7 @@ const KNOB_META = schema.knobs;
    Only chats you are ALONE in are offered, and that is enforced again on the way in
    (remote_assistant.use_chat) - the picker is a convenience, not the guard. */
 // the service's own spelling (phoneChats.CHANNEL_NAME): capitalize made "Whatsapp", and the button said "Open the whatsapp card"
-const PhoneDoorways = ({ onLoaded, onNavigate }) => {
+const PhoneDoorways = ({ onNavigate }) => {
   const [rows, setRows] = useState(null);
   const [handoff, setHandoff] = useState(null);   // the walk handed to a chat right now ({channel, chat}), or null
   const [busy, setBusy] = useState("");
@@ -206,15 +214,14 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
   // or Telegram connection", which is a lie about the owner's own setup, and the one thing a
   // settings page must never tell you (2026-09-17: "don't see anything there just one setting?").
   const load = useCallback(async () => {
-    try { const { data } = await api.get("/api/assistant/doorways"); setRows(data.data || []); setHandoff(data.handoff || null); setErr(""); onLoaded?.(true); }
+    try { const { data } = await api.get("/api/assistant/doorways"); setRows(data.data || []); setHandoff(data.handoff || null); setErr(""); }
     catch (e) {
       setRows(null);
       setErr(e?.response?.status === 404
-        ? { key: "This page needs a newer Taskuary than the one running — restart the app and it appears." }
-        : (e?.response?.data?.detail || { key: "could not read your channels just now" }));
-      onLoaded?.(false);
+        ? "This page needs a newer Taskuary than the one running — restart the app and it appears."
+        : (e?.response?.data?.detail || "could not read your channels just now"));
     }
-  }, [onLoaded]);
+  }, []);
   useEffect(() => { load(); }, [load]);
   // the list fills from chats the app has SEEN, so the owner is told to go and message themselves -
   // coming back to this window is the moment to look again, without a reload
@@ -445,7 +452,7 @@ const PAGE = 980;
 const PAGES = {
   about: { title: "About you", icon: AccountCircleIcon, desc: "Who the system knows you are — your identities per channel, the facts only you can add, your avatar." },
   docs: { title: "Docs", icon: MenuBookIcon, desc: "The documents the system writes from and writes to — how you sound, what triage is told, and what it has learned." },
-  config: { title: "Configuration", icon: TuneIcon, desc: "How mail is sorted, replies, agents and display - how Taskuary behaves." },
+  config: { title: "Configuration", icon: TuneIcon, desc: "Which AI does what, replies, agents and display - how Taskuary behaves." },
   policies: { title: "Mail rules", icon: AltRouteIcon, desc: "Rules the AI always follows — ignore a sender, escalate, auto-answer." },
   phone: { title: "Phone & chats", icon: SmartphoneIcon, desc: "The chats that reach Taskuary from outside — your Taskuary chat on WhatsApp or Telegram, and in Developer mode the chats that talk to your coding agents." },
   audit: { title: "Activity log", icon: VerifiedIcon, desc: "Who did what, when — a record of every action, and a check that proves nobody edited it." },
@@ -512,12 +519,9 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   const [draft, setDraft] = useState(null);
   const [verify, setVerify] = useState(null);
   const [help, setHelp] = useState(null);
-  const [panelOk, setPanelOk] = useState(false);   // the AI defaults panel is standing up; until it is, the plain rows stay
   const [err, setErr] = useState("");
 
   const [brains, setBrains] = useState([]);
-  const [agentNames, setAgentNames] = useState([]);
-  const [agentOptions, setAgentOptions] = useState([]);
   const [agentModels, setAgentModels] = useState({});
   const [connectors, setConnectors] = useState([]);
   const [mailboxes, setMailboxes] = useState(null);         // the sending mailboxes a rule can be scoped to (ruleMailbox.js); null until read - no "Applies to" until then
@@ -528,17 +532,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       setPolicies(p.data.data || []); setSettings(s.data.data || []);
       api.get("/api/brains").then(({ data }) => setBrains(data.data || [])).catch(() => {});
       api.get("/api/mailboxes").then(({ data }) => setMailboxes(data.data || [])).catch(() => setMailboxes([]));
-      api.get("/api/agents").then(({ data }) => {
-        const rows = data.data || [], models = data.models || {}, seen = new Set();
-        setAgentNames(rows.map((a) => a.Name));
-        setAgentModels(models);
-        // Settings asks which coding CLI runs, not which instruction profile it wears.
-        // The endpoint puts the saved default first; keep that order and collapse profiles
-        // backed by the same executable into one provider choice.
-        setAgentOptions(rows.filter((a) => ["coding", "cli"].includes(String(a.Kind || "").toLowerCase()))
-          .map((a) => ({ value: a.Name, label: models[a.Name]?.cli || models[a.Name]?.cmd || a.Name }))
-          .filter((a) => !seen.has(a.label) && seen.add(a.label)));
-      }).catch(() => {});
+      api.get("/api/agents").then(({ data }) => setAgentModels(data.models || {})).catch(() => {});
       api.get("/api/connectors").then(({ data }) => setConnectors(data.data || [])).catch(() => {});
     } catch (e) { setErr(e?.response?.data?.detail || { key: "Failed to load settings" }); }
   }, []);
@@ -569,7 +563,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     if (ok) chatDefaultsChanged(name, value);                        // an open chat follows its kind's new default     // coding comes or goes on every screen, this one's Coding agent group too
     load();
   };
-  const [jsonBad, setJsonBad] = useState({});           // a JSON knob's problem, said under its box until fixed
   const [verifying, setVerifying] = useState(false);
   const runVerify = async () => {
     setVerifying(true); setVerify(null);
@@ -579,7 +572,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   };
 
   // Where a model is really saved. The AI defaults panel names the owning screen and this opens it, the road every link takes:
-  // its own map sent "the claude connection" to the Profiles shelf (the 2026-10-19 UI walk)
+  // its own map once sent "the claude connection" to the wrong shelf (the 2026-10-19 UI walk)
   const goFromPanel = (where) => openAppLink(ownerHref(where));
 
   // Deep search: every hit knows the page and the section it lives in, and scrolls there.
@@ -600,32 +593,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
 
   const control = (s) => {
     const m = meta(s.Name);
-    const codingOptions = agentOptions.length ? agentOptions : agentNames.map((n) => ({ value: n, label: n }));
-    // Coding defaults choose an executable. The stored value remains its representative worker
-    // so existing task/session APIs keep their profile-specific model and repository mappings.
-    if (m.type === "agent") return (
-      <Select size="small" value={codingOptions.some((o) => o.value === s.Value) ? s.Value : (codingOptions[0]?.value || "")}
-        onChange={(e) => saveSetting(s.Name, e.target.value)} sx={{ minWidth: 140, fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)" }}>
-        {codingOptions.map((o) => <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12.5 }}>{o.label}</MenuItem>)}
-        {!codingOptions.length && <MenuItem value="" disabled sx={{ fontSize: 12.5 }}>{t("no coding CLI yet — add one under Connections")}</MenuItem>}
-      </Select>
-    );
-
-    if (m.type === "agents") {
-      const values = s.Value === "*" ? ["*"] : String(s.Value || "").split(",").filter((v) => codingOptions.some((o) => o.value === v));
-      return (
-        <Select size="small" multiple displayEmpty value={values}
-          renderValue={(picked) => picked.includes("*") ? t("automatic — any other coding CLI")
-            : picked.length ? picked.map((v) => codingOptions.find((o) => o.value === v)?.label || v).join(" → ") : t("none")}
-          onChange={(e) => {
-            const picked = typeof e.target.value === "string" ? e.target.value.split(",") : e.target.value;
-            saveSetting(s.Name, picked.includes("*") ? "*" : picked.join(","));
-          }} sx={{ minWidth: 250, maxWidth: 380, fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)" }}>
-          <MenuItem value="*" sx={{ fontSize: 12.5 }}>{t("automatic — any other configured coding CLI")}</MenuItem>
-          {codingOptions.map((o) => <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12.5 }}>{o.label}</MenuItem>)}
-        </Select>
-      );
-    }
     // the brains list is dynamic: AI connectors that actually hold a key + your CLI agents
     if (m.type === "brain") return (
       <Select size="small" displayEmpty value={brainOptions.some((b) => b.value === s.Value) ? s.Value : ""}
@@ -705,6 +672,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     }
     // THE EMAIL SIGNATURE (responder.signed): the exact block under every email, read off the sent mail and checked here
     if (m.type === "signature") return <SignatureSetting value={s.Value || ""} save={(v) => saveSetting(s.Name, v)} />;
+    if (m.type === "block") return <PostSignatureSetting value={s.Value || ""} save={(v) => saveSetting(s.Name, v)} />;
     // ...the chat's detail level, the one slider every chat corner draws too (DetailSlider)
     if (m.type === "detail") return <DetailSlider value={asLevel(s.Value) || asLevel(s.Default) || "summary"} label={m.label} says={false} onChange={(v) => saveSetting(s.Name, v)} />;
     if (m.type === "lines") return <LinesSetting value={s.Value || ""} fallback={s.Default || ""} save={(v) => saveSetting(s.Name, v)} />;
@@ -750,20 +718,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       <Switch checked={s.Value === "1"} title={m.hover ? t(m.hover) : undefined} inputProps={{ "aria-label": t(m.label || s.Name.replaceAll("_", " ")) }}
         onChange={() => saveSetting(s.Name, s.Value === "1" ? "0" : "1")} />
     );
-    // A JSON KNOB IS CHECKED BEFORE IT IS SENT. A stray quote used to save, and the reader ignored the
-    // whole value without a word - so every role quietly fell back to the default brain.
-    if (JSON_KNOBS.has(s.Name)) {
-      const bad = jsonBad[s.Name];
-      return (
-        <TextField defaultValue={s.Value} multiline minRows={1} error={!!bad} helperText={bad ? t(bad) : " "}
-          placeholder='{"researcher": "codex"}' sx={{ width: 260, bgcolor: "var(--tq-panel, #fff)" }} inputProps={{ style: { fontSize: 12.5, fontFamily: "monospace" } }}
-          onBlur={(e) => {
-            const v = e.target.value.trim(), why = jsonProblem(v);
-            setJsonBad((b) => ({ ...b, [s.Name]: why }));
-            if (!why && v !== (s.Value || "")) saveSetting(s.Name, v, e.target);
-          }} />
-      );
-    }
     return (
       <TextField defaultValue={s.Value} sx={{ width: 150, bgcolor: "var(--tq-panel, #fff)" }} inputProps={{ style: { fontSize: 12.5, padding: "6px 10px" } }}
         onBlur={(e) => e.target.value !== s.Value && saveSetting(s.Name, e.target.value, e.target)} />
@@ -773,21 +727,23 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // WHAT CONFIGURATION ACTUALLY DRAWS, decided once and told to the rail. A group with nothing in
   // it ("Other", on an install where no stray key fell there) must not be a rail entry: it would
   // scroll nowhere and highlight nothing. The rail cannot work this out - the rows are here.
-  const rowsOf = (g) => settings.filter((s) => !hidden(s.Name) && meta(s.Name).group === g
-    && !(panelOk && PANEL_OWNED.has(s.Name)));
+  // ...never a setting a panel holds: the panel is its one place (the owner, 2026-11-23: no "fallback if that panel cannot load" rows)
+  const rowsOf = (g) => settings.filter((s) => !hidden(s.Name) && meta(s.Name).group === g && !PANEL_OWNED.has(s.Name));
   // A PANEL IS A PLACE SEARCH CAN LAND ON: each under its id in settings_schema.json `panels`, which holds the words it is found by
   // (settingsSearch.js) - the id is its anchor and, as a knob, what #settings=config&group=..&key=<id> scrolls to
   const panel = (k, el) => <Box key={k} id={secId("config", k)} data-tq-knob={k} sx={{ scrollMarginTop: `${SCROLL_TOP}px` }}>{el}</Box>;
   const panels = {
-    "How mail is sorted": panel("panel:aidefaults", <AiDefaults brains={brainOptions} agents={agentOptions} onGo={goFromPanel} onLoaded={setPanelOk} />),
+    "Which AI does what": panel("panel:aidefaults", <AiDefaults brains={brainOptions} onGo={goFromPanel} />),
     "Agent permissions": panel("panel:agentperms", <AgentPermissions />),
   };
   // ...and what a section lists UNDER its knobs: the share links still open sit below the switch that allows them
   const after = {
+    // ...the backups above it, then the day's AI calls with their limit, and the last routes - read-only
+    "Which AI does what": <><TodayUsage /><RecentRoutes /></>,
     Sharing: panel("panel:sharedlinks", <SharedLinks />),
     Assistant: panel("panel:digest", <MorningDigest />),            // ...the digest it opens the main screen with: its time and on/off (2026-11-22)
     Replies: panel("panel:handsig", <HandSignature />),              // the signature forms are signed with sits beside the one under the email
-    "Agent permissions": <>{panel("panel:trusted", <TrustedSenders />)}{panel("panel:signins", <SavedSignins />)}{panel("panel:sendfilter", <SendFilter />)}</>,
+    "Agent permissions": <>{panel("panel:trusted", <TrustedSenders />)}{panel("panel:signins", <SavedSignins />)}{panel("panel:signups", <SignupsUse />)}{panel("panel:sendfilter", <SendFilter />)}</>,
   };
   // no coding tool connected: the Coding agent section has nothing to set (capabilities.js)
   // ...and the phone's knobs are Phone & chats' (the owner, 2026-11-06: "it's not clear where that is"), never a Configuration group too
@@ -804,8 +760,8 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // ...and the panel's own keys are suppressed wherever they would otherwise land. Scoping this
   // to the panel's tab was fine while every owned key had a KNOB_META entry in that group -
   // then `assistant_ai` lost its entry when it became a card, fell to "Other" by default, and
-  // came back as a bare unlabelled text box (d3bde8bd). `panelOk` still puts the plain rows
-  // back if the panel fails to load, which is why they keep their KNOB_META entries.
+  // came back as a bare unlabelled text box (d3bde8bd). They keep their KNOB_META entries so search, a link and the Assistant
+  // name them, and land on the panel's card.
   // A FUNCTION, NOT A COMPONENT: a component declared in here is a new type on every render,
   // so React would remount every row and the box you are typing in would lose the caret.
   const knobRow = (s) => {
@@ -950,7 +906,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     // PHONE & CHATS: the Assistant chat and its knobs, then - Developer mode only - the chats bound to coding agents (PhoneChats.jsx)
     if (page === PHONE_PAGE) return (
       <PhoneChats devMode={devMode} head={(name) => <SectionHead page={PHONE_PAGE} name={name} />}
-        assistant={<><PhoneDoorways onLoaded={setPanelOk} onNavigate={onNavigate} />{rowsOf(PHONE_GROUP).map(knobRow)}</>} />
+        assistant={<><PhoneDoorways onNavigate={onNavigate} />{rowsOf(PHONE_GROUP).map(knobRow)}</>} />
     );
     if (page === "about") return <AboutYou />;
     if (page === "docs") return <DocsView sel={docSel} onSel={setDocSel} onCatalog={onCatalog} />;
@@ -1061,25 +1017,16 @@ const NAV = ["about", "docs", "config", "policies", PHONE_PAGE, "audit", "update
 // DOCS IS A TREE, not a list of scroll anchors: its rail entries SWITCH the document rather than
 // scrolling to a heading, because a document is not a heading you scroll past. Groups are headers
 // with their files under them, and the buttons that used to sit on a shelf inside the page - New
-// playbook, Manage profiles - are entries here too. Nothing about this page lives in a header any
+// skill - are entries here too. Nothing about this page lives in a header any
 // more (the owner, 2026-09-22: "everything moves to sidebar").
-const docsTree = ({ profiles = [], people = [] }) => [
+const docsTree = ({ people = [] }) => [
   { key: "g:documents", label: "Your documents", head: true, sel: { group: "documents" } },
   ...OPERATOR_DOCS.map((d) => ({ key: `d:${d.name}`, label: d.label, sel: { group: "documents", doc: d.name } })),
-  { key: "g:profiles", label: "Profiles", head: true, sel: { group: "profiles" } },
-  // by WORKER NAME, not by filename. A profile's rules document can BE an operator document -
-  // the coding profile's is CODING.md - so filenames here put the same label in the rail twice,
-  // under two groups, and a click landed on whichever came first.
-  ...profiles.map((r) => ({ key: `p:${r.name}`, label: r.name, sel: { group: "profiles", doc: r.name } })),
-  { key: "a:new-profile", label: "+ New profile", sel: { action: "new-profile" } },
-  { key: "a:manage-profiles", label: "Manage profiles", sel: { action: "manage-profiles" } },
-  // NO PLAYBOOKS HERE: they live on the Reports page beside reports and workflows (the owner, 2026-10-21 - Settings is for regular
-  // configuration), PlaybookShelf.jsx
+  // NO SKILLS HERE: they live on the Reports page beside reports and workflows (the owner, 2026-10-21 - Settings is for regular
+  // configuration), SkillShelf.jsx
   // the pages the ledger keeps per person (people_pages.py), by address; none until reflection has compiled one
   ...(people.length ? [{ key: "g:people", label: "People", head: true, sel: { group: "people" } }] : []),
   ...people.map((p) => ({ key: `pp:${p.name}`, label: p.who, sel: { group: "documents", doc: p.name } })),
-  // no "Import skills" entry: that road was deliberately consolidated onto the Agents panel,
-  // which holds both ways in - a second door from here is the thing that was removed.
   { key: "g:how", label: "How it works", head: true, sel: { group: "how" } },
 ];
 const sameSel = (a, b) => !!a && !!b && (a.action || "") === (b.action || "")
@@ -1089,8 +1036,8 @@ const RAIL = 236, GUTTER = 24;   // the rail's own width, and the grid gap besid
 // `browse` (the assistant canvas, CanvasBrowse.jsx): the pages are the sections, Configuration's groups its cards, and one
 // group (or one page) opens with its own controls - drawn through the canvas's frame instead of this tab's rail.
 // `area` "about": the same view as ABOUT YOU (the owner, 2026-11-06: "general things you care about, how you do your job, personality,
-// goals") - You, Docs and Memory on one page of their own; Settings keeps the knobs, Profiles, Mail rules and Updates. Playbooks are
-// how you work, not who you are: they live on Reports (the owner, the same day; PlaybookShelf.jsx)
+// goals") - You, Docs and Memory on one page of their own; Settings keeps the knobs, Mail rules and Updates. Skills are
+// how you work, not who you are: they live on Reports (the owner, the same day; SkillShelf.jsx)
 export default function SettingsView({ onNavigate, browse = null, browseState = {}, onBrowseState = null, area = "settings" }) {
   useLocale();
   const about = area === "about";
@@ -1100,10 +1047,9 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
   // Docs' rail entries switch the document, so the selection belongs here beside `page` - and the
   // catalog they draw comes from DocsView, which already fetches and derives both lists.
   const [docSel, setDocSel] = useState({ group: "documents", doc: OPERATOR_DOCS[0].name });
-  const [docCat, setDocCat] = useState({ profiles: [], playbooks: [], people: [] });
-  const [catN, setCatN] = useState(0);    // a role just laid out new profiles and playbooks: read the catalogue again
+  const [docCat, setDocCat] = useState({ skills: [], people: [] });
   const onCatalog = useCallback((c) => setDocCat((cur) =>
-    (cur.profiles === c.profiles && cur.playbooks === c.playbooks && cur.people === c.people ? cur : c)), []);
+    (cur.skills === c.skills && cur.people === c.people ? cur : c)), []);
   // WHICH RAIL ENTRIES SHOW THEIR SECTIONS. The page you are in shows its own - it has to, or the
   // rail would highlight a section folded away under a title - and the rest stay shut. Scrolling
   // the whole document would otherwise leave all seven open behind you, with eleven Configuration
@@ -1124,7 +1070,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
   // may not have settled yet - the page below it is still fetching its rows - so the scroll is
   // retried until it lands or two seconds pass.
   // Picking a document DOES swap what Docs shows, and it also scrolls you to Docs, so a rail
-  // click always lands on the thing you clicked. An ACTION entry (New playbook, Manage profiles)
+  // click always lands on the thing you clicked. An ACTION entry (New skill)
   // carries a nonce: it is a one-shot, and without it a second click on the same entry would be
   // the same selection and nothing would reopen.
   const pickDoc = useCallback((sel) => {
@@ -1201,9 +1147,6 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     // ...the canvas's card is handed its page in `browseState` (canvasLinks.js), and the address is the router's (appLinks.js)
     if (browse) return;
     const hash = window.location.hash || "";
-    // #playbook=<slug> / #profiles come from a connector card and name no settings page. They are
-    // left in place for DocsView to read; this only has to open the page that renders it.
-    if (/^#profiles(?:$|=)/.test(hash)) { goTo("docs", ""); return; }
     if (!/settings=/.test(hash)) return;
     const m = /settings=([\w-]+)/.exec(hash);
     const g = /group=([^&]+)/.exec(hash);
@@ -1224,12 +1167,10 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
 
   if (browse) {
     // a page or a group this install does not have (an old link) opens the list, and says why - never a crash or a blank card
-    // PROFILES AND PLAYBOOKS ARE SECTIONS OF THEIR OWN up here, beside Docs - not shelves inside it (the owner, 2026-10-07: "separate
-    // docs and profiles ... it should have separate section on the top level settings thing"). They open in the Docs page's editor.
-    // ...and ABOUT YOU is its own page now (the owner, 2026-11-06): You, Docs, Memory - Settings keeps the rest, the Activity
+    // ABOUT YOU is its own page now (the owner, 2026-11-06): You, Docs, Memory - Settings keeps the rest, the Activity
     // log only in Developer mode
-    const SHELF = { docs: ["g:documents", "g:how"], profiles: ["g:profiles"] };
-    const mine = about ? ["you", "docs", "memory"] : ["config", "profiles", "policies", PHONE_PAGE, ...(devMode ? ["audit"] : []), "updates"];
+    const SHELF = { docs: ["g:documents", "g:how"] };
+    const mine = about ? ["you", "docs", "memory"] : ["config", "policies", PHONE_PAGE, ...(devMode ? ["audit"] : []), "updates"];
     const asked = mine.includes(browseState.section) ? browseState.section : null, section = sectionOr(asked, mine);
     // ...and SAYS WHY (the product audit, 2026-11-08: #settings=audit with Developer mode off drew the list with no pill and no word)
     const hidden = !about && browseState.section === "audit" && !section ? "The Activity log shows only in Developer mode." : "";
@@ -1248,14 +1189,12 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
         return h.page === "config" ? { key: h.section, title: t(h.label), sub, section: "config", knob: h.knob || "" }
           : { key: h.page, title: t(h.label), sub, section: h.page }; }) : [];
     // DOCS IS A SHELF OF FILES, not one page (the owner, 2026-09-29: "I don't see the rest of the docs ... we need sub
-    // settings to see all the files soul.md/counsel"): the same tree the tab's rail drew - the operator documents, the
-    // profiles, the playbooks and their New / Manage entries, How it works - each a card that opens that document
+    // settings to see all the files soul.md/counsel"): the same tree the tab's rail drew - the operator documents, the people
+    // pages, How it works - each a card that opens that document
     // ...each card saying what it is, not which shelf it is on ("Operator documents" in grey under every name)
     // ...and LEARNED.md is Memory's, as sentences (2026-11-06): not a card of raw lines beside it
     const what = { ...Object.fromEntries(OPERATOR_DOCS.map((d) => [`d:${d.name}`, d.blurb])),
-      ...Object.fromEntries((docCat.profiles || []).map((r) => [`p:${r.name}`, r.purpose])),
-      "a:new-profile": t("A new worker with its own rules"), "a:manage-profiles": t("Add, rename or remove workers"),
-      "g:how": t("Taskuary's chat and the gates a message passes") };
+      "g:how": "Taskuary's chat and the gates a message passes" };
     let shelf = "";
     const docCards = docsTree(docCat).flatMap((e) => {
       if (e.head) shelf = e.key;
@@ -1273,7 +1212,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
       : section ? [{ key: section, title: PAGES[page].title, sub: PAGES[page].desc }] : [];
     // ...a first section that IS its one page (About you's You) opens as that page, as its chip would
     const open = gone || !section ? null : browseState.open ?? (!asked && onePage(section, SHELF) ? section : null);
-    const label = (k) => (k === "you" ? "You" : k === "profiles" ? "Profiles" : k === "memory" ? "Memory" : PAGES[k].title);
+    const label = (k) => (k === "you" ? "You" : k === "memory" ? "Memory" : PAGES[k].title);
     const where = about ? "About you" : "Settings";
     return browse({
       title: where, wide: about && section === "memory", onePage: onePage(section, SHELF),
@@ -1285,7 +1224,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
       cards: cards.map((c, i) => ({ ...c, key: needle ? `${c.key}-${i}` : c.key,
         onOpen: c.node ? undefined : () => {
           setQ("");
-          // a document is picked the way the rail picked it; an action entry (New profile) is a one-shot, so it carries a nonce
+          // a document is picked the way the rail picked it; an action entry is a one-shot, so it carries a nonce
           if (c.sel) { const e = c; setDocSel(e.sel.action ? { ...e.sel, n: Date.now() } : e.sel); }
           onBrowseState?.({ ...browseState, section: c.section || section, open: c.key, knob: c.knob || "", at: c.knob ? Date.now() : browseState.at });
         } })),
@@ -1297,18 +1236,17 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
           sx={{ mt: 1.5, bgcolor: "var(--tq-panel, #fff)", borderRadius: 2 }} />
       ),
       // what the assistant changed here - the tab drew it over Configuration
-      tools: <>{hidden && <Typography data-tq-settings-hidden="" variant="body2" sx={{ mt: 1.5, color: DIM }}>{hidden}</Typography>}<LanguageSelector />{section === "config" && !open && !needle ? <Box sx={{ mt: 1.5 }}><AssistantChanges /></Box>
-        // the shelf's profiles come from DocsView's own reads - mounted unseen, as the tab's rail had it
-        : SHELF[section] && !open ? <>
-          {/* the one-click road to a whole role - worker, playbooks, where the mail goes (roles.py) - offered beside the workers */}
-          {section === "profiles" && !needle && <Box sx={{ mt: 1.5 }}><RoleStart onApplied={() => setCatN((n) => n + 1)} /></Box>}
-          <Box key={catN} sx={{ display: "none" }}><DocsView onCatalog={onCatalog} catalogOnly /></Box></> : null}</>,
+      tools: <>{hidden && <Typography data-tq-settings-hidden="" variant="body2" sx={{ mt: 1.5, color: DIM }}>{hidden}</Typography>}
+        {!about && !open && <LanguageSelector />}
+        {section === "config" && !open && !needle ? <Box sx={{ mt: 1.5 }}><AssistantChanges /></Box>
+        // the shelf's people pages come from DocsView's own reads - mounted unseen, as the tab's rail had it
+        : SHELF[section] && !open ? <Box sx={{ display: "none" }}><DocsView onCatalog={onCatalog} catalogOnly /></Box> : null}</>,
       detail: open && section !== "memory" ? <SettingsPages only={{ page, group: section === "config" ? open : null, knob: browseState.knob || "", at: browseState.at }} q="" setQ={() => {}} onNavigate={onNavigate}
         onJump={() => {}} onSections={setCfgSecs} docSel={docSel} setDocSel={setDocSel} onCatalog={onCatalog} /> : null,
-      openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" (Settings - {section})', { document: docCards.find((c) => c.key === open)?.title || (open === "d:learned" ? "LEARNED.md" : "Docs"), section: t(section === "docs" ? "Docs" : "Profiles") })
-        : section === "you" ? t("who you are - your name, your identity on each channel, what the agents are told (About you)")
-        : section === PHONE_PAGE ? t("Phone & chats (Settings) - your Taskuary chat on WhatsApp or Telegram{dev}", { dev: devMode ? t(", and the chats bound to coding agents") : "" })
-        : t('the settings group "{group}" (Settings)', { group: section === "config" ? open : PAGES[section]?.title }),
+      openLabel: !open ? "" : SHELF[section] ? `the document "${docCards.find((c) => c.key === open)?.title || (open === "d:learned" ? "LEARNED.md" : "Docs")}" (${where} - Docs)`
+        : section === "you" ? "who you are - your name, your identity on each channel, what the agents are told (About you)"
+        : section === PHONE_PAGE ? `Phone & chats (Settings) - your Taskuary chat on WhatsApp or Telegram${devMode ? ", and the chats bound to coding agents" : ""}`
+        : `the settings group "${section === "config" ? open : PAGES[section]?.title}" (Settings)`,
       empty: null,
       note: gone ? t("“{group}” is not a settings group any more - here are the ones there are.", { group: browseState.open }) : "",
     });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { sentLine, sentSaid, sentStands, sentTitle } from "../src/sentLine.js";
+import { sentLine, sentMark, sentSaid, sentStands, sentTitle } from "../src/sentLine.js";
 
 const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
@@ -11,8 +11,12 @@ test("a reply that went says where, and that the task is closing or why it stays
   assert.equal(sentLine({ channel: "email", closing: true }), "Sent by email - closing the task");
   assert.equal(sentLine({ channel: "teams", closing: false, kept: "an agent is still working" }), "Sent on Teams. The task stays open: an agent is still working");
   assert.equal(sentLine({ channel: "", to: "Ray Colton", closing: false }), "Sent to Ray Colton");
+  // ...ONE SEND, ONE SENTENCE (walk 12: "Sent to erin@...", "Sent by email", "Sent · closed by email"): whom and how, both where both are known
+  assert.equal(sentLine({ channel: "email", to: "Erin Blake" }), "Sent to Erin Blake by email");
+  assert.equal(sentLine({ channel: "", to: "erin@northwind.example" }), "Sent to erin@northwind.example");
+  assert.equal(sentSaid({ channel: "email", to: "Erin Blake", closing: true }), "to Erin Blake by email");
   const page = read("TaskPage.jsx");
-  assert.match(page, /const chatCards = sentBox \? <SentCard \{\.\.\.sentBox\} \/> :/);
+  assert.match(page, /const chatCards = sentBox \? <SentReview \{\.\.\.sentBox\} \/> :/);
   assert.match(read("ReviewDecision.jsx"), /said: verb === "approve" \? \{ text: value, channel: r\.Channel \|\| "", to: sentTo\(r\), subject: deliverySubject\(r\), id: r\.ReviewId, done: pw\.sentAs \} : null/);
 });
 
@@ -22,7 +26,10 @@ test("a sent reply stays its card: the subject, the words, and ✓ Sent on the b
   assert.equal(sentTitle({ subject: "Portal login", to: "erin@northwind.example" }), "Portal login");     // a new email is no reply
   assert.equal(sentTitle({ subject: "RE: Q3 numbers" }), "RE: Q3 numbers");
   assert.equal(sentTitle({ to: "Erin Blake" }), "Reply to Erin Blake");
-  assert.equal(sentSaid({ channel: "email", closing: true }), "by email - closing the task");
+  // ...Send and close's close is said on the button, in the one press-result word (pressResult): the line says where it went
+  assert.equal(sentSaid({ channel: "email", closing: true }), "by email");
+  assert.equal(sentMark({ channel: "email", closing: true }), "✓ Sent · closed");
+  assert.equal(sentMark({ channel: "email" }), "✓ Sent");
   assert.equal(sentSaid({ to: "Ray Colton" }), "to Ray Colton");
   // ...IN THE DEMO A SEND IS PLAYED (the owner, 2026-11-15): the card settles and says what did not happen - one sentence, the server's own
   assert.equal(sentLine({ channel: "email", demo: true }), "Sent - in the demo, nothing left this computer");
@@ -30,23 +37,20 @@ test("a sent reply stays its card: the subject, the words, and ✓ Sent on the b
   const { markDemo } = await import("../src/demoWorld.js");
   markDemo(true); assert.equal(sentLine({ channel: "teams" }), "Sent - in the demo, nothing left this computer"); markDemo(false);
   assert.equal(sentLine({ channel: "teams" }), "Sent on Teams");
-  const card = read("SentCard.jsx");
-  assert.match(card, /<PressedButton pressed="sent" label=\{sentMark\(p\)\} \/>/);      // ...a mark, never a button nobody can press (passedCard.test.mjs)
+  // ...a mark, never a button nobody can press (passedCard.test.mjs): the one card's after-state (oneReviewCard.test.mjs renders it)
+  assert.match(read("Artifact.jsx"), /<PressedButton pressed=\{a\.mark \|\| "approved"\} label=\{a\.label \|\| ""\} \/>/);
+  assert.match(read("ReviewDecision.jsx"), /after=\{\{ mark: "sent", label: sentMark\(p\)/);
 });
 
 // THE LIVE SHAPE (the audit, 2026-11-13, on the real CLI): Send pressed, he stays on the task, the sender writes again, the agent drafts the
 // new reply. The sent letter stood where the new draft belonged - "✓ Sent" under the turn that said "it waits for your Send", no Send to press
-test("the sent card holds its draft's place only until the task reads it as gone - then it is its turn's card, and what waits now is drawn", () => {
+test("in a chat with turns the pressed card is the only one that says it went - from the press, never a second copy under the chat", () => {
   const here = { id: 2, text: "Yes, March 12 works.", channel: "email", closing: false };
-  const pressed = [{ ReviewId: 2, Status: "pending" }], read = [{ ReviewId: 2, Status: "approved" }], again = [...read, { ReviewId: 3, Status: "pending" }];
-  assert.equal(sentStands(here, pressed, true), here, "at the press, before the task is read again: where its draft stood");
-  assert.equal(sentStands(here, read, true), null, "read as gone: its turn's card says it");
-  assert.equal(sentStands(here, again, true), null, "and the next draft is never hidden behind it");
-  assert.equal(sentStands({ ...here, id: 2 }, [{ ReviewId: 2, Status: "edited" }], true), null);
-  assert.equal(sentStands(here, read, false), here, "a task with no turns has no such card: it stays where it stood");
-  assert.equal(sentStands(null, again, true), null);
+  assert.equal(sentStands(here, true), null, "at the press, before the task is read again: the pressed card in its turn says it - never a second one");
+  assert.equal(sentStands(here, false), here, "a task with no turns has no such card: it stays where it stood");
+  assert.equal(sentStands(null, true), null);
   const page = readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
-  assert.match(page, /const sentBox = sentStands\(sentHere, allReviews, inTurns\);/);
+  assert.match(page, /const sentBox = sentStands\(sentHere, inTurns\);/);
   assert.match(page, /WENT\.includes\(r\.Status\) && r\.ReviewId !== sentBox\?\.id\)/);      // ...its turn's card is drawn from the same word
 });
 
@@ -86,10 +90,26 @@ test("an email's card goes sending… then Sent in its one place, and a card dra
   const rd = read("ReviewDecision.jsx"), page = read("TaskPage.jsx"), gw = read("GeneralWorkspace.jsx");
   assert.doesNotMatch(rd, /const \[sent, setSent\] = useState/, "the press is the review's, not the card's");
   assert.doesNotMatch(rd, /if \(delivery\.frozen\) setSent\(false\);/);
-  assert.match(rd, /if \(look === "sent" && !proposal && !co\) return <SentCard /, "Sent is the card's own last look");
+  assert.match(rd, /wentNow = look === "sent" && !proposal && !co/, "Sent is the card's own last look, on the same card");
+  assert.doesNotMatch(rd, /return <SentReview|return <SentCard/, "never a second card swapped in at the press");
   assert.match(rd, /else if \(data\.ok && verb === "approve" && !proposal\) setSent\(true\);/, "an email's Send with no page behind it is Sent from its answer");
   // ...one node per email, keyed by its review, drawn by the chat in its turn - pending and sent alike; the block under the chat holds none
   assert.match(page, /key: `rv:\$\{r\.ReviewId\}`[^\n]*letter: true/);
   assert.doesNotMatch(page, /r\.Kind !== "action" && WENT\.includes/, "no second sent card for an email");
   assert.match(page, /\{!inTurns && <SlotList /);
+});
+
+// WALK 9, 2026-11-23: an act's Approve read "running…", then Approve and Dismiss lit again for 2-7 s, then "✓ Approved" - its press answered
+// and the card stood unpressed until the re-read came. A press that landed stays pressed until the review reads decided: one state, press to result
+test("an act's Approve that landed stays pressed until the review reads it decided - never Approve again in between", async () => {
+  const { cardLook, endPress, pressMark } = await import("../src/sentLine.js");
+  const r = { ReviewId: 77, Kind: "proposal", Status: "pending" };
+  pressMark(77, { state: "going", pressed: "approve" });
+  pressMark(77, { state: "landed", pressed: "approve" });      // ...its decide answered ok
+  endPress(77);                                                 // ...and the press's own busy ends
+  assert.equal(cardLook(r), "going", "pressed, still - never the lit Approve");
+  assert.equal(cardLook({ ...r, Status: "approved" }), "sent", "the re-read: decided, from the review alone");
+  pressMark(78, { state: "going", pressed: "approve" }); endPress(78);
+  assert.equal(cardLook({ ReviewId: 78, Status: "pending" }), "live", "a press that did not land is the live card again");
+  pressMark(77, null);
 });

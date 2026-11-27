@@ -263,31 +263,6 @@ def _wrap(store, tid: int, agent: str, why: str, final_message: str = '', no_rep
     return {**out, 'closed': False, 'ended': True, 'drafting': bool(out.get('drafting')), 'why': why}
 
 
-# ── what the session is told ────────────────────────────────────────────────────────────
-# The explicit road only exists if the agent knows about it, so this rides in every seed prompt.
-# It is phrased as the CHEAP ending, because that is what it is: the alternative is a human
-# looking at a screen hours later.
-# Short on purpose. Every character here rides on a command line that a canonical tty caps at
-# 1024 bytes, so the WHOLE rule lives in CODING.md (which rides in as RULES) and this is only the
-# part that must survive a blanked document: the command, and what pressing it does.
-# ...FOR WHOEVER WROTE IN, never the owner (the real-CLI walk, 2026-11-12: asked a question in the chat, a coding agent saved its answer as a
-# reply to him, was refused, and told him so): what he asks here is answered in the session's own words
-SEED_LINE = ('REPLY: save the answer for whoever wrote in with `taskuary --reply "<text>"` (a file it promises: add `--attach <path>`) - the owner approves it; '
-             'what the owner asks you here, answer in your own words, never as a reply. '
-             'WHEN FINISHED: run `taskuary --done "<one sentence>"` - it files your ending, and a reply owed that you did not save is asked of you; the owner closes the task; '
-             'add `--no-reply` when nobody should hear back. '
-             'ONLY SOMEONE ELSE CAN ANSWER: ask them, then `taskuary --waiting-on "<who>"` - their reply brings the task back.')
-# ...and its opposite, for a session the owner opened to sit in (stays_open): the one thing the
-# agent must NOT do is end it. Said in the prompt, because CODING.md's finishing rules say the
-# reverse and an agent reading both without this line picks the one with a command in it. It says
-# what `declare` does: the command is refused here and the owner completes the task.
-STAY_LINE = ('THE OWNER OPENED THIS SESSION: `taskuary --done` is refused. Reply via `taskuary --reply "<text>" --to "<who>"`, not chat. '
-             'Answer what is asked, then wait.')
-# ...because this line REPLACES SEED_LINE (terminal.seed_parts), the reply road was the one thing an owner-opened session never
-# heard of: an agent wrote the whole reply into its chat, ran a refused --done, said "the reply above is ready", and the
-# drafter wrote a placeholder from that pointer (2026-10-13)
-
-
 # ── the general chat's version of the same thing ────────────────────────────────────────
 # A conversational agent has no shell to run a command in, and half the time no CLI behind it at
 # all, so it says it in the reply instead. A marker, not a judge: a chat is a conversation and
@@ -310,57 +285,47 @@ CHAT_LINE = (
 # ...ONE DUTY LINE (the owner's rule 8, 2026-11-11: the agent talks like a person helping - "no repeating what the card says"): it was told
 # to say what it set up and for whom, and said that over a card that says it - then "it waits for your Send", "nothing has been sent". What
 # the card shows is never said; the agent adds only what the card cannot
-CARD_SAID = ('A reply, an email or an act you set up is its card under your answer, with its own button - the result itself: it shows '
-             'what it is, to whom, its words, the file it carries, that it waits and that nothing went. Say none of that or what it replaced, and never '
-             'retell its content in other words. Add only what the card cannot say - what you will do after the press, an assumption in it (a '
-             'guessed address, a picked date), the one question - in one short line, or nothing. Raise your cards in the order they should '
-             'happen; what stands on his screen is told you at the head of every turn. Many of one act (25 emails, 40 issues to close) go as '
-             'ONE card, in one call with `items`.')
+CARD_SAID = ('It stands as its card, with its own button: the card shows what it is, to whom, its words, the file it '
+             'carries, what it replaced, that it waits and that nothing went. What stands on his screen is told you at the head of every turn; '
+             'many of one act (25 emails, 40 issues to close) are one card, in one call with `items`.')
 # ...AND A ROUTINE'S OWN EMAIL IS NO CARD (slots.routine_sends, the owner 2026-11-17: "routines should send on their own too"): it went at
 # once, and its agent was told the card "shows ... that it waits and that nothing went" - so it said nothing went (the tools stress round)
 def card_said(out: dict) -> str:
     "How a draft that stood is spoken of, on every road (the draft tools, `taskuary --draft`): sent at once, failed to go, or its card."
-    if out.get('sent'): return ("It went at once - a routine's email to what its owner saved into it is sent without a press, so there is no card: say in a few words that "
-                                "it was sent, and to whom.")
-    if out.get('send_error'): return (f"It did not go ({out['send_error']}), so it stands as its card for the owner's Send - say that in one "
-                                      f"line. {CARD_SAID}")
+    if out.get('sent'): return "It went at once - a routine's email to what its owner saved into it is sent without a press, so there is no card."
+    if out.get('send_error'): return f"It did not go ({out['send_error']}), so it stands for the owner's Send. {CARD_SAID}"
     return CARD_SAID
 # ...AND A STEP TASKUARY HELD IS A CARD TOO (the real-CLI walks, 2026-11-12: "The delete of old-export.csv is waiting for your approval",
 # over the card that says so; "still waiting for your Approve" the turn after): every hold's answer to its agent ends on this one tail
-CARD_TAIL = ('It is a card in this task now: the card says what it is and that it waits for their press - never say either. Add only what '
-             'you will do once it is pressed, in one short line, or nothing.')
-# ...and WHAT A TURN IS HANDED IS CONTEXT, NOT NEWS (same walks): each turn is told what waits, what went and what he pressed, and said it
-# back to him - so the block says once, at its head, that it is his page's own news (general.latest_block)
-FACTS_HEAD = ('WHAT TASKUARY TELLS YOU FOR THIS TURN - context for you alone: the owner sees each of these on the task already. Act on them; '
-              'never say them back - no "still waiting on your approval", no card or draft quoted, no id.')
-HANDLES_LINE = ("An id Taskuary gives a draft or a card (rv4) is your tools' handle - the owner never sees it: to them, name a thing by what it "
-                'is and whom it is to.')
+# ...THE ONE WAY AN AGENT ASKS HIS YES (the owner, 2026-11-23: "Ask them to approve by using action cards. That's it." - 26 orders to stop, end
+# the turn or never ask had piled up, one per bug, and an agent he had told twice to post stopped on "Awaiting final approval"): the card is
+# the ask, and the job goes on - every gate's refusal ends with this, and nothing else tells an agent to stop
+CARD_TAIL = ('It is an action card on this task now, the owner\'s to press: when they press it Taskuary runs it and tells you what happened. '
+             'The rest of the job is not held by it.')
+# THE ONE SENTENCE AN AGENT IS TOLD (the owner, 2026-11-23: "code should never tell an agent what to do ... don't bother users unless we need
+# them for approval to send email, login to something") - and the second beside it ("for everyone, in the agents' instructions"): what reads
+# faster as a picture is shown as one, compact, in the flow of the chat. Everything else an agent gets is context and tools.
+# ...AND THEY ARE HIS FILE (the owner, 2026-11-23): AGENTS.md under About you -> Docs, shipped as templates/agents.md, read by every agent on
+# every AI at its next turn (guidance). Kept short by the Docs meter (doclimits, AGENTS_CHARS) so it never grows back into a rulebook. Only
+# security stays in code, outside his text: the fence (terminal.FENCE_LINE), SECRET_LINE below, and the gates.
+from pathlib import Path as _Path
+AGENTS_DOC, AGENTS_CHARS = 'agents', 1000
+def flat(t: str) -> str:
+    "The text as a session receives it, docMeter.flatten line for line: headings unmarked, blank lines dropped, one space between everything"
+    ls = [re.sub(r'^[ #*-]+|[ #*-]+$', '', l).strip() if re.match(r'\s*#', l) else l.strip() for l in str(t or '').splitlines() if l.strip()]
+    return ' '.join(' '.join(ls).split())
+ONE_SENTENCE = flat((_Path(__file__).parent / 'templates' / f'{AGENTS_DOC}.md').read_text(encoding='utf-8'))      # the shipped text
+def guidance(store) -> str:
+    "What every agent is told about how to work: AGENTS.md as the owner keeps it, cut at AGENTS_CHARS - the shipped text when it is empty, never none"
+    return flat(store.doc(AGENTS_DOC) or '')[:AGENTS_CHARS].strip() or ONE_SENTENCE
+# ...and the one rule beside it, which is security: a secret found in his files goes out only on his press (the walk, 2026-11-04)
+SECRET_LINE = "A login or secret you find in the owner's files goes only in the draft that needs it - never in your answer, steps or summary."
 # ...and WHERE THE OWNER CLOSES IT (no CHAT_LINE: nobody wrote in, or the owner keeps the task to finish): the agent said "I couldn't
 # close the task from here", a failure over finished work (the desktop stress test, 2026-11-03). It is told whose press the close is
 # ...and ONE ANSWER TO "DID IT CLOSE": none of an agent's steps closes the task (the owner, 2026-11-16, "straight up lying": a coding agent ran
 # its finish and wrote "I've closed the task", then "I had just marked the task done, so I'm reopening it" over a task open all along)
-NEVER_CLOSES = ('Taskuary did not close the task - closing it is the owner\'s, with {close}, which is lit for them now. Your sentence is filed on '
-                'the task. Never say you closed, marked done or reopened it.')
-def owner_closes_line() -> str:
-    from .buttons import label
-    # ...and never names the close at all (design round 4, 2026-11-19: "Ready for Mark done" ended answers on three AIs - this line taught it):
-    # the page lights the button when the work is done, so the answer ends on the result
-    return (f'ENDING THE TASK: the owner closes it with {label("close")}, which the page lights for them once your work is done - none of your '
-            f'steps closes it, so never say you closed, marked done or reopened it, and never name the button or the close: end on the result. '
-            # ...and where what it drafts is (the owner, 2026-11-05: a draft said to be in a section that no longer exists): earlier turns of the
-            # conversation may still name another screen - the page they were written for is gone
-            f'WHERE YOUR DRAFTS ARE: this task is one chat - no other screen or tab, whatever an earlier turn said. {CARD_SAID} '
-            # ...and NAMED AS THE OWNER KNOWS IT (agent walk 2, 2026-11-10: "send it after rv3", "set up for your Send (review 5)")
-            f'{HANDLES_LINE}')
-
-
-# THE ONE ENDING THE AGENT SAYS (the owner, 2026-11-05: "it should trigger a new taskuary chat ... saying i saw you reply so i will close the
-# task" - then: "so i recommend close it"): the owner answered the thread themselves, outside Taskuary (general.owner_answered_last); the
-# agent thinks again and RECOMMENDS the close - the owner makes it
-OWNER_ANSWERED_LINE = ('THE OWNER ANSWERED THIS THEMSELVES: the newest message on the thread is their own reply, sent outside Taskuary. Think '
-                       'again about the task in its light. Say in one or two short lines that you saw their reply and what it settled; if that '
-                       'took care of it, recommend they close the task (you never close it yourself); if something is still open, say what. '
-                       'Do not draft a reply they already sent.')
+NEVER_CLOSES = ('Taskuary did not close the task - closing it is the owner\'s, with {close}, which is lit for them now; it stays open until '
+                'they press it. Your sentence is filed on the task.')
 
 
 # ...and its reply. The chat writes the answer the sender gets inside a marked block; the words between
@@ -381,19 +346,13 @@ REPLY_LINE = (f'REPLYING FOR THE OWNER: the answer the person who asked will get
 # each turn closes on a block the page draws as three parts - what the task wants, what the agent did, what is on the owner (the parser
 # is Task 3.5's). Not `SUMMARY:`, which the brief already uses as the task-summary label.
 SUMMARY_OPEN, SUMMARY_CLOSE = '[[TASKUARY-SUMMARY]]', '[[/TASKUARY-SUMMARY]]'
-AFTER_PRESS = ('send', 'handoff')
-from .buttons import label as _label
-RETRY_LABEL = _label('try_again')          # the button a summary's `retry` draws
 SUMMARY_LINE = (f'ENDING EVERY TURN: close with {SUMMARY_OPEN}{{"name": "<the task in three to six words, as a to-do list names it>", "about": "<two or three plain sentences from the whole thread: which '
                 f'conversation, what about, who asked, for whom, why - naming only people it shows in that role>", "did": "<the RESULT ITSELF '
                 f'first (the path, link, figure or name), then what you did; any part unmet or unchecked>", "on_you": ["<a step for what they '
-                f'asked that only they can take, a line each with why, said nowhere in your words above; [] when nothing_left>"],"nothing_left": <true only when the goal '
-                f'is met and you checked it>, "answer_is_result": <true when your words above ARE what was asked>, "after_press": <"send" only if a step of '
-                f'your own is left after the owner presses what you set up (deploy once he approves the merge; his Send finishing the job is not one) - that press wakes you once; "handoff" '
-                f'only if you carry on once he hands this to a person; else leave it out: a press with nothing after it never wakes you>, "retry": <true when what '
-                f'stopped you may work on another try (a page that did not load, a site that did not answer): Taskuary puts a {RETRY_LABEL} button under '
-                f'your turn - never ask the owner to send a message to try again>}}'
-                f'{SUMMARY_CLOSE} - valid JSON, plain words, no secret, "you" to the owner. A card you set up and a question you ask are never an on_you step. When their newest message CORRECTS you, add "corrections": '
+                f'asked that only they can take and no card or question can carry, a line each with why, said nowhere in your words above; [] when nothing_left>"],"nothing_left": <true only when the goal '
+                f'is met and you checked it>, "answer_is_result": <true when your words above ARE what was asked>, "retry": <true when what '
+                f'stopped you may work on another try (a page that did not load, a site that did not answer) - never ask the owner to send a message to try again>}}'
+                f'{SUMMARY_CLOSE} - valid JSON, plain words, no secret, "you" to the owner. A fact only they have (a phone number, a choice) is your one question, and a payment or other press of theirs is set up to its last press as a card: these are never an on_you step. When their newest message CORRECTS you, add "corrections": '
                 f'[{{"kind": "redraft" (their words for the draft) or "ask" (you misread the task), "review": <the draft\'s id or null>, '
                 f'"said": "<the correction, in their words>"}}], never shown. When what came in needs nothing from you or them - judged from '
                 f'the thread, not its wording; in a group chat banter, a question already answered, a reply that would only say "ok" or '
@@ -433,8 +392,6 @@ def summary_marker(text: str, letters=()) -> tuple:
     if (name := ' '.join(str(j.get('name') or '').split())[:80]): out['name'] = name
     # ...and the agent's own say on whether its prose is the deliverable (GeneralWorkspace: agentSummary.answerShown) - kept only when it said
     if isinstance(j.get('answer_is_result'), bool): out['answer_is_result'] = j['answer_is_result']
-    # ...and the one press it waits on to carry on (general.follow_up): that press starts its next turn
-    if j.get('after_press') in AFTER_PRESS: out['after_press'] = j['after_press']
     # ...and that what stopped it is worth another go: the page draws Try again under the turn (GeneralWorkspace), his press the go-ahead
     if j.get('retry') is True: out['retry'] = True
     if isinstance(j.get('on_you'), list): out['on_you'] = list(dict.fromkeys(x for x in (flat(o, ON_YOU_MAX) for o in j['on_you'] if isinstance(o, str)) if x))[:6]
@@ -520,36 +477,16 @@ def attach_markers(text: str) -> tuple:
 # LATEST MESSAGE WINS (the owner, 2026-11-06: "Latest message should recalculate all the prior messages. it's just resending the original
 # response that was already sent"): corrected after a draft was waiting, the agent answered the first ask of the thread again and left that
 # draft standing under its newest turn, reading as the answer to the correction. Every turn is told it answers the NEWEST message, read
-# against all before it, what is pending and what already went (general.latest_block) - and how to take a draft back: this marker, on a road
+# against all before it, what is pending and what already went (its events, events.py) - and how to take a draft back: this marker, on a road
 # with no shell, or `taskuary --withdraw-draft` / the withdraw_draft tool (verdicts.withdraw). The model judges; no word list does
 # ...AND A NEWER MESSAGE NEVER RETIRES WHAT IS STILL OWED (the walk, 2026-11-19: asked for three caterer options, then "did you hear back?",
 # the agent called the options "no longer needed" and drafted only "Not yet" - "never an earlier ask again" read as dropping it)
-LATEST_LINE = ('LATEST MESSAGE WINS: answer the newest message against the whole conversation - an ask it corrects or one already answered '
-               'is never answered again, but a newer message never retires what is still owed to its sender: answer that, then the new '
-               'question. When the thread changed (someone answered, plans or facts moved), re-plan - maybe no reply, new research, corrected '
-               'drafts, or nothing. Replace a pending draft with a corrected one or withdraw it (why, one line), never leave it standing as '
-               'this answer; never draft again what already went out below.')
-# ...A TURN NO MESSAGE STARTED (agent walk 2, 2026-11-10): woken by the owner's Send, the agent was handed the line it had answered a minute
-# before as "THE NEWEST MESSAGE", under "your answer is to the newest message" - and answered "What is left here?" a second time. A turn
-# Taskuary starts on an answered task (a press, a result that came back, a check-back) is told nothing new was said (general.latest_block)
-NO_NEW_LINE = ('NO NEW MESSAGE STARTED THIS TURN: the last message on the task is one you have answered - never answer it again. This turn '
-               'is about the rest of what you are told here. A draft still waiting stays as it is unless that undoes it; never draft again '
-               'what already went out below.')
-# EACH DUTY ONCE, IN THE STARTUP CONTEXT (the owner, 2026-11-11: "why would an agent say the same thing twice?"): the rules above rode EVERY
-# turn of a chat's agent, beside the same duty in its startup lines (REPLY_LINE, WHERE YOUR DRAFTS ARE, the summary's), and an agent says
-# back what it is told more than once - "ready for your Send below", then "Nothing has been sent", then "the new draft takes the place of
-# the old one". A chat's agent is told them once (DRAFTS_ONCE, general.prompt_parts) and a turn carries only its facts under a short head
-# ...and never said back (the real-CLI walks, 2026-11-12: "Nothing new has come in since my last answer" opened a turn a peer's note woke)
-LATEST_HEAD, NO_NEW_HEAD = 'A NEW MESSAGE STARTED THIS TURN.', ('NO NEW MESSAGE STARTED THIS TURN: the last message on the task is one you have '
-                                                                 'answered. Say only what this turn changed, in a line - never that nothing came in.')
 WITHDRAW_MARK = '[[TASKUARY-WITHDRAW: <why, one line>]]'
 # ...and any unsent thing it set up, as withdraw_draft takes it (verdicts.withdraw): an agent with no shell took back only the reply draft,
 # so an email to the wrong person stood beside the right one with its Send (agent-flow audit, 2026-11-07)
 WITHDRAW_LINE = (f'Withdraw it with {WITHDRAW_MARK} on its own line (shell: `taskuary --withdraw-draft "<why>"`; the withdraw_draft '
                  'tool), another proposal you set up with [[TASKUARY-WITHDRAW which=<its review id or who it was to>: <why>]] - kept under '
                  'Not sent, never deleted.')
-DRAFTS_ONCE = (f'{LATEST_LINE} A turn no new message started never answers the last one again and leaves a waiting draft unless told '
-               f'otherwise. {WITHDRAW_LINE}')
 _WITHDRAW_RE = re.compile(r'^[ \t]*\[\[\s*TASKUARY[-_ ]?WITHDRAW\b\s*(?:which\s*=\s*(?:"([^"]*)"|([^\s:\]]+)))?\s*:?\s*(.*?)\s*\]\][ \t]*\n?',
                           re.I | re.M)
 def withdraw_markers(text: str) -> tuple:
@@ -591,9 +528,6 @@ DRAFT_LINE = (f'EMAILS THIS TASK NEEDS: write each as {DRAFT_OPEN} slot=<id> sub
               'email fills it, never a second beside it. An email the checklist does not list takes to=<address> in place of slot (and beside '
               'slot, when the line names a person whose address you found). The subject is for its reader, never this task\'s title; to '
               'someone who mailed on this task, "Re: " their subject.')
-DRAFT_TOOL_LINE = ('EMAILS THIS TASK ALREADY OWES: a checklist line marked "-> email to" is an email only you will write - write it, or ask the owner what it '
-                   'needs: propose_email with `slot` set to its id and its words in `text` fills it, never a second email; no `slot` only for '
-                   'an email the checklist does not list.')
 
 
 def draft_markers(text: str) -> tuple:
@@ -620,8 +554,6 @@ TICK_CHAT_LINE = (f'TO-DOS HERE: you have no shell, so `taskuary --tick` is not 
 
 
 # ...and a session that HAS the tick tool (an AI card whose Taskuary toolbox answered) is told the tool, never "you have no shell"
-TICK_TOOL_LINE = ("TO-DOS HERE: when you finish one of the checklist's to-dos, tick it with the tick tool, its id - in brackets after it - as `item`. "
-                  'Only what you actually did.')
 
 
 def tick_markers(text: str) -> tuple:
@@ -743,7 +675,7 @@ def ask_markers(text: str) -> tuple:
         # the marker stands bare (ASK_LINE: asked in its own words), the paragraph above it. What follows on later lines is the answer's
         parts = [' '.join(p.split()) for p in _ASK_ONE.sub('', m.group(0), 1).split('|')]
         q = parts[0] or ' '.join((re.split(r'\n\s*\n', t[prev:m.start()].strip()) or [''])[-1].split())
-        if q: asks.append((q[:600], [p[:120] for p in parts[1:] if p]))
+        if q: asks.append((q, [p for p in parts[1:] if p]))          # ...whole: a cap cut it mid-word ("Can you send th", walk 13)
         prev = m.end()
     return re.sub(r'\n{3,}', '\n\n', _ASK_TAIL.sub('', t)).strip(), asks
 
@@ -773,8 +705,10 @@ def asked_inline(text: str) -> tuple:
     """(the answer with its questions as plain lines, [(question, choices)]). THE QUESTION STAYS IN THE ANSWER: the marker line IS the question,
     and cutting the marker cut the question with it - the chat showed "the laptop spend needs your yes first" and never what to say yes to (walk
     2026-10-21). Every chat's answer reads so: a coding turn's over ACP drew the bare marker (the audit, 2026-11-10)."""
+    # ...ITS CHOICES ARE NO WORDS OF IT (walk 13: written as "(a / b / c)" after the question, prose he could not press): they ride on its
+    # recorded ask, a button each, and his press is his answer (general._file)
     reply, asks = ask_markers(text)
-    said = '\n\n'.join(q + (f" ({' / '.join(c)})" if c else '') for q, c in asks if q not in reply)
+    said = '\n\n'.join(q for q, _c in asks if q not in reply)
     return '\n\n'.join(x for x in (reply, said) if x), asks
 
 
@@ -783,4 +717,24 @@ def ask_marker(text: str) -> tuple:
     m = _ASK_RE.search(text or '')
     if not m: return text, None, []
     parts = [' '.join(p.split()) for p in m.group(1).split('|')]
-    return text[:m.start()].rstrip(), (parts[0][:600] or None), [p[:120] for p in parts[1:] if p]
+    return text[:m.start()].rstrip(), (parts[0] or None), [p for p in parts[1:] if p]
+
+
+# WHAT A TOOL CALL SAYS FOR THE TURN'S END (the owner, 2026-11-23: "everything else the agent can do is a tool"): a turn's summary and its one
+# question were protocols taught in prose; called as tools (agenttools end_turn, ask_owner) each is kept here as the marker the one reader of a
+# turn's end (general._file) already reads, and handed over with the answer. A second end_turn replaces the first
+_MARKS: dict = {}
+def keep_mark(tid, kind: str, line: str) -> None:
+    got = _MARKS.setdefault(int(tid), [])
+    if kind == 'summary': got[:] = [x for x in got if x[0] != 'summary']
+    got.append((kind, line))
+def asks_now(tid) -> bool: return any(k == 'ask' for k, _l in _MARKS.get(int(tid), ()))
+def drop_asks(tid) -> None: _MARKS[int(tid)] = [x for x in _MARKS.get(int(tid), []) if x[0] != 'ask']
+def take_marks(tid) -> str:
+    "The marks this task's tool calls left since the last take, as lines to end the answer with - '' with none."
+    return '\n\n'.join(l for _k, l in _MARKS.pop(int(tid), []))
+def summary_mark(a: dict) -> str:
+    import json
+    return f'{SUMMARY_OPEN}{json.dumps(a, ensure_ascii=False)}{SUMMARY_CLOSE}'
+def ask_mark(question: str, choices=()) -> str:
+    return f"{ASK_MARKER} {' '.join(str(question).split())}" + ''.join(f' | {c}' for c in choices or () if str(c).strip())

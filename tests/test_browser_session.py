@@ -50,11 +50,11 @@ class AskingForOneTests(unittest.TestCase):
             self.assertNotIn('A BROWSER IS OPEN', terminal.seed_text(s, tid, repo=None, cwd=''))
 
     def test_what_the_agent_is_told_covers_driving_it_and_the_line_it_must_not_cross(self):
-        said = bv.brief()
+        said = bv.guide()
         self.assertIn('agent-browser', said)
         self.assertIn('skills get core', said)          # the CLI documents its own commands
         self.assertIn('NEVER type a password', said)    # ...and the owner types those, in the pane
-        self.assertIn('$TASKUARY_URL', said)             # reuse this server; never start another port
+        self.assertNotIn('$TASKUARY_URL', said); self.assertNotIn('--link', said)   # ...never pointed at the owner's own door (walk 19, M5)
         self.assertIn('NEVER use --session, --headed', said)
         # ...and it is told to LOOK with the accessibility tree, which is what the browser already
         # knows about its own page - an order of magnitude cheaper than the same page as pixels.
@@ -258,9 +258,10 @@ class StartingItTests(unittest.TestCase):
         what the close is for."""
         with mock.patch.object(bv.shutil, 'which', return_value='ab'), \
              mock.patch.object(bv, '_read', return_value='9222'), \
-             mock.patch.object(bv.spawn, 'run') as run:
+             mock.patch.object(bv.spawn, 'output', return_value=(0, '')) as run:
             bv.close('abc123')
-        self.assertEqual(run.call_args[0][0], ['ab', '--session', 'tq-abc123', 'close'])
+        # ...among what ran: a pane another test left behind may close its own browser through the same patched run while this one does
+        self.assertIn(['ab', '--session', 'tq-abc123', 'close'], [c[0][0] for c in run.call_args_list])
 
 
 if __name__ == '__main__':

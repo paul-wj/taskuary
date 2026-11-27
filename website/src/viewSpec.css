@@ -1,15 +1,22 @@
 /* A VIEW THE AGENT SHOWED (ViewSpec.jsx), in the chat's column, after json-render's look: every block its own white card - a hairline
    edge, 12px corners, the softest shadow, a semibold title and a muted line under it - on the dashboards' tokens (dashboard.css, scoped
    by .tq-dash, light and dark). Colour only identifies: a trend's arrow, a note's icon and tint, one highlighted bar. Nothing shouts. */
+/* NO VIEW TAKES OVER THE CHAT (the owner, 2026-11-23: "isn't so big it takes up the whole screen - you lose the flow"): the words before a view
+   and after it stay on the screen with it. A block's body - a table's rows, a chart's plot, a long list - is held to --v-body, two fifths of
+   the chat (the window less the ~360px of page around it), never under 150px or over 300px; the rest scrolls inside its card. Measured at
+   1366x768 the chat is 409px tall and a 12-bar chart stood 538px of it */
 .tq-view {
-  --v-shadow: 0 1px 2px rgb(0 0 0 / .05); --v-pad: 24px; --v-gap: 12px;
+  --v-body: clamp(150px, calc((100svh - 360px) * .4), 300px);
+  --v-pad: 20px; --v-gap: 12px;
   --v-info: #3f6489; --v-info-bg: #f1f5f9; --v-info-bd: #d9e3ec;
   --v-ok: #2f6b34; --v-ok-bg: #f1f6f0; --v-ok-bd: #d6e5d4;
   --v-warn: #8a5a12; --v-warn-bg: #fbf6ec; --v-warn-bd: #eedfc0;
-  gap: var(--v-gap); margin: 6px 0 12px; max-width: 980px;
+  gap: var(--v-gap); margin: 8px 0;   /* a paragraph's room, as every frame of a turn (appTheme.css .tq-turn-frame) */
 }
+/* ...IN THE TURN'S READING COLUMN (--tq-turn-item, appTheme.css), left-aligned; one whose table needs more takes what it needs (--tq-fit-w,
+   tableFit.js), up to the chat's width. Two classes: the chat's own `* { max-width: 100% }` never beats it */
+.tq-dash.tq-view.tq-turn-frame { max-width: min(100%, max(var(--tq-turn-item), var(--tq-fit-w, 0px))); }
 :root[data-theme="dark"] .tq-view {
-  --v-shadow: none;
   --v-info: #9cbbe0; --v-info-bg: rgba(79, 138, 203, .1); --v-info-bd: rgba(79, 138, 203, .28);
   --v-ok: #7cc482; --v-ok-bg: rgba(95, 184, 101, .1); --v-ok-bd: rgba(95, 184, 101, .28);
   --v-warn: #e2b766; --v-warn-bg: rgba(226, 183, 102, .1); --v-warn-bd: rgba(226, 183, 102, .28);
@@ -18,14 +25,13 @@
 .tq-view-el, .tq-view-kids { display: flex; flex-direction: column; gap: var(--v-gap); min-width: 0; }
 .tq-view-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
-/* the card, and its heading: title over a muted line, anything aside (a checklist's progress) on the right */
-.tq-view-card { background: var(--d-surface); border: 1px solid var(--d-border); border-radius: 12px; box-shadow: var(--v-shadow);
-  padding: var(--v-pad); display: flex; flex-direction: column; gap: var(--v-gap); min-width: 0; box-sizing: border-box; }
+/* a block, and its heading: title over a muted line, anything aside (a checklist's progress) on the right - laid flat in the view's one frame (below) */
+.tq-view-card { display: flex; flex-direction: column; gap: var(--v-gap); min-width: 0; box-sizing: border-box; }
 .tq-view-card.flush { padding: 0; gap: 0; overflow: hidden; }
-.tq-view-card.flush > .tq-view-head { padding: 20px var(--v-pad) 12px; }
+.tq-view-card.flush > .tq-view-head { padding: 0 var(--v-pad) 12px; }
 .tq-view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
 .tq-view-head > div:first-child { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.tq-view-head h4 { margin: 0; font-size: 15px; line-height: 1.35; font-weight: 600; color: var(--d-ink); letter-spacing: -.005em; }
+.tq-view-head h4 { margin: 0; font-size: 16px; line-height: 1.25; font-weight: 600; color: var(--d-ink); letter-spacing: -.005em; }
 .tq-view-head p { margin: 0; font-size: 14px; line-height: 1.45; color: var(--d-muted); }
 /* ...a heading over tiles or a grid sits on the chat itself, with the cards under it */
 .tq-view-el > .tq-view-head { padding: 0 2px; }
@@ -54,7 +60,7 @@
 
 /* the table: run to the card's edges, a quiet 40px head with no fill, 8px cells, rows that tint under the pointer, no rule under the last
    row, every number right-aligned in tabular figures */
-.tq-view-table { overflow: auto; max-height: 360px; border-top: 1px solid var(--d-grid); scrollbar-width: thin; }
+.tq-view-table { overflow: auto; max-height: var(--v-body); border-top: 1px solid var(--d-grid); scrollbar-width: thin; }
 .tq-view-card.flush > .tq-view-table:first-child { border-top: 0; }
 .tq-view-table table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.4; }
 .tq-view-table th { height: 40px; padding: 0 8px; text-align: left; font-weight: 500; color: var(--d-muted); white-space: nowrap; vertical-align: middle;
@@ -83,6 +89,14 @@
 .tq-view .tq-dash-bars.hi .tq-dash-press:not(.pick) .val { color: var(--d-muted); font-weight: 400; }
 .tq-view .tq-dash-bars.hi .pick .val { font-weight: 600; }
 .tq-view .tq-dash-svg .dot.pick { fill: var(--d-surface); stroke: var(--d-s1); stroke-width: 2.5; }
+/* ...ranked bars past the body's height scroll; a run of columns (ViewSpec's Chart) is the body's height, across the card, its axis in the
+   view's own figures, and a highlighted column keeps the accent while the rest step back as the bars do */
+.tq-view .tq-dash-bars.inline, .tq-view-checks, .tq-view-list { max-height: var(--v-body); overflow-y: auto; scrollbar-width: thin; }
+.tq-view .tq-dash-cols, .tq-view .tq-dash-yax { height: min(170px, var(--v-body)); }
+.tq-view .tq-dash-cols { gap: 6px; background-size: 100% 50%; }
+.tq-view .tq-dash-col .seg { max-width: 40px; }
+.tq-view .tq-dash-yax { width: auto; min-width: 4.5em; }
+.tq-view .tq-dash-cols.hi .tq-dash-col:not(.pick) .seg { background: color-mix(in srgb, var(--d-s1) 26%, var(--d-surface)) !important; }
 
 /* a checklist: how far along beside its title ("2 of 6"), a thin bar across under it, then the items, done ones ticked and quieter */
 .tq-view-count { flex: none; padding-top: 1px; font-size: 13px; font-weight: 500; color: var(--d-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -127,6 +141,31 @@
 .tq-view-note p { margin: 0; }
 .tq-view-note > div > p:last-child:not(:first-child) { color: var(--d-muted); }
 
+/* ONE FRAME FOR THE WHOLE VIEW, after json-render's own card (the owner, 2026-11-23: "look at the original json render open source repo ... that
+   was fire good"): the view is ONE raised card - the Artifact every card and file of a turn stands in (Artifact.jsx, appTheme.css .tq-turn-frame) - with its
+   title on top and its blocks laid flat inside it, a hairline between those stacked one under another; never a stack of separate boxes. A
+   number reads as theirs does: its label muted over it, the value large, how it moved small beside it */
+:root .tq-dash.tq-view { --d-surface: var(--tq-frame-bg); }   /* ...its surfaces (a sticky table head, a dot's ring) the frame's own, light and dark */
+/* ...and its hairlines a step from that frame toward its ink, light and dark (walk 19: the dashboard's dark grid, made for its near-black page,
+   drew heavy black dashes across a chart on the lighter dark frame - louder than the bars) */
+:root .tq-dash.tq-view { --d-grid: color-mix(in srgb, var(--d-ink) 10%, var(--d-surface)); --d-axis: color-mix(in srgb, var(--d-ink) 18%, var(--d-surface)); }
+.tq-dash.tq-view { --v-pad: 20px; padding: var(--v-pad); gap: 18px; }
+.tq-dash.tq-view.tq-turn-frame { overflow: visible; }   /* ...a chart's tooltip at its edge is never cut by the frame */
+.tq-view .tq-view-card.flush { margin: 0 calc(-1 * var(--v-pad)); max-width: none; }   /* ...a table runs to the frame's edges */
+.tq-view .tq-view-card.flush:last-child { margin-bottom: calc(-1 * var(--v-pad)); }
+.tq-view .tq-view-grid[data-cols="1"] > .tq-view-el + .tq-view-el, .tq-view .tq-view-kids > .tq-view-el + .tq-view-el {
+  border-top: 1px solid var(--d-grid); padding-top: 18px; }
+.tq-view-el > .tq-view-head h4 { font-size: 16px; color: var(--d-ink); }
+.tq-view .tq-view-tiles { gap: 12px 28px; }
+.tq-view .tq-view-tile { display: flex; flex-flow: row wrap; align-items: baseline; align-content: flex-start; column-gap: 8px; row-gap: 4px; padding: 0; }
+.tq-view .tq-view-tile .lbl, .tq-view .tq-view-tile .note { flex-basis: 100%; font-size: 14px; }
+.tq-view .tq-view-tile .val { font-size: 28px; font-weight: 700; }
+.tq-view .tq-view-tile .trend { font-size: 12.5px; white-space: nowrap; }
+.tq-view .tq-view-title { font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+.tq-view .tq-dash-svg .grid { stroke-dasharray: none; opacity: .6; }
+.tq-view .tq-dash-svg .axis { stroke: var(--d-grid); }
+:root[data-theme="dark"] .tq-view .tq-dash-bars.hi .tq-dash-press:not(.pick) .bar { background: color-mix(in srgb, var(--d-s1) 42%, var(--d-surface)); }   /* ...still read as bars in the dark */
+
 /* a phone: the cards a little tighter */
 @container (max-width: 520px) {
   .tq-view > .tq-view-el { --v-pad: 16px; }
@@ -135,6 +174,9 @@
   .tq-view-card.flush > .tq-view-head { padding: 16px var(--v-pad) 10px; }
   .tq-view-table table { font-size: 13px; }
   .tq-view-table th, .tq-view-table td { padding-left: 6px; padding-right: 6px; }
+  /* ...each bar under its own label, the card's whole width: beside its label the track was 25px of crowded grid lines, 37% and 100% a dot and a dash */
+  .tq-view .tq-dash-bars.inline { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .tq-view .tq-dash-bars.inline .lbl { max-width: none; padding-top: 6px; }
   /* ...tiles two abreast, an odd last one the whole width */
   .tq-view-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tq-view-tile:last-child:nth-child(odd) { grid-column: 1 / -1; }
@@ -146,3 +188,86 @@
   .tq-view-progress > div { animation: tq-view-grow .7s cubic-bezier(.16, 1, .3, 1) .08s backwards; }
 }
 @keyframes tq-view-grow { from { width: 0; } }
+
+/* A CONTROL (slider, toggle, select, date): its label and value over the slider in the view's ink; a toggle on one line. The numbers it
+   moves change in place - tabular figures, so a tile never jumps sideways as its digits change */
+.tq-view-control { display: flex; flex-direction: column; gap: 2px; min-width: 0; color: var(--d-ink); font-size: 14px; }
+.tq-view-control.row { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.tq-view-control-head { display: flex; justify-content: space-between; gap: 12px; color: var(--d-ink2); font-weight: 500; }
+.tq-view-control-head b { color: var(--d-ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+.tq-view-control .MuiSlider-root { color: var(--d-s1); margin: 0 6px; width: calc(100% - 12px); }
+.tq-view-control .MuiSwitch-switchBase.Mui-checked { color: var(--d-s1); }
+.tq-view-control .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track { background-color: var(--d-s1); }
+.tq-view-answer .tq-view-button { text-transform: none; }
+.tq-view-control.MuiTextField-root { max-width: 280px; }
+.tq-view-control .MuiInputBase-root, .tq-view-control .MuiInputLabel-root { color: var(--d-ink); }
+.tq-view-control .MuiOutlinedInput-notchedOutline { border-color: var(--d-border); }
+/* HIS ANSWER: the options as buttons; his pick filled, the rest greyed, and a quiet line saying what he picked */
+.tq-view-answer { display: flex; flex-direction: column; gap: 8px; }
+.tq-view-answer .MuiButton-contained { background: var(--d-s1); color: var(--d-surface); }
+.tq-view-answer .MuiButton-contained.Mui-disabled { background: var(--d-s1); color: var(--d-surface); opacity: 1; }
+.tq-view-said { font-size: 13px; color: var(--d-muted); }
+/* A VALUE THAT COULD NOT BE WORKED OUT says so where it stands, in plain words - the view around it still draws */
+.tq-view-err { font-size: 12.5px; line-height: 1.4; color: var(--v-warn); overflow-wrap: anywhere; }
+
+/* WHO CAN MAKE WHICH TIMES (ViewSpec's Availability): the best slot and its count over a grid - a row a person, the days side by side on one
+   axis, each range a soft bar in the accent, the people who fit the best slot a step stronger, "People free" counted under them, and one
+   band down every row where the best slot is. One accent, nothing else coloured; the hairlines are the view's own */
+.tq-avl { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.tq-avl-best { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; min-width: 0; }
+.tq-avl-best > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tq-avl-best .lbl { font-size: 13px; font-weight: 500; color: var(--d-muted); }
+.tq-avl-best .when { font-size: 22px; line-height: 1.2; font-weight: 700; letter-spacing: -.015em; color: var(--d-ink); font-variant-numeric: tabular-nums; text-wrap: balance; }
+.tq-avl-best .fit { display: flex; align-items: center; gap: 8px; flex: none; }
+.tq-avl-best .fit b { min-width: 1ch; text-align: right; font-size: 34px; line-height: 1; font-weight: 700; letter-spacing: -.02em; color: var(--d-s1); font-variant-numeric: tabular-nums; }
+.tq-avl-best .fit span { font-size: 12.5px; line-height: 1.3; color: var(--d-muted); white-space: nowrap; }
+.tq-avl-grid { position: relative; display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); column-gap: 12px; row-gap: 3px; align-items: center; min-width: 0;
+  max-height: max(var(--v-body), 280px); overflow-y: auto; scrollbar-width: thin; padding: 4px 0; }   /* ...a long team scrolls in its card, as a table does (--v-body) */
+.tq-avl-name { display: flex; align-items: center; gap: 7px; max-width: 132px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--d-ink2); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.tq-avl-name::before { content: ""; flex: none; box-sizing: border-box; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--d-axis); }
+.tq-avl-name.fit { color: var(--d-ink); font-weight: 600; }
+.tq-avl-name.fit::before { background: var(--d-s1); border-color: var(--d-s1); }
+.tq-avl-name.wait { color: var(--d-muted); }
+.tq-avl-name.wait::before { border-style: dashed; }
+.tq-avl-name.sum { margin-top: 3px; font-size: 12px; color: var(--d-muted); }
+.tq-avl-name.sum::before { visibility: hidden; }
+.tq-avl-track { position: relative; height: 20px; min-width: 0; }
+.tq-avl-track.head, .tq-avl-track.axis { height: 16px; font-size: 11.5px; line-height: 16px; color: var(--d-muted); }
+.tq-avl-track.head > span { position: absolute; top: 0; text-align: center; font-size: 12.5px; font-weight: 600; color: var(--d-ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tq-avl-track.axis > span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tq-avl-track.sum { margin-top: 3px; }
+.tq-avl-track > em { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 12px; color: var(--d-muted); }
+/* ...a bar carries no words: the band crosses it, and hours written in it were cut by the band or by a short bar ("9am-12p") - its hours are
+   read off the axis, said whole on a hover and to a screen reader on its row */
+.tq-avl-bar { position: absolute; top: 3px; bottom: 3px; box-sizing: border-box; border-radius: 6px;
+  background: color-mix(in srgb, var(--d-s1) 20%, var(--d-surface)); transform-origin: left center; }
+.tq-avl-track.fit .tq-avl-bar { background: color-mix(in srgb, var(--d-s1) 42%, var(--d-surface)); }
+:root[data-theme="dark"] .tq-avl-bar { background: color-mix(in srgb, var(--d-s1) 34%, var(--d-surface)); }   /* ...still read as bars on the dark frame */
+:root[data-theme="dark"] .tq-avl-track.fit .tq-avl-bar { background: color-mix(in srgb, var(--d-s1) 66%, var(--d-surface)); }
+.tq-avl-seg { position: absolute; top: 2px; bottom: 2px; box-sizing: border-box; border-radius: 5px; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  font-style: normal; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--d-ink2);
+  background: color-mix(in srgb, var(--d-s1) calc(var(--k, 0) * 38%), var(--d-chip)); box-shadow: inset 0 0 0 1px var(--d-surface); }
+.tq-avl-seg.best { background: var(--d-s1); color: #fff; }
+/* ...the hours' hairlines and the days' rules under the bars; the best slot's band over them, never in the pointer's way */
+.tq-avl-lay { position: absolute; inset: 0; grid-column: 2; pointer-events: none; }
+.tq-avl-lay.under > i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--d-grid); }
+.tq-avl-lay.under > i.sep { background: var(--d-axis); }
+.tq-avl-band { position: absolute; top: -4px; bottom: -3px; box-sizing: border-box; border-radius: 8px; border: 1.5px solid var(--d-s1);
+  background: color-mix(in srgb, var(--d-s1) 8%, transparent); opacity: 0; }
+.tq-avl-band[data-on] { opacity: 1; }
+.tq-avl-who { margin: 0; display: flex; flex-wrap: wrap; gap: 2px 18px; font-size: 13px; line-height: 1.45; color: var(--d-muted); }
+/* ...AS REPLIES COME the view is shown again in place: a new range grows from its start, one that changed slides, the counts fade in, the band
+   moves to the new best slot and its number lands; nothing moves for prefers-reduced-motion */
+@media (prefers-reduced-motion: no-preference) {
+  .tq-avl-bar { animation: tq-avl-in .6s cubic-bezier(.16, 1, .3, 1) backwards;
+    transition: left .5s cubic-bezier(.16, 1, .3, 1), width .5s cubic-bezier(.16, 1, .3, 1), background-color .45s; }
+  .tq-avl-seg { animation: tq-avl-fade .45s ease-out backwards; transition: left .5s cubic-bezier(.16, 1, .3, 1), width .5s cubic-bezier(.16, 1, .3, 1), background-color .45s, color .45s; }
+  .tq-avl-band { transition: left .65s cubic-bezier(.16, 1, .3, 1), width .65s cubic-bezier(.16, 1, .3, 1), opacity .35s; }
+  .tq-avl-name, .tq-avl-name::before { transition: color .45s, background-color .45s, border-color .45s; }
+  .tq-avl-best .fit b { animation: tq-avl-land .5s cubic-bezier(.16, 1, .3, 1); }
+}
+.tq-avl-bar.kept { animation: none; }     /* ...a bar that was there before this draw moves from where it stood: only a new one grows in */
+@keyframes tq-avl-in { from { transform: scaleX(0); opacity: 0; } }
+@keyframes tq-avl-fade { from { opacity: 0; } }
+@keyframes tq-avl-land { from { transform: translateY(5px); opacity: .35; } }

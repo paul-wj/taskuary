@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from taskuary import browsergate as bg, browserview, cli, config, general, guard, mailsearch, server, verdicts
 from taskuary.store import MemoryStore
+from taskuary.testing import turn_told
 
 c = TestClient(server.app)
 SRV = config.load()['server']
@@ -125,7 +126,7 @@ class SignUp(unittest.TestCase):
     def setUp(self):
         self.s, self.tid, self.mid, _ = world()
         self.told = []
-        self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(text))
+        self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(turn_told(self.s, self.tid, text)))
         self.noai = mock.patch('taskuary.llm.build_llm', return_value=None); self.noai.start()
 
     def tearDown(self): self.noai.stop()
@@ -160,13 +161,13 @@ class SignUp(unittest.TestCase):
         with TheBrowser(url=None): out = self.check('agent-browser click @e5')
         why = out['hookSpecificOutput']['permissionDecisionReason']
         self.assertIn('could not read which page your browser is on', why); self.assertIn('nothing was done', why)
-        self.assertIn('"retry": true', why); self.assertNotIn('send another message', why)   # a Try again button, never a chore (F5, 2026-11-18)
+        self.assertNotIn('send another message', why)   # never a chore (F5, 2026-11-18) - and no Try again promised that may not be drawn (walk 13)
         self.assertEqual(self.pending(), [])                                                # no card that could never be approved
 
     def test_approve_on_a_closed_or_unnamed_browser_does_nothing_and_says_why(self):
         for i, (b, said) in enumerate(((TheBrowser(open_=False), 'browser is closed'), (TheBrowser(url=None), 'could not read which page'),
                                        (TheBrowser(url='https://events.vendor.example/other'), 'already left that page'))):
-            self.s, self.tid, self.mid, _ = world()     # his yes stands for its task (actrule.remember): each refusal on a task of its own
+            self.s, self.tid, self.mid, _ = world()     # his yes stands for its task (gate.remember): each refusal on a task of its own
             with TheBrowser(): self.check(f'agent-browser click @e{5 + i}')
             [rv] = self.pending()
             with b:
@@ -190,10 +191,10 @@ class TheOffer(unittest.TestCase):
 
     def test_the_offer_names_only_taskuarys_browser_and_asks_for_a_plain_reason(self):
         b = browserview.brief(open_now=False)
-        self.assertIn('NO BROWSER IS OPEN', b); self.assertIn('agent-browser open <url>', b)
-        self.assertIn('never a browser tool of your own CLI', b); self.assertIn('IF A STEP FAILS OR IS REFUSED', b)
-        self.assertIn('"held for the owner"', b); self.assertIn('his press on the card runs it', b)
-        self.assertIn('never a browser tool of your own CLI', browserview.brief())          # the open browser says it too
+        self.assertIn('NO BROWSER IS OPEN', b); self.assertIn('agent-browser open <url>', b); self.assertIn('guide `browser`', b)
+        g = browserview.guide()
+        self.assertIn('never a browser tool of your own CLI', g); self.assertIn('IF A STEP FAILS OR IS REFUSED', g)
+        self.assertIn('"held for the owner"', g); self.assertIn('his press on the card runs it', g)
         # ...and the owner hears the browser is not set up - never a tool's name to install, nor "ask me again": its Try again (2026-11-18)
         gone = browserview.NOT_SET_UP
         self.assertIn('The browser is not set up on this computer yet', gone); self.assertNotIn('agent-browser', gone); self.assertIn('"retry": true', gone)

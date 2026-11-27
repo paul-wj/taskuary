@@ -9,6 +9,8 @@ from unittest import mock
 from taskuary import concierge, general, ingest, processing_all
 from taskuary.store import MemoryStore
 
+REAL_START = general.start_session          # ...the real start, for a test that follows it past the patch its class puts on it
+
 
 @contextlib.contextmanager
 def triage_reads(same_as, seen=None):
@@ -77,6 +79,27 @@ class NewsBoxIsTheOneStartTests(unittest.TestCase):
         r = self.start('Fix the rounding bug in the ledger totals, checkout at C:/work/ledger')
         self.assertEqual(r.status_code, 200, r.text); self.assertTrue(r.json()['started'])
 
+    def test_the_ai_and_model_picked_on_news_chooser_are_what_its_agent_starts_on(self):
+        """The owner, 2026-11-24: "in New I asked for a certain model astra, the agent did not start with it?" - /api/start took his words
+        alone, so the session opened on what routing picks whatever he wanted. New's chooser (the task header's SwitchAi) rides the start, and
+        the session - the real one - opens on exactly that AI and model and saves them, so the task's header names them after."""
+        cid = self.s._exec("INSERT INTO connector (Type,Name,ConfigJson,Secret,Active) VALUES "
+                           "('hipaa_ai','HIPAA AI','{\"model\": \"claude-sonnet-5-5\"}','k',1)")
+        self.s._exec("INSERT INTO connector (Type,Name,ConfigJson,Secret,Active) VALUES ('openai','OpenAI','{\"model\": \"gpt-6\"}','k',1)")
+        pick = f'connector:{cid}'
+        general.start_session.side_effect = REAL_START
+        with mock.patch('threading.Thread', side_effect=lambda target, **k: mock.Mock(start=lambda: None)):
+            r = self.start('Compare the two payroll vendors and say which is cheaper', pick=pick, model='gemini-4-astra')
+            self.assertEqual(r.status_code, 200, r.text)
+            tid = r.json()['taskId']
+            s = general.session_for(tid); self.addCleanup(general.drop_session, tid)
+            self.assertEqual((s.pick, s.model), (pick, 'gemini-4-astra'))
+            self.assertEqual((self.s.saved_session(tid)['Pick'], self.s.saved_session(tid)['Model']), (pick, 'gemini-4-astra'))
+            # ...an AI that is not here is said as the header's chooser says it, and nothing is made
+            n = len(self.s.list_tasks())
+            r = self.start('Compare the two payroll vendors', pick='connector:999', model='gemini-4-astra')
+            self.assertEqual(r.status_code, 422); self.assertIn('not ready here', r.text); self.assertEqual(len(self.s.list_tasks()), n)
+
     def test_a_fix_in_the_folder_he_names_is_made_tested_and_committed_by_the_general_agent(self):
         """Design round 3, 2026-11-18: "Fix the rounding bug in the ledger totals - my checkout is at <path>" from New was refused on every AI
         ("this general task has no way to switch to coding", "add your checkout as a repository"). Developer mode off, the general agent with
@@ -130,6 +153,33 @@ class NewsBoxIsTheOneStartTests(unittest.TestCase):
         self.assertEqual(test().returncode, 0, said)
         self.assertIn('Round totals to cents', git('log', '-1', '--format=%s').stdout, said)
 
+    def test_a_file_attached_in_new_is_named_in_the_first_turn_under_his_own_ask(self):
+        """Walk 9, 2026-11-23: five asks with a file attached in New - "make a chart of monthly spend from this" + budget.csv - and the agent's
+        first turn named no file ("your request came through with no figures or attachment"), while the same file on a chat line was read.
+        His ask was headed "TASKUARY'S WORDS ON THIS TURN - not the owner's", and triage's reading ("the message has no body or attached data")
+        replaced his words as the task's summary that my_task hands the agent."""
+        from taskuary import apiagent, browserview as bv, llm, outputs, agenttools
+        seen = []
+        class Card:
+            def chat(self, msgs, tools, max_tokens, **kw): seen.append(msgs[0]['content'] + str(msgs[1]['content'])); return {'content': 'Done.'}
+        def opened(store, tid, **kw):
+            s_ = general.GeneralSession(store, tid); s_.pick, s_.provider, s_.model = 'connector:1', 'Northwind AI', ''
+            return s_
+        general.start_session.side_effect = opened
+        class Now:                         # ...the first turn, run where it is started
+            def __init__(self, target, args=(), **kw): self.target, self.args = target, args
+            def start(self): self.target(*self.args)
+        ask = 'Make a chart of monthly spend from this.'
+        with mock.patch.object(llm, 'build_llm', return_value=Card()), mock.patch.object(bv, 'installed', return_value=False), \
+             mock.patch.object(bv, 'can_set_up', return_value=False), mock.patch.object(apiagent, 'taskuary_tools', return_value=[]), \
+             mock.patch('taskuary.capabilities.has_ai', return_value=True), mock.patch('taskuary.concierge.threading', mock.Mock(Thread=Now)), mock.patch('taskuary.ingest.threading', mock.Mock(Thread=Now)):
+            tid = concierge.handoff_task(self.s, ask, 'general', 'owner', said=ask, files=[str(self.up)], door='New')['taskId']
+        self.assertTrue(seen, 'the first turn ran')
+        self.assertIn(str(outputs.folder(tid) / 'october-spend.csv'), seen[0])
+        self.assertNotIn("TASKUARY'S WORDS", seen[0])
+        mine = agenttools.call(self.s, tid, 'my_task', {}, {})
+        self.assertNotIn('no attached data', mine); self.assertIn('october-spend.csv', mine)
+
     def test_with_no_ai_nothing_is_made_and_the_line_carries_its_way_past(self):
         r = self.start('Find three caterers near the office', ai=False)
         self.assertEqual(r.status_code, 422); self.assertEqual(self.s.list_tasks(None), [])
@@ -138,13 +188,28 @@ class NewsBoxIsTheOneStartTests(unittest.TestCase):
     def test_an_ask_from_new_is_a_new_task_at_once_never_read_by_triage_first(self):
         # the owner, 2026-11-22: "it should not go through triage, no one asked for that. It should create new task right away"
         there = self.s.create_task({'Title': 'Find caterers for the offsite', 'Kind': 'general', 'Status': 'open'}, 'owner')
-        seen = []
-        with triage_reads(there, seen), mock.patch.object(general, 'take_line') as told, mock.patch.object(ingest, 'ask_later') as read:
+        seen, asked = [], []
+        with triage_reads(there, seen), mock.patch.object(general, 'take_line') as told, \
+             mock.patch('taskuary.triage.classify_intent', side_effect=lambda *a, **k: asked.append(a) or {}):
             r = self.start('Find three caterers near the office for the offsite')
         self.assertNotEqual(r.json()['taskId'], there); self.assertFalse(r.json().get('joined'))
-        self.assertEqual(seen, [], 'no reading before the task stands'); told.assert_not_called()
-        # ...and its ask is still read into its steps, beside its agent (walk 5: a 10-step ask got one box, ticked whole)
-        self.assertEqual((read.call_count, read.call_args.args[1]), (1, r.json()['taskId']))
+        self.assertEqual((seen, asked), ([], []), 'no triage reading, before the task stands or after'); told.assert_not_called()
+        # ...HIS WORDS STAY HIS (2026-11-23): no summary, no to-dos read out of them - the one box is his ask as typed; its agent reads it
+        t, ask = self.s.get_task(r.json()['taskId']), 'Find three caterers near the office for the offsite'
+        self.assertEqual((t['Summary'], [i['text'] for i in self.s.task_checklist(t['TaskId'])]), (ask, [ask]))
+
+    def test_his_ask_through_the_assistant_never_passes_triage_either(self):
+        """Every door his own ask comes by - New, the phone, the Assistant's hand-off - is the one start (handoff_task), and none of them
+        asks triage whether it is open work, how hard it is, or what its steps are: it is a task of its own, its agent at work on his words."""
+        there = self.s.create_task({'Title': 'Find caterers for the offsite', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        seen, asked = [], []
+        with triage_reads(there, seen), mock.patch('taskuary.triage.classify_intent', side_effect=lambda *a, **k: asked.append(a) or {}), \
+             mock.patch.object(concierge, '_handoff_brief', return_value='Find three caterers near the office'), \
+             mock.patch.object(concierge, 'start_refusal', return_value=''):
+            made = concierge.handoff_task(self.s, 'Find three caterers near the office', 'general', 'owner')
+        self.assertNotEqual(made['taskId'], there); self.assertFalse(made.get('joined'))
+        self.assertEqual((seen, asked), ([], []))
+        self.assertIsNone(self.s.task_judged(made['taskId']).get('Difficulty'), 'nothing judged how hard it is')
 
 
 class AgentsNewTaskIsTheSameRoadTests(unittest.TestCase):
@@ -182,7 +247,7 @@ class AdvisorMarkTests(unittest.TestCase):
     def test_only_an_advisor_idea_wears_the_advisor_mark(self):
         idea = {'Source': 'assistant', 'SourceRef': 'assistant:idea:42'}
         self.assertTrue(processing_all.advisor_task(idea))
-        for ref in ('assistant:handoff', 'assistant:agent', 'assistant:setup', 'assistant:playbook'):
+        for ref in ('assistant:handoff', 'assistant:agent', 'assistant:setup', 'assistant:skill'):
             self.assertFalse(processing_all.advisor_task({'Source': 'assistant', 'SourceRef': ref}), ref)
         self.assertEqual(processing_all.task_mark([idea]), 'assistant')
         self.assertIsNone(processing_all.task_mark([{'Source': 'assistant', 'SourceRef': 'assistant:handoff'}]))

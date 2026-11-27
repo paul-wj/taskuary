@@ -6,12 +6,12 @@ change on the card is what goes, and "Save as draft" saves it in LinkedIn's draf
 import json, unittest
 from unittest import mock
 from fastapi.testclient import TestClient
-from taskuary import config, connectorcatalog as cat, general, guard, linkedin, proposals, scopes, server, verdicts
+from taskuary import config, connectorcatalog as cat, docsync, guard, linkedin, proposals, scopes, server, verdicts
 from taskuary.reports import REGISTRY, card_of
 
 c = TestClient(server.app)
 SRV = config.load()['server']
-TYPES = {'text', 'line', 'image', 'choice', 'people', 'files'}
+TYPES = {'text', 'line', 'money', 'image', 'choice', 'people', 'files'}
 
 
 def agent(tid): return {'X-Taskuary-Token': SRV['agent_token'], guard.TASK_HDR: guard.task_proof(SRV, tid)}
@@ -128,8 +128,9 @@ class OnePress(unittest.TestCase):
         # the chat's card offered Connect for a post whose LinkedIn was switched off after it was set up; the task's review list - the road
         # a bulk card's rows and a review drawn on its own take to the same ActionCard - had no Connect for an act, so that card offered
         # Post to LinkedIn and the press failed on a network nothing had connected. One fact, one answer (outbound.review_connect)
+        # ...a network never set up (one set up and switched off takes the press, which switches it on - the owner, 2026-11-25)
         rv = self.propose(text='Northwind is at the spring hiring fair on Friday.')
-        server.store.save_connector({'ConnectorId': self.card['ConnectorId'], 'Active': 0}, 'test')
+        server.store._exec("UPDATE connector SET Secret=NULL, Active=0 WHERE ConnectorId=?", (self.card['ConnectorId'],))
         chat = next(x for x in c.get(f'/api/tasks/{self.tid}/assistant').json()['cards'] if x['ReviewId'] == rv['ReviewId'])
         self.assertTrue(chat['connect'])
         listed = next(r for r in c.get('/api/reviews', params={'status': 'pending'}).json()['data'] if r['ReviewId'] == rv['ReviewId'])
@@ -143,7 +144,7 @@ class OnePress(unittest.TestCase):
         # and the card stays waiting with its Connect - the same answer for every network (outbound.review_connect)
         net = LinkedIn()
         rv = self.propose(text='Northwind is at the spring hiring fair on Friday.')
-        server.store.save_connector({'ConnectorId': self.card['ConnectorId'], 'Active': 0, 'ConfigJson': '{}'}, 'test')
+        server.store._exec("UPDATE connector SET Secret=NULL, Active=0, ConfigJson='{}' WHERE ConnectorId=?", (self.card['ConnectorId'],))
         with stubbed(net):
             out = verdicts.decide(server.store, rv, 'approve', 'Northwind is at the spring hiring fair on Friday.')
         self.assertFalse(out['ok']); self.assertEqual(net.calls, [])
@@ -191,9 +192,49 @@ class OnePress(unittest.TestCase):
         self.assertEqual(r.status_code, 422, r.text)
 
     def test_the_prompt_says_which_fields_the_agent_may_name(self):
-        r = general.roads(server.store)
-        self.assertIn("linkedin_post - posts on LinkedIn under your name, with a picture; it takes `text`, `image`", r)
-        self.assertIn("`publish` (now or draft) come from the owner's defaults", r)
+        r = docsync.agent_systems(server.store)          # the facts every agent with hands is told of his systems
+        self.assertIn("linkedin_post - posts on LinkedIn under your name, with a picture or a video; it takes `text`, `media`", r)
+        self.assertIn("`publish` (now or draft) come from the owner's defaults on the card", r)
+
+
+class TheOwnersWords(unittest.TestCase):
+    """The owner, 2026-11-23: "all cards should be that way if there is text". A waiting card's lines of words (a post's or an issue's title,
+    its flair) are his to change as its box is, and what he left goes with the press - on the one road the box's words take (owner_edits);
+    where it goes (the subreddit, the repository) is not his to retype on the card."""
+    P = {'action': 'run_tool', 'type': 'reddit_post', 'subreddit': 'strollers', 'title': 'Strollers then and now', 'text': 'A short history.'}
+
+    def setUp(self):
+        from taskuary.store import MemoryStore
+        self.s = MemoryStore(); self.tid = self.s.create_task({'Title': 'Post the stroller piece', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        self.rid = self.s.add_review({'TaskId': self.tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(self.P)})
+
+    def press(self, words, fields):
+        from taskuary import reports
+        ran = []
+        with mock.patch.dict(reports.REGISTRY, {'reddit_post': lambda cfg: ran.append(cfg) or {'rows': [{'url': 'https://reddit.example/r/strollers/1'}]}}),              mock.patch.object(reports, 'resolve_cfg', lambda st, cfg: cfg):
+            proposals.execute(self.s, self.s.get_review(self.rid), 'owner', words, fields=fields)
+        return ran
+
+    def test_a_pressed_post_goes_with_the_title_he_edited_and_keeps_it(self):
+        ran = self.press('A short history, with pictures.', {'title': 'Strollers, then and now', 'flair': ''})
+        self.assertEqual((ran[0]['title'], ran[0]['text'], ran[0]['flair']), ('Strollers, then and now', 'A short history, with pictures.', ''))
+        kept = json.loads(proposals.receipt(self.s.get_review(self.rid), 'A short history, with pictures.', {}, {'title': 'Strollers, then and now'}))
+        self.assertEqual(kept['title'], 'Strollers, then and now')
+
+    def test_an_emptied_title_or_a_retyped_subreddit_posts_nothing(self):
+        for bad in ({'title': '  '}, {'subreddit': 'prams'}):
+            with self.assertRaises(ValueError): self.press('A short history.', bad)
+
+    def test_post_via_the_browser_hands_the_agent_the_title_he_left(self):
+        from taskuary import general
+        with mock.patch.object(general, 'to_agent', return_value='woke') as to:
+            out = proposals.via_browser(self.s, self.rid, '', 'owner', {'title': 'Strollers, then and now'})
+        self.assertTrue(out['ok'], out)
+        self.assertIn('title "Strollers, then and now"', to.call_args.args[2])
+        self.assertEqual(json.loads(self.s.get_review(self.rid)['FinalText'])['title'], 'Strollers, then and now')
+        rid = self.s.add_review({'TaskId': self.tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(self.P)})
+        self.assertFalse(proposals.via_browser(self.s, rid, '', 'owner', {'title': ''})['ok'])
+        self.assertEqual(self.s.get_review(rid)['Status'], 'pending')
 
 
 if __name__ == '__main__':

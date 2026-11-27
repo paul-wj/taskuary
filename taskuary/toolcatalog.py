@@ -14,17 +14,14 @@ Nothing here executes. On the desk a CALL brings up the button that does it, lit
 (concierge.routes, the owner 2026-10-19) - the press is the confirmation; on a phone it is a yes-or-no (PW-123/124).
 """
 import json, re
-from . import buttons, devphone, operations, roles
+from . import buttons, devphone, operations
 L = buttons.label        # a button is named by its one label (buttons.json) - never retyped in a tool's sentence
-
-# the roles a role.apply call may name, from roles.ROLES - a list in prose here would drift from what applies
-_ROLES = ' | '.join(f"{k} ({r['title'].lower()})" for k, r in roles.ROLES.items())
 
 # What each operation is FOR, in the owner's terms. Kinds absent from here are internal roads the chat
 # has no business offering (triage corrections, dispatch plumbing) and are left out of the catalogue.
 PURPOSE = {
     'task.create_from_message': 'hand this message to an agent or put it on the list - `kind`: coding | general | task',
-    'task.create_from_text':    ('a new job with no message behind it - `kind`: task (a to-do or reminder the owner does '
+    'task.create_from_text':    ('a new job with no message behind it - `kind`: todo (a to-do or reminder the owner does '
                                  'themselves, no agent) | general (a regular agent) | coding | send (a new message the owner starts, '
                                  'to someone - `channel`: email | whatsapp | telegram | teams | slack, the one they said; `to`: the name of '
                                  'the person, chat or group as they said it (never the channel word), '
@@ -75,38 +72,29 @@ PURPOSE = {
     # written into LEARNED.md where every reader of its section has it, and the line it makes untrue is closed - kept as history
     # ...and EVERY fact, said in the owner's words, lands in LEARNED.md where triage, the report gate, the Advisor and agents read it - a
     # "don't care" above all (the owner, 2026-10-27: "if I don't care about something the system knows it")
-    # ...and a rule about HOW to write goes where the drafter reads its voice, STYLE.md's Owner notes - the model says which, by what the
-    # fact IS (the owner, 2026-10-28: "when I ask the chat to write Mrs X to women from now on it should go to STYLE.md ... It should know
-    # where each memory goes")
+    # ...and HOW he writes is what he said too: every draft reads what he said that bears on it (memory.for_task)
     'memory.remember':          ("keep a fact or rule the owner tells you, at once, and above the CALL answer them in a few natural words "
                                  '("Got it - Omar for badge faults.") - never that it was saved, where, or who reads it. `note`: it, in the owner\'s words '
-                                 '("Gail moved to Ops", "Ray handles payroll for me", "I put renewals off to Friday", "I don\'t care about the '
-                                 'legacy export job any more"); `section`, always: people (who someone is to them, how they deal with them) | '
-                                 'care (what they are responsible for and what they do NOT care about - a legacy process, a system no longer '
-                                 'theirs: triage and the report gate then make no task of it) | work (their rhythm) | promises | bring (what the '
-                                 'Advisor may raise) - those five are LEARNED.md, the memory every reader uses | style: a rule about HOW they '
-                                 'write - greetings and salutations ("write Mrs <surname> to women, never her first name"), tone, '
-                                 'length, formatting, words to use or avoid - saved to their writing style, STYLE.md\'s Owner notes, which '
-                                 'every draft reads; with `about` (one person: "write to Gail informally") it is kept for that person alone, '
-                                 'read only by the drafts to them | signature: how they sign, as the block under every email ("Best,\\nAlex") - '
-                                 'it becomes their saved signature, the one the signer puts on | soul: who the owner IS, lasting - their title, company, the systems and '
-                                 'repositories they use ("I\'m now the AP lead", "our ERP is Intacct") - SOUL.md, which triage, drafts, '
-                                 'agents and you read | counsel: how YOU should behave and speak to the owner ("be shorter with me", "don\'t '
-                                 'walk me through the FYI") - COUNSEL.md, your own instructions. SOUL and COUNSEL are added to, never '
-                                 'rewritten; a fact about their job or about what becomes a task is care or work, never these. '
-                                 "`about`: the person's address or name, for a people or style line; `replaces`: the key of the line "
-                                 'it makes untrue, closed and kept as history (memory.about gives the keys). Who reports to whom and who owns '
+                                 '("Gail moved to Ops", "Ray handles payroll for me", "no meetings before 10", "write Mrs <surname> to women", '
+                                 '"I don\'t care about the legacy export job any more") - triage, every agent on a task it bears on, every '
+                                 'draft and you read it from then on. `subject`, always: what it is about in a few words ("meeting hours", '
+                                 '"who handles payroll", "Gail\'s role") - the same subject as a line it corrects, which it then replaces '
+                                 '(memory.about and memory.list show each line\'s subject). `about`: the person it is about (an address or '
+                                 'name), never the owner himself. `signature`: true when the note IS how they sign, the block under every email '
+                                 '("Best,\\nAlex") - it becomes their saved signature. `doc`: soul for who the owner IS, lasting - their title, '
+                                 'company, the systems they use ("I\'m now the AP lead") - or counsel for how YOU should speak to them ("be '
+                                 'shorter with me"): appended to SOUL.md or COUNSEL.md, never rewritten. Who reports to whom and who owns '
                                  'what is people.relate'),
-    'memory.wrong':             ('take a line Taskuary learned out of its memory - `key` (from memory.about or memory.list), `how`: wrong '
-                                 '(it was never true: never written back) | forget (not now: back only on much more evidence) | ended (it '
-                                 'was true and stopped: kept as history) | keep (the memory page\'s Keep: a proposed line adopted as the owner\'s). '
-                                 '"forget that Ray does payroll", "that is wrong about Erin". On the habits row: Adopt is keep, No and Not right '
-                                 'are wrong. A line the owner wrote themselves takes forget only'),
+    'memory.wrong':             ('take a line out of the memory, or confirm one - `key` (from memory.about or memory.list), `how`: wrong '
+                                 '(a learned line that was never true: never learned again) | forget (out for now) | ended (it was true and '
+                                 'stopped: kept as history) | keep (the owner said a learned line is right: used from then on). '
+                                 '"forget that Ray does payroll", "that is wrong about Erin". '
+                                 'A line the owner said himself takes forget or ended - a correction of it is memory.remember on its subject'),
     'people.relate':            ("who someone is to the owner, on their org chart - `who`: a name or address; `relation`: manager | report | none "
                                  '(none clears it); `owns`: areas they are responsible for ("payroll, benefits"), added; `drops`: areas taken off; '
                                  '`forget`: true takes them off the chart. "Erin is my manager", "Ray owns payroll", "Gail reports to me" - '
                                  'never memory.remember for these: triage and agents read the chart'),
-    'routing.remember':         ('remember how work like this should be ROUTED next time - `field`: kind | profile | system, '
+    'routing.remember':         ('remember how work like this should be ROUTED next time - `field`: kind | system, '
                                  'and `value`. kind: coding (an agent in a checkout) | general (the assistant) | task (the owner, '
                                  'no agent). system: where the work actually lives when no repository here can touch it, named '
                                  'plainly ("ADP"). It teaches triage and moves nothing - say it when the owner tells you a '
@@ -125,7 +113,7 @@ PURPOSE = {
     # THE TASK PAGE, as tools (2026-09-25). A task tool acts on the task on the table, or on the one `ref` names
     # (TQ-0123) - never a guess. Each is the page's own button.
     'task.update':              ("change a task's priority, title, owner or due day - any of `priority`: regular | important | urgent, "
-                                 "`title`, `assignee`: exactly `owner` (the owner takes it) or `agent:<profile>` (one of the saved profiles), "
+                                 "`title`, `assignee`: exactly `owner` (the owner takes it) or `none` (nobody holds it), "
                                  "`due`: the day the work is due (2026-10-30, \"friday\", \"2 weeks\", or \"none\" to clear it); `ref` when "
                                  "it is not the one on the table. Any other value is refused with the allowed ones"),
     'task.set_kind':            'say who does a task - `kind`: task (the owner does it) | general (a non-coding agent) | coding - an agent kind starts that agent on it; `ref`',
@@ -211,12 +199,6 @@ PURPOSE = {
                                  'Yahoo, a domain address) - never another product of the same company. Never carrying a secret: the owner gives it on the card. '
                                  # a system with no card was "said so" and left there (the Connections audit, 2026-11-02)
                                  'A system the catalogue has no card for is a feature request: issue.draft'),
-    # A ROLE IS A WALK, NOT A GUESS (the owner, 2026-10-08: "the assistant should be able to walk a user through setting up
-    # new role and work"): the chat asks what a role needs, then puts the whole set-up on one card.
-    'role.apply':               ("set Taskuary up for the owner's job in one go - its worker, playbooks and daily workflow. `role`: "
-                                 + _ROLES + ". Before calling, ASK the owner the address of their "
-                                 "bill-approval portal (`portal`; fine to leave out). The workflow is created OFF: after the yes, offer to run it once (report.run), and say "
-                                 "they sign in to the portal themselves in the browser pane"),
     # THE APP ITSELF, by name. A report is named by `title` (part of its name) or `source_id`; a
     # connection by `name` or `connector_id`; a setting by `key` or `label`. Each opens its page, the knob or button to press on it.
     'report.run':               ('run a report or workflow now - `title` (or `source_id`); a report lands in the pipe when done, '
@@ -235,7 +217,7 @@ PURPOSE = {
     'rule.change':              ('change or delete one routing rule (its page: rules) - `about`: words naming it, as rules.list '
                                  'says it (its sender, pattern or name); `how`: edit (the default) | remove. Adding a rule for a sender '
                                  'is preference.sender_rule'),
-    'deleted.restore':          ('bring back something removed in the last 30 days - a report, workflow, dashboard, routing rule, profile or '
+    'deleted.restore':          ('bring back something removed in the last 30 days - a report, workflow, dashboard, routing rule or '
                                  "Hub post - `what`: its title as deleted.list says it (or its kind, \"hub post\", when it is the only one). "
                                  "A Hub post the vote took off is not here: it is on the Hub's own removed shelf, restored there"),
     'hub.comment':              ("add a comment to a Hub post - `post`: its number (#12, as knowledge.search prints it), `text`: the "
@@ -400,7 +382,7 @@ def block(store=None) -> str:
         '     mean (six months ago is days: 200).',
         '  3. they want something DONE and it says what - CALL it now; its button is their confirmation. A reminder or',
         # ...and a message to send (the owner, 2026-11-03: "send this on WhatsApp" pasted the words into the chat): New, filled in, for their Send
-        '     a to-do they will do themselves is task.create_from_text kind task, a message to send kind send (channel,',
+        '     a to-do they will do themselves is task.create_from_text kind todo, a message to send kind send (channel,',
         '     to, the words in text, never pasted here), a meeting meeting.new; a task that',
         '     exists is never a new one - change it with the task bucket.',
         '  4. it is not clear which - LOOK first; then, if two things still fit, ASK naming both. A question about',
@@ -444,10 +426,10 @@ _DECIDE = {
     'stop_agent':      "stop the agent working on the item now - on the desk the x on its running turn, at once; on a phone the yes-or-no that ends its session",
     'rerun':           'run the report on the table again',
     'report_off':      "pause the report on the table - off its clock - only when its findings are about something the owner said they do not care about",
-    'remember':        "keep a fact about how the owner works in their memory - `text`, their words (\"I don't care about the legacy export job any more\" too)",
-    # ...and a PLAYBOOK, which has its own New playbook: "can I build a playbook for it?" was sent to a general agent as its job (the
-    # owner, 2026-10-22: "this is not playbook ui?")
-    'setup':           ('build a report, a playbook (how one kind of recurring request is handled from now on), a connection to another '
+    'remember':        "keep a fact about how the owner works in their memory - `text`, their words (\"I don't care about the legacy export job any more\" too), `subject` and `about`, as memory.remember's",
+    # ...and a SKILL, which has its own New skill: "can I build a skill for it?" was sent to a general agent as its job (the
+    # owner, 2026-10-22: "this is not skill ui?")
+    'setup':           ('build a report, a skill (how one kind of recurring request is handled from now on), a connection to another '
                         'system or an automation - `text`: the request. Never a to-do, and never an agent\'s job'),
     'confirm':         "the owner's yes to the card already waiting - only when one is",
     'cancel':          "the owner's no to it",
@@ -529,7 +511,7 @@ WHERE = (
     ('how something is done here - a policy, a system, a site', 'knowledge.search', {'query': 'PO limit'}),
     ('how Taskuary itself works', 'docs.search', {'query': 'remind me'}),
     ('reports and workflows', 'reports.list', {}),
-    ('agents, profiles, which brain does what', 'agents.list', {}),
+    ('the agents, which brain does what', 'agents.list', {}),
     ('the repositories a coding agent works in', 'repos.list', {}),
     ("the owner's meetings", 'calendar.read', {'from': 'tomorrow'}),
     ('what is failing, or failed', 'errors.list', {}),
@@ -552,16 +534,16 @@ BUCKETS = (
                                                             'preference.exclude_sender', 'preference.sender_rule', 'message.retriage')),
     ('reports', 'reports and workflows', ('report.create', 'report.run', 'report.rerun', 'report.pause', 'report.resume',
                                           'report.route', 'report.edit', 'report.delete', 'advisor.ideas')),
-    ('app', 'settings, connections, scripts, memory, rules, bell, Hub, Board, Search', ('setting.set', 'connection.create', 'role.apply', 'connection.test', 'connection.pause',
+    ('app', 'settings, connections, scripts, memory, rules, bell, Hub, Board, Search', ('setting.set', 'connection.create', 'connection.test', 'connection.pause',
                                                              'connection.resume', 'app.repair', 'issue.draft', 'script.start', 'memory.remember', 'memory.wrong', 'people.relate',
                                                              'rule.change', 'deleted.restore', 'hub.publish', 'hub.comment', 'hub.vote', 'page.open', 'problems.dismiss')),
 )
 
 
 # what a tool takes, when its registry entry cannot say it: a tool that needs one of several, or takes its words as `text`
-HINTS = {'task.create_from_text': 'kind, text, channel?, to?', 'report.route': 'line, how, to?', 'pipe.remove': 'select, learn?','agents.stop': 'refs|all', 'page.open': 'page, query?', 'pipe.block': 'select, how?', 'pipe.mine': 'select', 'rule.change': 'about, how?', 'hub.vote': 'post, up?', 'memory.remember': 'note, about?, section?, replaces?', 'memory.wrong': 'key, how?', 'button.light': 'button, ref?, note?', 'app.repair': 'name, how', 'issue.draft': 'kind, trying, happened', 'pipe.clear': 'select, scope?', 'pipe.defer': 'select, until', 'pipe.close': 'select', 'hub.publish': 'title, body, topic?, kind?, why_earned?', 'task.update': 'priority|title|assignee|due', 'reply': 'text, cc?', 'redraft': 'text', 'regular_agent': 'text, new?', 'coding_agent': 'text, as?, new?',
-         'answer_agent': 'text', 'remember': 'text', 'setup': 'text', 'task.handoff': 'who, note?', 'task.share': 'who, about?', 'task.complete': 'note?',
-         'dispatch.prepare': 'kind, instructions?', 'role.apply': 'role, portal?', 'task.check': 'item, done?, note?', 'task.checklist': 'add?, items?, emails?, drop?', 'task.watch': 'what?', 'task.defer': 'until', 'meeting.new': 'who?, about?, when?, minutes?'}
+HINTS = {'task.create_from_text': 'kind, text, channel?, to?', 'report.route': 'line, how, to?', 'pipe.remove': 'select, learn?','agents.stop': 'refs|all', 'page.open': 'page, query?', 'pipe.block': 'select, how?', 'pipe.mine': 'select', 'rule.change': 'about, how?', 'hub.vote': 'post, up?', 'memory.remember': 'note, subject, about?, signature?, doc?', 'memory.wrong': 'key, how?', 'button.light': 'button, ref?, note?', 'app.repair': 'name, how', 'issue.draft': 'kind, trying, happened', 'pipe.clear': 'select, scope?', 'pipe.defer': 'select, until', 'pipe.close': 'select', 'hub.publish': 'title, body, topic?, kind?, why_earned?', 'task.update': 'priority|title|assignee|due', 'reply': 'text, cc?', 'redraft': 'text', 'regular_agent': 'text, new?', 'coding_agent': 'text, as?, new?',
+         'answer_agent': 'text', 'remember': 'text, subject, about?', 'setup': 'text', 'task.handoff': 'who, note?', 'task.share': 'who, about?', 'task.complete': 'note?',
+         'dispatch.prepare': 'kind, instructions?', 'task.check': 'item, done?, note?', 'task.checklist': 'add?, items?, emails?, drop?', 'task.watch': 'what?', 'task.defer': 'until', 'meeting.new': 'who?, about?, when?, minutes?'}
 
 
 def signature(kind: str) -> str:
@@ -623,10 +605,10 @@ READS = {
     'sender.read':      ('one person at a glance - how often they write, their recent messages, their open tasks, when you last '
                          'wrote back and what the owner told you to remember about them. `who`: a name or an address'),
     # ...and the owner's docs your instructions do NOT carry, by name (2026-11-02): SOUL, JOB, COUNSEL and LEARNED ride every turn, but
-    # "how do I usually sign off?" is STYLE.md's and "what rules do the agents work under" AGENT.md's - and nothing said they could be read
+    # "how do I usually sign off?" is STYLE.md's - and nothing said it could be read
     'docs.search':      ("how Taskuary works and how to set it up (the help pages), and the owner's own docs - STYLE.md (how they write: "
-                         'greeting, sign-off, tone), AGENT.md (the rules every agent works under), TRIAGE.md, CODING.md, DIGEST.md (the '
-                         'morning brief), the profiles - each read whole as `section` "your doc <name>" (your doc style) - and what each '
+                         'greeting, sign-off, tone), TRIAGE.md, DIGEST.md (the '
+                         'morning brief) - each read whole as `section` "your doc <name>" (your doc style) - and what each '
                          'release changed (help/whats-new). `query`: the words; `section`: one section read whole, as its contents list '
                          'names it. Use it for any "how do I", "what does X do", "what changed" or "why did it" about the app'),
     # THE APP AT WORK (lookups.py, 2026-09-24): which agent is on what, what waits on a yes, the
@@ -648,15 +630,15 @@ READS = {
                          '"what broke", "why did X not happen", "is anything wrong"'),
     'memory.about':     ('who someone is to the owner: every line the memory holds about them, with its key, and what the org chart '
                          'says - `who`: a name or address. Use it for "who\'s Gail to me", "what do you know about Ray", and before '
-                         'memory.remember replaces or memory.wrong takes out a line about them'),
-    'memory.list':      ('everything kept about the owner: LEARNED.md - what they told you ("remember this"), their verdicts, '
-                         'and what it learned from what they did. `about`: words to narrow it (a sender, a topic). '
+                         'memory.remember corrects or memory.wrong takes out a line about them'),
+    'memory.list':      ('everything kept about the owner: what they said (each line with its key and subject), the facts, what was '
+                         'learned from what they did - confirmed, or still waiting on their word. `about`: words to narrow it (a sender, a topic). '
                          'Use it for "what do you remember", "what do you know about me"'),
     # ...and THE FILES THEY MADE (outputs.find, the owner 2026-10-28: "pull up the Excel created by the agent on the task about X")
     'outputs.find':     ('the files agents made on tasks - workbooks, PDFs, documents, charts, pages - each once, its newest version, with '
                          'its task and the link that downloads it. `query`: words of the task or the file ("vendor pricing"); `kind` '
                          'optional: xlsx | pdf | doc | deck | csv | picture | page; `ref` optional: one task. Answer with the link'),
-    'deleted.list':     ('what was removed in the last 30 days and can still come back - reports, workflows, dashboards, rules, profiles '
+    'deleted.list':     ('what was removed in the last 30 days and can still come back - reports, workflows, dashboards, rules '
                          "and Hub posts the owner removed (one the vote took off waits on the Hub's own removed shelf)"),
     'rules.list':       ('the standing filters on the owner\'s mail - queue mutes set with a reason, and the policy rules '
                          '(skip, ignore, escalate...) that decide before any model reads it. `about`: words to narrow it. '
@@ -679,7 +661,7 @@ READS = {
                          '(whatsapp, telegram, outlook...), claude or codex for a slow agent start (is its agent connector installed), '
                          'or none for everything failing. `chat` optional: one WhatsApp chat or group '
                          'by its name - whether it is switched on under Chats, and where its messages went'),
-    'agents.list':      'the agents and profiles, and which brain answers which job',
+    'agents.list':      'the agents, and which brain answers which job',
     'repos.list':       'the repositories a coding agent can work in, and what each one is for',
     'tools.list':       'every tool in one `bucket` (table, task, agents, new, pipe, reports, app, look) - what each does and needs',
     'tools.describe':   'one tool in full - `kind`: its name',

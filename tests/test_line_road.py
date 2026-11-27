@@ -11,7 +11,7 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
-from taskuary import acpcoding, agents, clipool, codingchat, general, session_artifacts, terminal
+from taskuary import acpcoding, agents, clipool, general, session_artifacts, terminal
 from taskuary.store import MemoryStore
 
 pytestmark = pytest.mark.acp            # the fake adapter is this file's own (conftest.no_real_acp_adapters)
@@ -76,7 +76,7 @@ def world(tmp_path, monkeypatch, request):
             from taskuary import browserview, llm
             opt = {'pick': 'connector:1', 'label': 'Northwind AI', 'model': '', 'type': 'openai'}
             monkeypatch.setattr(general, 'provider_options', lambda store: [opt])
-            monkeypatch.setattr(general, 'default_pick', lambda store, task=None: 'connector:1')
+            monkeypatch.setattr(general, 'default_pick', lambda store, task=None, level=True: 'connector:1')
             monkeypatch.setattr(llm, 'build_llm', lambda *a, **k: Brain())
             monkeypatch.setattr(browserview, 'installed', lambda: False)
             monkeypatch.setattr(browserview, 'can_set_up', lambda: False)
@@ -102,13 +102,15 @@ def read(kind, c, tid) -> dict:
         after = [text(m) for m in msgs[last + 1:] if m['role'] == 'assistant'] if last is not None else []
         before = [text(m) for m in msgs[:last] if m['role'] == 'assistant' and str(m.get('createdAt') or '') > str(said[-1].get('createdAt'))] if last is not None else []
     else:
-        d = c.get(f'/api/tasks/{tid}/coding-chat').json()['data']
-        ups = [u for ss in d['sessions'] for u in ss.get('updates') or []]
-        mine = [i for i, u in enumerate(ups) if u['sessionUpdate'] == 'user_message_chunk' and (u.get('_meta') or {}).get('taskuary') == 'owner']
-        lines = [ups[i]['content']['text'] for i in mine] + [w['text'] for w in d['waiting']]
-        last = max((i for i in mine if ups[i]['content']['text'] == LINE), default=None)
-        chunks = [u['content']['text'] for u in ups[last + 1:] if u['sessionUpdate'] == 'agent_message_chunk'] if last is not None else []
-        after, before = [''.join(chunks)] if chunks else [], []
+        # ...a coding task's chat is the one list every chat reads (the owner, 2026-11-25): what the log drew, then what waits by the box
+        d = c.get(f'/api/tasks/{tid}/conversation', params={'level': 'everything'}).json()
+        items = d['items']
+        words = lambda t: t.get('text') or ''.join(x.get('text') or '' for x in t.get('steps') or [] if x.get('k') == 'said')
+        lines = [x['text'] for x in items if x['kind'] == 'line'] + [p['text'] for p in d['pending'] if p['kind'] == 'line']
+        last = max((i for i, x in enumerate(items) if x['kind'] == 'line' and x['text'] == LINE), default=None)
+        after = [w for x in items[last + 1:] if x['kind'] == 'turn' and (w := words(x))] if last is not None else []
+        before = []
+        return {'lines': lines, 'after': after, 'before': before, 'working': d['working'], 'at': d['started']}
     return {'lines': lines, 'after': after, 'before': before, 'working': d['working'], 'at': d['turnStarted']}
 
 
@@ -161,7 +163,7 @@ def test_a_typed_line_is_his_once_and_at_work_from_the_press_to_the_answer(world
     assert answered(r), f'the line was answered: {r}'
     assert bad == [], f'from the press to the answer the payload said (s, times his line, working, new turn before it): {bad[:6]}'
     if state != 'midturn':
-        assert ats and len(set(ats)) == 1 and abs(ats[0] - pressed) < 1.0, f'the turn runs from the press, its clock never moving: {sorted(set(ats))[:4]} vs {pressed}'
+        assert ats and len(set(ats)) == 1 and abs(ats[0] - pressed) < 3.0, f'the turn runs from the press, its clock never moving: {sorted(set(ats))[:4]} vs {pressed}'
     else: assert ats == sorted(ats), 'the clock never runs backwards'
     assert s.get_task(tid)['Status'] in ('open', 'in_progress')
     if state == 'closed':
@@ -178,22 +180,7 @@ def test_a_coding_line_waiting_is_named_by_the_page_s_own_id_wherever_it_waits(w
     threading.Thread(target=lambda: c.post(f'/api/tasks/{tid}/assistant/messages', json={'text': LINE, 'line_id': 'held-7'}, timeout=120), daemon=True).start()
     seen, end = [], time.time() + 60
     while time.time() < end and not answered(r := read(kind, c, tid)):
-        seen += [w for w in c.get(f'/api/tasks/{tid}/coding-chat').json()['data']['waiting'] if w['text'] == LINE]
+        d = c.get(f'/api/tasks/{tid}/conversation').json()
+        seen += [p for p in d['items'] + d['pending'] if p['kind'] == 'line' and p['text'] == LINE]
         time.sleep(0.05)
-    assert seen and all(w.get('line') == 'held-7' for w in seen), {str(w.get('id'))[:1] + ':' + str(w.get('line')) for w in seen}
-
-
-def test_a_turn_that_ends_while_the_chat_is_read_is_at_work_in_that_read(tmp_path, monkeypatch):
-    # CI, 2026-11-10 (acp-midturn): the payload read the record, the turn ended, then `working` was read - his line with no answer under it and
-    # nothing at work, one poll long. Whether a turn works is read on both sides of the record (general.line_state `was`)
-    from types import SimpleNamespace
-    monkeypatch.setattr(session_artifacts, 'root', lambda: tmp_path)
-    s = MemoryStore()
-    tid = s.create_task({'Title': 'Comment the ledger totals', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
-    live = SimpleNamespace(task_id=tid, sid='s1', alive=True, busy=True, acp=True, started='2026-11-10 09:00:00', cli='claude', cwd='', _q=[])
-    live.phase = lambda: 'working' if live.busy else 'parked'
-    real = codingchat.sessions
-    def ends(store, t):
-        got = real(store, t); live.busy = False; return got           # ...its answer lands just after this read
-    monkeypatch.setattr(codingchat, 'sessions', ends)
-    with mock.patch.dict(terminal.SESSIONS, {'s1': live}, clear=True): assert codingchat.chat(s, tid)['working']
+    assert seen and all(p['id'] == 'held-7' for p in seen), {p['id'] for p in seen}

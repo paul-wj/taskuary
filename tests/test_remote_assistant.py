@@ -25,19 +25,19 @@ def armed_store(channel='whatsapp', chat=JID, on='1', talking=True):
     funnel.invalidate(); funnel.forget_states(); funnel._CACHE.update(cands_at=0.0, cands=[])
     cid = store.get_connector_by_type(channel)['ConnectorId']
     store.save_connector({'ConnectorId': cid, 'Active': 1, 'Roles': 'trigger,tool', 'Secret': 'tok',
-                          'ConfigJson': json.dumps({'assistant_chat': chat})}, 'test')
+                          'ConfigJson': json.dumps({'assistant_chat': chat, **({'me_number': chat.split('@')[0]} if str(chat).endswith('@s.whatsapp.net') else {})})}, 'test')
     store.set_setting('phone_assistant', on, 'test')
     if talking: remote_assistant.owner_spoke(store, channel, chat)      # the owner is talking in the chat: it may answer (in_session)
     return store, store.get_connector(cid, with_secret=True)
 
 
-def waiting(store, subject='Export still broken'):
+def waiting(store, subject='Export still broken', who='Dana'):
     """One thing in the pipe: a drafted reply, the kind the walk opens with."""
     from datetime import datetime
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     t = store.create_task({'Title': subject, 'Kind': 'coding', 'Status': 'waiting'}, 'o')
     m = store.add_message({'TaskId': t, 'ExternalId': f'x:{subject}', 'ConversationId': f'c:{subject}',
-                           'Channel': 'email', 'Subject': subject, 'FromName': 'Dana',
+                           'Channel': 'email', 'Subject': subject, 'FromName': who,
                            'FromEmail': 'dana@vendor.com', 'SentAt': now, 'BodyText': 'Send the corrected file?',
                            'Status': 'routed'})
     r = store.add_review({'TaskId': t, 'MessageId': m, 'Kind': 'reply', 'DraftText': 'Attached.', 'Status': 'pending'})
@@ -222,61 +222,34 @@ class WordsInsteadOfButtonsTests(unittest.TestCase):
         text = remote_assistant.turn_text(batch)
         self.assertNotIn('people told you', text)
         head = text.split('\n\n')[0].split('\n')
-        # ...numbered, so a number opens one - led by Got it, 1, the members 2 on (the owner, 2026-10-22)
-        self.assertEqual(head[1:], ["1 · Got it", f"2 · {funnel.CHANNEL_MARKS['github']} Alex - Run failed: ci",
-                                    f"3 · {funnel.CHANNEL_MARKS['email']} Erin - Rebecca is back Tuesday"])
+        # ...read, not numbered (the owner, 2026-11-25: one move) - and the way on, Got it, is the one choice under them
+        self.assertEqual(head[1:], [f"• {funnel.CHANNEL_MARKS['github']} Alex - Run failed: ci",
+                                    f"• {funnel.CHANNEL_MARKS['email']} Erin - Rebecca is back Tuesday"])
         self.assertTrue(head[0].endswith('2 fyi · nothing to do'), head[0])
-        # ...and the walk's own way on is said once, first, under the batch's word (A8, 2026-10-22)
+        self.assertTrue(text.endswith('Reply with one of:\n1 · Got it'), text)
         self.assertEqual(text.count('Got it'), 1)
-        self.assertNotIn('4 · ', text)
 
     def test_a_word_that_only_contains_next_is_not_the_way_on(self):
         """Which word is Next is the chip's verb or the vocabulary's own word - a label match on "next" took "Plan next week"
         for the way on and the batch offered none (the owner, 2026-10-11: no word matching)."""
         batch = {'kind': 'fyis', 'lane': 'fyi', 'items': [{'key': 'msg:7', 'who': 'Erin', 'title': 'Back Tuesday', 'channel': 'email'}]}
         text = remote_assistant.turn_text({'say': 'x', 'options': ['Plan next week'], 'chips': [], 'item': batch})
-        self.assertIn('3 · Plan next week', text); self.assertIn(f"1 · {remote_assistant.GOT_IT}", text)
+        self.assertIn('2 · Plan next week', text); self.assertIn(f"1 · {remote_assistant.GOT_IT}", text)
 
-    def test_a_number_on_an_fyi_batch_opens_that_one(self):
-        """The desktop's "Talk about it" on one member; the chat had four lines and no door into any of
-        them (the owner, 2026-09-20: "how do you dig into one specific one?")."""
+    def test_a_number_on_an_fyi_batch_is_got_it_never_a_member(self):
+        """ONE MOVE (the owner, 2026-11-25): a number that opened one member - the desktop's old "Talk about it" - went. The poll and the
+        numbers carry Got it alone; the members are read in the text, and a tap on Got it puts the batch down."""
         store, connector = armed_store()
-        batch = {'kind': 'fyis', 'lane': 'fyi', 'items': [{'key': 'msg:7', 'who': 'Alex', 'title': 'Run failed: ci', 'channel': 'github'},
-                                                          {'key': 'msg:8', 'who': 'Erin', 'title': 'Back Tuesday', 'channel': 'email'}]}
+        batch = {'kind': 'fyis', 'lane': 'fyi', 'key': 'fyis:msg:7,msg:8',
+                 'items': [{'key': 'msg:7', 'who': 'Alex', 'title': 'Run failed: ci', 'channel': 'github'},
+                           {'key': 'msg:8', 'who': 'Erin', 'title': 'Back Tuesday', 'channel': 'email'}]}
         text = remote_assistant.turn_text({'say': 'x', 'chips': [{'verb': 'next', 'label': 'All read, next'}], 'item': batch})
-        remote_assistant.remember_offered(store, 'whatsapp', JID, text)
-        with mock.patch.object(concierge, 'restore_current', return_value=batch), \
-             mock.patch.object(concierge, 'surface', return_value={'say': 'Erin: back Tuesday.', 'options': [], 'chips': [],
-                                                                   'item': {'kind': 'fyi', 'lane': 'fyi'}}) as opened, \
-             mock.patch.object(messengers, 'wa_send') as send:
-            remote_assistant.respond(store, 'whatsapp', JID, '3', connector['ConnectorId'])       # 1 is Got it: the second member is 3
-        self.assertEqual(opened.call_args.args[1], 'msg:8')
-        self.assertIn('Erin: back Tuesday.', send.call_args.args[2])
-
-    def test_every_member_is_a_poll_option_and_each_tap_opens_its_own(self):
-        """2026-09-29: two identical notifications and two long lines - the poll showed 3 of 4 (a poll drops a repeat),
-        and a tap on a long line went to the model: the bridge cuts at 100 UTF-16 units, where the mark counts twice."""
-        store, connector = armed_store()
-        long = 'Re: [northwind/ledger] docs: fill in the empty descriptions of 36 working connector cards (PR #121)'
-        batch = {'kind': 'fyis', 'lane': 'fyi', 'items': [
-            {'key': 'msg:1', 'who': 'ops@vendor.example', 'title': 'Success File Notification', 'channel': 'email'},
-            {'key': 'msg:2', 'who': 'ops@vendor.example', 'title': 'Success File Notification', 'channel': 'email'},
-            {'key': 'msg:3', 'who': 'Ray Colton', 'title': long, 'channel': 'email'}]}
-        text = remote_assistant.turn_text({'say': 'x', 'chips': [{'verb': 'next', 'label': 'All read, next'}], 'item': batch})
+        self.assertIn('Back Tuesday', text)
         with mock.patch.object(messengers, 'wa_send') as sent:
             remote_assistant.send(store, 'whatsapp', JID, text, connector['ConnectorId'])
-        poll = sent.call_args.kwargs['poll']
-        self.assertEqual(len(poll), 4, poll)
-        self.assertEqual(len(set(poll)), 4, 'a poll drops a repeated option')
-        self.assertTrue(all(len(o.encode('utf-16-le')) // 2 <= 100 for o in poll))
-        for vote, key in ((poll[2], 'msg:2'), (poll[3], 'msg:3')):         # poll[0] is Got it
-            remote_assistant.remember_offered(store, 'whatsapp', JID, text)
-            with mock.patch.object(concierge, 'restore_current', return_value=batch), \
-                 mock.patch.object(concierge, 'surface', return_value={'say': 'opened', 'item': {'kind': 'fyi'}}) as opened, \
-                 mock.patch.object(concierge, 'say') as model, mock.patch.object(messengers, 'wa_send'):
-                remote_assistant.respond(store, 'whatsapp', JID, vote, connector['ConnectorId'], poll=True)
-            model.assert_not_called()
-            self.assertEqual(opened.call_args.args[1], key)
+        self.assertNotIn('Back Tuesday', ' '.join(sent.call_args.kwargs['poll']), 'a member is not a choice')
+        self.assertEqual(sent.call_args.kwargs['poll'][0], remote_assistant.GOT_IT)
+        self.assertEqual(remote_assistant.remember_offered(store, 'whatsapp', JID, text), [remote_assistant.GOT_IT])
 
     def test_an_opened_member_is_the_whole_message_and_a_chat_line_brings_the_lines_before_it(self):
         """The owner, 2026-09-29: "for email, the full email, chat full chat and last few" - not its first 400 characters."""
@@ -336,6 +309,38 @@ class WordsInsteadOfButtonsTests(unittest.TestCase):
         self.assertEqual(send.call_args.args[1], TG_CHAT)
 
 
+class OwnPlaceTests(unittest.TestCase):
+    """THE PHONE AND THE DESK EACH HAVE THEIR OWN PLACE (the owner, 2026-11-23): they shared one row on screen, so answering on the phone moved
+    the desk to another task, the phone's next turn said its agent was "not the one on the table", and the phone's Next measured from the
+    desk's place."""
+
+    def test_the_phone_walks_its_own_walk_and_the_desk_stays_on_its_row(self):
+        from taskuary import railwalk
+        store, connector = armed_store()
+        waiting(store, 'Export still broken')
+        t2 = store.create_task({'Title': 'Badge reader at the side door', 'Kind': 'task', 'Status': 'open'}, 'o')
+        desk = railwalk.open(store, f'task:{t2}')['item']['key']               # the desk has the second task open
+        with mock.patch.dict(terminal.SESSIONS, {}, clear=True), \
+             mock.patch.object(concierge, 'brain', return_value=lambda *a, **k: 'Ok.\nCALL: {"kind": "next", "params": {}}'), \
+             mock.patch.object(messengers, 'wa_send'):
+            remote_assistant.respond(store, 'whatsapp', JID, 'next', connector['ConnectorId'])
+        self.assertEqual(railwalk.on(store), desk, 'the phone moved the desk off its row')
+        with railwalk.seated(f'whatsapp:{JID}'): phone = railwalk.on(store)
+        self.assertTrue(phone, 'the phone walked nowhere')
+
+    def test_the_phone_is_never_told_the_desks_row_is_on_its_table(self):
+        from taskuary import railwalk
+        store, connector = armed_store()
+        t2 = store.create_task({'Title': 'Badge reader at the side door', 'Kind': 'task', 'Status': 'open'}, 'o')
+        railwalk.open(store, f'task:{t2}')                                     # the desk's row
+        seen = {}
+        brain = lambda system, user, **kw: seen.update(system=system, user=user) or 'Noted.'
+        with mock.patch.dict(terminal.SESSIONS, {}, clear=True), \
+             mock.patch.object(concierge, 'brain', return_value=brain), mock.patch.object(messengers, 'wa_send'):
+            remote_assistant.respond(store, 'whatsapp', JID, 'start a task to book the plumber', connector['ConnectorId'])
+        self.assertIn('ON THE TABLE: nothing', seen['user'], "the desk's open task rode into the phone's turn as its table")
+
+
 class SameWalkTests(unittest.TestCase):
     def test_a_question_is_answered_by_the_walk_on_the_same_conversation(self):
         store, connector = armed_store()
@@ -351,8 +356,9 @@ class SameWalkTests(unittest.TestCase):
         self.assertNotIn('Assistant tab', seen['system'])
         # ...and it is the SAME conversation the tab reads
         rows = general.chat_rows(store, general.dock_task(store)[0]['TaskId'])
-        self.assertEqual([r['ActorType'] for r in rows], [general.USER_TYPE, general.ASSISTANT_TYPE])
-        self.assertIn('Dana is waiting on the corrected file.', send.call_args.args[2])
+        # ...the answer, then Dana's waiting draft it names brought up under it (named_drafts)
+        self.assertEqual([r['ActorType'] for r in rows], [general.USER_TYPE, general.ASSISTANT_TYPE, general.ASSISTANT_TYPE])
+        self.assertIn('Dana is waiting on the corrected file.', ''.join(c.args[2] for c in send.call_args_list))
 
     def test_next_moves_the_walk_and_the_next_item_comes_with_it(self):
         """The tab's own JavaScript surfaces the next card; a chat has no page, so this must."""
@@ -486,11 +492,11 @@ class HandoffTests(unittest.TestCase):
         self.assertIsNone(state['handoff'])
 
 
-def on_the_table(store, key):
-    """The row on the table, as the walk keeps it (railwalk's one setting, 2026-10-30)."""
+def on_the_table(store, key, seat=f'whatsapp:{JID}'):
+    """The row on the phone chat's own table, as its walk keeps it (railwalk.seat)."""
     import json
     from taskuary import railwalk
-    store.set_setting(railwalk.KEY, json.dumps({**railwalk._blank(), 'on': key, 'members': [key]}), 't')
+    with railwalk.seated(seat): store.set_setting(railwalk._key(), json.dumps({**railwalk._blank(), 'on': key, 'members': [key]}), 't')
 
 
 class InterruptionsReachThePhoneTests(unittest.TestCase):
@@ -745,6 +751,50 @@ class BringUpTests(unittest.TestCase):
         self.assertEqual(sent[-1][1], ['Mark done', 'Next', 'Remind me'])   # nothing lit by the decision: the chips' own order, as the desk draws them
         self.assertEqual(remote_assistant.acts_for(store, 'whatsapp', JID)['Mark done'], {'t': 'verb', 'verb': 'close', 'key': 'task:35'})
 
+    def test_an_answer_naming_one_task_by_its_ref_brings_up_its_draft_with_its_own_buttons(self):
+        """Walk 16: "A reply to Omar is drafted and waiting for your approval" came with only Next / Ask under it. An answer that names the
+        one task by its ref is that task brought up - its draft's own Send under it, as a link's is; two refs name no one task."""
+        store, c = armed_store()
+        card = {'say': 'Omar Keller wrote about a duplicate payment.', 'item': {'key': 'task:12', 'kind': 'task', 'tid': 12, 'ref': 'TQ-0012', 'title': 'Duplicate payment', 'rid': 5},
+                'chips': [{'verb': 'approve', 'label': 'Send'}, {'verb': 'next', 'label': 'Next'}]}
+        def turn(said):
+            sent = []
+            with mock.patch.object(concierge, 'restore_current', return_value=None), \
+                 mock.patch.object(concierge, 'say', return_value={'say': said, 'options': [], 'chips': [], 'decision': None}), \
+                 mock.patch.object(concierge, 'surface', return_value=card) as surfaced, \
+                 mock.patch.object(messengers, 'wa_send', side_effect=lambda st, chat, body, connector_id=None, poll=None: sent.append((body, poll))):
+                remote_assistant.respond(store, 'whatsapp', JID, "did anyone deal with Omar's duplicate payment?", c['ConnectorId'])
+            return sent, surfaced
+        sent, surfaced = turn('A reply to Omar on TQ-0012 is drafted and waits for your Send.')
+        self.assertEqual(surfaced.call_args.args[1], 'task:12')
+        self.assertIn('Send', sent[-1][1])
+        self.assertIsNone(remote_assistant.named_task('TQ-0012 and TQ-0013 both wait.'), 'two tasks named: no one of them is brought up')
+
+    def test_an_answer_naming_a_waiting_draft_by_its_person_brings_it_up_and_a_list_keeps_its_refs(self):
+        """Walk 18: "A reply to Omar is drafted and waiting for your approval" - no ref, no link - came with only Next / Ask, and "list them
+        all" named its tasks by linked labels the phone cut to words, so none of them could be reached. The one draft whose person the
+        answer names is brought up with its own Send; a linked label keeps its ref; two drafts named are each one tap away."""
+        store, c = armed_store()
+        omar, gail = waiting(store, 'Duplicate Trainly payment', who='Omar Keller')[0], waiting(store, 'Payworth accrual', who='Gail Moreno')[0]
+        card = {'say': 'Omar Keller wrote about a duplicate payment.', 'item': {'key': f'task:{omar}', 'kind': 'task', 'tid': omar, 'ref': f'TQ-{omar:04d}',
+                'title': 'Duplicate payment'}, 'chips': [{'verb': 'approve', 'label': 'Send'}, {'verb': 'next', 'label': 'Next'}]}
+        def turn(said):
+            sent = []
+            with mock.patch.object(concierge, 'restore_current', return_value=None), \
+                 mock.patch.object(concierge, 'say', return_value={'say': said, 'options': [], 'chips': [], 'decision': None}), \
+                 mock.patch.object(concierge, 'surface', return_value=card) as surfaced, \
+                 mock.patch.object(messengers, 'wa_send', side_effect=lambda st, chat, body, connector_id=None, poll=None: sent.append((body, poll))):
+                remote_assistant.respond(store, 'whatsapp', JID, "did anyone deal with Omar's duplicate payment?", c['ConnectorId'])
+            return sent, surfaced
+        sent, surfaced = turn('A reply to Omar is drafted and waiting for your approval.')
+        self.assertEqual(surfaced.call_args.args[1], f'task:{omar}')
+        self.assertIn('Send', sent[-1][1])
+        sent, surfaced = turn("Waiting on you: Gail's Payworth accrual and Omar's draft.")
+        self.assertFalse(surfaced.called, 'two drafts named: neither is guessed')
+        self.assertEqual(remote_assistant.unlinked(f"[Gail's Payworth accrual](#task={gail}) and [TQ-0003](#task=3)"),
+                         f"Gail's Payworth accrual (TQ-{gail:04d}) and TQ-0003")
+        self.assertTrue({f'Open TQ-{omar:04d}', f'Open TQ-{gail:04d}'} <= set(sent[-1][1]), sent[-1][1])
+
 
 class NoAITests(unittest.TestCase):
     """F10: with no AI connected, typed "next" answered "use the buttons" and the walk stopped; "7" over a list of six did the
@@ -783,3 +833,65 @@ class NoAITests(unittest.TestCase):
         body = sent[-1][0]
         self.assertNotIn('button', body.lower())
         self.assertNotIn('..', body); self.assertNotRegex(body, r'[a-z] Connect an AI')
+
+
+class NoMachineTextTests(unittest.TestCase):
+    """Walk 6 (H12): a bubble whose whole text was `{}` reached the phone - the Assistant's empty answer sent as it was - and a voice
+    note's failure put a gateway's raw JSON in front of him. The one road to his chat (send) refuses both and says what happened."""
+    def sent(self, text):
+        store, c = armed_store()
+        got = []
+        with mock.patch.object(messengers, 'wa_send', side_effect=lambda st, chat, body, connector_id=None, poll=None: got.append(body)):
+            remote_assistant.send(store, 'whatsapp', JID, text, c['ConnectorId'])
+        return got
+
+    def test_an_empty_or_raw_answer_is_said_in_words(self):
+        for raw in ('{}', '', '  ', '[]', '{"choices": [], "usage": {"tokens": 3}}'):
+            got = self.sent(raw)
+            self.assertEqual(len(got), 1, raw)
+            self.assertIn(remote_assistant.EMPTY_ANSWER, got[0], raw)
+            self.assertNotIn('{', got[0]); self.assertNotIn('[]', got[0])
+
+    def test_words_go_as_they_are(self):
+        self.assertIn('Erin wrote about the offsite {see below}', self.sent('Erin wrote about the offsite {see below}')[0])
+
+    def test_a_gateway_error_on_a_voice_note_is_plain(self):
+        store, c = armed_store()
+        got = []
+        err = RuntimeError('litellm.BadRequestError: VertexAIException - {\n  "error": {"code": 400, "message": "Invalid audio", "status": "INVALID_ARGUMENT"}\n}')
+        with mock.patch.object(messengers, 'react', return_value=True), \
+             mock.patch.object(messengers, 'wa_send', side_effect=lambda st, chat, body, connector_id=None, poll=None: got.append(body)):
+            messengers._unheard(store, 'whatsapp', JID, c, err, 'WAMID.2')
+        self.assertTrue(got and 'voice note' in got[-1])
+        for bit in ('{', '"error"', 'litellm', 'Vertex', '\\n'): self.assertNotIn(bit, got[-1])
+
+
+
+def test_a_turn_with_a_picture_that_says_nothing_says_so_and_logs_why():
+    """Walk 10, 2026-11-23: a photo and "What is this, and who is it for?" got a thumb, six model calls, then silence - no answer on the
+    phone, nothing in the log. A turn that ends with nothing said sends one line with the way on, and the log says it happened."""
+    from taskuary import messengers, remote_assistant
+    store, _c = armed_store()
+    with mock.patch.object(remote_assistant, 'respond', return_value=None), mock.patch.object(messengers, 'wa_send') as sent, \
+         mock.patch.object(remote_assistant.logger, 'warning') as warned:
+        remote_assistant._locked_respond(store, 'whatsapp', JID, 'What is this, and who is it for?', None, images=['badge.png'])
+    assert sent.call_count == 1 and "couldn't answer" in sent.call_args.args[2], sent.call_args_list
+    assert any('nothing said' in str(c.args[0]) for c in warned.call_args_list)
+    with mock.patch.object(remote_assistant, 'respond', lambda st, ch, chat, *a, **k: remote_assistant.send(st, ch, chat, 'It is a badge.')), \
+         mock.patch.object(messengers, 'wa_send') as sent:
+        remote_assistant._locked_respond(store, 'whatsapp', JID, 'What is this?', None, images=['badge.png'])
+    assert sent.call_count == 1, 'a turn that answered is not added to'
+
+
+def test_a_photo_sent_from_the_phone_is_his_file_on_the_task_it_was_about():
+    """A picture the owner sent from the phone reached the Assistant and no record: a file attached on the desk is his file on its task
+    (ledger.his_line, by store.add_comment), and the same photo sent from WhatsApp about the task on the table was nowhere in it. His line
+    keeps what he attached - on the Assistant's chat and on the task that turn was about - by the desk's own writer."""
+    from taskuary import ledger, railwalk
+    store, c = armed_store()
+    tid = store.create_task({'Title': 'Badge for the new hire', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    photo = 'C:/data/attachments/phone/202611/20261123-101500-a1b2c3-badge.jpg'
+    with railwalk.seated(f'whatsapp:{JID}'): railwalk.open(store, f'task:{tid}', actor='owner', record=False)
+    with mock.patch.object(remote_assistant, 'send'), mock.patch.object(concierge, 'brain', return_value=None):
+        remote_assistant.respond(store, 'whatsapp', JID, 'This is the badge for Erin', c['ConnectorId'], images=[photo])
+    assert [r['Subject'] for r in ledger.rows(store, 'file', task=tid)] == [photo], ledger.rows(store, 'file')

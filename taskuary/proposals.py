@@ -53,20 +53,24 @@ def strip(text: str) -> str:
 MAX = 5                      # per transcript: a loop proposing 200 pushes is a bug, not intent
 
 # action -> (what it does in words, required keys, the switch that must be ON for it to be
-# proposable at all). Nothing here executes without an approved review.
+# proposable at all). Nothing here executes without an approved review. A push, a pull request, a merge is NEVER gated by "Agents may push /
+# deploy": that switch says whether an agent goes WITHOUT asking - off, the card IS the asking, and his press is the yes (the owner, 2026-11-25:
+# "classic example of saying it can't do something" - a PR card refused because the switch was off, the agent left to say so in words).
+# ...and the same for a comment on, or the close of, the GitHub issue a task came from: "Reply to issue/PR authors" and "GitHub is the issue
+# tracker" decide what Taskuary drafts and files by itself - an agent's card for his press is his explicit say-so, never refused by them
 ACTIONS = {
     # 'land' does whatever the owner's git_flow says (a draft PR, or straight onto the
     # default branch) - the agent asks to PUBLISH, the owner decides what publishing means.
     # open_pr / push_direct force one road for an agent that means one specifically.
     'land': ('publish this work (a draft pull request, or straight to the default branch - your setting)',
-             (), 'agent_push_enabled'),
-    'open_pr': ('open a DRAFT pull request for this task', (), 'agent_push_enabled'),
+             (), None),
+    'open_pr': ('open a DRAFT pull request for this task', (), None),
     'push_direct': ('push these commits STRAIGHT onto the default branch - no pull request',
-                    (), 'agent_push_enabled'),
-    'comment_issue': ('post a PUBLIC comment on the linked issue/PR', ('body',), 'github_reply'),
-    'close_issue': ('close the linked GitHub issue', (), 'use_as_tracker'),
+                    (), None),
+    'comment_issue': ('post a PUBLIC comment on the linked issue/PR', ('body',), None),
+    'close_issue': ('close the linked GitHub issue', (), None),
     # the close-out of a task whose work is an open pull request (CLOSEOUT below): raised by the finish, never by an agent
-    'merge_pr': ('merge the pull request this task opened', ('repo', 'number'), 'agent_push_enabled'),
+    'merge_pr': ('merge the pull request this task opened', ('repo', 'number'), None),
     'run_tool': ('run a step in a connected system', ('type',), None),
     # the close-out of a task from a Jira, Monday or Linear item (trackers.py, 2026-10-25): its comment, and the move to done - raised by
     # the finish like merge_pr, never by an agent (an agent's own comment or move is a run_tool on jira_comment, linear_move, ...)
@@ -74,16 +78,13 @@ ACTIONS = {
     # a workflow step that failed, fixed by the model on the owner's say-so (flow.repair): the new list is saved only past their yes
     'repair_workflow': ("change this workflow's steps to the repaired list", ('source_id', 'flow'), None),
     'change_setup': ("change a report's or dashboard's setup", ('source_id', 'patch'), None),
-    # the on-close "did this session do a kind of job that will recur?" answer (playbooks.draft),
-    # and an agent that knows it did: a playbook is filed only past the owner's click
-    'write_playbook': ('file a new PLAYBOOK - how this kind of job is done here - for the next agent to follow',
-                       ('slug', 'text'), 'playbooks_enabled'),
-    # what the outcome ledger counted about a kind of work, as a block on its playbook (playbook_facts.py): reflection proposes it,
-    # the owner's yes writes it - a derived line never edits a playbook on its own (spec 2026-10-12, build step 5)
-    # ...and lessons onto a playbook page (playbooks.with_lessons, the owner 2026-11-05)
-    'amend_playbook': ('add what was learned to a playbook', ('slug', 'text'), 'playbooks_enabled'),
-    'publish_skill': ('publish this reviewed Skill package and expose it to compatible local Agents',
-                      ('generation_id', 'digest'), None),
+    # an agent that did a kind of job that will recur: its SKILL.md is filed only past the owner's click (skills.py). A change to one
+    # he has is the same card - what the outcome ledger counted about a kind of work as a `block` on it (skill_facts.py), or `lessons`
+    # onto it (skills.with_lessons, the owner 2026-11-05): a derived line never edits a skill on its own
+    'save_skill': ('save a SKILL - how this kind of job is done here - for the next agent to use', ('slug', 'text'), 'playbooks_enabled'),
+    # A generated package is published only by its task's exact, current owner review. Agents cannot create this marker or tool request;
+    # skillauthoring queues it after the owner has accepted a generation.
+    'publish_skill': ('publish this reviewed Skill package', ('generation_id', 'digest'), None),
     # An instruction that BELONGS in a switch should be written there, not left as a note the
     # classifier merely weighs - but nothing may change a switch on its own. So it arrives as a
     # proposal: the assistant says which switch it means, the owner's click applies it, and only the
@@ -108,19 +109,54 @@ ACTIONS = {
     # we save this"): the card shows the script whole, and the owner's press is the save (workflows.save_script_routine) - nothing is
     # saved or run before it, and it is the one door by which an agent's script ever reaches a schedule
     'save_routine': ('save this routine or report', ('title',), None),
+    # A DESKTOP ACT ON A TASK NOT MARKED "needs desktop", OR WITH AGENT DESKTOP OFF (the owner, 2026-11-25): raised by the desktop hook, never an
+    # agent's marker - his press marks the task (agentdesktop.let); only a marked task gets the desktop (the owner, 2026-10-31)
+    'use_desktop': ('let this task use your desktop', (), None),
+    # NEW WORK ASKED FOR ON A TASK HE NEVER SPOKE ON (the owner, 2026-11-25): raised by the new_task door, never an agent's marker - his press
+    # makes the task and starts its agent (server.new_task_from); a stranger's task never gets one
+    'start_task': ('start this as a task of its own', ('title', 'ask'), None),
+    # A BROWSER ASKED OF AN AI THAT CANNOT USE ONE (the owner, 2026-11-25): raised by Taskuary (general.browser_card), never an agent's marker -
+    # his press hands the task to that AI and picks the work up there, Continue's own road (server.continue_work)
+    'switch_ai': ('run this task on another AI', ('pick',), None),
+    # A TASK'S AGENT ASKING FOR ONE OF HIS REPORTS OR ROUTINES TO RUN NOW (the owner, 2026-11-25): raised by its door, never an agent's marker -
+    # his press is his Run now (server._rerun_report)
+    'rerun_report': ('run a report or routine of yours now', ('source_id',), None),
+    # A CHECKOUT ONLY HIS YES PICKS (repochoice.Asks, the owner 2026-11-25): raised by the use_repo door, never an agent's marker - his press makes
+    # it this task's code, as his Change does (repochoice.use, mine)
+    'use_repo': ('work in this checkout on this task', ('path',), None),
+    # A STEP ON THE AGENT'S PAGE ONLY HE CAN DO - a sign-in, a robot check (pagestep.py, the owner 2026-11-25: "the browser should be treated
+    # like a card, so only one at a time"): raised by Taskuary from the step its agent handed over, never an agent's marker - his press is
+    # his I'm done, the step's own hand-back
+    'page_step': ("do a step on the agent's page that only he can", ('request',), None),
+    # A CALL ON AN ACCOUNT OF ANOTHER PROFILE (workstreams.move_card, the owner 2026-11-26): raised by the wall, never an agent's marker - his
+    # press moves the task there, as the task's own picker does (workstreams.set_task)
+    'move_profile': ('move this task to another profile', ('profile',), None),
+    # THE AGENT'S QUESTIONS, ASKED TOGETHER (the owner, 2026-11-26: "one that includes interview ... and asks you questions"): raised by the
+    # ask_owner door, never an agent's marker - one card holding each question with its box or its choices, his one press his answer to all of
+    # them; nothing is raised under it while it waits (cardqueue.asking), and its agent hears every answer once (card.carries_on)
+    'questions': ('answer its questions', ('questions',), None),
 }
 FAILED_NOTE = 'failed'      # a pressed act that failed: settled, its error kept (ActError) - its agent sets up what goes next
-HELD_ACTS = ('browser_act', 'shell_act', 'desktop_act')     # raised by a hook before the act ran - never an agent's marker
+HELD_ACTS = ('browser_act', 'shell_act', 'desktop_act', 'page_step')     # raised by a hook before the act ran - never an agent's marker
 # ...each by its own gate, which runs it on the owner's yes (perform) and tells its agent their no (declined) - and where it was held, as its
 # card says it. One table: the card's reason (queue), the yes (execute) and the no (settle) each spelled the three out
 HELD_IN = {'browser_act': "in the agent's browser", 'shell_act': "in the agent's shell", 'desktop_act': 'on your desktop'}
+
+
+def act_words(reason) -> str:
+    """An act card's Reason (propose) as the act itself, the card's own words: "held before it ran, in the agent's browser: Publish your post on
+    Chirp - it speaks for you ..., so it waits for your press" is "Publish your post on Chirp". Our own sentence, parsed as written."""
+    why = ' '.join(str(reason or '').split())
+    for lead in ('the agent proposes to ', 'the workflow asks to '): why = why[len(lead):] if why.lower().startswith(lead) else why
+    why = why.split(': ', 1)[1] if why.startswith('held before it ran') and ': ' in why else why
+    return why.split(' - ')[0]
 def _gate(a: str):
-    from . import agentdesktop, browsergate, shellgate
-    return {'browser_act': browsergate, 'shell_act': shellgate, 'desktop_act': agentdesktop}[a]
+    from . import agentdesktop, browsergate, pagestep, shellgate
+    return {'browser_act': browsergate, 'shell_act': shellgate, 'desktop_act': agentdesktop, 'page_step': pagestep}[a]
 # WHAT NO AGENT MAY ASK FOR, AND THE MARKS NONE MAY PUT ON ITS OWN ASK - one list for both doors: the marker (parse) and the tool
 # (agenttools.proposal_of). They were two, and had drifted (the spine audit, 2026-11-09): the tool's did not name the held steps, so an agent
 # could file a "held step" of its own - a command of its choosing, on the card the owner reads as one Taskuary stopped
-NOT_ASKED = ('merge_pr', 'close_item', 'repair_workflow', 'change_setup', *HELD_ACTS)
+NOT_ASKED = ('merge_pr', 'close_item', 'repair_workflow', 'change_setup', 'use_desktop', 'start_task', 'switch_ai', 'rerun_report', 'use_repo', 'move_profile', 'questions', 'publish_skill', *HELD_ACTS)
 MARKS = ('closeout', 'flow_run')
 
 # A POST IS DRAWN AS THE POST (the owner, 2026-11-05: "it's not showing the post and the image as a linkedin post and asking me if i want to
@@ -128,9 +164,29 @@ MARKS = ('closeout', 'flow_run')
 # where the network takes one - and what the owner left in the box is what goes. MEDIA: the ones that carry a picture from here.
 POSTS = {'linkedin_post': 'LinkedIn', 'bluesky_post': 'Bluesky', 'mastodon_post': 'Mastodon', 'reddit_post': 'Reddit', 'x_post': 'X'}
 MEDIA = {'linkedin_post', 'x_post'}
+VIDEO = {'linkedin_post'}                    # ...and the ones that carry a video from here (linkedin.upload_video)
 
 
 def is_post(p: dict) -> bool: return (p or {}).get('action') == 'run_tool' and (p or {}).get('type') in POSTS
+NETWORKS = {t.removesuffix('_post'): t for t in POSTS}         # ...propose's post `network`: the card's own type (linkedin, x, reddit ...)
+def post_type(network) -> str | None:
+    "The run_tool type a post on `network` is - by its card's type, its name or a word of its card's title (\"X (Twitter)\"); None for none."
+    from .connectorcatalog import by_type
+    n = str(network or '').strip().lower().removesuffix('_post')
+    return next((t for k, t in NETWORKS.items() if n in (k, POSTS[t].lower(), *re.findall(r'[a-z0-9]+', ((by_type(k) or {}).get('title') or '').lower()))), None)
+def post_of(a: dict) -> dict:
+    """A post propose call as the run_tool proposal the post road files (queue, card_roads, via_browser): `media` (`picture`, as it was) is its `image`, and a
+    `link` where the network has no field of its own for one goes at the end of its words. ValueError names the networks there are."""
+    from .connectorcatalog import action_for, field
+    t = post_type(a.get('network'))
+    if not t: raise ValueError(f"no post card for {a.get('network')!r} - one of: {', '.join(NETWORKS)}")
+    text, link = str(a.get('text') or '').strip(), str(a.get('link') or '').strip()
+    own = field(action_for(t), 'link')
+    if link and not own and link not in text: text = f'{text}\n\n{link}'.strip()
+    # ...only what its network's card takes: a `title` on an X post is no field of X's, and was refused as running unseen - it is left off
+    keep = {k: a[k] for k in ('subreddit', 'title', 'why', 'alt') if str(a.get(k) or '').strip() and (k in ('why', 'alt') or field(action_for(t), k))}
+    return {'action': 'run_tool', 'type': t, 'text': text, **keep, **({'image': m} if (m := a.get('media') or a.get('picture')) else {}),
+            **({'link': link} if link and own else {})}
 # A POST ON A NETWORK NOT CONNECTED IS STILL ITS CARD, AND ITS PRESS HANDS IT TO THE AGENT FOR THE SITE (the owner, 2026-11-22: "card first,
 # sign-in at the press"): the agent went to LinkedIn's sign-in before writing a word, then gave the posts back as prose. The card stands with
 # the words and picture; Post via the browser saves them as he left them, once (decide_review takes one press), and hands them to its agent,
@@ -138,23 +194,46 @@ def is_post(p: dict) -> bool: return (p or {}).get('action') == 'run_tool' and (
 BROWSER_POST = ('The owner pressed Post via the browser on your {network} post card. Post exactly these words on {network} in your browser'
                 '{pic}: "{words}". If the site wants him signed in, hand him its sign-in; then press its final Post - Taskuary holds that press '
                 'for his yes.')
-def via_browser(store, rid: int, text: str, actor: str = 'owner') -> dict:
-    "Post via the browser: {ok, status, told} - the post saved as he left it and handed to its agent; never twice, never a card that is not a post."
+def via_browser(store, rid: int, text: str, actor: str = 'owner', fields: dict = None) -> dict:
+    """Post via the browser: {ok, status, told} - the post saved as he left it (his words and the lines he edited, the press's own road:
+    _edited) and handed to its agent; never twice, never a card that is not a post."""
+    from . import connectorcatalog as cat
     rv = store.get_review(int(rid)) or {}
     try: p = json.loads(rv.get('DraftText') or '{}')
     except ValueError: p = {}
     if not is_post(p): return {'ok': False, 'why': 'Only a post goes through the browser.'}
-    words = str(text if str(text or '').strip() else p.get('text') or '').strip()
+    # ...and only one whose network is not connected (the owner, 2026-11-25: "if you can't connect then use the browser site"): a connected
+    # card's one road is its connection - the press its card shows
+    from .outbound import review_connect
+    if rv.get('Status') == 'pending' and not review_connect(store, rv):
+        return {'ok': False, 'why': f"{POSTS[p['type']]} is connected - {(cat.action_for(p['type']) or {}).get('press') or 'its press'} posts it."}
+    try: p = _edited(p, text, fields)
+    except ValueError as e: return {'ok': False, 'why': str(e)}
+    words = str(p.get('text') or '').strip()
     if not words: return {'ok': False, 'why': 'The post has no words to put up.'}
     p = {**p, 'text': words, 'result': {'browser': True}}
+    # ...and its title or content warning as he left them, told with the words: the agent's own proposal holds the ones before his edit
+    lines = ''.join(f', {f["label"].lower()} "{p[f["key"]]}"' for f in (cat.action_for(p['type']) or {}).get('fields') or []
+                    if f['type'] == 'line' and f.get('edit') and str(p.get(f['key']) or '').strip())
     if not store.decide_review(int(rid), 'approved', json.dumps(p), actor):
         return {'ok': True, 'status': (store.get_review(int(rid)) or {}).get('Status'), 'already': True}
     from . import general, outputs
     pic = f" with the picture {outputs.folder(int(rv['TaskId'])) / p['image']}" if p.get('image') else ''
-    told = general.to_agent(store, int(rv['TaskId']), BROWSER_POST.format(network=POSTS[p['type']], pic=pic, words=words), actor, start=True)
+    told = general.to_agent(store, int(rv['TaskId']), BROWSER_POST.format(network=POSTS[p['type']], pic=pic + lines, words=words), actor, start=True)
     return {'ok': True, 'status': 'approved', 'told': told}
 
 
+# THE PICTURE HE SAW IS THE PICTURE THAT GOES (red team round 6: a card kept its picture by name alone, so a file written over under that
+# name after the card was shown went up at his press). Its content is pinned where the card is raised (queue: PINNED) and read again at
+# the press (_run): another file under that name posts nothing, and its agent is told to raise the post again with the picture it means
+PINNED = 'image_sha256'
+def picture_print(tid, p: dict) -> str:
+    "The content of a card's picture as it is on disk now - '' with no picture, or none there."
+    import hashlib
+    from . import outputs
+    f = outputs.named(int(tid), p['image']) if tid and p.get('image') else None
+    try: return hashlib.sha256(f.read_bytes()).hexdigest() if f else ''
+    except OSError: return ''
 def picture_why(tid, p: dict) -> str:
     """'' when a post's `image` is a picture in the task's own folder it can carry; else what is wrong, said to the agent."""
     if not p.get('image'): return ''
@@ -162,8 +241,15 @@ def picture_why(tid, p: dict) -> str:
     # ...EVERY POST CARD CARRIES ITS PICTURE (the owner, 2026-11-20): one Taskuary cannot upload to that network (MEDIA) is shown on the card to
     # save and add by hand, never refused - the card says so (ActionCard)
     f = outputs.named(int(tid), p['image']) if tid else None
-    if not f: return f"{p['image']} is not a file in your task folder - save the picture there first"
-    if f.suffix.lower() not in linkedin.IMAGE_TYPES: return f'{f.name} is not a PNG, JPG or GIF picture'
+    if not f: return f"{p['image']} is no picture this task may read - name the one you made by its full path"
+    # ...AND ITS VIDEO, WHERE ITS NETWORK TAKES ONE FROM HERE (VIDEO; the owner, 2026-11-26: a screen recording was refused as "not a PNG, JPG or
+    # GIF picture" and its agent went to the site with it): read now against what the network states it takes, answered with that fact
+    net = POSTS.get(p.get('type')) or 'post'
+    if linkedin.is_video(f):
+        return linkedin.video_why(f) if p.get('type') in VIDEO else (f'{f.name} is a video, and the {net} card carries a PNG, JPG or GIF picture, '
+                                                                     'not a video')
+    if f.suffix.lower() not in linkedin.IMAGE_TYPES:
+        return f"{f.name} is not a PNG, JPG or GIF picture{' or an MP4 video' if p.get('type') in VIDEO else ''}"
     return ''
 
 
@@ -178,16 +264,123 @@ def _edited(p: dict, final_text, fields: dict = None) -> dict:
     return cat.owner_edits(p, fields) if fields else p
 
 
+# A CHANGE TO SOMETHING STORED IS SHOWN AS WHAT IT WILL BE (the owner, 2026-11-24: "to edit text it should show the edited text?"): a routine's or
+# a report's new words each in a box of their own beside what they were (workflows.change_card), a setting's old value beside its new one, a
+# skill page beside the page it replaces - so the card can mark where it changed
+CHANGES = ('repair_workflow', 'change_setup')
+def change_card(store, p: dict) -> dict:
+    a = p.get('action')
+    if a in CHANGES:
+        from . import workflows
+        return workflows.change_card(p)
+    if a == 'settings':
+        def was(c):
+            if not c.get('connector'): return store.get_setting(c['name'])
+            try: return json.loads((store.get_connector_by_type(c['connector']) or {}).get('ConfigJson') or '{}').get(c['name'])
+            except ValueError: return None
+        return {**p, 'changes': [{**c, 'was': was(c)} for c in setting_changes(p)[0]]}
+    # ...A SKILL'S CARD IS ITS PAGE (the owner, 2026-11-26: "the card that shows the changes should bring up the skill card ... and show what
+    # the agent is editing"): the page he has under that name beside the new one - none for a new skill, so all of it reads as added - and
+    # the routines that use it, by title
+    # ...BY THE NAME THE PRESS WILL FILE IT UNDER (skills.filed_as - the real walk, 2026-11-26: an agent's new page for a skill he had came with
+    # no name of its own, its card read "new" with nothing marked, and the press wrote it over the old one)
+    if a == SKILL:
+        from . import skills, workflows
+        slug = skills.filed_as(str(p.get('slug') or '').strip(), str(p.get('text') or ''))
+        if slug and (was := skills.read(slug)) is not None:
+            used = workflows.uses_skill(store).get(skills.key(slug)) or []
+            return {**p, 'slug': slug, 'was_text': was, **({'used_by': used} if used else {})}
+    return p
+
+
+def cards_waiting(store) -> int:
+    "A change card filed before change_card - waiting still - drawn the same way: its new words in their boxes, once at the start."
+    n = 0
+    for r in store._rows("SELECT ReviewId, DraftText FROM review WHERE Kind='action' AND Status='pending'"):
+        p = _draft(r)
+        if p.get('action') not in CHANGES or (now := change_card(store, p)) == p: continue
+        try: store._exec("UPDATE review SET DraftText=? WHERE ReviewId=? AND Status='pending'", (json.dumps(now), r['ReviewId'])); n += 1
+        except Exception as e: logger.warning(f"rv{r['ReviewId']}: its change card is drawn as filed - {e}")
+    return n
+
+
+# ── the agent's questions, one card (ACTIONS 'questions') ────────────────────────────────────────────────────────────────────────────────
+ASKS, ASKS_MIN, ASKS_MAX = 'questions', 2, 6
+def asks_of(p: dict) -> list:
+    "A questions card's questions as given: [{question, choices}] - whatever was filed that is not one is left out."
+    qs = (p or {}).get(ASKS)
+    flat = lambda x: ' '.join(str(x or '').split())
+    return [{'question': flat(q.get('question'))[:300], 'choices': [c for c in (flat(c)[:80] for c in q.get('choices') or [] if not isinstance(c, (dict, list))) if c][:6]}
+            for q in (qs if isinstance(qs, list) else []) if isinstance(q, dict) and flat(q.get('question'))]
+def asks_card(question, qs) -> tuple:
+    "(the card ask_owner's `questions` make, '') - or (None, what to give instead)."
+    p = {'action': ASKS, ASKS: asks_of({ASKS: qs}), **({'title': t} if (t := ' '.join(str(question or '').split())[:200]) else {})}
+    n = len(p[ASKS])
+    if n < ASKS_MIN or n > ASKS_MAX or n != len(qs):
+        return None, (f'`questions` holds {ASKS_MIN}-{ASKS_MAX}, each {{question, choices}} with its `question` in words - {len(qs)} came, {n} of them readable; '
+                      'one question alone is `question`, and more than six are the six the work hangs on')
+    return p, ''
+def asks_waiting(store, tid) -> list:
+    "The questions cards of task `tid` that wait for his answers."
+    return [r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' ORDER BY ReviewId", (int(tid),)) if _action(r) == ASKS]
+def answers_of(p: dict, fields: dict = None) -> list:
+    "His answer to each question of the card, in its order - '' where he left one empty."
+    got = (fields or {}).get('answers') if isinstance(fields, dict) else None
+    got = [' '.join(str(a or '').split())[:2000] if not isinstance(a, (dict, list)) else '' for a in (got if isinstance(got, list) else [])]
+    return [(got[i] if i < len(got) else '') for i in range(len(asks_of(p)))]
+def answered(result) -> str:
+    "What he answered, a line a question - as its agent is told it and its card keeps it (the receipt's result)."
+    rows = (result or {}).get('answers') if isinstance(result, dict) else None
+    return '\n'.join(f"{i}. {a.get('question')} - {a.get('answer') or '(left empty)'}" for i, a in enumerate(rows or [], 1) if isinstance(a, dict))
+
+
+def as_left(p: dict, final_text, fields: dict = None) -> dict:
+    "The proposal as he left its card at the press: a change's boxes (workflows.edit_change), else an act's words and choices (_edited)."
+    if p.get('action') == ASKS: return {**p, 'answers': answers_of(p, fields)}
+    if p.get('action') in CHANGES:
+        from . import workflows
+        return workflows.edit_change(p, fields)
+    return _edited(p, final_text, fields)
+
+
 def _ran(res) -> dict:
     """An executor's answer as the card reads it: (headline, body), or the {rows, columns} a connector returns - its first row's
     link the place it landed. Unpacking that dict as a pair read its two KEYS: a LinkedIn post said "rows" / "columns"."""
-    if isinstance(res, dict):
-        rows = res.get('rows') or []
-        first = rows[0] if rows and isinstance(rows[0], dict) else {}
-        return {k: v for k, v in {'headline': str(res.get('headline') or f"{len(rows)} row{'s' * (len(rows) != 1)}")[:200],
-                                  'output': json.dumps(rows, default=str)[:2000], 'url': first.get('url') or ''}.items() if v}
-    head, body = res
-    return {'headline': str(head)[:200], 'output': (body or '')[:2000]}
+    from .reports import pair
+    head, body = pair(res)
+    rows = res.get('rows') or [] if isinstance(res, dict) else []
+    url = rows[0].get('url') or '' if rows and isinstance(rows[0], dict) else ''
+    return {'headline': str(head)[:200], **({'output': body[:2000]} if body or not isinstance(res, dict) else {}), **({'url': url} if url else {})}
+
+
+def passing(e) -> bool:
+    """Is this a failure the same press could get past on a second try - no answer in time, the far side unreachable, down or over its limit?
+    Read off the failure's type and the status it carries, never its words. One the far side REFUSED (a 4xx: the content, the token) is not:
+    the same press gets the same no, and its agent finds another way."""
+    import requests
+    from .general import _chain
+    for x in _chain(e):
+        if isinstance(x, (requests.Timeout, requests.ConnectionError, TimeoutError, ConnectionError)): return True
+        s = getattr(x, 'status', None) or getattr(getattr(x, 'response', None), 'status_code', None)
+        if isinstance(s, int) and (s in (408, 425, 429) or s >= 500): return True
+    return False
+
+
+def retryable(store, rv: dict) -> bool:
+    """Does this failed card offer Try again? Its press failed where a second try could get past it (verdicts: ActRetry 1), it has not been
+    tried again, and nothing has been set up on its task since - once its agent raised what goes next, that card is the way on."""
+    return bool(rv and rv.get('Kind') == 'action' and rv.get('Status') == 'superseded' and rv.get('DecideNote') == FAILED_NOTE and rv.get('ActRetry') == 1
+                and not store._one('SELECT 1 AS x FROM review WHERE TaskId=? AND ReviewId>? LIMIT 1', (rv.get('TaskId'), rv['ReviewId'])))
+
+
+def left(rv: dict, final_text, fields: dict = None):
+    "The proposal as he pressed it, where that is not as it was filed (a press that failed keeps it as its FinalText) - None for one unchanged."
+    try: p = json.loads(rv.get('DraftText') or '{}')
+    except ValueError: return None
+    if p.get('action') not in ('run_tool', *CHANGES): return None
+    try: his = as_left(p, final_text, fields)
+    except ValueError: return None
+    return json.dumps(his, default=str) if his != p else None
 
 
 def receipt(rv: dict, final_text, out: dict, fields: dict = None) -> str:
@@ -196,10 +389,10 @@ def receipt(rv: dict, final_text, out: dict, fields: dict = None) -> str:
     try: p = json.loads(rv.get('DraftText') or '{}')
     except ValueError: return rv.get('DraftText')
     # ...every act keeps what it did, so its card reads as its result once pressed - "Approved · ran", its link (the owner, 2026-11-09)
-    return json.dumps({**(_edited(p, final_text, fields) if p.get('action') == 'run_tool' else p), 'result': out}, default=str)
+    return json.dumps({**(as_left(p, final_text, fields) if p.get('action') in ('run_tool', *CHANGES) else p), 'result': out}, default=str)
 
 # What a proposal may touch: routing and visibility only. Never a permission that lets anything OUT
-# (agent_push_enabled, github_replies_ok, reply channels), never a token, key, model or document.
+# (agent_push_enabled, reply channels), never a token, key, model or document.
 SETTING_ALLOW = {
     'coding_auto_enabled': 'start the coding agent automatically on new coding work',
     'intent_classify_enabled': 'let the brain classify inbound mail at all',
@@ -208,8 +401,9 @@ SETTING_ALLOW = {
     'funnel_hours': 'how far back the pipe reaches',
     'funnel_max': 'how much the pipe holds at once',
     'calendar_enabled': 'read your calendar',
-    'playbooks_enabled': 'let agents follow and propose playbooks',
+    'playbooks_enabled': 'let agents follow and propose skills',
     'agent_issues_enabled': 'treat GitHub issues as the tracker (off = GitHub items are rows on the work rail, not tasks)',
+    'email_signature': 'the signature under every email you send',        # ...an agent's word on how he signs (server.agent_remember)
 }
 # ...and the same rule for a CONNECTOR's own switches, which is where "PRs are Timeline items, not
 # tasks" actually lives (store.github_permissions reads the connector first).
@@ -219,25 +413,14 @@ SETTING_VALUES = {'answer_to_agent': ('auto', 'ask', 'off')}   # timeline_fade r
 
 # A REFUSAL NAMES THE SWITCH THAT REFUSED, AND OPENS IT (design round 2, 2026-11-18): "the owner has that switch off" named none, and an agent
 # told the owner to "turn on pull requests under Policies" - a page of mail rules with no such switch. Each switch by its label where the owner
-# sees it, and the link that opens that place; GitHub's are read where its card keeps them (store.github_permissions), never a second copy
-SWITCHES = {'agent_push_enabled': ('Agents may push / deploy', 'the GitHub card', '#connector=github'),
-            'use_as_tracker': ('GitHub is the issue tracker', 'the GitHub card', '#connector=github'),
-            'github_reply': ('Reply to issue/PR authors', 'the GitHub card', '#connector=github'),
-            'playbooks_enabled': ('Use playbooks', words.name('sorting'), words.href('sorting') + '&key=playbooks_enabled')}
-def _switch_ok(store, name) -> bool:
-    if not name: return True
-    if name == 'agent_push_enabled': return store.github_permissions()[1]
-    if name == 'use_as_tracker': return store.github_permissions()[0]
-    if name == 'playbooks_enabled': return store.get_setting(name, '1') == '1'
-    import json as _j
-    c = store.get_connector_by_type('github') or {}
-    try: cfg = _j.loads(c.get('ConfigJson') or '{}')
-    except ValueError: cfg = {}
-    return bool(cfg.get({'github_reply': 'reply_comments'}.get(name, name)))
+# sees it, and the link that opens that place
+SWITCHES = {'playbooks_enabled': ('Use skills', words.name('sorting'), words.href('sorting') + '&key=playbooks_enabled')}
+def _switch_ok(store, name) -> bool: return not name or store.get_setting(name, '1') == '1'
 def switch_off(name) -> str:
-    "The switch `name` said as the owner finds it, with its link: what an agent passes on, never a place of its own guessing."
-    label, where, href = SWITCHES[name]
-    return f'"{label}" is off on {where} - [open it]({href}); only the owner turns it on'
+    """The switch `name` said as the owner finds it - and as HIS CHOICE (the owner, 2026-11-25: "it should find a way around it"): "only the
+    owner turns it on" was passed on to him as a step, over a switch that ships on and that he turned off."""
+    label, where, _ = SWITCHES[name]
+    return f'"{label}" is off on {where} - the owner\'s choice; nothing waits on it, so go on without it'
 
 
 def parse(text: str) -> list:
@@ -257,7 +440,10 @@ def parse(text: str) -> list:
 
 def setting_changes(p: dict) -> tuple:
     """(changes, reason). Every named switch checked against the allow-list BEFORE it is proposed -
-    so a proposal the owner sees is one that could actually be applied."""
+    so a proposal the owner sees is one that could actually be applied. A switch it may not touch is said with the way on: what such a
+    switch lets go without asking is asked one act at a time, on the act's own card."""
+    never = lambda n: (f"{n} is not a switch a proposal may touch - what it lets go without asking is asked one act at a time: propose the "
+                       "act itself, and his press on its card is the yes")
     out, got = [], p.get('changes') or []
     # ...{switch: value} is the same changes written as one object - read as such: its keys came through below as "a change must be an object"
     if isinstance(got, dict): got = [got] if 'name' in got else [{'name': k, 'value': v} for k, v in got.items()]
@@ -265,26 +451,90 @@ def setting_changes(p: dict) -> tuple:
         if not isinstance(c, dict): return [], 'each change is {"name": a switch, "value": its new value} - {"connector", "name", "value"} for a connection\'s own switch'
         conn, name, val = str(c.get('connector') or '').strip().lower(), str(c.get('name') or '').strip(), c.get('value')
         if conn:
-            if name not in CONNECTOR_ALLOW.get(conn, {}): return [], f'{conn}.{name} is not a switch a proposal may touch'
+            if name not in CONNECTOR_ALLOW.get(conn, {}): return [], never(f'{conn}.{name}')
             out.append({'connector': conn, 'name': name, 'value': bool(val), 'says': CONNECTOR_ALLOW[conn][name]})
             continue
-        if name not in SETTING_ALLOW: return [], f'{name} is not a switch a proposal may touch'
+        if name not in SETTING_ALLOW: return [], never(name)
         v = str('1' if val is True else '0' if val is False else val).strip()
         if name in SETTING_VALUES and v not in SETTING_VALUES[name]:
             return [], f'{name} must be one of {", ".join(SETTING_VALUES[name])}'
         if name in ('poll_minutes', 'funnel_hours', 'funnel_max') and not v.isdigit():
             return [], f'{name} must be a whole number'
+        if name == 'email_signature':
+            from .signatures import shape
+            try: v = shape(v)
+            except ValueError as e: return [], str(e)
         out.append({'name': name, 'value': v, 'says': SETTING_ALLOW[name]})
     return out, '' if out else 'no change was named'
 
 
+# THE ACTS A CARD SETS UP FOR HIS PRESS - ONE TABLE, the catalogue's (connectorcatalog: each card's declared actions), read by the propose
+# tool's refusals (HIPAA walk 6, H6: `post_linkedin` was refused as "there is no tool 'post_linkedin'" with no way on - a "did you mean" that
+# matched only a prefix missed a reordered name - and the agent told him three times LinkedIn could not be posted to). Every refusal lists
+# them by what they do, the name nearest the one given first; a network not connected is still its card, posted through the browser
+def acts(near: str = '') -> str:
+    "'linkedin_post (Post to LinkedIn), x_post (Post to X), ...' - every act a run_tool card can be, the ones sharing words with `near` first."
+    from .connectorcatalog import cards
+    got = {a['tool']: a.get('press') or a['tool'] for c in cards() for a in c.get('actions') or [] if a.get('tool')}
+    bits = set(re.split(r'[^a-z0-9]+', str(near or '').lower())) - {''}
+    return ', '.join(f'{t} ({p})' for t, p in sorted(got.items(), key=lambda x: (-len(bits & set(x[0].split('_'))), x[0])))
+
+
 def unknown_tool(t) -> str:
-    "Why `t` is no tool a run_tool can run - '' when it is one; the names nearest it said so the agent can propose it again."
+    "Why `t` is no tool a run_tool can run - '' when it is one; the acts there are said, nearest first, so the agent can propose it again."
     from .reports import REGISTRY
     t = str(t or '').strip()
     if not t or t == 'mcp' or t in REGISTRY: return ''
-    near = sorted(k for k in REGISTRY if k.startswith(t) or t in k)[:6]
-    return f"there is no tool {t!r}" + (f" - did you mean {', '.join(near)}?" if near else '')
+    return (f"there is no tool {t!r}. The acts a card sets up are: {acts(t)} - propose again with one as `type` (a network that is not "
+            f"connected still stands as its card, posted through the browser at his press); a tool of one of his systems is list_systems'")
+
+
+# WHAT A CARD SHOWS IS WHAT ITS PRESS RUNS (red team F1): a card its connector declares (connectorcatalog `actions`) draws only its declared
+# fields and its picture, so a key beside them - a `script`, a `query` - would run unseen under the card's words. Only these ride beside them
+# ...and the picture's description (`alt`), drawn as the picture's own words on the card (the owner's live task, 2026-11-25: refused as "alt
+# would run unseen", the agent wrote its alt text into the card's why and a drafts file beside the cards)
+SHOWN_BESIDE = ('action', 'type', 'connector_id', 'why', 'network', 'flow_run', 'closeout', 'image', 'alt', PINNED, 'image_path', 'result')   # the last three never run (_run)
+def _hidden(p: dict) -> tuple:
+    "(the fields a declared act's card draws, the keys of `p` beside them) - ((), []) for a tool no card declares."
+    from .connectorcatalog import action_for
+    if not (act := action_for((p or {}).get('type'))): return (), []
+    fs = [k for f in act.get('fields') or [] for k in (f['key'], f.get('id')) if k]      # ...and the id a named thing runs on, said beside it
+    return fs, sorted(k for k in p if k not in SHOWN_BESIDE and k not in fs)
+def unshown(p: dict) -> str:
+    "'' when every field of a run_tool on a declared act is one its card draws, else what to drop: nothing runs that the card does not show."
+    fs, hid = _hidden(p)
+    return f"{p['type']}'s card shows only {', '.join(fs)} - {', '.join(hid)} would run unseen under it; propose it without them" if hid else ''
+# ...AND AN AGENT'S EXTRA FIELD IS LEFT OFF ITS CARD, NEVER A REFUSAL (the owner's design, 2026-11-25: "harmless extra fields are ignored" - a
+# post raised with its `hashtags` beside its words was refused whole, and came back to him as prose): what the card does not draw
+# is dropped where the card is raised (queue), so it is neither shown nor run - a stored one is still refused at the press (validate)
+def shown_only(p: dict) -> dict:
+    hid = set(_hidden(p)[1])
+    return {k: v for k, v in p.items() if k not in hid} if hid else p
+
+
+CHANGED = 'This card changed after it was shown to you - nothing ran. It is shown again as it stands now; read it and press again.'
+def _to(x) -> list: return sorted({' '.join(str(a).split()).lower() for a in (x if isinstance(x, (list, tuple)) else [x]) if a})
+# A LETTER'S ENVELOPE AS ITS CARD DRAWS IT (red team round 6: only its To was held to what was shown - its Cc, its subject, where it leaves
+# from and the files on it could change under the words he read): each part read the one way, for the press (unlike_shown) and for an
+# agent's save over a card he has put his hand to (wrapup.repoints)
+DRAWN = {'to': _to, 'cc': _to, 'subject': lambda x: ' '.join(str(x or '').split()), 'mailbox': lambda x: str(x or '').strip().lower(),
+         'attachments': lambda x: sorted((str(f.get('name') or ''), str(f.get('sha256') or '')) for f in x or [] if isinstance(f, dict))}
+def unlike_drawn(env: dict, shown: dict) -> list:
+    "The parts of envelope `env` that are not as `shown` names them - only the parts `shown` names."
+    return [k for k, read in DRAWN.items() if k in shown and read((env or {}).get(k)) != read(shown[k])]
+def unlike_shown(rv: dict, shown, verb: str) -> dict | None:
+    """The press's refusal when the card the page drew (`shown`: an action's proposal, a letter's envelope, as drawn) is not the one on file - a
+    field changed after it was shown never runs under the words he read (red team F1), and a letter never goes to someone the card did not
+    name (round 4: an agent's second save in its turn rewrote the To of the card on his screen). None to go on: no card shown (a phone's
+    typed yes), or the same one."""
+    if not isinstance(shown, dict) or verb not in ('approve', 'edit', 'merge_anyway'): return None
+    if (rv or {}).get('Kind') == 'action': same = _draft(rv) == shown
+    else:
+        try: env = json.loads(rv.get('Deliver') or '{}') or {}
+        except (TypeError, ValueError): env = {}
+        same = not unlike_drawn(env, shown)
+    if same: return None
+    return {'ok': False, 'status': rv.get('Status') or 'pending', 'sent': None, 'changed': True, 'send_error': CHANGED}
 
 
 def validate(store, p: dict) -> tuple:
@@ -292,8 +542,9 @@ def validate(store, p: dict) -> tuple:
     a = p.get('action')
     # ...AND SAYS WHAT WOULD BE ONE (the owner's rules, part 4: nothing an agent calls answers without what to do next): a Claude agent
     # proposed its LinkedIn post twice as 'post_linkedin', was told only "unknown action", and handed the post to the owner as prose
-    if a not in ACTIONS: return False, (f"unknown action {a!r} - the actions are {', '.join(ACTIONS)}; a post is run_tool with type "
-                                        f"{' | '.join(POSTS)} and its words in `text` (connector_id where that network is connected)")
+    if a not in ACTIONS: return False, (f"unknown action {a!r} - the actions are {', '.join(ACTIONS)}; a post, a send or a comment on one of "
+                                        f"his systems is run_tool with its `type` one of {acts(a)}, and its words in `text` (connector_id "
+                                        "where that system is connected)")
     words, need, switch = ACTIONS[a]
     if a == 'settings':
         changes, why = setting_changes(p)
@@ -307,18 +558,30 @@ def validate(store, p: dict) -> tuple:
         try: generation = skillstate.get(store, 'generation', int(p['generation_id']))
         except (TypeError, ValueError): generation = None
         if not generation: return False, 'the Skill generation no longer exists'
-        if generation.get('state') in ('published', 'discarded', 'failed', 'interrupted'):
-            return False, 'this Skill draft is no longer waiting for publication'
+        if generation.get('state') != 'needs_review': return False, 'this Skill generation is no longer waiting for its exact owner review'
         if generation.get('draft_digest') != p['digest'] or generation.get('base_digest') != p.get('base_digest'):
             return False, 'the Skill draft changed - review its new revision'
     # ...A TOOL THAT IS NOT ONE IS REFUSED TO ITS AGENT NOW, NEVER AT HIS PRESS (the Hydrogen walk, 2026-11-19: a card for a tool named
     # "linkedin" raised, its Approve answered "Failed 'linkedin'" - and nothing before the press said LinkedIn was not connected)
     if a == 'run_tool' and (bad := unknown_tool(p.get('type'))): return False, bad
-    # NOTHING EMPTY IS PUT IN FRONT OF THE OWNER: a playbook that could not be filed, or says nothing of how the job is done, is refused at
+    from .scopes import NEVER_AGENT
+    if a == 'run_tool' and p.get('type') in NEVER_AGENT and not isinstance(p.get('flow_run'), dict):
+        return False, f"{p['type']} is never an agent's to run - code on this computer runs only from a report or routine the owner saved"
+    if a == 'run_tool' and (hid := unshown(p)): return False, hid
+    # ...AND NO CARD STANDS OVER ITS NETWORK'S LIMIT (the owner's live task, 2026-11-25: an X post read "314 of 280" on his screen): its agent
+    # is told the limit and its count, and shortens it before he sees it
+    from .connectorcatalog import action_for, too_long
+    from . import signatures
+    if a == 'run_tool' and (long := too_long(action_for(p.get('type')), p, signatures.post(store) if is_post(p) else '')): return False, long
+    # ...NOR WITH NO WORDS AT ALL (walk 25, 2026-11-26: a LinkedIn card went up with a video and an empty box - its Post off until he wrote the
+    # post himself): a card that cannot be pressed is never shown, and its agent is answered with what it lacks
+    if is_post(p) and not str(p.get('text') or '').strip():
+        return False, f"the {POSTS[p['type']]} post has no words, and a card with nothing to say cannot be pressed - give the post's words in `text`"
+    # NOTHING EMPTY IS PUT IN FRONT OF THE OWNER: a skill that could not be filed, or says nothing of how the job is done, is refused at
     # this one gate - the tool, a marker in the agent's words, the on-close question - and its writer is told what it lacks
-    if a == PLAYBOOK:
-        from . import playbooks
-        try: playbooks.check(str(p.get('text') or ''))
+    if a == SKILL:
+        from . import skills
+        try: skills.check(str(p.get('text') or ''))
         except ValueError as e: return False, str(e)
     from . import trackers
     if (a == 'close_item' or p.get('type') in trackers.TYPES) and (why := trackers.check(p)): return False, why
@@ -403,8 +666,7 @@ def linked(store, tid) -> tuple | None:
 
 
 def refusal_line(why) -> str:
-    return (f"the proposal was refused: {why or 'it did not validate'}. Fix that and propose it again - or, if it cannot be fixed from "
-            "here, say in your answer what is missing and who could supply it.")
+    return f"the proposal was refused: {why or 'it did not validate'}. Fix that and propose it again."
 
 
 def tool_words(store, p: dict) -> str:
@@ -415,11 +677,17 @@ def tool_words(store, p: dict) -> str:
     # (Twitter)" on the next card's line (design round 6, D3)
     from .connectorcatalog import action_for
     if (act := action_for(t)) and act.get('kind') == 'post' and (press := str(act.get('press') or '')): return press[:1].lower() + press[1:]
+    # ...and one whose card declares its title says that ("bill for Payworth - $200.00 on QuickBooks"), never its tool's name
+    from .connectorcatalog import head
+    if (h := head(act, p)): return h[:1].lower() + h[1:]
     verb = {'read': 'read', 'write': 'write', 'admin': 'run'}.get(scopes.needs(t), 'run')
     if t.endswith('_move'): verb = 'move'
+    # ...a call that is not the read its executor is classed as (an AWS operation that changes something) is said as what it runs
+    if verb == 'read' and scopes.reaches(t, p): verb = 'run'
     where = next((str(p[k]) for k in WHERE_KEYS if p.get(k)), '')
     code = ' '.join(str(p.get('query') or p.get('script') or '').split())
-    what = where or (f"this {'query' if p.get('query') else 'script'}: {code[:120]}" if code else t.replace('_', ' '))
+    op = ' '.join(str(p[k]) for k in ('service', 'operation') if p.get(k))
+    what = where or (f"this {'query' if p.get('query') else 'script'}: {code[:120]}" if code else op or t.replace('_', ' '))
     try: c = reports._connector(store, reports.card_of(t), p.get('connector_id'))
     except (TypeError, ValueError): c = None
     on = (c or {}).get('Name') or ''
@@ -429,7 +697,12 @@ def tool_words(store, p: dict) -> str:
 def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = None, unheard: bool = False) -> dict | None:
     """ONE proposal through the gate: a pending review when it validates, a recorded refusal (None) when not - its reason appended to
     `refused`, so the agent that proposed it is told why and can fix it (refusal_line). `unheard`: no answer goes back to it now (collect)."""
-    from . import trackers
+    from . import card, cardqueue, trackers
+    # ...its `then`, the agent's own step after the press, is the card's (card.carries_on) - never part of what is run or compared
+    then, p = card.then_of(p), {k: v for k, v in p.items() if k != 'then'}
+    # ...and a step held while a card his press handed over is under way - its page's last press, a file it reads to upload, his sign-in - is
+    # that card's own next press (cardqueue.step)
+    if p.get('action') in HELD_ACTS: p = {**p, **({'card': fl['ReviewId']} if (fl := cardqueue.in_flight(store, int(task_id))) else {})}
     # an agent's comment or move on "the ticket" means the item this task came from: named on the proposal, so the card says which
     if p.get('action') == 'run_tool' and p.get('type') in trackers.TYPES and not str(p.get('item') or '').strip():
         it = trackers.item_of(store, task_id)
@@ -439,11 +712,13 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     # write is the owner's own saved step and keeps what he saved
     several = ''
     if p.get('action') == 'run_tool' and actor != 'workflow':
+        from .connectorcatalog import action_for, keyed
         from .reports import REGISTRY, query_only, tool_card
-        p = {**query_only(p), **({'connector_id': p['connector_id']} if str(p.get('connector_id') or '').strip() else {})}
+        p = keyed(action_for(p.get('type')), p)          # ...a field by the name its agent was told (`media`) is the card's own (`image`)
+        p = shown_only({**query_only(p), **({'connector_id': p['connector_id']} if str(p.get('connector_id') or '').strip() else {})})
         # ...on THE card it will run on, pinned now (reports.tool_card): the press ran the first card of its type, under a card naming it
         if p.get('type') in REGISTRY and not p.get('connector_id'):
-            try: p = {**p, **({'connector_id': c['ConnectorId']} if (c := tool_card(store, p['type'])) else {})}
+            try: p = {**p, **({'connector_id': c['ConnectorId']} if (c := tool_card(store, p['type'], tid=task_id if actor == 'agent' else None)) else {})}
             except ValueError as e: several = str(e)
     # ...a run's ask to change its own routine is the card a run's own repair is (workflows.change_of): one card, one save
     routine = ''
@@ -451,6 +726,11 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
         from . import workflows
         p, routine = workflows.change_of(store, task_id, p) if actor != 'workflow' else ({}, 'change_routine is an agent\'s ask')
         p = p or {'action': 'change_routine'}
+    # ...AND A POST ENDS WITH HIS SAVED POST SIGNATURE, put on here and never by its agent (signatures.post_signed): before the limit is counted,
+    # so the card that stands is within it. A routine's step is his own saved words, and goes as he saved it
+    if is_post(p) and actor != 'workflow':
+        from . import signatures
+        p = {**p, 'text': signatures.post_signed(store, p.get('text'))}
     ok, why = validate(store, p) if not routine else (False, routine)
     if ok and p.get('action') == 'publish_skill':
         from . import skillstate
@@ -458,19 +738,32 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
         if not generation or generation.get('task_id') != task_id:
             ok, why = False, 'a task may only propose its own Skill package'
     if ok and several: ok, why = False, several
+    # ...and on an account of another profile it is the move card that goes up, never that account's own (workstreams.may_use, the one wall)
+    if ok and actor == 'agent' and p.get('action') == 'run_tool' and str(p.get('connector_id') or '').isdigit():
+        from . import workstreams
+        if (m := workstreams.move_card(store, task_id, int(p['connector_id']), tool_words(store, p))):
+            if not m['review']: ok, why = False, m['says']
+            else: return {'reviewId': m['review'], 'action': 'move_profile', 'says': m['says']}
+    # ...and a write its system can check is read against it now (reports.checked): the card says each thing by name, and one that cannot
+    # happen as asked is answered with why - never found out at his press
+    if ok and p.get('action') == 'run_tool' and actor != 'workflow':
+        from .reports import checked
+        try: p = checked(store, p)
+        except ValueError as e: ok, why = False, str(e)[:300]
     # ...a new GitHub issue names its repository and a title, said to the agent now rather than at the press
     if ok and p.get('action') == 'run_tool' and p.get('type') == 'github_issue':
         from .github import issue_check, issue_labels
         if why := issue_check(p): ok = False
         elif p.get('labels'): p = {**p, 'labels': ', '.join(issue_labels(p['labels']))}
-    # ...a picture on a post is one in the task's own folder, named - never a path the agent wrote (execute resolves it again)
+    # ...a picture on a post is one in the task's own folder, kept by its name there - taken in from wherever its agent may read it
+    # (outputs.take), never a path the agent wrote (execute resolves the name again)
     if ok and p.get('action') == 'run_tool':
-        p = {k: v for k, v in p.items() if k != 'image_path'}
+        from . import outputs
+        p = {k: v for k, v in p.items() if k not in ('image_path', PINNED)}
         if p.get('type') in POSTS: p = {**p, 'network': POSTS[p['type']]}       # ...its card says where in his words ("LinkedIn"), never "linkedin post"
+        if p.get('image') and task_id and (f := outputs.take(store, int(task_id), p['image'])): p = {**p, 'image': outputs.rel(int(task_id), f)}
         if why := picture_why(task_id, p): ok = False
-        elif p.get('image'):                     # ...kept as its name in the folder: an agent names it by its full path as often as not
-            from . import outputs
-            p = {**p, 'image': outputs.rel(int(task_id), outputs.named(int(task_id), p['image']))}
+        elif p.get('image') and (seen := picture_print(task_id, p)): p = {**p, PINNED: seen}
     # ...and what the agent left unnamed on a card's choices comes from the connection's own defaults (Connections), so the card shows them
     if ok and p.get('action') == 'run_tool':
         from . import connectorcatalog as cat
@@ -484,6 +777,14 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     if ok and p.get('action') == 'break_out':
         p, miss = break_out(store, task_id, p)
         if miss: ok, why = False, miss
+    if ok: p = change_card(store, p)
+    # ...and a pull request's card says what it opens - its title, the repository, the branch into its base - as the press will read them
+    if ok and p.get('action') == 'open_pr':
+        from . import ci
+        # ...and one that cannot be opened - no checkout, nothing committed, the base's own branch - is refused here with the fix (ci.pr_why)
+        # ...nor one for a repository nobody checked: what is known of it wins, and one only its agent names is read first (ci.repo_why)
+        if (no := ci.pr_why(plan := ci.pr_plan(store, task_id, p)) or ci.repo_why(store, task_id, plan, p)): ok, why = False, no
+        else: p = {**p, 'pr': {k: v for k, v in plan.items() if k != 'cwd'}}
     # ...ONE CARD PER ASK (the stress round, 2026-11-18): the same proposal again - a retried call - is the card already waiting, and a
     # break_out moving what a waiting one moves is refused: stood behind it, its press could only fail
     if ok:
@@ -505,12 +806,12 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
                    'kind': 'routine' if workflows.is_workflow(cfg) else 'report'}
     if ok and p.get('action') in ('comment_issue', 'close_issue') and not linked(store, task_id):
         ok, why = False, f"{NO_LINK} - a comment or an issue on a repository you name is a run_tool (the guide tool's `propose` topic)"
-    # ...THE ONE RULE (actrule.decide): the same card he dismissed since his last line is his no - refused in his voice, never a second card.
+    # ...THE ONE RULE (gate.decide): the same card he dismissed since his last line is his no - refused in his voice, never a second card.
     # A post, a payment, a PR stays his press however often he approved its like (big); a held act's gate asks it at the hook
     if ok and actor != 'workflow' and p['action'] not in HELD_ACTS:
-        from . import actrule
+        from . import gate
         what = tool_words(store, p) if p['action'] == 'run_tool' else p['action'].replace('_', ' ')
-        how, told = actrule.decide(store, task_id, [{'what': what, 'key': actrule.card_key(p)}], big=True)
+        how, told = gate.decide(store, task_id, [{'what': what, 'key': gate.card_key(p)}], big=True)
         if how == 'dismissed': ok, why = False, told
     if not ok:
         store.add_comment(task_id, actor, 'agent', f'PROPOSAL REFUSED ({p.get("action")}): {why}')
@@ -524,14 +825,26 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
                   f"create the {p.get('kind') or 'routine'} \"{p['title']}\", to run {p['runs']}" + (f" - built from {p['based_on']}" if p.get('based_on') else ''))
             if p['action'] == 'save_routine'
             else f"change the routine \"{p['title']}\"" if p['action'] == 'repair_workflow' and actor != 'workflow'
-            else f"change the {p.get('kind') or 'report'} \"{p['title']}\"" if p['action'] == 'change_setup' else why)
+            else f"change the {p.get('kind') or 'report'} \"{p['title']}\"" if p['action'] == 'change_setup'
+            else f"start \"{p['title']}\" as its own task" if p['action'] == 'start_task'
+            else f"run this task on {p.get('ai') or p['pick']}" if p['action'] == 'switch_ai'
+            else f"run \"{p.get('title') or p['source_id']}\" now" if p['action'] == 'rerun_report'
+            else f"work in {p['path']} on this task" if p['action'] == 'use_repo'
+            else f"move this task to {p.get('name') or p['profile']}" if p['action'] == 'move_profile' else why)
     # ...nor a held browser act: the agent did not propose it, it tried it, and the hook stopped it (browsergate.check)
     # ...a shell step by what it does, never its raw line: the card folds the command under "Show the command"
-    reason = (f"held before it ran, {HELD_IN[p['action']]}: {p.get('what') or ('a step' if p['action'] == 'shell_act' else p.get('command'))}"
+    # ...and the agent's own why is read as the plain line it is drawn as (walk 25: a pull request's card title showed its code marks raw)
+    from .chatformat import plain_text
+    reason = (str(p.get('what') or 'a step on the page only you can do') if p['action'] == 'page_step' else       # ...his step, in the words it was handed over with
+              f"held before it ran, {HELD_IN[p['action']]}: {p.get('what') or ('a step' if p['action'] == 'shell_act' else p.get('command'))}"
               + (f" - {p['why']}" if p.get('why') else '') if p['action'] in HELD_ACTS else
               f"finishing it: {'merge pull request #' + str(p.get('number')) if p['action'] == 'merge_pr' else trackers.words(p) if p['action'] == 'close_item' else 'close the issue it came from'}"
-              if p.get('closeout') else f"the {'workflow asks' if actor == 'workflow' else 'agent proposes'} to {said}" + (f" - {p['why'][:200]}" if p.get('why') else ''))
-    rid = store.add_review({'TaskId': task_id, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(p), 'Reason': reason})
+              if p.get('closeout') else p.get('title') or f"{len(asks_of(p))} questions from the agent" if p['action'] == ASKS       # ...its own heading: no act is proposed
+              else f"the {'workflow asks' if actor == 'workflow' else 'agent proposes'} to {said}" + (f" - {plain_text(p['why'])[:200]}" if p.get('why') else ''))
+    rid = store.add_review({'TaskId': task_id, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(p), 'Reason': reason, 'NextStep': then[:300] or None})
+    if p.get('action') == 'publish_skill':
+        from . import skillstate
+        skillstate.update(store, 'generation', int(p['generation_id']), {'review_id': rid})
     store.audit('review', rid, 'proposed', actor, detail={'action': p['action']})
     logger.info(f'task {task_id}: proposal queued - {p["action"]} (rv{rid})')
     return {'reviewId': rid, 'action': p['action']}
@@ -552,47 +865,25 @@ _ISSUE = re.compile(r'github\.com/([^/]+/[^/]+)/issues/(\d+)')
 _PULL = re.compile(r'github\.com/([^/]+/[^/]+)/pull/(\d+)')
 
 
-def closeout_pending(store, tid: int):
-    """The task's close-out still waiting on the owner, if any."""
-    return next((r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,))
-                 if _action(r) in CLOSEOUT), None)
-
-
-# ── close-out and playbook are TWO things (the owner, 2026-10-01) ────────────────────────────────────────────────────
-# Neither closes the task: its close-out (the reply sent, the pull request merged or closed, the issue closed) and the
-# playbook proposal its agent left (approved or dismissed) are each said on the task, and only the owner's Mark done closes it
-# (2026-10-18: "sending and closing are two steps, never automatic"). A sent reply used to dismiss the undecided playbook.
-PLAYBOOK = 'write_playbook'
-# ...and lessons proposed for a playbook (amend_playbook) are the same kind of ask: the owner's yes or no on how a kind of
-# job is done, never a close-out owed on the task - so it holds, settles and counts as the playbook does (the owner, 2026-11-05)
-PLAYBOOKS = (PLAYBOOK, 'amend_playbook')
-
-
-def playbook_pending(store, tid: int):
-    """The playbook proposal still waiting on the owner's approve or dismiss, if any."""
-    return next((r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,))
-                 if _action(r) in PLAYBOOKS), None)
-
-
-# A PLAYBOOK PROPOSAL IS ALWAYS SEEN (the owner, 2026-10-21). It is drafted after the task's ending, and a task that closed itself
-# with nobody to answer - a workflow run, the owner's own chat, a coding session - was done by then: a pending review on a done task
-# is shown nowhere (store._VISIBLE_PENDING), so the proposal waited where nobody could find it. Such a task waits for it instead,
-# marked HELD, and goes back to done once the owner answers it, yes or no - the close was already theirs or the agent's.
+# ── A SKILL ITS AGENT OFFERED IS A CARD OF THE LINE LIKE ANY OTHER (the owner, 2026-11-26) ───────────────────────────────────────────
+# It is raised by the agent that did the job, while the work is on his screen, and it waits as every proposal waits: an agent's own
+# finish does not cancel it (owed), and the last one answered puts the task back on him (settle). Nothing drafts one after a task's
+# ending any more, so nothing has to bring a closed task back for it.
+SKILL = 'save_skill'
+# ...a task held open for one BEFORE that (the side model drafted it after the close, and the task was marked to wait): its answer
+# still lets it go (skill_answered). Nothing sets the mark now.
 HELD = 'held:playbook'
 
 
-def hold_for_playbook(store, tid: int, actor: str) -> None:
-    t = store.get_task(tid) or {}
-    if t.get('Status') != 'done': return
-    tags = [x for x in str(t.get('Tags') or '').split(',') if x.strip()]
-    store.update_task(tid, {'Status': 'waiting', 'Tags': ','.join([*tags, HELD])}, actor)
-    store.add_comment(tid, actor, 'agent', 'Kept open for its playbook proposal - approve or dismiss it, and the task closes again.')
+def _pending(store, tid, sort):
+    from .card import pending
+    return pending(store, tid, sort)
 
 
-def playbook_answered(store, tid: int, actor: str) -> None:
+def skill_answered(store, tid: int, actor: str) -> None:
     t = store.get_task(tid) or {}
     tags = [x for x in str(t.get('Tags') or '').split(',') if x.strip()]
-    if HELD not in tags or playbook_pending(store, tid): return
+    if HELD not in tags or _pending(store, tid, 'skill'): return
     from . import workerstate as ws          # ...never back to done under work still live on it (a Continue since, 2026-11-01)
     store.update_task(tid, {'Tags': ','.join(x for x in tags if x != HELD)}, actor)
     if not owed(store, tid) and not ws.live_work(store, tid):
@@ -600,31 +891,15 @@ def playbook_answered(store, tid: int, actor: str) -> None:
         concierge.close_task(store, tid, actor, save=False)
 
 
-def held_pending(store, tid) -> dict | None:
-    """AN ACTION WAITING FOR THE OWNER'S YES on the task - a step a hook held (a `git push` the shell gate stopped), or a proposal its agent
-    filed - as {rid, action, what}, the newest; None when none waits. Not a close-out (its own card, the reply's settle) nor the playbook
-    (asked after the work ended). The Advisor read an agent's card as asking and lit nothing over the Approve it waited on (2026-11-02 audit)."""
-    if not tid: return None
-    for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' ORDER BY ReviewId DESC", (int(tid),)):
-        try: p = json.loads(r.get('DraftText') or '{}') or {}
-        except (TypeError, ValueError): p = {}
-        if not isinstance(p, dict) or p.get('closeout') or p.get('action') in (*PLAYBOOKS, *CLOSEOUT): continue
-        what = (p.get('what') or str(p.get('command') or '')[:160]) if p.get('action') in HELD_ACTS else ''
-        return {'rid': r['ReviewId'], 'action': p.get('action') or '', 'what': ' '.join(str(what or r.get('Reason') or p.get('action') or 'a step').split())[:240]}
-    return None
-
-
 # A CARD YOU HAVE MOVED PAST IS OLD NEWS (the owner, 2026-11-10: "no once youa re passed it, it should stay where it is with buttons grayed
 # out. You can ask the agent to bring it back?" - "check this code everywhere so actions both genral/coding agents are part of prompt that is
 # old news once you move on to next one"). ONE RULE, every card kind and every agent: a card waiting for the owner's press is live from the turn
 # that raised it until the conversation moves on - the owner's next line on the task, or the agent's next turn begun for anything but that
 # card's own press. Then it is settled as passed: kept where it stood as its record, never pressable again, and its agent told once
-# (passed_since) that it is old news and to raise it again if the step is still wanted. Each kind had its own road or none: a held step
-# went past only on a pty's prompt hook, a page hand-over on the owner's words, and a proposal, a post or an agent's routine stayed
-# pressable for ever under turns that had moved on.
-# A REPLY OR EMAIL DRAFT IS THE AGENT'S TO RE-DECIDE (496eefb72 wakes it on the owner's line): it keeps, replaces or withdraws it in that
-# turn (general.latest_block's WITHDRAW_LINE), and the page greys it while that turn runs - only actions are passed by the line itself.
-# Nor the task's own finish (its close-out, its playbook): Taskuary raises those when the work ends, no turn of the agent's does
+# (cardqueue.screen) that it was greyed; its next turn brings back under the newest line each card that still stands (cardqueue.keep: the
+# same card, no new proposal) and raises a new version of one the input changed - so nothing live ever sits above his newest line
+# (the owner, 2026-11-23). Each kind had its own road or none: a held step went past only on a pty's prompt hook, a page hand-over on the
+# owner's words, and a proposal, a post or an agent's routine stayed pressable for ever under turns that had moved on.
 SET_ASIDE = 'set aside when you moved on'
 LAND = 'land'                  # move_on's mark for the landing question (landing.pass_over) among the review ids
 
@@ -638,75 +913,100 @@ def passed(rv: dict | None) -> bool:
     return bool(rv) and rv.get('Status') == 'superseded' and rv.get('DecideNote') in (SET_ASIDE, NOT_NEEDED, PAGE_LEFT)
 
 
-def finished_without(store, tid: int) -> list:
+def finished_without(store, tid: int, card: int = None) -> list:
     """A STEP HELD IN A TURN THAT THEN FINISHED THE JOB IS NOT LEFT LIT UNDER ITS ANSWER (the owner, 2026-11-16: a research turn's PDF read-back
     was held, it finished the report another way, and the Approve stood live under the complete answer). The turn's own word that its goal is
-    met and checked (its summary's nothing_left - no reading of it) greys the steps held in that same turn in place, with the true line. ->
-    the review ids."""
+    met and checked (its summary's nothing_left - no reading of it) greys the steps held in that same turn in place, with the true line.
+    AND A STEP HELD ON A CARD'S BROWSER ROAD ENDS WITH THAT ROAD (`card`, cardqueue.done - walk 24, 2026-11-25: a look at the page was held on
+    the way to a post, the agent went on without it, the post went up on its own Approve - and the look stayed pending on a card that read
+    "Posted", with no button anywhere and the task "waiting for your input" for good). -> the review ids."""
     from .shellgate import turn_of
+    from .verdicts import _RUNNING
     turn, out = turn_of(store, int(tid)), []
     for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' AND DeliveryClaim IS NULL", (int(tid),)):
         try: p = json.loads(r.get('DraftText') or '{}') or {}
         except (TypeError, ValueError): p = {}
-        if isinstance(p, dict) and p.get('action') in HELD_ACTS and p.get('turn') == turn and store.decide_review(r['ReviewId'], 'superseded', None, 'taskuary', note=NOT_NEEDED):
+        # ...never the step whose own press is running now (verdicts._claim_act): that is the road's last press itself, marked once it has run
+        if r['ReviewId'] in _RUNNING: continue
+        if isinstance(p, dict) and p.get('action') in HELD_ACTS and (p.get('turn') == turn if card is None else p.get('card') == card) \
+                and store.decide_review(r['ReviewId'], 'superseded', None, 'taskuary', note=NOT_NEEDED):
             out.append(r['ReviewId'])
     if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out, 'why': NOT_NEEDED})
     return out
 
 
 def move_on(store, tid, before: str = None) -> list:
-    """THE CONVERSATION ON TASK `tid` MOVED ON: a permission the agent waits on is passed (permissions.set_aside), and the landing question.
-    AN ACTION CARD IS NOT (the owner, 2026-11-11, of a held step with a long query he asked a question about: "the question has 2 approve
-    buttons? i thought we got rid of those??" - his line set the card aside, greyed, and the agent raised the step again beside it): a card
-    that waits for his press stays lit until he presses it, a newer one takes its place or its agent withdraws it - as a reply does. A row an
-    earlier build set aside keeps its record (passed). The marks passed."""
+    """THE CONVERSATION ON TASK `tid` MOVED ON: a permission the agent waits on is passed (permissions.set_aside). The cards are greyed by the
+    input itself, one rule for every kind (set_aside_drafts). -> [] (the cards it passed: none)."""
     if not tid: return []
-    out = []
     try:
         from . import permissions
         permissions.set_aside(store, int(tid))
     except Exception as e: logger.debug(f'task {tid}: a permission waiting was not set aside - {e}')
-    if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out})
-    return out
+    return []
 
 
-def set_aside_drafts(store, tid: int, before: float, actions: float = 0) -> list:
+def set_aside_drafts(store, tid: int, before: float = 0., mails=()) -> list:
     """A CARD THE CHAT MOVED PAST IS SET ASIDE FOR GOOD AS ITS AGENT HEARS THE INPUT (the owner, 2026-11-16, said ~20 times: "The second a new
-    prompt comes in, from manual or email, it should gray out the action card but never move"): every card older than the input at `before`
-    (`_older` - one rule, every kind), and the landing question, stays where it stood, greyed, and its agent is told it was set aside because
-    the chat moved on (cardqueue.screen - never that he declined), to raise it again under the newest line if it is still wanted.
-    From the moment the input came in until then every surface already reads it greyed (written_past). Every road hears an input through
-    conversation.hear, which calls this. `actions`: the old split by kind, read as the same input. -> the review ids (and LAND)."""
+    prompt comes in, from manual or email, it should gray out the action card but never move"): every card older than an input that bears on it
+    (`_older`, `bears` - one rule, every kind) stays where it stood, greyed, and its agent is told it was set aside because the chat moved on
+    (cardqueue.screen - never that he declined), to bring it back under the newest line if it still stands (cardqueue.keep). From the moment
+    the input came in until then every surface already reads it greyed (written_past). Every road hears an input through conversation.hear,
+    which calls this. `before`: when his own line came (every card, and the landing question); `mails`: the messages heard, as (when it
+    joined, its row) - each greys only the cards it bears on. -> the review ids (and LAND)."""
     from . import landing
-    at = max(before or 0., actions or 0.)
-    out = [r for r in _older(store, tid, at) if store.decide_review(r, 'superseded', None, 'taskuary', note=SET_ASIDE)]
-    if landing.pass_over(store, int(tid), at): out.append(LAND)
-    if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out})
+    # ...which of them his own line alone greyed is kept (`line`): those its agent can bring back (cardqueue.keep, comes_back);
+    # one a message on its own thread passed is answered by that message - the newest wins, and it stays greyed
+    mail = set(_older(store, tid, [(at, m) for at, m in mails or () if at]))
+    line = [r for r in (_older(store, tid, [(before, None)]) if before else []) if r not in mail]
+    # ...written down first: each card's own event reads it as the card is settled (events.card, comes_back)
+    if mail or line: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': [*mail, *line], 'line': line})
+    out = [r for r in [*mail, *line] if store.decide_review(r, 'superseded', None, 'taskuary', note=SET_ASIDE)]
+    if before and landing.pass_over(store, int(tid), before): out.append(LAND)
     return out
 
 
-def restore_set_aside(store, tid: int) -> list:
-    """A TURN THE AI NEVER ANSWERED SETS NOTHING ASIDE (design round 4, H3: a draft he needed stood greyed for 43 minutes while the provider
-    failed turn after turn on the line after it). Set aside as its agent heard the input (set_aside_drafts), a card no answer has come under
-    since stands again, live where it stood: no agent read past it. The input stays heard - the try after the failure answers it. -> ids."""
-    from . import general
-    rows = store.list_comments(int(tid), internal=True)
-    answer = next((c['CreatedAt'] for c in reversed(rows) if c.get('ActorType') == general.ASSISTANT_TYPE and c.get('Actor') == 'assistant'
-                   and not (lambda w, f: f and not w)(*general.failed_line(c.get('Body')))), '')
-    out = [r['ReviewId'] for r in store._rows("SELECT ReviewId FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedBy='taskuary' "
-                                              "AND DecidedAt>=?", (int(tid), SET_ASIDE, str(answer or ''))) if store.restore_review(r['ReviewId'])]
-    if out: store.audit('task', tid, 'cards_restored', 'taskuary', 'system', {'rids': out})
-    return out
+# NOTHING HIS LINE GREYED COMES BACK BY ITSELF (the owner, 2026-11-26: "Nothing comes back automatically ... if the reply is still the right
+# choice after a clarifying question then of course bring it back" - his line asked for a routine change and then a new post; at the turn's end
+# Taskuary raised the OLD post again beside the routine card: "then it showed the old post not even the new one?"). The greyed card stays greyed
+# where it stood; whether it is still right is its agent's to judge, and it stands again only by the agent's keep (cardqueue.keep)
+UNTIL = 'greyed by his line - it stays greyed where it stood, and stands again under his newest line only where you keep it (keep_card)'
+def comes_back(store, r: dict) -> bool:
+    """Is `r` a card HIS OWN LINE greyed (set_aside_drafts' record of it) that its agent can still keep (cardqueue.keep) - what it is told of
+    it (UNTIL)? Never a held step, nor one a message on its thread passed."""
+    from .cardqueue import again_of
+    if not (r.get('Status') == 'superseded' and r.get('DecideNote') == SET_ASIDE and r.get('TaskId') and _action(r) not in HELD_ACTS): return False
+    if again_of(store, r['ReviewId']): return False              # ...kept once already: this one stays greyed where it stood
+    return any(r['ReviewId'] in (json.loads(a['Detail'] or '{}').get('line') or []) for a in store._rows(
+        "SELECT Detail FROM audit WHERE EntityType='task' AND EntityId=? AND Action='cards_passed' AND CreatedAt>=?", (int(r['TaskId']), str(r.get('DecidedAt') or ''))))
 
 
-def _older(store, tid: int, before: float, actions: float = 0) -> list:
-    """The pending cards an input at `before` stands after - set_aside_drafts' and written_past's ONE rule, read only. Every kind: a reply, an
-    email, a calendar answer, the agent's act or held step, and Taskuary's own close-out, playbook or routine step alike (the owner, 2026-11-16:
-    a close-out's Push stood lit above his newer line, and he scrolled up to press it). Only an email he wrote himself is his, never set aside,
-    and a reply owed that nobody wrote is no card yet."""
+def bears(store, r: dict, m: dict | None, at: float = 0.) -> bool:
+    """DOES AN INPUT BEAR ON CARD `r` - what it greys (the owner, 2026-11-23, narrowing 11-16's "any input greys every waiting card": a chat
+    line from one colleague greyed another's ready reply, and its agent redrafted it for nothing). His own line on the task (`m` None) bears on
+    every card - he is redirecting, and what still stands is its agent's to bring back (cardqueue.keep) - EXCEPT HIS ANSWER
+    TO THE AGENT'S OWN QUESTION (walk 23: "Keep both" under a question about X greyed the LinkedIn card for good, and its agent said it waited),
+    which is no moving on (workerstate.answering). A message bears only on a card to someone it is from - his own, to someone it went to - or
+    on a card written on its own thread. Structure, never meaning."""
+    if m is None:
+        from .workerstate import answering
+        return not (r.get('TaskId') and answering(store, int(r['TaskId']), at))
+    from .context import _recipients
+    from .continuity import addressees, answers
+    who = {a.lower() for a in _recipients(m)} if m.get('Own') else {str(m.get('FromEmail') or '').lower()} - {''}
+    if who & addressees(store, r): return True
+    conv = m.get('ConversationId')
+    return bool(conv) and conv == (store.get_message(answers(r)) or {}).get('ConversationId')
+
+
+def _older(store, tid: int, inputs) -> list:
+    """The pending cards an input stands after and bears on (`bears`) - set_aside_drafts' and written_past's ONE rule, read only. `inputs`:
+    (when it came, the message - None for his own line). Every kind: a reply, an email, a calendar answer, the agent's act or held step, and
+    Taskuary's own close-out, skill or routine step alike (the owner, 2026-11-16: a close-out's Push stood lit above his newer line, and he
+    scrolled up to press it). Only an email he wrote himself is his, never set aside, and a reply owed that nobody wrote is no card yet."""
     from .conversation import ep
-    at = max(before or 0., actions or 0.)
-    if not at: return []
+    inputs = [(at, m) for at, m in inputs or () if at]
+    if not inputs: return []
     rows = store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND DeliveryClaim IS NULL", (int(tid),))
     from . import bulkcard
     words = lambda r: bool(str(r.get('DraftText') or '').strip())
@@ -717,27 +1017,33 @@ def _older(store, tid: int, before: float, actions: float = 0) -> list:
         # ...but a bulk card at work runs on to its end, and shows it (bulkcard: the owner, 2026-11-16)
         if r.get('Batch') and bulkcard.running(store, r['Batch']): return False
         if r['Kind'] == 'slot': return words(r) and not str(r.get('Reason') or '').startswith('your email')
+        if _action(r) == 'page_step': return False              # ...a step on a page is closed by his press or the page alone (workerstate.page_step)
         return r['Kind'] == 'action' or words(r) or r['Kind'] not in ('draft_reply', 'draft')
-    return [r['ReviewId'] for r in rows if card(r) and ep(r.get('DraftAt') or r['CreatedAt']) < at]
+    return [r['ReviewId'] for r in rows if card(r) and (t := ep(r.get('DraftAt') or r['CreatedAt'])) is not None
+            and any(t < at and bears(store, r, m, at) for at, m in inputs)]
+
+
+def inputs_since(store, tid: int, after: float = 0.) -> list:
+    """THE INPUTS NO AGENT HAS HEARD YET, newer than `after`, as (when, the message - None for his line): a line he typed (waiting, or kept for
+    a turn not begun), a message that joined the thread - never his own Send come back from his Sent folder, nor a stranger's words held
+    behind trust (origin.hold), which moved nothing on (recorded on the real CLI, 2026-11-15)."""
+    from . import conversation, general, origin
+    led = {(r['Kind'], r['Ref']) for r in store._rows("SELECT Kind, Ref FROM heard WHERE TaskId=?", (int(tid),))}
+    out = [(t, None) for x in store.list_comments(int(tid), internal=True)
+           if x.get('ActorType') in (general.USER_TYPE, general.WAITING_TYPE) and not general.is_brief(x) and x.get('Actor') == 'owner'
+           and (x.get('ActorType') == general.WAITING_TYPE or x.get('LineId') and ('line', str(x['LineId'])) not in led)
+           and (t := conversation.ep(x['CreatedAt'])) > after]
+    mail = [x for x in conversation._mail(store, int(tid)) if x['T'] > after and ('mail', str(x['MessageId'])) not in led]
+    if not mail: return out
+    mine = general.went_from_here(store, int(tid))
+    held = {str(m) for m in (origin.hold(store, int(tid)) or {}).get('mids') or ()}
+    return out + [(x['T'], x) for x in mail if not (mine(x) if x.get('Own') else str(x['MessageId']) in held)]
 
 
 def moved_on(store, tid: int, after: float = 0.) -> float:
-    """WHEN THE CHAT LAST MOVED ON, by an input no agent has heard yet: a line he typed (waiting, or kept for a turn not begun), a message that
-    joined the thread - never his own Send come back from his Sent folder, nor a stranger's words held behind trust (origin.hold), which moved
-    nothing on (recorded on the real CLI, 2026-11-15). Epoch seconds; 0. with none - or none newer than `after`, all that is asked."""
-    from . import conversation, general, origin
-    led = {(r['Kind'], r['Ref']) for r in store._rows("SELECT Kind, Ref FROM heard WHERE TaskId=?", (int(tid),))}
-    lines = [conversation.ep(x['CreatedAt']) for x in store.list_comments(int(tid), internal=True)
-             if x.get('ActorType') in (general.USER_TYPE, general.WAITING_TYPE) and not general.is_brief(x) and x.get('Actor') == 'owner'
-             and (x.get('ActorType') == general.WAITING_TYPE or x.get('LineId') and ('line', str(x['LineId'])) not in led)]
-    top = max([after, *lines])
-    # ...newest first, and only as far as one counts: who sent it and whether it is held are asked of the few newer than his newest line
-    mail = sorted((x for x in conversation._mail(store, int(tid)) if x['T'] > top and ('mail', str(x['MessageId'])) not in led), key=lambda x: -x['T'])
-    if not mail: return top if top > after else 0.
-    got = {}                                        # ...each asked once, and only of a message it is about
-    mine = lambda x: (got['mine'] if 'mine' in got else got.setdefault('mine', general.went_from_here(store, int(tid))))(x)
-    held = lambda x: str(x['MessageId']) in (got['held'] if 'held' in got else got.setdefault('held', {str(m) for m in (origin.hold(store, int(tid)) or {}).get('mids') or ()}))
-    return next((x['T'] for x in mail if not (mine(x) if x.get('Own') else held(x))), top if top > after else 0.)
+    """WHEN HIS OWN LINE LAST MOVED THE CHAT ON, unheard yet (inputs_since): what moves the landing question past, which no message bears on
+    (bears). Epoch seconds; 0. with none newer than `after`."""
+    return max((at for at, m in inputs_since(store, tid, after) if m is None), default=0.)
 
 
 def written_past(store, tid: int) -> set:
@@ -752,12 +1058,9 @@ def _written_past(store, tid: int) -> set:
     from .conversation import ep
     first = store._one("SELECT MIN(CreatedAt) AS a FROM review WHERE TaskId=? AND Status='pending'", (int(tid),))
     if not (first and first['a']): return set()
-    return set(_older(store, tid, moved_on(store, tid, ep(first['a']))))      # ...an input in a card's own second moves nothing (_older)
+    return set(_older(store, tid, inputs_since(store, tid, ep(first['a']))))      # ...an input in a card's own second moves nothing (_older)
 
 
-# what an agent is told to do about a step that is no longer on his screen - one sentence, every road
-AGAIN = ('If a step is still needed, raise it again as a new card (a step held for their press: run it again - Taskuary holds it anew); never '
-         'say it still waits on them, and never ask them in words to press it.')
 def passed_why(store, r: dict) -> str:
     """WHY A CARD STANDS GREYED, IN WHAT HAPPENED (the owner's live task, 2026-11-16: "there was no earlier draft. This is broken?" - he typed a
     line while the agent worked, the turn that never read it finished its draft after it, and the draft stood greyed reading "set aside when
@@ -785,7 +1088,8 @@ def passed_why(store, r: dict) -> str:
     m = store.get_message(r.get('MessageId')) if not tid and r.get('MessageId') else None
     rows = _mail(store, tid) if tid else [{**x, 'Own': is_ours(x), 'T': ep(x.get('CreatedAt'))}
                                          for x in (store.thread_messages(m['ConversationId']) if m and m.get('ConversationId') else [])]
-    for at, x in sorted(((came(x), x) for x in rows), key=lambda p: (p[0], p[1]['MessageId'])):
+    # ...and only the messages that bear on it (bears): a colleague's line on another thread greyed nothing of this one
+    for at, x in sorted(((came(x), x) for x in rows if bears(store, r, x)), key=lambda p: (p[0], p[1]['MessageId'])):
         n = x.get('FromName') or x.get('FromEmail')
         if not x.get('Own'): who = n or who; mails.append((at, f"{n or 'a'}'s new message", f"Not sent - {n or 'someone'} wrote again after it")); continue
         if (went := _recipients(x)) and mine and not mine & {a.lower() for a in went}:
@@ -803,20 +1107,20 @@ def _cut(w: str, n: int = 60) -> str: return (w := ' '.join(str(w or '').split()
 
 
 def owed(store, tid: int) -> bool:
-    """Something of the close-out still waits on the owner: a reply, a close-out act, any other proposal - not the playbook."""
-    return any(_action(r) not in PLAYBOOKS for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending'", (tid,)))
+    """Something still waits on the owner's press: a reply, a close-out act, any other proposal, a skill its agent offered (card.holds_close)."""
+    from .card import holds_close
+    return bool(holds_close(store, tid))
 
 
 def closed_out(store, tid: int, actor: str, said: str) -> None:
-    """The close-out is done: said on the task, with what still waits (its emails, its playbook). The task STAYS OPEN - only
+    """The close-out is done: said on the task, with what still waits (its emails). The task STAYS OPEN - only
     the owner's Mark done closes it (the owner, 2026-10-18: "sending and closing are two steps, never automatic"); this used
     to close it whenever nothing else waited."""
     from . import slots
     if (store.get_task(tid) or {}).get('Status') in ('done', 'dropped'): return
     n = len(slots.open_(store, tid))
     store.audit('task', tid, 'closed_out', actor)
-    rest = (f" {plural(n, 'email')} still to go." if n else ' Its playbook still waits on your approve or dismiss.' if playbook_pending(store, tid)
-            else f" {buttons.label('close')} when the task is finished.")
+    rest = f" {plural(n, 'email')} still to go." if n else f" {buttons.label('close')} when the task is finished."
     store.add_comment(tid, actor, 'human', f'{said}{rest}')
 
 
@@ -890,7 +1194,7 @@ def _report(store, tid: int) -> str:
 def closeout(store, tid: int, p: dict, text: str = '', actor='agent'):
     """Queue the close-out `closeout_due` named. `text` is what the card shows and the owner may edit:
     the summary a merge is squashed with, or the comment an issue is closed with."""
-    if closeout_pending(store, tid): return None
+    if _pending(store, tid, 'closeout'): return None
     return queue(store, tid, {**p, 'text': (text or '').strip()}, actor)
 
 
@@ -901,7 +1205,7 @@ def settle(store, rv: dict, verb: str, actor='owner') -> None:
     if tid and _action(rv) == 'publish_skill':
         from . import skillauthoring
         return skillauthoring.review_settled(store, rv, verb, actor)
-    if tid and _action(rv) in PLAYBOOKS: return playbook_answered(store, tid, actor)
+    if tid and _action(rv) == SKILL and HELD in str((store.get_task(tid) or {}).get('Tags') or ''): return skill_answered(store, tid, actor)
     if not tid: return
     # a held step dismissed: the waiting agent hears it was not done
     if _action(rv) in HELD_ACTS and verb not in ('approve', 'edit'): _gate(_action(rv)).declined(store, tid, json.loads(rv.get('DraftText') or '{}'))
@@ -957,19 +1261,30 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
     grant the permission.
 
     `final_text` is what was in the Review box when the owner approved. For a proposed
-    playbook the box shows the page itself (not the JSON envelope), so an edited page is
-    what gets filed - the owner tightening an `alone:` line before the first run is the point."""
+    skill the box shows the page itself (not the JSON envelope), so an edited page is
+    what gets filed - the owner tightening its words before the first run is the point."""
     p = json.loads(rv.get('DraftText') or '{}')
     edited = str(final_text or '').strip() and not str(final_text).lstrip().startswith('{')
     # ...a close-out's box too, EMPTY AS PROPOSED INCLUDED (the spine audit, 2026-11-09): a merge with no summary shows an empty box that
     # reads "GitHub writes the merge message" - what the owner typed into it was dropped, and GitHub wrote the message all the same
-    if edited and p.get('action') in ('write_playbook', 'amend_playbook', *CLOSEOUT): p['text'] = final_text.strip()
+    if edited and p.get('action') in (SKILL, *CLOSEOUT): p['text'] = final_text.strip()
     # a tracker close-out's box IS its comment: what the owner left there goes, emptied included (None = pressed off the card, as filed)
     if p.get('action') == 'close_item' and final_text is not None and not str(final_text).lstrip().startswith('{'): p['text'] = str(final_text).strip()
-    p = _edited(p, final_text, fields)
+    # ...a GitHub comment's box IS its words: what the owner left there is what is posted
+    if edited and p.get('action') == 'comment_issue': p['body'] = final_text.strip()
+    # ...A CHANGE'S CARD IS DRAWN FROM WHAT ITS PRESS SAVES (workflows.change_card), and one on file that draws anything else saves nothing
+    if p.get('action') in CHANGES and 'texts' in p and change_card(store, p) != p: raise RuntimeError(CHANGED)
+    p = as_left(p, final_text, fields)
     ok, why = validate(store, p)
     if not ok: raise RuntimeError(f'refused at execution: {why}')
     tid, a = rv.get('TaskId'), p['action']
+    if a == 'publish_skill':
+        from . import skillstate
+        generation = skillstate.get(store, 'generation', int(p['generation_id']))
+        if not generation or generation.get('task_id') != tid:
+            raise RuntimeError('the review does not belong to this Skill generation task')
+        if generation.get('review_id') != rv.get('ReviewId'):
+            raise RuntimeError('this Skill review is no longer the current owner review')
     before = (store._one('SELECT MAX(Id) AS n FROM audit') or {}).get('n') or 0
     try: out = _run(store, rv, p, tid, a, actor, edited, skip_checks)
     except Exception as e:                  # ...the act itself ran and failed (verdicts settles its card), never a refusal before it ran
@@ -984,25 +1299,26 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
                     (rv['ReviewId'], before, tid, actor))
     if tid: store.add_comment(tid, actor, 'human', f'APPROVED PROPOSAL ({a}): {json.dumps(out)[:600]}')   # a task-less one has no card to say it on
     store.audit('review', rv['ReviewId'], 'proposal_executed', actor, detail={'action': a, 'result': out})
-    # a workflow run that stopped for this yes goes on from that step (flow.resume) - on its own thread, as a run starts: a last
-    # agent step's first turn would otherwise hold the owner's click for as long as the agent works
+    return out
+
+
+def go_on(store, rv: dict, out: dict) -> None:
+    """A workflow run that stopped for this yes goes on from that step (flow.resume) - on its own thread, as a run starts: a last agent
+    step's first turn would otherwise hold the owner's click for as long as the agent works. Called once HIS YES IS WRITTEN DOWN, never
+    before (execute started it, 2026-11-26): a run with nothing left finished and closed its task while the card still waited, the close
+    put the card down as unanswered, and the press whose write had gone answered that it was already turned down."""
+    p = _draft(rv); a = p.get('action')
     if isinstance(p.get('flow_run'), dict) and a in ('run_tool', 'repair_workflow'):
         from . import flow, workflows
         workflows._spawn(lambda: flow.resume(store, p['flow_run'], out if a == 'run_tool' else None))
-    return out
 
 def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks: bool) -> dict:
     "The act itself, for execute."
-    if a == 'publish_skill':
-        from . import skillstate, skillpackages
-        generation = skillstate.get(store, 'generation', int(p['generation_id']))
-        if not generation or generation.get('task_id') != tid:
-            raise RuntimeError('the review does not belong to this Skill generation task')
-        out = skillpackages.publish(store, int(p['generation_id']), p['digest'], actor=actor)
-    elif a in ('land', 'open_pr', 'push_direct'):
+    if a == ASKS: return {'answers': [{'question': q['question'], 'answer': w} for q, w in zip(asks_of(p), p.get('answers') or answers_of(p))]}
+    if a in ('land', 'open_pr', 'push_direct'):
         from . import ci
         fn = {'land': ci.land, 'open_pr': ci.open_for_task, 'push_direct': ci.push_direct}[a]
-        r = fn(store, tid, actor)
+        r = fn(store, tid, actor, **({'p': p} if a == 'open_pr' else {}))      # ...a pull request as its card showed it
         out = {'pr': r.get('number'), 'branch': r.get('branch'), 'sha': (r.get('sha') or '')[:7],
                'url': r.get('url')}
         out = {k: v for k, v in out.items() if v}
@@ -1054,19 +1370,29 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
                 if not conn: raise RuntimeError(f"no {c['connector']} connector to change")
                 store.merge_connector_config(conn['ConnectorId'], {c['name']: c['value']})
                 done.append(f"{c['connector']}.{c['name']} = {c['value']}")
+            elif c['name'] == 'email_signature':                    # ...its one home, which re-signs the letters waiting for his Send
+                from .signatures import keep
+                done.append(f"email signature = {keep(store, c['value'], actor)!r}")
             else:
                 store.set_setting(c['name'], str(c['value']), actor)
                 done.append(f"{c['name']} = {c['value']}")
         out = {'changed': done}
-    elif a in ('write_playbook', 'amend_playbook'):
-        from . import playbooks
-        if a == 'amend_playbook' and p.get('block') and not edited:      # the ledger's block onto the page as it is NOW (playbook_facts)
+    elif a == 'publish_skill':
+        from . import skillpackages
+        out = skillpackages.publish(store, int(p['generation_id']), p['digest'], actor=actor)
+    elif a == SKILL:
+        from . import skills
+        if p.get('block') and not edited:      # the ledger's block onto the page as it is NOW (skill_facts)
             from .people_pages import splice
-            p['text'] = splice(playbooks.read(p['slug']) or p['text'], p['block'])
-        elif a == 'amend_playbook' and p.get('lessons') and not edited:   # ...and its lessons, onto the page as it is NOW (with_lessons)
-            p['text'] = playbooks.with_lessons(playbooks.read(p['slug']) or p['text'], p['lessons'])
-        slug = playbooks.write(p['slug'], p['text'])
-        out = {'playbook': slug, 'path': str(playbooks.folder() / f'{slug}.md')}
+            p['text'] = splice(skills.read(p['slug']) or p['text'], p['block'])
+        elif p.get('lessons') and not edited:   # ...and its lessons, onto the page as it is NOW (with_lessons)
+            p['text'] = skills.with_lessons(skills.read(p['slug']) or p['text'], p['lessons'])
+        # ...a page written whole over the one its card showed: changed since by another hand, the marks he read were against a page that is
+        # gone - not saved over it (a routine's steps the same, below)
+        elif not (p.get('block') or p.get('lessons')) and p.get('was_text') is not None and (skills.read(p['slug']) or '') != p['was_text']:
+            raise RuntimeError('this skill has changed since the card was written - nothing was saved over it')
+        slug = skills.write(p['slug'], p['text'])
+        out = {'skill': slug, 'path': str(skills.path_of(slug))}
     elif a == 'repair_workflow':
         from . import flow, workflows
         if not isinstance(p.get('flow'), list): raise RuntimeError('the repaired steps are not a list')
@@ -1088,6 +1414,26 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
         workflows.save(store, {'SourceId': int(p['source_id']), 'ConfigPatch': p['patch']}, actor)      # ...its editor's own save
         out = {'source': int(p['source_id']), 'changed': str(p.get('changes') or '')[:1200]}
     elif a in HELD_ACTS: out = _gate(a).perform(store, tid, p)
+    elif a == 'start_task':
+        from .server import new_task_from                  # ...the new_task door's own road, made and started on his press
+        out = new_task_from(int(tid), str(p['title']), str(p['ask']), str(p.get('kind') or 'general'), str(p.get('model') or ''),
+                            str(p.get('repo') or ''), actor)
+    elif a == 'use_repo':
+        from . import repochoice
+        out = repochoice.use(store, int(tid), str(p['path']), str(p.get('why') or ''), actor, mine=True)
+    elif a == 'rerun_report':
+        from .server import _rerun_report                    # ...his Run now, on his press
+        out = _rerun_report(int(p['source_id']), by=actor)
+    elif a == 'switch_ai':
+        from .server import ContinueBody, continue_work      # ...the task head's own hand-over (SwitchAi), on his press
+        out = {'ai': p.get('ai') or p['pick'], **{k: v for k, v in continue_work(int(tid), ContinueBody(pick=p['pick'])).items() if k in ('continued', 'kind')}}
+    elif a == 'move_profile':
+        from . import workstreams
+        workstreams.set_task(store, int(tid), str(p['profile']), actor)
+        out = {'profile': p['profile'], 'said': f"This task is under {p.get('name') or p['profile']} now."}
+    elif a == 'use_desktop':
+        from . import agentdesktop
+        out = agentdesktop.let(store, tid, actor)
     elif a == 'close_item':
         from . import trackers
         out = trackers.close_out(store, p)
@@ -1113,12 +1459,18 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
     else:                                   # run_tool
         from .reports import REGISTRY, resolve_cfg
         # the owner approved THIS query, so it may commit - the one road to a write on a read-level SQL card
-        cfg = {k: v for k, v in p.items() if k not in ('action', 'flow_run', 'image_path', 'result', 'network')}
+        cfg = {k: v for k, v in p.items() if k not in ('action', 'flow_run', 'image_path', 'result', 'network', PINNED)}
         if p.get('image'):
             from . import outputs
             if why := picture_why(tid, p): raise RuntimeError(f'{why} - nothing was posted')
+            if p.get(PINNED) and picture_print(tid, p) != p[PINNED]:
+                raise RuntimeError(f"{p['image']} is not the file this card was raised with - it changed after the card was shown, so nothing was posted. "
+                                   'Raise the post again with the picture it should carry')
             if p.get('type') in MEDIA: cfg['image_path'] = str(outputs.named(int(tid), p['image']))
             else: cfg.pop('image', None)          # ...a network Taskuary uploads no picture to posts the words; the card said so
         if (bad := unknown_tool(p.get('type'))): raise RuntimeError(f'{bad} - nothing was run')       # ...a card from before the gate refused it
+        # ...ON A CONNECTION SWITCHED OFF, HIS PRESS SWITCHES IT ON (the owner, 2026-11-25: "it should find a way around it"): the card said so
+        if str(p.get('connector_id') or '').isdigit() and (c := store.get_connector(int(p['connector_id']))) and not c.get('Active'):
+            store.save_connector({'ConnectorId': c['ConnectorId'], 'Active': 1}, actor)
         out = _ran(REGISTRY[p['type']](resolve_cfg(store, {**cfg, '_write': True})))
     return out

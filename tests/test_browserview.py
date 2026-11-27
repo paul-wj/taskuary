@@ -88,6 +88,22 @@ class StateTests(unittest.TestCase):
                 self.assertTrue(bv.start('slow'))
         self.assertGreater(sum(slept), 10, 'it waited past the warm budget rather than giving up on it')
 
+    def test_the_browser_stands_in_its_task_s_folder_never_where_the_server_was_started(self):
+        """Walk 19: `agent-browser screenshot proton-signup.png` wrote into the folder Taskuary was started in (the repository root there) - the
+        daemon resolves a relative path against its own working folder, and the server launched it from its own. It stands in the task's
+        outputs folder; every command the server sends it does too."""
+        from taskuary import outputs
+        terminal.SESSIONS['w19'] = SimpleNamespace(task_id=7)
+        try:
+            got, opens = [], iter([False] + [True] * 60)
+            with mock.patch.object(bv.shutil, 'which', return_value='agent-browser'), mock.patch.object(bv.spawn, 'popen', side_effect=lambda cmd, **kw: got.append(kw)),                  mock.patch.object(bv.time, 'sleep'), mock.patch.object(bv, 'state', side_effect=lambda sid, fresh=False: {'open': next(opens), 'url': '', 'port': 0}):
+                self.assertTrue(bv.start('w19', 'https://mail.example'))
+            self.assertEqual(Path(got[0]['cwd']), outputs.folder(7))
+            self.assertNotEqual(Path(got[0]['cwd']).resolve(), Path.cwd().resolve())
+            self.assertEqual(Path(bv._cli('w19')['cwd']), outputs.folder(7))
+            self.assertEqual(Path(bv._cli('no-task')['cwd']), bv.downloads('no-task'), "a session no task names: scratch, never where the server stands")
+        finally: terminal.SESSIONS.pop('w19', None)
+
     @pytest.mark.real_chrome
     def test_the_session_s_chrome_is_a_real_one_taskuary_starts_and_agent_browser_attaches_to(self):
         """Cloudflare looped on agent-browser's own headless launch, whose navigator.webdriver is TRUE (the owner, 2026-11-16): the
@@ -100,9 +116,9 @@ class StateTests(unittest.TestCase):
             # ...on a computer with no Chrome installed: the installed one comes first (chrome_exe), so it is out of the way for the whole launch
             no_chrome = mock.patch.object(bv, 'installed_chrome', return_value=''); no_chrome.start(); self.addCleanup(no_chrome.stop)
             self.assertEqual(bv.chrome_exe(), str(exe))
-            e = bv.env('rc1'); port = bv.cdp_port('rc1')
-            self.assertEqual(e['AGENT_BROWSER_CDP'], str(port)); self.assertNotIn('AGENT_BROWSER_USER_AGENT', e)
-            self.assertEqual(bv.env('rc1')['AGENT_BROWSER_CDP'], str(port), 'one port per session, whoever asks')
+            e = bv._cli_env('rc1'); port = bv.cdp_port('rc1')
+            self.assertEqual(e['AGENT_BROWSER_CDP'], str(port)); self.assertNotIn('AGENT_BROWSER_USER_AGENT', bv.env('rc1'))
+            self.assertEqual(bv.cdp('rc1')['AGENT_BROWSER_CDP'], str(port), 'one port per session, whoever asks')
             started, up = [], iter([False, False, True])
             with mock.patch.object(bv, '_spawn_chrome', side_effect=lambda argv, hidden=True: started.append(argv) or 4242),                  mock.patch.object(bv, '_listening', side_effect=lambda p, timeout=.25: next(up, True)), mock.patch.object(bv.time, 'sleep'):
                 self.assertEqual(bv.real_chrome('rc1'), 4242)
@@ -118,7 +134,7 @@ class StateTests(unittest.TestCase):
             prefs = json.loads((prof / 'Default' / 'Preferences').read_text(encoding='utf-8'))
             self.assertEqual(Path(prefs['download']['default_directory']).resolve(), bv.downloads('rc1').resolve())     # ...the session's own, however spelled (/var is /private/var on macOS)
             self.assertFalse(prefs['download']['prompt_for_download'])
-            self.assertTrue(bv.downloads().is_dir()); self.assertIn(str(bv.downloads()), bv.brief())
+            self.assertTrue(bv.downloads().is_dir()); self.assertIn(str(bv.downloads()), bv.guide())
             from taskuary import readgate
             self.assertTrue(any(readgate._in(readgate._n(bv.downloads() / 'invoice.pdf'), r) for r in readgate.own(None, None)))
 
@@ -132,9 +148,9 @@ class StateTests(unittest.TestCase):
             (self.tmp / 'tq-early.stream').write_text(str(stream.getsockname()[1])); (self.tmp / 'tq-early.pid').write_text('5150')
             self.assertFalse(bv.state('early', fresh=True)['open'], 'a helper with no Chrome under it is no open browser')
             done, chrome = [], {'up': False}
-            def run(argv, **kw): done.append(('run', argv[-1])); return mock.Mock(returncode=0)
+            def run(argv, wait, **kw): done.append(('run', argv[-1])); return 0, ''
             def launched(sid): chrome['up'] = True; done.append(('chrome', sid)); return 4242
-            with mock.patch.object(bv, 'program', return_value='ab'), mock.patch.object(bv.spawn, 'run', side_effect=run),                  mock.patch.object(bv, '_end_daemon', side_effect=lambda sid, pids=None: done.append(('end', pids))),                  mock.patch.object(bv, 'real_chrome', side_effect=launched), mock.patch.object(bv, 'chrome_up', side_effect=lambda sid: chrome['up']),                  mock.patch.object(bv.spawn, 'popen', side_effect=lambda cmd, **kw: done.append(('open', cmd[-1]))), mock.patch.object(bv, 'clock'):
+            with mock.patch.object(bv, 'program', return_value='ab'), mock.patch.object(bv.spawn, 'output', side_effect=run),                  mock.patch.object(bv, '_end_daemon', side_effect=lambda sid, pids=None: done.append(('end', pids))),                  mock.patch.object(bv, 'real_chrome', side_effect=launched), mock.patch.object(bv, 'chrome_up', side_effect=lambda sid: chrome['up']),                  mock.patch.object(bv.spawn, 'popen', side_effect=lambda cmd, **kw: done.append(('open', cmd[-1]))), mock.patch.object(bv, 'clock'):
                 self.assertTrue(bv.start('early', 'https://portal.example'))
             self.assertEqual([d[0] for d in done], ['run', 'end', 'chrome', 'open'])      # the helper closed, then the Chrome, then the page
             self.assertEqual(done[1][1], [5150])
@@ -188,11 +204,12 @@ class StateTests(unittest.TestCase):
     def test_close_is_a_no_op_without_the_tool_or_a_session(self):
         with mock.patch('shutil.which', return_value=None), mock.patch('subprocess.run') as run:
             bv.close('s9'); run.assert_not_called()
-        with mock.patch('shutil.which', return_value='/x/agent-browser'), mock.patch('subprocess.run') as run:
+        with mock.patch('shutil.which', return_value='/x/agent-browser'), mock.patch.object(bv.spawn, 'output', return_value=(0, '')) as run:
             bv.close('s9'); run.assert_not_called()                # no .stream file: nothing to close
             (self.tmp / 'tq-s9.stream').write_text('1234')
             bv.close('s9')
-            self.assertEqual(run.call_args.args[0], ['/x/agent-browser', '--session', 'tq-s9', 'close'])
+            # ...its output to a file within CLOSE_WAIT: piped, a helper it left held close() past its timeout (45 s measured, for ever at IDLE_MS 0)
+            self.assertEqual(run.call_args.args[:2], (['/x/agent-browser', '--session', 'tq-s9', 'close'], bv.CLOSE_WAIT))
 
 
 class RelayTests(unittest.TestCase):
@@ -227,6 +244,43 @@ class RelayTests(unittest.TestCase):
         self.assertEqual((bv._frame(bv.LAST['r1']['frame']), bv.LAST['r1']['url']), (JPEG, 'https://example.test/login'))
         self.assertEqual(bv.state('r1', fresh=True)['url'], 'https://example.test/login')
 
+    def test_the_tab_handed_to_him_is_the_view_while_the_agent_works_another(self):
+        """The owner, 2026-11-23: a sign-in was handed to him on one site's tab, the agent opened LinkedIn in a new tab, and the view - the
+        browser's active tab - showed LinkedIn under "Sign in to X". While his step waits on its tab, that tab is cast to the view and his
+        keys go to it; the agent's own tab sends the view nothing."""
+        cast, mine = [], base64.b64encode(b'his sign-in page').decode()
+        async def fake_cast(ws, sid, tab, inbox):
+            cast.append(tab)
+            await ws.send_text(json.dumps({'type': 'frame', 'seq': 1, 'data': mine, 'metadata': {}}))
+            while True: cast.append(json.loads(await inbox.get()))
+        with mock.patch.object(bv, 'his_tab', return_value='H1'), mock.patch.object(bv, 'active_tab', return_value='A2'), \
+             mock.patch.object(bv, 'front', return_value=True), mock.patch.object(bv, '_cast', fake_cast), mock.patch.object(bv, 'tab_url', return_value=''), \
+             c.websocket_connect('/api/terminals/r1/browser/ws') as ws:
+            frames, end = [], time.time() + 5
+            while time.time() < end and not frames:
+                m = ws.receive_json()
+                if m['type'] == 'frame': frames.append(m['data'])
+            ws.send_json({'type': 'input_keyboard', 'eventType': 'keyDown', 'key': 'a', 'text': 'a'})
+            end = time.time() + 5
+            while time.time() < end and len(cast) < 2: time.sleep(.05)
+        self.assertEqual(frames, [mine], "the agent's own tab was drawn over his step")
+        self.assertEqual(cast[:2], ['H1', {'type': 'input_keyboard', 'eventType': 'keyDown', 'key': 'a', 'text': 'a'}])
+        self.assertEqual(self.fake.got, [{'type': 'ack', 'seq': 7}], "the agent's frame is acked and dropped; his keys never reach its tab")
+
+    def test_his_tab_is_the_open_tab_a_step_waits_on_him_in(self):
+        from taskuary import browsergate
+        ts = [{'id': 'A2', 'url': 'https://www.linkedin.example/feed'}, {'id': 'H1', 'url': 'https://x.example/login'}]
+        with mock.patch.object(terminal, 'get', return_value=SimpleNamespace(task_id=7)), mock.patch.object(bv, 'pages', return_value=ts):
+            with mock.patch.object(browsergate, 'owner_tabs', return_value={'H1': 'x.example'}): self.assertEqual(bv.his_tab('r1'), 'H1')
+            with mock.patch.object(browsergate, 'owner_tabs', return_value={'gone': 'x.example', '': 'a card naming no tab'}): self.assertEqual(bv.his_tab('r1'), '')
+        # ...the strip marks the tab shown, by its address; and his input is DevTools' own call on that tab
+        tabs = json.dumps({'type': 'tabs', 'tabs': [{'tabId': 't1', 'url': 'https://x.example/login', 'active': False},
+                                                    {'tabId': 't2', 'url': 'https://www.linkedin.example/feed', 'active': True}]})
+        self.assertEqual([t['active'] for t in json.loads(bv.shown_tabs(tabs, 'H1', ts))['tabs']], [True, False])
+        self.assertEqual(bv.to_cdp({'type': 'input_mouse', 'eventType': 'mousePressed', 'x': 4, 'y': 5, 'button': 'left', 'clickCount': 1}),
+                         ('Input.dispatchMouseEvent', {'x': 4, 'y': 5, 'button': 'left', 'clickCount': 1, 'type': 'mousePressed'}))
+        self.assertIsNone(bv.to_cdp({'type': 'ack', 'seq': 3}))
+
     def test_a_press_on_a_tab_switches_the_browser_to_it_and_is_never_sent_to_the_page(self):
         """The owner, 2026-11-15: several sites in one task are tabs of its one browser, and the view lists them. A press on one reaches
         agent-browser as `tab <id>` - an argv list, its own id form only - and never the stream, which has no such message; while a sign-in
@@ -243,7 +297,7 @@ class RelayTests(unittest.TestCase):
             self.assertTrue(bv.switch_tab('r1', 't3'))
             self.assertEqual(po.call_args.args[0], ['agent-browser', '--session', 'tq-r1', 'tab', 't3'])
             self.assertFalse(bv.switch_tab('r1', 't3; rm'))
-        self.assertIn('agent-browser tab new <url>', bv.brief()); self.assertIn('agent-browser tab new <url>', bv.guide())
+        self.assertIn('agent-browser tab new <url>', bv.guide())
 
     def test_a_page_the_agent_went_to_after_the_view_closed_is_the_page_named(self):
         """The view was shown for a sign-in and closed; the agent then went to ANOTHER site, with no relay to hear it. The address the view
@@ -423,9 +477,8 @@ class NavigateTests(unittest.TestCase):
         self.assertEqual(kw.get('stdin'), bv.subprocess.DEVNULL)
 
     def test_a_refusal_says_what_agent_browser_said(self):
-        log = Path(bv.tempfile.gettempdir()) / 'tq-s-open.log'
         def popen(argv, **kw):
-            log.write_bytes(b'noise\nError: net::ERR_NAME_NOT_RESOLVED\n')
+            kw['stdout'].write(b'noise\nError: net::ERR_NAME_NOT_RESOLVED\n')
             return mock.Mock(wait=mock.Mock(return_value=1), kill=mock.Mock())
         with mock.patch.object(bv.spawn, 'popen', side_effect=popen):
             with self.assertRaises(ValueError) as e: bv.navigate('s', 'nope.test')
@@ -501,10 +554,10 @@ class StuckLoadTests(unittest.TestCase):
         self.assertTrue(str(e.exception).startswith('It had not finished loading')); self.assertIn('Taskuary stopped it', str(e.exception))
 
     def test_the_agents_next_browser_line_stops_it_first(self):
-        from taskuary import browsergate, gatecmd
+        from taskuary import browsergate, gate
         bv._BEGAN['st'] = time.time() - bv.STUCK - 5
         with mock.patch.object(bv, 'on_demand'), mock.patch.object(browsergate, 'check', return_value={}):
-            gatecmd.judge(MemoryStore(), 1, 'st', 'agent-browser get url')
+            gate.judge(MemoryStore(), 1, 'st', 'agent-browser get url')
         self.assertEqual(self.stopped, ['A'])
 
     def test_the_sign_in_reaches_chrome_on_its_own_port_not_through_agent_browser(self):
@@ -550,21 +603,7 @@ def test_google_s_own_refusal_page_is_said_with_the_way_past_it():
     assert told == [bv.REFUSED_WHAT] and 'email and password' in told[0]
 
 
-# A HUMAN CHECK IS HIS, AT ONCE, and A DOWNLOAD IS TOLD BY ITS PATH (the owner, 2026-11-19: "the browser must work like a regular user's; no dead ends")
-def test_a_human_check_that_stands_is_handed_to_him_once_and_one_that_clears_is_nobodys():
-    tl = [{'type': 'page', 'id': 'P', 'url': 'https://portal.vendor.example/login'},
-          {'type': 'iframe', 'id': 'F', 'url': 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile'}]
-    handed, told, seen = [], [], {}
-    with mock.patch.object(bv, '_devtools', return_value=tl), mock.patch.object(bv, 'active_tab', return_value='P'), \
-            mock.patch.object(bv, 'HUMAN_AFTER', 0), mock.patch('taskuary.terminal.get', return_value=SimpleNamespace(task_id=7)), \
-            mock.patch.object(bv, 'your_turn', side_effect=lambda st, tid, sid, what='': handed.append(what)), \
-            mock.patch('taskuary.browsergate._tell', side_effect=lambda st, tid, text, **k: told.append(text)):
-        assert bv.human('hc1', seen) and not bv.human('hc1', seen)                       # once a page
-    assert handed == [bv.HUMAN_WHAT] and "I'm done" in handed[0] and 'wait' in told[0]
-    with mock.patch.object(bv, '_devtools', return_value=tl[:1]), mock.patch.object(bv, 'active_tab', return_value='P'):
-        assert not bv.human('hc2', {})                                                    # no check on the page: nothing
-
-
+# A DOWNLOAD IS TOLD BY ITS PATH (the owner, 2026-11-19: "the browser must work like a regular user's; no dead ends")
 def test_a_finished_download_is_told_by_its_path(tmp_path):
     told = []
     with mock.patch.object(bv, 'downloads', return_value=tmp_path), mock.patch('taskuary.terminal.get', return_value=SimpleNamespace(task_id=7)), \
@@ -574,3 +613,44 @@ def test_a_finished_download_is_told_by_its_path(tmp_path):
         assert told == []                                                                 # still coming
         (tmp_path / 'statement.pdf').write_text('x'); bv.arrived('dl1', had)
     assert len(told) == 1 and str(tmp_path / 'statement.pdf') in told[0] and 'outputs folder' in told[0]
+
+
+# A BROWSER THAT HANGS OR WILL NOT START (a HIPAA AI walk on another user's computer, 2026-11-25: "Opening whois.com in the browser" spun for
+# over a minute and the app froze) - measured on a throwaway home with a stand-in Chrome: five views onto a Chrome that took connections and
+# never answered held every request of the app for 15 s; a Chrome that never answered, or closed as it started, took 102 s to be said
+def test_a_view_opening_onto_a_hung_browser_never_holds_the_event_loop():
+    ticks = []
+    def hung(sid, fresh=False): time.sleep(.6); return {'open': False, 'url': '', 'port': 0}
+    class View:
+        async def close(self, code=None): pass
+    async def main():
+        async def tick():
+            for _ in range(12): ticks.append(time.monotonic()); await asyncio.sleep(.05)
+        t = asyncio.create_task(tick()); await asyncio.sleep(0)
+        await asyncio.gather(bv.relay(View(), 'hung'), t)
+    with mock.patch.object(bv, 'state', side_effect=hung): asyncio.run(main())
+    assert max(b - a for a, b in zip(ticks, ticks[1:])) < .4, 'every socket and request of the app waited on the browser'
+
+
+@pytest.mark.real_chrome
+def test_a_chrome_that_never_answers_is_given_its_wait_in_wall_time_whatever_a_probe_costs():
+    tried = []
+    def probe(port, timeout=.25): time.sleep(.2); return False             # Windows: a port nobody listens on costs the whole probe
+    with mock.patch.object(bv, 'chrome_exe', return_value='chrome.exe'), mock.patch.object(bv, '_spawn_chrome', side_effect=lambda a, hidden=True: tried.append(hidden) or 4242), \
+            mock.patch.object(bv, '_listening', side_effect=probe), mock.patch.object(bv, '_end_daemon'), \
+            mock.patch.object(bv, 'LAUNCH_WAIT', 1.0), mock.patch.object(bv, 'LAUNCH_POLL', .05):
+        t0 = time.monotonic(); assert bv.real_chrome('slow') is None; took = time.monotonic() - t0
+    assert took < 2.0, f'{took:.1f}s for a 1 s launch'
+    assert tried == ([True, False] if os.name == 'nt' else [False])       # ...its own desktop, then off the screen, both within the one wait
+    assert 'did not answer within' in bv.failed_why('slow')
+
+
+@pytest.mark.real_chrome
+def test_a_chrome_that_closes_as_it_starts_is_a_failure_at_once_said_by_its_exit_code():
+    def spawned(argv, hidden=True): bv._KIDS[99] = lambda: 3; return 99
+    with mock.patch.object(bv, 'chrome_exe', return_value='chrome.exe'), mock.patch.object(bv, '_spawn_chrome', side_effect=spawned), \
+            mock.patch.object(bv, '_listening', return_value=False), mock.patch.object(bv, '_end_daemon') as ended:
+        t0 = time.monotonic(); assert bv.real_chrome('gone') is None
+    assert time.monotonic() - t0 < 2.0
+    assert 'closed as soon as it started (exit code 3)' in bv.failed_why('gone') and not ended.called
+    assert 99 not in bv._KIDS

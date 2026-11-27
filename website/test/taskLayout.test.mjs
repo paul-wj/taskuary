@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { SECTIONS, homeSection, liveTerminal, soloTodo, cameFrom, cameChip, agentStatus, agentWord, answeredOutside, reportLine, writeupAt, fromStatus, TAB_MOST, focusOf, fromLine, holderName, layoutOf, mainOf, nextInDrawer, sameWords, sectionFade, waitingOn, workPane } from "../src/taskLayout.js";
+import { SECTIONS, homeSection, liveTerminal, soloTodo, cameFrom, cameChip, judgedMarks, agentStatus, agentWord, answeredOutside, reportLine, writeupAt, fromStatus, TAB_MOST, focusOf, fromLine, holderName, layoutOf, mainOf, nextInDrawer, sameWords, sectionFade, waitingOn, workPane } from "../src/taskLayout.js";
 import { STAGE, sectionOf } from "../src/stages.js";
 import { taskSource } from "./taskSource.mjs";
 
@@ -229,8 +229,8 @@ test("the two sections come in the flow's order, and each closed tab says where 
   const tp = fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
   assert.match(tp, /const stoppedRun = !term\?\.alive && \(detail\?\.runEnded === "stopped" \|\| \["saved", "interrupted"\]\.includes\(detail\?\.agentStory\?\.kind\)\);/);
   assert.match(tp, /failed: failedRun, stopped: stoppedRun \|\| agentState === AGENT\.stopped,/);
-  assert.deepEqual(agentStatus({ profile: "assistant", word: "finished", said: "Wrote a one-page plan.", made: "Plan for a first box" }),
-    { lines: ["assistant · finished", "Wrote a one-page plan.", "Made: Plan for a first box"], foot: "✓ Done" });
+  assert.deepEqual(agentStatus({ name: "Agent", word: "finished", said: "Wrote a one-page plan.", made: "Plan for a first box" }),
+    { lines: ["Agent · finished", "Wrote a one-page plan.", "Made: Plan for a first box"], foot: "✓ Done" });
   assert.deepEqual(agentStatus({}), { lines: ["not started"], foot: "" });
 });
 
@@ -308,8 +308,9 @@ test("no task kind or state lays a Close out section: Came from and the chat, a 
   assert.doesNotMatch(from, /<NoAgentChat /);
   assert.match(src, /\{!solo && slot\("agent", <Box data-tq-work=/);
   // ...the task's own moves ride the chat's strip
-  assert.match(src, /function useTaskMoves\(sec\) \{/);
-  assert.match(src, /close = sec === "agent";/);
+  const row = fs.readFileSync(new URL("../src/TaskRow.jsx", import.meta.url), "utf8");
+  assert.match(row, /function useTaskMoves\(sec\) \{/);
+  assert.match(row, /close = sec === "agent";/);
 });
 
 // ONE RULE FOR EVERY KIND (the owner, 2026-11-08): any agent, turn or draft on a task opens it on its chat with Came from the thin arrow tab -
@@ -359,4 +360,36 @@ test("a chat that lands after the task's first read opens the chat, and stays th
   const page = taskSource();
   assert.match(page, /chatSeen\.current = chatLatch\(chatSeen\.current, selected, anyChat && detail\?\.task\?\.TaskId === selected\)/);
   assert.match(page, /const mainHeld = useRef\(\{ key: null, main: null, sec: null \}\), mainKey = `[^`]*\|\$\{chatSeen\.current\.on\}`/);
+});
+
+// THE OWNER, 2026-11-23: "I hit Try again on the canvas and the whole thing flickered". A first start that failed left its failure in the chat and
+// the run marked failed; its Try again read the page again, found an agent "started", and ran as Run another agent - a fresh conversation, the
+// chat's key bumped and the whole chat remounted under the press. The press is read once; its Try again replays what it read
+test("a start's Try again is the same start - never another agent read off the page its own failure changed", async () => {
+  const { startsAnother } = await import("../src/taskLayout.js");
+  const first = startsAnother({ report: false, transcript: false, alive: false, started: false });
+  assert.equal(first, false, "a first start is no other agent");
+  assert.equal(startsAnother({ started: true }, first), false, "its retry, after its failure made the chat 'started', is still the first start");
+  assert.equal(startsAnother({ started: true }), true, "a press on a task an agent already worked is another agent");
+  assert.equal(startsAnother({}, true), true, "and its retry stays another");
+  assert.equal(startsAnother({ alive: true }, { type: "click" }), true, "a press's click event is no answer of its own");
+});
+
+// A "LAST, FIRST" SENDER IS CALLED BY THEIR NAME (the owner's live task, 2026-11-25: Outlook's "Moreno, Gail at Partner Co" read as written,
+// and its Trust "Trust Moreno,") - who it came from, the spine's line and the chat's run all read personName
+test("an Outlook 'Last, First at Org' sender reads First Last wherever the page names them", async () => {
+  const { senderOf } = await import("../src/taskSources.js");
+  const m = { Channel: "email", SourceName: "alex@northwind.example", FromName: "Moreno, Gail at Partner Co", FromEmail: "gail@partner.example" };
+  assert.equal(cameFrom(m), "Gail Moreno");
+  assert.equal(fromLine({ sender: m, count: 2 }), "Gail Moreno · 2 messages");
+  assert.equal(senderOf(m), "Gail Moreno");
+  assert.equal(waitingOn({ task: { Status: "waiting", Assignee: "person:gail@partner.example" }, messages: [m] })?.name, "Gail Moreno");
+});
+
+// THE MESSAGE'S MARKS - how hard, how sensitive - are said in one place, beside who sent it (the owner, 2026-11-25: under the attachments pill)
+test("triage's marks on a message: only where not ordinary", () => {
+  assert.equal(judgedMarks({ difficulty: "hard", data_class: "sensitive" }), "hard work · sensitive data");
+  assert.equal(judgedMarks({ data_class: "sensitive" }), "sensitive data");
+  assert.equal(judgedMarks({ difficulty: "standard", data_class: "ordinary" }), "");
+  assert.equal(judgedMarks(null), "");
 });

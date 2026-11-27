@@ -117,7 +117,7 @@ def test_a_routines_email_goes_from_its_run_task_and_opens_nothing_else(db):
     steps = [read_dupes(db), {'id': 's2', 'kind': 'ai', 'label': 'Sum up', 'prompt': 'Summarise {{s1}}', 'output': 'text'},
              {'id': 's3', 'kind': 'draft', 'label': 'Email Gail', 'to': 'gail@northwind.example', 'about': 'This week: {{s2}}', 'subject': 'Duplicate bills'}]
     src = source(s, steps); tid = run_task(s, src); sent = []
-    with mailer(sent), mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learn.learn_from'):
+    with mailer(sent), mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learning.learn_from'):
         workflows._STARTING.add(tid)                                                # the run has its task, as workflows.run marks it
         try: out = flow.execute(s, src, tid, 'manual', llm=answering('One duplicate: Payworth INV-1.', 'Hi Gail, one duplicate this week: Payworth INV-1. Alex'))
         finally: workflows._STARTING.discard(tid)
@@ -351,7 +351,8 @@ def test_testing_a_write_step_dry_runs_it():
     steps = [{'id': 's1', 'kind': 'source', 'label': 'Put', 'type': 'smb_write', 'path': 'out/{{run.date}}.csv'}]
     with mock.patch.object(server, 'store', s):
         r = TestClient(server.app).post('/api/workflows/step-test', json={'flow': steps, 'index': 0}).json()
-    assert r['status'] == 'dry' and r['head'] == 'would run smb_write' and '"path": "out/20' in r['body']
+    # ...and says it would wait: a write to a connected system waits for his press, whatever the card's Authority (the owner, 2026-11-25)
+    assert r['status'] == 'dry' and r['head'] == 'would wait for your yes: smb_write' and '"path": "out/20' in r['body']
 
 
 # ── repair: a workflow is a goal ────────────────────────────────────────────────────────────────────────────────────────
@@ -419,7 +420,7 @@ def test_a_repair_that_changes_the_goal_waits_for_the_owner(site):
         proposals.execute(s, {'ReviewId': 0, 'TaskId': tid, 'DraftText': json.dumps(p)})      # the owner's yes keeps it
         assert workflows.cfg_of(s.get_source(src['SourceId']))['flow'] == fixed()
         with pytest.raises(RuntimeError, match='do not hold'):                              # a list that does not hold is never saved
-            proposals.execute(s, {'ReviewId': 0, 'TaskId': tid, 'DraftText': json.dumps({**p, 'was': fixed(), 'flow': [{'id': 's1', 'kind': 'task'}]})})
+            proposals.execute(s, {'ReviewId': 0, 'TaskId': tid, 'DraftText': json.dumps(workflows.change_card({**p, 'was': fixed(), 'flow': [{'id': 's1', 'kind': 'task'}]}))})
 
 
 def test_repairs_stop_at_the_cap_and_never_loop(site):

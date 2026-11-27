@@ -114,7 +114,7 @@ class GithubIngestTests(unittest.TestCase):
             out = ingest_message(s, dict(ask), llm=reply_llm)
         self.assertEqual(out['status'], 'created')
         self.assertEqual(s.get_task(out['task_id'])['Kind'], 'reply'); self.assertIsNotNone(s.pending_review(out['task_id']))
-        self.assertIn('GitHub replies are off', s.feed()[0]['RouteReason'])
+        self.assertNotIn('GitHub replies are off', s.feed()[0]['RouteReason'])      # ...and nothing stands between it and his Send
         s2 = self._store(True)
         self.assertEqual(ingest_message(s2, dict(ask), llm=reply_llm)['status'], 'created')
         # the route row carries the classifier's verdict verbatim - the panel's why-it's-here line
@@ -123,9 +123,7 @@ class GithubIngestTests(unittest.TestCase):
     def test_approving_a_github_reply_posts_a_comment_only_when_allowed(self):
         from taskuary import outbound
         msg = {'Channel': 'github', 'ExternalId': 'gh:o/app#7', 'FromEmail': 'x@users.noreply.github.com'}
-        with self.assertRaises(RuntimeError):
-            outbound.reply_to_message(self._store(False), msg, 'answer')     # off: never posts
-        s = self._store(True)
+        s = self._store(False)                                              # ...his Send is the say-so, whatever a card switch said
         gh = next(x for x in s.list_connectors() if x['Type'] == 'github')
         s.save_connector({'ConnectorId': gh['ConnectorId'], 'Secret': 'ghp_x'}, 'o')
         seen = {}
@@ -625,35 +623,13 @@ class ApiTests(unittest.TestCase):
         picks = [b['pick'] for b in body['general_brains']]
         self.assertEqual(len(picks), len(set(picks)))
 
-    def test_agents_ui_flow_persists_to_config(self):
-        self.assertEqual(c.put('/api/cli/connections/uitest-cli', json={
-            'cmd': 'uitest-cli', 'args': ['-p'], 'resume_args': ['--resume'], 'timeout': 900}).status_code, 200)
-        prof = {'provider': 'cli:uitest-cli', 'model': 'sonnet',
-                'cwd_map': {'o/r': 'C:/src/r'}, 'kind': 'coding',
-                'purpose': 'writes and changes code, in a repository'}
-        self.assertEqual(c.put('/api/agents/uitest', json=prof).json(),
-                         {'ok': True, 'rules_doc': 'coding'})
-        # the model names the BRAIN's gear, so it lands on the connection and leaves the worker:
-        # a profile has nothing to do with which model runs it (the 2026-09-16 spec)
-        role = {k: v for k, v in prof.items() if k not in ('model', 'provider')}
-        self.assertEqual(c.get('/api/agents').json()['config']['uitest'], role)
-        self.assertTrue(any(a['Name'] == 'uitest' for a in c.get('/api/agents').json()['data']))
-        self.assertEqual(config.load()['agents']['uitest'], role)  # written to config.toml
-        self.assertEqual(config.load()['cli_connections']['uitest-cli']['model'], 'sonnet')
-        self.assertEqual(json.loads(server.store.get_setting('profile_brains'))['uitest'], 'uitest-cli')   # the CLI is the role's brain
-        self.assertEqual(c.put('/api/agents/bad', json={'provider': 'cli:not-connected'}).status_code, 422)   # a brain that is not there
-        self.assertTrue(c.delete('/api/agents/uitest').json()['ok'])
-        self.assertNotIn('uitest', config.load().get('agents', {}))
-        self.assertEqual(c.delete('/api/cli/connections/uitest-cli').status_code, 200)
-        self.assertEqual(c.delete('/api/agents/uitest').status_code, 404)
-
-    def test_put_agent_does_not_persist_env_server(self):
-        """The Docker overlay lives on the shared cfg object that put_agent save()s — disk [server] must survive."""
+    def test_a_config_save_does_not_persist_env_server(self):
+        """The Docker overlay lives on the shared cfg object a route save()s (a CLI connection here) — disk [server] must survive."""
         try: import tomllib
         except ImportError: import tomli as tomllib
         path = config.home() / 'config.toml'
         previous = path.read_text(encoding='utf-8') if path.exists() else None
-        stored = {'host': '127.0.0.1', 'port': 7787, 'token': 'stored-secret', 'allowed_hosts': 'testserver'}
+        stored = {'host': '127.0.0.1', 'port': 7787, 'allowed_hosts': 'testserver'}     # ...an older build's token is taken off (config._owner_token)
         # allowed_hosts rides along: rewriting [server] wholesale used to drop the name the test
         # client calls this server by, and every later test in the process was refused at the Host
         path.write_text('[server]\nhost = "127.0.0.1"\nport = 7787\ntoken = "stored-secret"\nallowed_hosts = "testserver"\n', encoding='utf-8')
@@ -661,22 +637,23 @@ class ApiTests(unittest.TestCase):
         try:
             with mock.patch.dict('os.environ', {'TASKUARY_HOST': '0.0.0.0', 'TASKUARY_TOKEN': 'from-env'}):
                 server.cfg['server'] = dict(config.load()['server'])
-                self.assertEqual(c.put('/api/agents/overlay-api', json={'cmd': 'echo', 'timeout': 5},
+                self.assertEqual(c.put('/api/cli/connections/overlay-cli', json={'cmd': 'overlay-echo-cli', 'timeout': 5},
                                        headers={'X-Taskuary-Token': 'from-env'}).status_code, 200)
                 self.assertEqual((server.cfg['server']['host'], server.cfg['server']['token']),
                                  ('0.0.0.0', 'from-env'))
             disk = tomllib.loads(path.read_text(encoding='utf-8'))
             self.assertTrue(disk['server'].pop('agent_token', None))     # minted on load, belongs on disk
             self.assertEqual(disk['server'], stored)
-            self.assertNotIn('provider', disk['agents']['overlay-api'])     # a profile names no CLI; echo is its brain
-            self.assertEqual(disk['cli_connections']['echo']['cmd'], 'echo')
+            self.assertEqual(disk['cli_connections']['overlay-cli']['cmd'], 'overlay-echo-cli')
         finally:
             server.cfg['server'] = old_server
-            (server.cfg.get('agents') or {}).pop('overlay-api', None)
+            (server.cfg.get('cli_connections') or {}).pop('overlay-cli', None)
             if previous is None: path.unlink(missing_ok=True)
             else: path.write_text(previous, encoding='utf-8')
 
     def test_sources_crud_run_and_delete(self):
+        from taskuary import scopes                       # ...a stand-in that reads, declared so (an undeclared one waits as a write)
+        p = mock.patch.dict(scopes.ACTIONS, {'_t': 'read'}); p.start(); self.addCleanup(p.stop)
         REGISTRY['_t'] = lambda cfg: ('2 rows', 'x\ny')
         try:
             cfg = {'type': '_t', 'title': 'T', 'every_minutes': 30}
@@ -888,9 +865,11 @@ class ApiTests(unittest.TestCase):
         with teaching('Export job noise from vendor.com is never a task for you'):
             r = c.post(f'/api/tasks/{tid}/not-a-task').json()
         self.assertEqual(c.get(f'/api/tasks/{tid}').status_code, 404)
-        # ...and what the verdict teaches is a line in LEARNED.md, where every reader reads it (memorylines, 2026-10-27)
+        # ...and what the verdict teaches is kept as a lesson; one press is one episode (the owner, 2026-11-24), not yet a line in use
+        from taskuary import memory
         self.assertTrue(r['learned']['source'].startswith('msg'))
-        self.assertIn('Export job noise from vendor.com is never a task for you', server.store.get_doc('learned'))
+        self.assertIn('Export job noise from vendor.com is never a task for you', [l['text'] for l in memory.lessons(server.store)])
+        self.assertNotIn('Export job noise from vendor.com is never a task for you', server.store.get_doc('learned'))
         self.assertNotIn('policy', r['learned'])
         self.assertEqual(len(c.get('/api/policies').json()['data']), before)      # nobody was muted
         self.assertFalse(any(p['Pattern'] == 'noise@vendor.com' for p in c.get('/api/policies').json()['data']))
@@ -968,29 +947,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(c.post(f'/api/messages/{mid}/not-mine', json={'scope': 'weird'}).status_code, 422)
 
     def test_editing_a_draft_teaches_learned_md(self):
-        """The README's promise, made true: your edit to a draft leaves a lesson behind - a
-        hypothesis in LEARNED.md, written by the triage brain the moment you decide."""
+        """The README's promise, made true: your edit to a draft leaves a lesson behind - a learned line
+        citing the review, written the moment you decide (in use once he confirms it)."""
         tid = c.post('/api/tasks', json={'Title': 'a question'}).json()['taskId']
         server.store.add_review({'TaskId': tid, 'Kind': 'draft', 'Status': 'pending', 'Reason': 'r',
                                  'DraftText': 'Dear sir, I will most certainly look into it.'})
         rid = next(r['ReviewId'] for r in c.get('/api/reviews', params={'status': 'pending'}).json()['data']
                    if r['TaskId'] == tid)
-        bullet = f'- {{{{owner_first}}}} drops formal openers. [s:2 | ev: rv{rid} | seen: 2026-08-21]'
+        from taskuary import memory
         seen = {}
-        fake = lambda sys_, usr, **kw: seen.update(usr=usr) or bullet
+        fake = lambda sys_, usr, **kw: seen.update(usr=usr) or json.dumps({'line': 'You drop formal openers.', 'subject': 'formal openers'})
         with mock.patch('taskuary.llm.build_llm', return_value=fake):
             r = c.post(f'/api/reviews/{rid}/decide', json={'verb': 'approve', 'final_text': 'On it.'})
         self.assertEqual(r.json()['status'], 'edited')            # the diff, not the verb, says edited
         self.assertIn('DRAFT:', seen['usr']); self.assertIn('On it.', seen['usr'])   # the edit IS the lesson
-        self.assertIn(bullet[:-1] + ' | k: owner first drops formal openers]', server.store.get_doc('learned'))   # keyed on the way in
+        learned = lambda: [r for r in memory.rows(server.store, memory.INFERRED) if f'rv{rid}' in r['ev']]
+        self.assertEqual([r['Text'] for r in learned()], ['You drop formal openers.'])        # a learned line, citing the review
         # and a plain approve teaches nothing hot-path: it is aggregate confirmation, counted at reflection
+        before = memory.rows(server.store, memory.INFERRED)
         server.store.add_review({'TaskId': tid, 'Kind': 'draft', 'Status': 'pending', 'Reason': 'r', 'DraftText': 'ok'})
         rid2 = next(r2['ReviewId'] for r2 in c.get('/api/reviews', params={'status': 'pending'}).json()['data']
                     if r2['TaskId'] == tid)
-        before = server.store.get_doc('learned')
         with mock.patch('taskuary.llm.build_llm', return_value=fake):
             c.post(f'/api/reviews/{rid2}/decide', json={'verb': 'approve', 'final_text': None})
-        self.assertEqual(server.store.get_doc('learned'), before)
+        self.assertEqual(memory.rows(server.store, memory.INFERRED), before)
 
     def test_ingest_status_heals_ghost_running(self):
         # a poll that died with the app used to leave 'running' behind forever - the timeline
@@ -1056,7 +1036,7 @@ class ApiTests(unittest.TestCase):
         good = server.store.get_doc('learned')
         with mock.patch('taskuary.llm.build_llm', return_value=lambda sys_, usr, **kw: good):
             self.assertTrue(c.post('/api/learn/reflect').json()['reflected'])
-        from taskuary.learn import gather
+        from taskuary.learning import gather
         self.assertIn('DRAFT VERDICTS', gather(server.store, '2000-01-01'))
 
     def test_reviews_say_whether_the_channel_can_carry_a_reply(self):
@@ -1068,9 +1048,8 @@ class ApiTests(unittest.TestCase):
         mid = push['message_id']
         c.post(f'/api/messages/{mid}/reply')
         row = next(r for r in c.get('/api/reviews', params={'status': 'pending'}).json()['data'] if r['MessageId'] == mid)
-        self.assertFalse(row['CanSend'])                       # github, replies off: no send road
-        feedrow = next(r for r in c.get('/api/feed').json()['data'] if r['MessageId'] == mid)
-        self.assertFalse(feedrow['CanSend'])
+        # github: his Send is the say-so (the owner, 2026-11-25) - no card switch over it; with no GitHub card set up, its Connect stands instead
+        self.assertNotIn('replies are off', row['SendBlock']); self.assertTrue(row['CanSend'] or 'connected' in row['SendBlock'], row)
         push2 = c.post('/api/ingest/push', json={'external_id': 'cansend2', 'subject': 'rota',
                                                  'body': 'can you explain the rota?', 'from_email': 'a@b.example',
                                                  'channel': 'email'}).json()
@@ -1304,11 +1283,12 @@ class ApiTests(unittest.TestCase):
         with teaching('Failed bank imports are real work for you, even from a machine'):
             out = c.post(f'/api/messages/{mid}/mine', json={}).json()
         # ...readable as a line in LEARNED.md, about the topic it was given on, citing the mail (memorylines, 2026-10-27)
-        from taskuary import memorylines
-        made = [l for l in memorylines.lessons(server.store) if l['ev'] == f'msg{mid}']
+        from taskuary import memory
+        made = [l for l in memory.lessons(server.store) if l['ev'] == f'msg{mid}']
         self.assertEqual([l['kind'] for l in made], ['made_task'])
-        self.assertIn('(about: the topic "', made[0]['text'])
-        self.assertIn(made[0]['text'], server.store.get_doc('learned'))
+        self.assertEqual(made[0]['text'], 'Failed bank imports are real work for you, even from a machine')
+        # ...one press acts once (the owner, 2026-11-24): an episode on the Memory page, not yet a line every reader takes
+        self.assertNotIn(made[0]['text'], server.store.get_doc('learned'))
         self.assertEqual(server.store.get_message(mid)['TaskId'], out['taskId'])
 
     def test_promoting_one_report_run_is_not_a_standing_order_for_the_report(self):
@@ -1316,19 +1296,19 @@ class ApiTests(unittest.TestCase):
         mid = server.store.add_message({'ExternalId': 'report:1:2026-09-29 10:04', 'Channel': 'report', 'SourceName': 'Daily Digest',
                                         'Subject': 'Daily Digest - an agent ran a prompt - 49 lines', 'SentAt': '2026-09-29 10:04',
                                         'BodyText': 'Top 15 list.', 'Status': 'filed'})
-        from taskuary import memorylines
+        from taskuary import memory
         with teaching('never written'):
             c.post(f'/api/messages/{mid}/mine', json={})
-        self.assertEqual([l for l in memorylines.lessons(server.store) if l['ev'] == f'msg{mid}'], [])
+        self.assertEqual([l for l in memory.lessons(server.store) if l['ev'] == f'msg{mid}'], [])
 
     def test_a_report_run_promoted_as_standing_is_learned(self):
         mid = server.store.add_message({'ExternalId': 'report:2:2026-09-29 10:04', 'Channel': 'report', 'SourceName': 'Weekly Digest',
                                         'Subject': 'Weekly Digest - an agent ran a prompt - 12 lines', 'SentAt': '2026-09-29 10:04',
                                         'BodyText': 'Numbers.', 'Status': 'filed'})
-        from taskuary import memorylines
+        from taskuary import memory
         with teaching('The weekly digest is work you act on'):
             c.post(f'/api/messages/{mid}/mine', json={'standing': True})
-        self.assertEqual(len([l for l in memorylines.lessons(server.store) if l['ev'] == f'msg{mid}']), 1)
+        self.assertEqual(len([l for l in memory.lessons(server.store) if l['ev'] == f'msg{mid}']), 1)
 
     def test_a_taskless_fyi_reply_and_manual_edits_survive_reopening(self):
         mid = server.store.add_message({'ExternalId': 'teams:fyi-reply', 'Channel': 'teams',
@@ -1516,14 +1496,15 @@ class ApiTests(unittest.TestCase):
     def test_not_a_task_without_learning_deletes_and_teaches_nothing(self):
         """Someone answered 'yes' - that is chatter, not a verdict about the sender. The lighter
         not-a-task deletes the task and leaves no policy and no memory behind."""
+        from taskuary import memory
         tid = c.post('/api/tasks', json={'Title': 'yes'}).json()['taskId']
         server.store.add_message({'TaskId': tid, 'ExternalId': 'graph:CHAT1', 'Channel': 'teams',
-                                  'FromEmail': 'priya@corp.com', 'BodyText': 'yes', 'Status': 'routed'})
-        before_p = len(c.get('/api/policies').json()['data'])
+                                  'FromEmail': 'omar@vendor.example', 'BodyText': 'yes', 'Status': 'routed'})
+        before_p, before_m = len(c.get('/api/policies').json()['data']), memory.rows(server.store, memory.INFERRED)
         r = c.post(f'/api/tasks/{tid}/not-a-task', json={'learn': False}).json()
         self.assertIsNone(r['learned'])
         self.assertEqual(len(c.get('/api/policies').json()['data']), before_p)
-        self.assertNotIn('priya@corp.com', server.store.get_doc('learned') or '')
+        self.assertEqual(memory.rows(server.store, memory.INFERRED), before_m)
         self.assertEqual(c.get(f'/api/tasks/{tid}').status_code, 404)   # the task is gone
 
 

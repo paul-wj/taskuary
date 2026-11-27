@@ -8,9 +8,9 @@ from taskuary import chatlog
 from taskuary.store import MemoryStore
 
 
-def world():
+def world(kind='general'):
     s = MemoryStore()
-    return s, s.create_task({'Title': 'Vendor review for Erin', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+    return s, s.create_task({'Title': 'Vendor review for Erin', 'Kind': kind, 'Status': 'in_progress'}, 'owner')
 
 
 def test_an_item_is_appended_once_and_keeps_its_place_through_every_update():
@@ -57,6 +57,20 @@ def test_a_turn_at_work_draws_its_steps_and_holds_its_card_back():
     assert [x['what'] for x in t['fold']] == ['Read the vendor sheet'] and t['level'] == 'live' and t['cards'] == [], 'at work: its work counted, shut'
     chatlog.update(s, tid, 't:1', state='done')
     assert [c['id'] for c in chatlog.read(s, tid, 'everything')['items'][0]['cards']] == ['r:7']
+
+
+def test_a_turns_run_is_to_the_last_thing_it_did_never_only_to_its_answer():
+    """The owner, 2026-11-23: a head read "ran 1m 15s" while its steps went on for five minutes. The answer filed at 1m 15s ended the turn, and
+    its session went on writing steps under it; a wake after it was a turn of its own, drawn under the same head. Each turn says how long it
+    ran, to its last step (chatlog.run_of) - the page adds up the turns under one head (chatStream.ranUnder)."""
+    s, tid = world()
+    chatlog.put(s, tid, 'turn', 't:1', {'started': 100.0, 'ended': 175.0, 'text': 'Posted it; checking it went up.'}, state='done')
+    for i, at in enumerate((150.0, 260.0, 400.0)): chatlog.put(s, tid, 'step', f's:1:{i}', {'k': 'tool', 'name': 'Bash', 'text': 'look'}, parent='t:1', at=at)
+    chatlog.put(s, tid, 'turn', 't:2', {'started': 400.0, 'ended': 430.0, 'text': 'It is up.'}, state='done')
+    chatlog.put(s, tid, 'turn', 't:3', {'started': 500.0}, state='working')
+    got = {x['id']: x for x in chatlog.read(s, tid, 'everything')['items']}
+    assert (got['t:1']['ran'], got['t:2']['ran']) == (300.0, 30.0), 'to its last step, never to the answer alone'
+    assert 'ran' not in got['t:3'], 'one at work has its running clock'
 
 
 def test_a_summary_block_streamed_across_steps_is_never_drawn():
@@ -251,9 +265,199 @@ def test_a_card_pressed_after_later_turns_turns_sent_where_it_stood():
     assert s._rows("SELECT Id, Parent FROM chatlog WHERE TaskId=? AND Key=?", (tid, f'r:{rid}'))[0] == where, 'nothing moved'
 
 
+def test_the_held_step_of_a_cards_browser_road_is_drawn_on_that_card_as_its_next_press():
+    """Walk 22, 2026-11-25, both homes: X and LinkedIn posts; Post via the browser on the X card; he signs in, says "post without the picture",
+    and the agent's final Post is held - joined to the X card he had already pressed, whose row read `approved`, so NOTHING could be pressed
+    anywhere and both agents said a card waited. The step is that card's next press: the card waits again carrying it, no card of its own
+    is drawn for it - held, set aside by his next line, or pressed - and its press ends the card."""
+    from unittest import mock
+    from taskuary import cardqueue, conversation, general, proposals
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    x, li = [s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Origin': 'agent', 'Reason': 'the post you asked for',
+                           'DraftText': json.dumps({'action': 'run_tool', 'type': t, 'text': 'We close the month in four days.'})}) for t in ('x_post', 'linkedin_post')]
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Two posts are set up.')
+    chatlog.read(s, tid)
+    with mock.patch.object(general, 'to_agent', return_value='woke'): assert proposals.via_browser(s, x, '')['ok']
+    cards = lambda: {c['review']: c for i in chatlog.read(s, tid)['items'] for c in ([i] if i['kind'] == 'card' else i.get('cards') or [])}
+    cardqueue._SEEN.clear()
+    assert cards()[x]['status'] == 'approved' and not cards()[x].get('step'), 'handed: the agent has it, nothing of his to press yet'
+    hold = lambda: proposals.queue(s, tid, {'action': 'browser_act', 'sid': 's1', 'args': ['click', '@e20'], 'command': 'agent-browser click @e20',
+                                            'site': 'x.example', 'what': 'Publish your post on X', 'why': 'it speaks for you'}, 'agent')['reviewId']
+    held = hold(); cardqueue._SEEN.clear()
+    got = cards()
+    assert got[x]['status'] == 'pending' and got[x]['step'] == {'review': held, 'what': 'Publish your post on X', 'card': x}, got[x]
+    assert held not in got and li not in got and chatlog.live_card(s, tid)['review'] == x, 'one card: the step is on it, never beside it'
+    said = cardqueue.screen(s, tid)
+    assert 'Waiting for his press now, drawn on the card he pressed' in said and 'Publish your post on X' in said and 'NOT done yet - do it' not in said, said
+    # ...his next line sets the step aside as it does every waiting card: the card is handed again, and no greyed card of the step is drawn
+    s.decide_review(held, 'superseded', None, 'taskuary', note=proposals.SET_ASIDE); cardqueue._SEEN.clear()      # ...as set_aside_drafts settles it
+    got = cards()
+    assert s.get_review(held)['Status'] == 'superseded' and held not in got and got[x]['status'] == 'approved' and not got[x].get('step'), got
+    # ...the agent presses Post again: held anew, on the same card; his press runs it and the card is done - LinkedIn comes forward
+    again = hold(); cardqueue._SEEN.clear()
+    assert again != held and cards()[x]['step']['review'] == again
+    s.decide_review(again, 'approved', None, 'owner'); assert cardqueue.done(s, tid, 'Posted on x.example') == [x]; cardqueue._SEEN.clear()
+    got = cards()
+    assert got[x]['status'] == 'approved' and not got[x].get('step') and again not in got and held not in got, got
+    assert cardqueue.state(s, tid)['live'] == [got[li]['review']] if li in got else True
+
+
+def one_call(s, tid, acts) -> list:
+    "The acts one call raised together (its `items`): their rows share a Batch, as agenttools files them - one card."
+    from taskuary import bulkcard
+    key, ids = bulkcard.new_key(), []
+    for p in acts:
+        ids.append(s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Origin': 'agent', 'Reason': 'the post you asked for', 'DraftText': json.dumps(p)}))
+        s._exec('UPDATE review SET Batch=? WHERE ReviewId=?', (key, ids[-1]))
+    return ids
+
+
+def test_a_step_handed_over_on_one_tab_of_a_set_is_that_tabs_next_press():
+    """Walk 25, 2026-11-26: X and LinkedIn posts raised in ONE call - one card, a tab each. LinkedIn posted; Post via the browser on the X tab;
+    X wanted a sign-in and the agent handed it over. The step was queued BEHIND the card whose tab it belongs to, which only finishes after
+    the step: no I'm done, no browser pane, and the agent told "in line, 2 of 2" - a dead end his own line could not pass. A step on a tab's
+    browser road is that tab's next press: drawn on the one card, its page open, and told as waiting for his press now."""
+    from unittest import mock
+    from taskuary import cardqueue, conversation, general, pagestep, proposals, workerstate as ws
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    x, li = one_call(s, tid, [{'action': 'run_tool', 'type': t, 'text': 'We close the month in four days.'} for t in ('x_post', 'linkedin_post')])
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Two posts, one card.')
+    chatlog.read(s, tid)
+    s.decide_review(li, 'approved', None, 'owner')
+    with mock.patch.object(general, 'to_agent', return_value='woke'): assert proposals.via_browser(s, x, '')['ok']
+    ws.record(s, tid, 'run1', 'input_needed', request_id='signin:x.example', text='Sign in to X so the post can go out', source='api')
+    cardqueue._SEEN.clear()
+    cards = {c['review']: c for i in chatlog.read(s, tid)['items'] for c in ([i] if i['kind'] == 'card' else i.get('cards') or [])}
+    step = pagestep.card_of(s, tid, 'signin:x.example')['ReviewId']
+    assert list(cards) == [x] and cards[x]['status'] == 'pending', 'one card: the step is on it, never a card of its own behind it'
+    assert cards[x]['step']['review'] == step and cards[x]['step']['card'] == x and cards[x]['step']['press'] == 'done', cards[x]['step']
+    st = cardqueue.state(s, tid)
+    assert step in st['live'] and not st['held'] and not cardqueue.row_over(s, tid)
+    assert pagestep.shown(s, tid, {'request_id': 'signin:x.example'}), 'its page opens: its card is in front'
+    assert 'on his screen now' in pagestep.place(s, tid, 'signin:x.example')
+    said = cardqueue.screen(s, tid)
+    assert 'Waiting for his press now, drawn on the card he pressed' in said and 'behind the card in front' not in said, said
+    [tabs] = cardqueue.sets(s, tid).values()
+    assert [(t['name'], t['done']) for t in tabs] == [('X', False), ('LinkedIn', True)]
+
+
+def test_each_tab_of_a_set_is_told_by_what_came_of_it_never_by_its_first_rows_fate():
+    """Walk 25, 2026-11-26, two roads: three posts in one call - he dismissed X, POSTED LinkedIn and never answered Reddit, which his next,
+    unrelated line greyed. Its agent was told "Turned down by him: rv7 + rv8 + rv9" - the first row's fate for the whole card - and said "you
+    turned down the X and Reddit posts"; it could not keep the one he never answered, and could have posted the posted one again."""
+    from taskuary import cardqueue, conversation, general
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    x, li, rd = one_call(s, tid, [{'action': 'run_tool', 'type': t, 'text': 'We shipped the ledger export.'} for t in ('x_post', 'linkedin_post', 'reddit_post')])
+    s._exec("UPDATE review SET CreatedAt=datetime(CreatedAt, '-5 seconds') WHERE TaskId=?", (tid,))
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Three posts are set up.')
+    chatlog.read(s, tid)
+    s.decide_review(x, 'rejected', None, 'owner'); s.decide_review(li, 'approved', None, 'owner'); cardqueue._SEEN.clear()
+    told = lambda: {next(i for i in (x, li, rd) if f'rv{i},' in l): l for l in cardqueue.screen(s, tid).splitlines()[1:] if 'rv' in l}
+    got = told()
+    assert 'Turned down by him' in got[x] and 'Done' in got[li] and 'Waiting for his press now' in got[rd], got
+    assert not any(f'rv{a} + rv{b}' in l for l in got.values() for a in (x, li, rd) for b in (x, li, rd)), 'each tab alone'
+    line = general.new_line_id()
+    conversation.hear(s, tid, [line], standing=True); cardqueue._SEEN.clear()
+    assert s.get_review(rd)['Status'] == 'superseded'
+    got = told()
+    assert 'Turned down by him' in got[x] and 'Done' in got[li] and 'Greyed by his line' in got[rd] and 'Turned down' not in got[rd], got
+
+
+def test_an_empty_reply_box_in_front_is_never_told_as_waiting_for_his_press():
+    """Walk 25, 2026-11-26: a reply was owed and its agent had asked what to say, so the empty box stood with that on it. Its agent then raised
+    a card of its own, which waited behind the box - and was told "Waiting for his press now: the reply to ..." for a box whose Send is off."""
+    from taskuary import cardqueue, conversation, general
+    s, tid = world()
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'p1', 'Channel': 'email', 'FromName': 'Paula Vance', 'FromEmail': 'paula@vendor.example',
+                         'ToEmail': 'alex@northwind.example', 'Subject': 'Flour order', 'BodyText': 'Twenty bags as usual? Paula', 'Status': 'routed'})
+    conversation.hear(s, tid, turn=True)
+    box = _rv(s, tid, mid, text='')
+    s.set_review_draft_needs(box, 'How many bags should I confirm?')
+    act = one_call(s, tid, [{'action': 'run_tool', 'type': 'linkedin_post', 'text': 'We shipped the ledger export.'}])[0]
+    s._exec('UPDATE review SET Batch=NULL WHERE ReviewId=?', (act,))
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'How many bags should I confirm?')
+    cardqueue._SEEN.clear()
+    assert cardqueue.state(s, tid)['live'] == [box], 'the shape: the empty box is in front of the card its agent raised'
+    said = cardqueue.screen(s, tid)
+    assert 'Waiting for his press now' not in said and 'no words in it' in said and 'paula@vendor.example' in said, said
+
+
+def test_a_tab_he_said_no_to_is_marked_so_never_as_one_that_went():
+    """The card gallery, 2026-11-25: one of three sent, the next dropped - and the dropped one's tab was ticked like the sent one. A tab
+    settled without going (his no, a press that failed) says so (`no`); one that went, or still waits, does not."""
+    from taskuary import cardqueue, conversation, general
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    ids = one_call(s, tid, [{'action': 'run_tool', 'type': t, 'text': 'We shipped the ledger export.'} for t in ('x_post', 'linkedin_post', 'reddit_post')])
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Three posts are set up.')
+    chatlog.read(s, tid)
+    s.decide_review(ids[0], 'approved', None, 'owner'); s.decide_review(ids[1], 'rejected', None, 'owner'); cardqueue._SEEN.clear()
+    [tabs] = cardqueue.sets(s, tid).values()
+    assert [(t['name'], t['done'], bool(t.get('no'))) for t in tabs] == [('X', True, False), ('LinkedIn', True, True), ('Reddit', False, False)]
+
+
+def test_a_card_raised_the_second_before_its_turns_answer_waits_lit_in_that_turn():
+    """The card gallery, 2026-11-25: three emails raised as one card at :49.99 by a turn whose answer was filed at :50.01, the task first read
+    after (its chat frozen then - migrate). A stamp is a whole second, so the card read as older than its turn: it stood ABOVE the turn,
+    and greyed as a version the turn had rewritten - while it still waited. It stands lit, in the turn that raised it; and a bulk card left
+    standing alone (raised seconds before) waits lit where it is - it has no words of its own a later turn could rewrite. Invented people."""
+    from datetime import datetime, timedelta
+    from unittest import mock
+    from taskuary import general, server
+    from test_bulk_card import call
+    def chat(gap):
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Tell the three approvers', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner'}, 'owner')
+        s.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, 'Tell Erin, Gail and Paula the portal goes live Monday.')
+        with mock.patch.object(server, 'store', s):
+            call(tid, 'propose', kind='email', why='one note to each approver',
+                 items=[{'to': f'{w}@northwind.example', 'subject': 'The ledger portal is live Monday', 'text': f'Hello {w},\n\nIt is live Monday.\n\nAlex'}
+                        for w in ('erin', 'gail', 'paula')])
+        now = datetime.utcnow(); at = lambda d: f'{now - timedelta(seconds=d):%Y-%m-%d %H:%M:%S}'
+        s._exec('UPDATE comment SET CreatedAt=? WHERE TaskId=?', (at(5), tid)); s._exec('UPDATE review SET CreatedAt=? WHERE TaskId=?', (at(gap), tid))
+        cid = s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Three emails, one card.')
+        s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (at(0), cid))
+        return [(x['kind'], x.get('status'), [c.get('status') for c in x.get('cards') or []]) for x in chatlog.serve(s, tid)['items']]
+    assert chat(1) == [('turn', None, ['pending'])]
+    # ...and one raised seconds before stands lit too, never greyed - under its turn's words, as every card that waits (waits_last, 2026-11-26:
+    # it stood alone ABOVE them, the turn's answer drawn under a card he had yet to press)
+    assert chat(3) == [('turn', None, ['pending'])]
+
+
+def test_a_card_raised_during_its_tasks_first_read_stands_in_its_turn():
+    """The card gallery, 2026-11-25: a sign-in asked on the agent's page, its turn answered, and the task first read after - its card was raised
+    in that read, under the turn noted for it in the log the read then froze afresh, whose Id was the card's own by then: drawn nowhere."""
+    from taskuary import general, workerstate as ws
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Download the October statement', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner'}, 'owner')
+    s.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, 'Get the October statement from the vendor portal.')
+    ws.record(s, tid, 'run1', 'input_needed', request_id='signin:portal.vendor.example', text='Sign in to Vendor portal to continue', source='api')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'The portal wants you signed in before I can download it.')
+    assert [(x['kind'], [c.get('status') for c in x.get('cards') or []]) for x in chatlog.serve(s, tid)['items']] == [('turn', ['pending'])]
+
+
+def test_a_tab_names_a_thing_as_its_card_writes_it():
+    """The card gallery, 2026-11-25: the pull request's tab read "Northwind/ledger#31" over a card saying northwind/ledger#31 - a name is
+    written as it is; only a phrase in his words ('Push') starts with a capital."""
+    from taskuary import cardqueue, conversation, general
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    ids = [s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Origin': 'agent', 'Reason': 'the agent proposes to merge it',
+                         'DraftText': json.dumps(p)}) for p in ({'action': 'merge_pr', 'repo': 'northwind/ledger', 'number': 31, 'text': ''},
+                                                              {'action': 'push', 'cwd': '.', 'why': 'the fix'})]
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Merge it, then push.')
+    chatlog.read(s, tid)
+    names = [cardqueue.tab(s, s.get_review(i)) for i in ids]
+    assert names[0] == 'northwind/ledger#31' and names[1][:1].isupper(), names
+
+
 def test_every_tool_call_is_one_row_in_plain_words_and_summary_folds_them_to_one_line():
     """"BETTER SHOWING WHAT TOOLS ARE RUN, BUT NOT A BILLION DETAILS" (the owner, 2026-11-19): each call one row of what it did and on what,
-    its outcome in a few words, its output capped behind it; the same call again folded into its row; summary - one line that opens."""
+    its outcome in a few words, its output capped behind it; summary - one line that opens. ONE ROW PER CALL, ALWAYS (2026-11-23): the same
+    call again is the page's to fold ("(3 times)", agentSteps.group, keyed by its first call) - never a row taken out under its key."""
     big = 'x' * 10000 + '\n4 passed in 0.2s'
     steps = [{'k': 'tool', 'name': 'Bash', 'text': 'pytest tests/test_totals.py', 'output': big},
              {'k': 'tool', 'name': 'Read', 'file': 'C:/work/board-data-asks.txt'},
@@ -263,13 +467,13 @@ def test_every_tool_call_is_one_row_in_plain_words_and_summary_folds_them_to_one
              {'k': 'tool', 'name': 'WebFetch', 'args': {'url': 'https://www.uprinting.com/business-cards'}},
              {'k': 'said', 'text': 'Four tests pass; uprinting is cheapest.'}]
     rows = chatlog.tool_rows(steps)
-    assert [(r.get('line'), r.get('outcome'), r.get('times')) for r in rows[:4]] == [
-        ('Ran pytest tests/test_totals.py', '4 passed', None), ('Read board-data-asks.txt', None, 3),
-        ('Searched the web for printer prices', None, None), ('Opened uprinting.com', None, None)]
+    assert [(r.get('line'), r.get('outcome')) for r in rows[:6]] == [
+        ('Ran pytest tests/test_totals.py', '4 passed'), *[('Read board-data-asks.txt', None)] * 3,
+        ('Searched the web for printer prices', None), ('Opened uprinting.com', None)]
     assert rows[0]['size'] == len(big) and len(rows[0]['output']) < 3200, 'the output capped: its head and tail, and how big it was'
     t = chatlog.detailed({'kind': 'turn', 'state': 'done', 'text': 'Done.', 'steps': steps}, 'summary')
-    assert [s['k'] for s in t['steps'] if s not in t['fold']] == ['said'] and t['folded'] == 4      # ...its one line is the page's (chatStream.foldLine)
-    assert len(chatlog.detailed({'kind': 'turn', 'state': 'done', 'steps': steps}, 'everything')['steps']) == 5
+    assert [s['k'] for s in t['steps'] if s not in t['fold']] == ['said'] and t['folded'] == 6      # ...its one line is the page's (chatStream.foldLine)
+    assert len(chatlog.detailed({'kind': 'turn', 'state': 'done', 'steps': steps}, 'everything')['steps']) == 7
 
 
 def test_migration_freezes_what_he_saw_and_a_turn_at_work_goes_on_in_its_own_row(tmp_path, monkeypatch):
@@ -403,6 +607,8 @@ def test_a_card_press_and_a_chat_read_on_two_threads_both_finish():
     for x in ts: x.start()
     for x in ts: x.join(8)
     assert sorted(done) == ['press', 'read'], f'a thread never finished: {done}'
+    rest = conversation.items(s, tid)       # ...and at rest, every card the presses left is where it stood (chatlog.missing)
+    assert chatlog.missing(s, tid, rest) == []
 
 
 def test_a_task_search_and_a_chat_read_that_migrates_on_two_threads_both_finish():
@@ -456,6 +662,58 @@ def test_a_reply_raised_empty_and_written_after_his_line_stands_under_the_turn_t
     items = chatlog.read(s, tid)['items']
     at = {c['review']: i for i, x in enumerate(items) for c in x.get('cards') or []}
     assert [x['kind'] for x in items] == ['arrival', 'turn', 'line', 'turn'] and at.get(rid) == 3, (at, [x['kind'] for x in items])
+
+
+@pytest.mark.parametrize('kind', ['general', 'coding'])
+def test_a_reply_rewritten_in_place_by_the_next_turn_stands_under_that_turn(kind):
+    """THE OWNER'S LIVE APP (2026-11-25: "why is there text after the card?"): one turn wrote the reply to a sender, the next - the agent going on
+    by itself, nothing of his between - rewrote that same card in place, and the card stayed in the first turn with the second's words, the
+    turn that wrote them drawn after it. A card whose words a later turn wrote is that turn's last thing - on a coding task exactly as on a chat
+    task (the owner, 2026-11-25: "it should be exactly the same"): its chat is the same log. Invented people."""
+    import time as t_
+    from taskuary import cardqueue, conversation, general, wrapup
+    from taskuary.store import set_owner
+    s, tid = world(kind)
+    set_owner(s, 'Alex Doyle', 'alex@northwind.example')
+    s.add_message({'TaskId': tid, 'ExternalId': 'mr2', 'Channel': 'email', 'FromName': 'Marcus Reed', 'FromEmail': 'marcus@northwind.example',
+                   'ToEmail': 'alex@northwind.example', 'Subject': 'Harness', 'BodyText': 'How do the tools fit together? Marcus', 'Status': 'routed'})
+    conversation.hear(s, tid, turn=True)
+    rid = wrapup.agent_reply(s, tid, 'Hi Marcus, the harness hands the model its tools. Alex', to='marcus@northwind.example')['review_id']
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'I drafted the reply to Marcus.')
+    chatlog.settled(); chatlog.read(s, tid)
+    t_.sleep(1.1)
+    conversation.hear(s, tid, turn=True)
+    assert wrapup.agent_reply(s, tid, 'Hi Marcus, the harness hands the model a menu of tools and skills. Alex', to='marcus@northwind.example')['review_id'] == rid
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'I updated the reply to Marcus with the skills.')
+    chatlog.settled(); cardqueue._SEEN.clear()
+    items = chatlog.read(s, tid)['items']
+    at = {c['review']: i for i, x in enumerate(items) for c in x.get('cards') or []}
+    assert [x['kind'] for x in items] == ['arrival', 'turn', 'turn'] and at.get(rid) == 2, (at, [x['kind'] for x in items])
+    # ...AND WHAT IT SAID BEFORE STAYS IN THE FIRST TURN, greyed with its own words (the owner's plan, 2026-11-25): nothing he saw vanishes
+    [old] = items[1].get('cards') or [None]
+    assert old and old['review'] == rid and old['status'] == 'passed' and 'a menu of tools' not in old['was']['text'], old
+    [new] = items[2]['cards']
+    assert new['status'] == 'pending' and 'a menu of tools' in new['was']['text']
+    chatlog.settled(); cardqueue._SEEN.clear()
+    again = chatlog.read(s, tid)['items']
+    assert [(c['id'], c['status']) for x in again for c in x.get('cards') or []] == [(old['id'], 'passed'), (new['id'], 'pending')], 'read again, it stays'
+
+
+def test_a_turn_a_message_began_after_another_turn_keeps_why_it_began():
+    """The coordinator's live shape (2026-11-25): Marcus's mail came in while nothing worked and was drawn at the foot; the turn begun next never
+    heard it - it was typed into the session once that turn ended, and began the second, and nothing said what began it. What is drawn never
+    moves (the mail stays where it came), and the turn it began keeps why it began: the message by id (data, drawn nowhere). Invented people."""
+    from taskuary import conversation
+    s, tid = world()
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'mr9', 'Channel': 'email', 'FromName': 'Marcus Reed', 'FromEmail': 'marcus@northwind.example',
+                         'ToEmail': 'alex@northwind.example', 'Subject': 'Harness', 'BodyText': 'One more question. Marcus', 'Status': 'routed'})
+    chatlog.came_in(s, tid)
+    chatlog.put(s, tid, 'turn', 't:first', {'started': 1.0, 'text': 'Looked up the tools.'}, state='done')     # ...a turn that never heard it
+    assert [x['kind'] for x in chatlog.read(s, tid)['items']] == ['arrival', 'turn']
+    conversation.hear(s, tid, turn=True)
+    items = chatlog.read(s, tid)['items']
+    assert [x['kind'] for x in items] == ['arrival', 'turn', 'turn'], [x['kind'] for x in items]
+    assert items[0]['id'] == f'm:{mid}' and items[2]['why'] == {'mail': [str(mid)]}, items[2]
 
 
 def test_the_agents_own_words_are_the_question_the_marker_only_marks_the_wait():
@@ -524,3 +782,508 @@ def test_a_row_written_this_beat_on_another_connection_is_updated_not_lost(tmp_p
         n = chatlog.put(b, tid, 'card', 'r:7', {'review': 7, 'what': 'slot', 'line': '1 of 1'}, state='pending')
     rows = [r for r in b.cx.execute("SELECT Id, Body FROM chatlog WHERE TaskId=? AND Key='r:7'", (tid,))]
     assert len(rows) == 1 and rows[0]['Id'] == n and '1 of 1' in rows[0]['Body']
+
+
+# ── EVERY STEP BY THE AGENT'S OWN ID (the owner, 2026-11-23: adopt the open-source model - Zed, Toad, agent-shell key a row by the tool call) ──
+def _rows(s, tid):
+    return {r['Key']: (r['Id'], r['Rev'], json.loads(r['Body'])) for r in s._rows("SELECT Key, Id, Rev, Body FROM chatlog WHERE TaskId=? AND Kind='step' ORDER BY Id", (tid,))}
+
+
+def test_a_step_is_its_agents_own_id_and_an_update_patches_that_row_alone():
+    """A call announced with a generic title, words said while it runs, the call's own update, another call: each is ONE row keyed by the id the
+    agent gave it - and an update touches its own row and no other (a re-reading of the whole turn by place rewrote them all)."""
+    from taskuary import conversation
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    put = lambda u: chatlog.feed(s, tid, 'sid1', 'acp', u)
+    put({'sessionUpdate': 'tool_call', 'toolCallId': 'toolu_1', 'kind': 'read', 'title': 'Read File', 'status': 'pending'})
+    put({'sessionUpdate': 'agent_message_chunk', 'messageId': 'msg_1', 'content': {'type': 'text', 'text': 'Reading the vendor sheet.'}})
+    before = _rows(s, tid)
+    put({'sessionUpdate': 'tool_call_update', 'toolCallId': 'toolu_1', 'title': 'Read vendors.csv', 'locations': [{'path': 'C:/work/vendors.csv'}],
+         'rawInput': {'file_path': 'C:/work/vendors.csv'}, 'status': 'completed'})
+    put({'sessionUpdate': 'tool_call', 'toolCallId': 'toolu_2', 'kind': 'execute', 'title': 'ls vendors', 'rawInput': {'command': 'ls vendors'}})
+    after = _rows(s, tid)
+    assert list(after) == ['s:sid1:toolu_1', 's:sid1:m:msg_1', 's:sid1:toolu_2'], list(after)
+    assert after['s:sid1:m:msg_1'][:2] == before['s:sid1:m:msg_1'][:2], 'the words were not touched by the call\'s update'
+    assert after['s:sid1:toolu_1'][0] == before['s:sid1:toolu_1'][0] and after['s:sid1:toolu_1'][2]['title'] == 'Read vendors.csv'
+    assert after['s:sid1:toolu_1'][2]['paths'] == ['C:/work/vendors.csv'] and after['s:sid1:toolu_1'][2]['tool_kind'] == 'read'
+
+
+def test_a_call_that_ends_after_his_line_ends_in_its_own_row_above_it():
+    """A command still running when Paula's line is heard: the rest of the turn goes on under her line, and the command's end is ITS row's -
+    read again from that point on by place, its completion had nothing to land on and the row above spun for good."""
+    from taskuary import conversation, general
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    for e in [{'type': 'prompt', 'name': 'prompt_sent_to_agent', 'detail': 'go'},
+              {'type': 'tool_call', 'name': 'Bash', 'detail': {'tool_call_id': 'c1', 'args': {'command': 'pytest -q'}}}]: chatlog.feed(s, tid, 'sid1', 'trace', e)
+    general.wait_line(s, tid, 'Paula says use the March export', line_id='l-paula'); conversation.hear(s, tid, ['l-paula'])
+    chatlog.feed(s, tid, 'sid1', 'trace', {'type': 'tool_result', 'name': 'c1', 'detail': {'result': '3 passed'}})
+    chatlog.feed(s, tid, 'sid1', 'trace', {'type': 'progress', 'name': 'text', 'detail': 'Tests pass; switching to the March export.'})
+    items = chatlog.read(s, tid, 'everything')['items']
+    assert [x['kind'] for x in items] == ['turn', 'line', 'turn']
+    assert [(x['k'], x.get('status')) for x in items[0]['steps']] == [('tool', 'completed')] and items[0]['steps'][0]['output'] == '3 passed'
+    assert [x['k'] for x in items[2]['steps']] == ['said']
+
+
+def test_an_api_agent_turn_and_an_acp_turn_write_the_same_rows():
+    """ONE RECORD SHAPE FOR EVERY AI (the owner, 2026-11-23: "Does this work for both ACP and HIPAA AI or any AI we use?"): the API agent's own
+    tool loop (apiagent.turn, the HIPAA AI card's road) and an ACP agent doing the same work write one row per call keyed by its call id, each
+    with its input, its output and - for a file it wrote - its diff, and its words as their own row; nothing on either road is a second shape."""
+    from unittest import mock
+    from taskuary import apiagent, conversation, general
+    said = 'Two vendor files; the totals are in totals.csv.'
+    def api(s, tid):
+        steps = iter([{'role': 'assistant', 'content': None, 'tool_calls': [
+                           {'id': 'call_1', 'type': 'function', 'function': {'name': 'run_command', 'arguments': '{"command": "ls vendors"}'}},
+                           {'id': 'call_2', 'type': 'function', 'function': {'name': 'file_write', 'arguments': '{"path": "totals.csv", "text": "vendor,total"}'}}]},
+                      {'role': 'assistant', 'content': said}])
+        class Brain:
+            def chat(self, msgs, tools, max_tokens, **kw): return next(steps)
+        feed = lambda kind, name, detail=None: chatlog.feed(s, tid, 'sid1', 'trace', {'type': kind, 'name': name, 'detail': detail})
+        with mock.patch.object(apiagent, 'run_tool', side_effect=lambda st, t, sid, name, a: 'payworth.csv trainly.csv' if name == 'run_command' else 'ok'):
+            assert apiagent.turn(Brain(), s, tid, 'sid1', 'sys', 'go', 500, trace=feed) == said
+        feed('progress', 'text', said)
+    def acp(s, tid):
+        for u in [{'sessionUpdate': 'tool_call', 'toolCallId': 'call_1', 'kind': 'execute', 'title': 'ls vendors', 'rawInput': {'command': 'ls vendors'}},
+                  {'sessionUpdate': 'tool_call_update', 'toolCallId': 'call_1', 'status': 'completed',
+                   'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'payworth.csv trainly.csv'}}]},
+                  {'sessionUpdate': 'tool_call', 'toolCallId': 'call_2', 'kind': 'edit', 'title': 'Write totals.csv', 'locations': [{'path': 'totals.csv'}],
+                   'rawInput': {'path': 'totals.csv'}, 'content': [{'type': 'diff', 'path': 'totals.csv', 'oldText': '', 'newText': 'vendor,total'}]},
+                  {'sessionUpdate': 'tool_call_update', 'toolCallId': 'call_2', 'status': 'completed', 'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'ok'}}]},
+                  {'sessionUpdate': 'agent_message_chunk', 'messageId': 'm1', 'content': {'type': 'text', 'text': said}}]:
+            chatlog.feed(s, tid, 'sid1', 'acp', u)
+    seen = {}
+    for road, run in (('api', api), ('acp', acp)):
+        s, tid = world(); conversation.hear(s, tid, turn=True)
+        run(s, tid)
+        s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, said)
+        t = chatlog.read(s, tid, 'everything')['items'][-1]
+        seen[road] = ([(x['k'], x.get('status'), x.get('output'), x.get('file'), [p['new'] for p in (x.get('edit') or {}).get('parts') or []]) for x in t['steps']],
+                      [k.rsplit('.', 1)[-1].rsplit(':', 1)[-1] for k in _rows(s, tid) if ':m:' not in k])
+    assert seen['api'] == seen['acp'], seen
+    assert seen['acp'][1] == ['call_1', 'call_2'], 'each row keyed by its own call id'
+
+
+# ── WORDS STAY WHERE THEY WERE SAID (the owner, 2026-11-23: "the live layout IS the finished layout") ──────────────────────────────────
+def test_the_words_it_streamed_stay_its_rows_once_the_answer_is_filed_and_only_the_rest_of_the_answer_is_drawn():
+    """A turn says a line, works, and streams its answer; the answer is filed. Its rows as they stood while it worked are its rows filed -
+    nothing taken out of them, nothing moved - and of the filed answer only what they did not say is drawn under them (`tail`): here nothing."""
+    from taskuary import conversation, general
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    say = lambda mid, t: chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'agent_message_chunk', 'messageId': mid, 'content': {'type': 'text', 'text': t}})
+    say('m1', 'Checking the vendor sheet first.')
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'tool_call', 'toolCallId': 'c1', 'kind': 'read', 'title': 'Read vendors.csv', 'status': 'completed'})
+    say('m2', 'Payworth is cheapest at $40 a seat.'); say('m2', '\n\nShall I draft the reply to Erin?')
+    chatlog.flush(s, tid)
+    live = [x['id'] for x in chatlog.read(s, tid, 'summary')['items'][-1]['steps']]
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Payworth is cheapest at $40 a seat.\n\nShall I draft the reply to Erin?')
+    t = chatlog.read(s, tid, 'summary')['items'][-1]
+    assert [x['id'] for x in t['steps']] == live and [x['k'] for x in t['steps']] == ['said', 'tool', 'said'], 'the same rows, in place'
+    assert t['tail'] == '' and t['text'].startswith('Payworth'), 'the answer is not drawn a second time; its words are still the turn\'s'
+
+
+def test_words_held_behind_a_first_token_are_written_once_they_settle_while_the_agent_thinks():
+    """His live chat, 2026-11-25: "I", then 10-20 s of Thinking, then the rest. The message's first token was written at once, the rest of its
+    sentence came a beat later and was held for the next thing the agent did - and it reasoned, then wrote a tool call's input, for seconds."""
+    import time
+    from taskuary import conversation
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    say = lambda u: chatlog.feed(s, tid, 'sid1', 'acp', u)
+    say({'sessionUpdate': 'agent_message_chunk', 'messageId': 'm1', 'content': {'type': 'text', 'text': 'I'}})
+    say({'sessionUpdate': 'agent_message_chunk', 'messageId': 'm1', 'content': {'type': 'text', 'text': '’ll check the vendor sheet first.'}})
+    say({'sessionUpdate': 'agent_thought_chunk', 'content': {'type': 'text', 'text': 'Which sheet is newest?'}})
+    said = lambda: [x.get('text') for x in chatlog.read(s, tid, 'everything')['items'][-1]['steps'] if x['k'] == 'said']
+    assert said() == ['I'], 'the first token is drawn at once'
+    end = time.time() + 3
+    while said() != ['I’ll check the vendor sheet first.'] and time.time() < end: time.sleep(0.05)
+    assert said() == ['I’ll check the vendor sheet first.'], 'nothing else came, and the sentence is whole within a beat'
+
+
+def test_a_message_pushed_as_it_streams_reads_as_the_turn_reads_it_its_repeated_opener_said_once():
+    """Walk 21 (S7, Codex): "I see you confirmed 2 p.m. with Erin." - a step - then the answer opening on that sentence again. A read of the turn
+    said it once; the row pushed to the open chat as it streamed was read alone, and the open chat drew the sentence twice."""
+    from taskuary import conversation, live
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    said = 'I see you confirmed 2 p.m. with Erin and told her you’d move the invite.'
+    say = lambda mid, t: chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'agent_message_chunk', 'messageId': mid, 'content': {'type': 'text', 'text': t}})
+    say('m1', said)
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'tool_call', 'toolCallId': 'c1', 'kind': 'other', 'title': 'Marked the reply as not needed', 'status': 'completed'})
+    say('m2', f'{said}\n\nI marked the reply as no longer needed.')
+    chatlog.flush(s, tid)
+    n = s._one("SELECT Id FROM chatlog WHERE TaskId=? AND Key=?", (tid, 's:sid1:m:m2'))['Id']
+    assert chatlog.pushed(s, tid, n)['step']['text'] == 'I marked the reply as no longer needed.'
+    assert [x.get('text') for x in chatlog.read(s, tid, 'everything')['items'][-1]['steps'] if x['k'] == 'said'] == [said, 'I marked the reply as no longer needed.']
+
+
+def test_the_answer_draws_only_what_its_words_did_not_say_a_file_by_its_name_or_its_path():
+    from taskuary.conversation import unsaid
+    path = 'C:\\Users\\alex\\AppData\\Local\\Temp\\home\\scratch\\outputs\\TQ-0003\\Wellness_Flyer.pdf'
+    said = [{'k': 'said', 'text': f'Created the one-page flyer at `{path}` and showed it in the chat.'}]
+    assert unsaid('Created the one-page flyer at `Wellness_Flyer.pdf` and showed it in the chat.', said) == ''
+    report, after, draft = 'My recommendation is to send Erin alone.', "If you'd rather send both, tell me.", 'Hi Erin,\n\nYes, we should go.\n\nAlex Doyle'
+    assert unsaid(f'{report}\n\n{draft}\n\n{after}', [{'k': 'said', 'text': f'{report}\n\n{after}'}]) == draft, 'only what the stream left out'
+    assert unsaid('Two vendor files.', []) == 'Two vendor files.' and unsaid('Two vendor files.', [{'k': 'tool'}]) == 'Two vendor files.'
+
+
+def test_a_permission_asked_is_its_calls_update_with_the_agents_options_and_clears_when_it_runs():
+    """THE ASK BELONGS TO THE CALL'S ROW (the ACP spec: a request_permission's toolCall IS that call's update; Zed draws it in the call's card):
+    Codex announces a read with no input and asks for it with the input and its own kind - the ask fills only what the call left out, the row
+    carries the agent's options while it waits, and they are gone from it once the call runs."""
+    from taskuary import acp, conversation, permissions
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    put = lambda u: chatlog.feed(s, tid, 'sid1', 'acp', u)
+    put({'sessionUpdate': 'tool_call', 'toolCallId': 'call_9', 'kind': 'read', 'title': 'Read', 'status': 'pending'})
+    put(acp.asked_update({'toolCall': {'toolCallId': 'call_9', 'kind': 'execute', 'title': "powershell.exe -Command 'Get-Content notes.md'",
+                                       'rawInput': {'command': ['powershell.exe', '-Command', 'Get-Content notes.md']}},
+                          'options': [{'optionId': 'ok', 'name': 'Yes', 'kind': 'allow_once'}, {'optionId': 'no', 'name': 'No', 'kind': 'reject_once'}]}))
+    row = lambda: next(x for x in chatlog.read(s, tid, 'everything')['items'][-1]['steps'] if x['k'] == 'tool')
+    r = row()
+    assert (r['title'], r['tool_kind'], r['call']) == ('Read', 'read', 'call_9'), 'what the call said stands; the ask only fills its gaps'
+    assert r['text'] == 'Get-Content notes.md' and [o['name'] for o in r['ask']] == ['Yes', 'No'], r
+    put({'sessionUpdate': 'tool_call_update', 'toolCallId': 'call_9', 'status': 'in_progress'})
+    assert not row().get('ask'), 'answered and running: nothing waits on the row'
+    # ...and a request put to him names that call, so the page draws its buttons on that row (chatStream.askOn)
+    with permissions._LOCK: permissions.PENDING['t-row'] = {'id': 't-row', 'tid': tid, 'store': s, 'req': permissions.normal({'call': 'call_9', 'tool': 'Bash'}),
+                                                           'g': 'g', 'rid': 'r', 'sid': 'sid1', 'at': '2026-11-23 10:00:00', 'until': '2026-11-23 10:05:00'}
+    try: assert [p['call'] for p in permissions.pending(tid, s)] == ['call_9']
+    finally: permissions.PENDING.pop('t-row', None)
+
+
+def test_a_plan_is_one_row_replaced_whole_and_the_sessions_state_is_no_row():
+    """THE PLAN IS ONE OBJECT (the ACP spec: every plan update carries the whole list, and the client replaces it): a run's plans - an ACP
+    agent's, or claude's TodoWrite on the argv road - are one row, replaced in place where it first stood; the newer plan_update by its planId.
+    Commands, mode and usage are the session's state (acp.ACPClient.state), never a line of the chat."""
+    from taskuary import acp, conversation
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    entries = lambda *st: [{'content': c, 'status': x} for c, x in zip(('Read the ledger', 'Fix the tax line'), st)]
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'plan', 'entries': entries('in_progress', 'pending')})
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'agent_message_chunk', 'messageId': 'm1', 'content': {'type': 'text', 'text': 'Reading.'}})
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'plan', 'entries': entries('completed', 'in_progress')})
+    for k in ('available_commands_update', 'current_mode_update', 'usage_update'): chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': k, 'availableCommands': []})
+    for todo in ('pending', 'completed'):
+        chatlog.feed(s, tid, 'sid2', 'trace', {'type': 'tool_call', 'name': 'TodoWrite', 'detail': {'tool_call_id': f't-{todo}', 'args': {'todos': [{'content': 'Send it', 'status': todo}]}}})
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'plan_update', 'planId': 'pl-1', 'entries': entries('pending', 'pending')})
+    chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'plan_update', 'planId': 'pl-1', 'entries': entries('completed', 'completed')})
+    steps = chatlog.read(s, tid, 'everything')['items'][-1]['steps']
+    assert [x['k'] for x in steps] == ['plan', 'said', 'plan', 'plan'], 'one row per plan, where it first stood; no row of the session\'s state'
+    assert [i['status'] for i in steps[0]['items']] == ['completed', 'in_progress'] and steps[2]['items'] == [{'text': 'Send it', 'status': 'completed'}]
+    assert [i['status'] for i in steps[3]['items']] == ['completed', 'completed']
+    c = object.__new__(acp.ACPClient); c.state, c.options, c.on_update = {}, [], None
+    c._notified({'method': 'session/update', 'params': {'update': {'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': 'compact'}]}}})
+    c._notified({'method': 'session/update', 'params': {'update': {'sessionUpdate': 'current_mode_update', 'currentModeId': 'plan'}}})
+    c._notified({'method': 'session/update', 'params': {'update': {'sessionUpdate': 'usage_update', 'used': 1200, 'size': 200000}}})
+    assert c.state == {'commands': [{'name': 'compact'}], 'mode': 'plan', 'usage': {'used': 1200, 'size': 200000}}
+
+
+def test_a_plan_updated_after_his_line_is_drawn_under_it_and_the_turn_above_keeps_its_own():
+    """A PLAN IS THE TURN'S THAT LAST UPDATED IT: one ACP session keeps its plan across turns, and its next update - after his line - redrew the
+    row where it first stood, ABOVE that line. The newest plan stands in the newest turn; the turn above keeps the plan as it stood there."""
+    from taskuary import conversation, general
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    plan = lambda *st: chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'plan', 'entries': [
+        {'content': c, 'status': x} for c, x in zip(('Read the ledger', 'Fix the tax line'), st)]})
+    plan('in_progress', 'pending'); plan('completed', 'in_progress')
+    general.wait_line(s, tid, 'Gail says the tax line is fine', line_id='l-gail'); conversation.hear(s, tid, ['l-gail'])
+    plan('completed', 'completed'); plan('completed', 'completed')
+    items = chatlog.read(s, tid, 'everything')['items']
+    assert [x['kind'] for x in items] == ['turn', 'line', 'turn'], [x['kind'] for x in items]
+    st = lambda t: [[i['status'] for i in x['items']] for x in t['steps'] if x['k'] == 'plan']
+    assert st(items[0]) == [['completed', 'in_progress']], 'the turn above keeps the plan as it stood there, replaced in place within it'
+    assert st(items[2]) == [['completed', 'completed']], 'the newest plan is under his line, once'
+    # ...and the same rule on a session's own record read whole (conversation.acp_steps)
+    up = lambda x: {'sessionUpdate': 'plan', 'entries': [{'content': 'Fix the tax line', 'status': x}]}
+    got = conversation.acp_steps([up('pending'), up('in_progress'), {'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': 'Gail says fine'}},
+                                  up('completed'), up('completed')])
+    assert [(x['k'], x.get('items', [{}])[0].get('status')) for x in got] == [('plan', 'in_progress'), ('you', None), ('plan', 'completed')]
+
+
+def test_a_row_is_pushed_to_the_open_chat_as_it_is_written():
+    """THE WORDS STREAM INTO THEIR ROW (the owner, 2026-11-23): each write of a row goes out on the task's run-tail with the row as a read
+    serves it and the turn it stands in - the page patches it in place (chatStream.patchSteps), never waiting on a 600 ms read."""
+    from taskuary import conversation, live
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    tab = object(); live.attach(tab)
+    try:
+        chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'tool_call', 'toolCallId': 'c1', 'kind': 'execute', 'title': 'pytest -q', 'status': 'in_progress'})
+        chatlog.feed(s, tid, 'sid1', 'acp', {'sessionUpdate': 'agent_message_chunk', 'messageId': 'm1', 'content': {'type': 'text', 'text': 'Running the suite.'}})
+        got = live._pending['run-tail']['steps']
+    finally: live.reset()
+    turn = chatlog.read(s, tid, 'everything')['items'][-1]
+    assert [(p['tid'], p['turn'], p['step']['id']) for p in got] == [(tid, turn['id'], 's:sid1:c1'), (tid, turn['id'], 's:sid1:m:m1')]
+    assert got[0]['step']['line'] and got[1]['step']['text'] == 'Running the suite.', 'in the read\'s own shape'
+
+
+def test_a_check_back_made_as_the_turn_filed_is_said_under_that_turn():
+    """Walk 18 (L4b): restarted 5 s into its turn, the agent's check_back call never reached the app; the agent wrote the check-back was "not
+    scheduled", and the app made the call as the turn filed - the chip read "Checks back" beside words saying it did not. What the app did
+    stands under the turn as its own line, once, from the state it set (checkback.of_task) - below the answer that ended the turn."""
+    from taskuary import agenttools, checkback, remind
+    s, tid = world()
+    chatlog.put(s, tid, 'turn', 't:1', {'started': 101.0}, state='working')
+    import datetime as dt
+    when = (dt.datetime.now() + dt.timedelta(days=2)).replace(hour=7, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')   # ...always ahead: a fixed date went past
+    call = [{'type': 'tool_call', 'name': 'mcp__taskuary__check_back', 'detail': {'args': {'when': when, 'what': 'Dana sent the corrected quote'}}}]
+    late = agenttools.made_late(s, tid, call, set())
+    chatlog.update(s, tid, 't:1', state='done', text='The Thursday check-back is therefore not scheduled.')      # ...its answer ends the turn (general._file)
+    chatlog.made_late(s, tid, late); chatlog.made_late(s, tid, late)
+    cb = checkback.of_task(s.get_task(tid))
+    got = chatlog.read(s, tid, 'everything')['items']
+    assert [x['kind'] for x in got] == ['turn', 'note'], 'one line, under the turn, never splitting it'
+    assert f"set for {remind.when(cb['at'])}: Dana sent the corrected quote" in got[1]['text']
+    assert agenttools.made_late(s, tid, [], set()) == ''
+
+
+def test_an_answer_filed_is_never_read_without_its_turn():
+    """Windows CI, 2026-11-24: an answer's comment was written, and its turn's row a beat later (chatlog.answered) - a read at rest in that
+    beat held an answer filed in no turn (chatlog.missing). Filing one is one step under the store's lock: a read waits for both."""
+    import threading
+    from unittest import mock
+    from taskuary import conversation, general
+    s, tid = world()
+    general.wait_line(s, tid, 'Send Erin the review', line_id='l-1'); conversation.hear(s, tid, ['l-1'], turn=True)
+    conversation.items(s, tid)                  # ...read once: its log is the record from here
+    real, between, go, gaps = chatlog.answered, threading.Event(), threading.Event(), []
+    def slow(*a, **k): between.set(); go.wait(5); return real(*a, **k)
+    def read(): gaps.extend(chatlog.missing(s, tid, conversation.items(s, tid)))
+    with mock.patch.object(chatlog, 'answered', slow):
+        w = threading.Thread(target=lambda: s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Sent Erin the review.'), daemon=True); w.start()
+        assert between.wait(5)
+        r = threading.Thread(target=read, daemon=True); r.start(); r.join(0.5)
+        go.set(); w.join(5); r.join(5)
+    assert not r.is_alive() and gaps == [], gaps
+
+
+def test_an_answer_filed_while_a_chat_is_first_read_keeps_its_turn():
+    """Windows CI, 2026-11-26: a task's first read built the list to freeze (chatlog.migrate), the turn's answer was filed on its own thread,
+    and the freeze then cleared the log and wrote the list built before it - the turn without its answer, for good ("answer comment-2 ...
+    is in no turn"). The freeze writes a list only of the log as it stands: one written to since the list was built is read again."""
+    from unittest import mock
+    from taskuary import conversation, general
+    s, tid = world()
+    general.wait_line(s, tid, 'Send Erin the review', line_id='l-1'); conversation.hear(s, tid, ['l-1'], turn=True)
+    real, filed = chatlog._legacy, []
+    def late(st, t):
+        got = real(st, t)
+        if not filed: filed.append(s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Sent Erin the review.'))    # ...between the list and its freeze
+        return got
+    with mock.patch.object(chatlog, '_legacy', late): conversation.items(s, tid)
+    got = conversation.items(s, tid)
+    assert filed and chatlog.migrated(s, tid) and not got['working']
+    assert chatlog.missing(s, tid, got) == []
+    assert [x['text'] for x in got['items'] if x['kind'] == 'turn' and x.get('answer') == f'comment-{filed[0]}'] == ['Sent Erin the review.']
+
+
+def test_a_card_raised_after_his_newest_line_stands_under_that_line_never_as_a_tab_of_the_card_above_it():
+    """Walk 24 (2026-11-25, all three roads): a post waited; the agent asked a question; he answered (an answer greys no card); the turn his
+    answer began raised a second card - told "it stands as its card under your answer" - and it became tab 2 of the card that stood ABOVE his
+    answer, with nothing to press under his newest line; when the first was pressed the one card came down the chat. A run never crosses his
+    line: the second is its own card in the turn that raised it, both wait for his press, and a press moves nothing. Invented posts."""
+    import time
+    from unittest import mock
+    from taskuary import cardqueue, general, selfclose, taskstate
+    s, tid = world()
+    raised = {}
+    def turn(said, raise_, answer):
+        "His line and the turn it starts, on the chat's own road: mid-turn the agent's card is raised, then it answers."
+        def brain(system, user, **kw):
+            time.sleep(1.1)                       # ...a model's answer takes longer than a stamp's one second: the card is raised after his line
+            raised[said] = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Origin': 'agent', 'Reason': 'the post you asked for',
+                                         'DraftText': json.dumps({'action': 'run_tool', 'type': raise_, 'text': 'Our AP team closed October in four days.'})})
+            return answer
+        with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')): sess = general.GeneralSession(s, tid)
+        with mock.patch.object(general.llm_mod, 'build_llm', return_value=brain): sess.send_prompt(said)
+    turn('Post on LinkedIn that we closed October in four days.', 'linkedin_post', f'The post is set up. {selfclose.ASK_MARKER} Shall I put it on Bluesky too? | Yes | No')
+    post = raised['Post on LinkedIn that we closed October in four days.']
+    assert taskstate.open_question(s, tid) and s.get_review(post)['Status'] == 'pending'
+    time.sleep(1.1)
+    turn('Yes', 'bluesky_post', 'The Bluesky post is set up.')
+    mail = raised['Yes']
+    assert s.get_review(post)['Status'] == 'pending', 'his answer to the question greys no card'
+    q = cardqueue.state(s, tid)
+    assert [[u['rids'] for u in r] for r in q['runs']] == [[[post]], [[mail]]], 'his answer parts the two: each is its own card'
+    assert (q['live'], q['fronts']) == ([post], [[mail]])
+    assert cardqueue.alone(q) == [str(mail)] and cardqueue.sets(s, tid) == {}, 'the later card alone - no tabs with the one above'
+    items = chatlog.read(s, tid, 'everything')['items']
+    order = [(x['kind'], [c['review'] for c in x.get('cards') or []] if x['kind'] == 'turn' else x.get('text')) for x in items if x['kind'] in ('line', 'turn')]
+    assert order[-3:] == [('turn', [post]), ('line', 'Yes'), ('turn', [mail])], order
+    assert [c['status'] for x in items if x['kind'] == 'turn' for c in x.get('cards') or []] == ['pending', 'pending'], 'both wait for his press'
+    told = cardqueue.screen(s, tid)
+    assert told.count('Waiting for his press now') == 2 and 'tab of the same card' not in told, told
+    # ...and his press on the one above moves nothing: the email is the one card left, where it stood
+    where = lambda: s._rows("SELECT Id, Parent FROM chatlog WHERE TaskId=? AND Key=?", (tid, f'r:{mail}'))[0]
+    was = where()
+    s.decide_review(post, 'rejected', None, 'owner'); cardqueue._SEEN.clear(); chatlog.read(s, tid)
+    assert where() == was and chatlog.live_card(s, tid)['review'] == mail
+
+
+def test_a_step_held_on_a_cards_road_that_the_agent_went_on_without_ends_with_the_card_nothing_stays_pending_with_no_button():
+    """Walk 24 (2026-11-25, the real Claude CLI): Post via the browser on the X card; on the way a look at the page was held, then the final
+    Post; the Post stood as the card's step, he approved it and the post went up - and the look stayed pending for good, a row of a card that
+    read "Posted": no button anywhere, and the task's header and rail said the agent waited on him. A step held on a card's road ends with
+    that road, with its one true line. Invented posts."""
+    from unittest import mock
+    from taskuary import cardqueue, conversation, general, proposals, taskstate, verdicts
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    x = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Origin': 'agent', 'Reason': 'the post you asked for',
+                      'DraftText': json.dumps({'action': 'run_tool', 'type': 'x_post', 'text': 'We close the month in four days.'})})
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'The post is set up.')
+    chatlog.read(s, tid)
+    with mock.patch.object(general, 'to_agent', return_value='woke'): assert proposals.via_browser(s, x, '')['ok']
+    hold = lambda what, **p: proposals.queue(s, tid, {'action': 'browser_act', 'sid': 's1', 'site': 'x.example', 'what': what, 'why': 'it is his to allow', **p}, 'agent')['reviewId']
+    look = hold('Run a script on the page', args=['eval', 'document.title'], command='agent-browser eval document.title')
+    post = hold('Publish your post on X', args=['click', '@e20'], command='agent-browser click @e20')
+    # ...his Approve on the Post, in the order a press runs: claimed, run on the page - the card is done - and only then marked (verdicts.decide)
+    assert verdicts._claim_act(s, post)
+    try: assert cardqueue.done(s, tid, 'Posted on x.example') == [x]
+    finally: verdicts._RUNNING.discard(post)
+    assert s.get_review(post)['Status'] == 'pending', 'the press that is running is never one the card went without'
+    s.decide_review(post, 'approved', None, 'owner'); cardqueue._SEEN.clear()
+    rv = s.get_review(look)
+    assert s.get_review(post)['Status'] == 'approved' and proposals.passed(rv) and rv['DecideNote'] == proposals.NOT_NEEDED, 'the look it went on without is over with the card'
+    assert not s._rows("SELECT 1 AS x FROM review WHERE TaskId=? AND Status='pending'", (tid,)) and cardqueue.row_over(s, tid)
+    assert taskstate.standing(s, tid)['waits_on'] != 'you', 'nothing waits on him'
+    assert chatlog.live_card(s, tid) is None
+
+
+# ── A CARD THAT WAITS IS THE LAST THING IN THE CHAT (the owner, 2026-11-26) ──────────────────────────────────────────────────────────────
+from pathlib import Path
+WAITS = json.loads((Path(__file__).parent / 'fixtures' / 'waits_last.json').read_text(encoding='utf-8'))
+def shape(items): return [f"{x['id']}[{','.join(c['id'] for c in x.get('cards') or [])}]" if x['kind'] == 'turn' else x['id'] for x in items]
+
+
+@pytest.mark.parametrize('case', WAITS, ids=[c['name'] for c in WAITS])
+def test_a_card_that_waits_is_set_down_under_what_was_said_after_it(case):
+    "The one rule, read by the page too (website/test/chatStream.test.mjs, the same cases): chatlog.waits_last."
+    got = chatlog.waits_last(case['items'])
+    assert shape(got) == case['want']
+    assert shape(chatlog.waits_last(got)) == case['want'], 'set down once: the same list again'
+
+
+def posts_world():
+    "Alex asked for three posts; the agent raised them in one call - one card with a tab each (cardqueue.sets) - and said so."
+    from taskuary import general
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Announce the ledger portal', 'Kind': 'general', 'Status': 'in_progress', 'OriginBase': 'owner'}, 'owner')
+    s.add_message({'TaskId': tid, 'ExternalId': 'own-1', 'Channel': 'own', 'Subject': 'Announce the ledger portal', 'FromName': 'You',
+                   'BodyText': 'post about the portal on X, Reddit and LinkedIn', 'Status': 'routed'})
+    ids = one_call(s, tid, [{'action': 'run_tool', 'type': t, 'text': 'The ledger portal is live.'} for t in ('x_post', 'reddit_post', 'linkedin_post')])
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Three posts are set up.')
+    return s, tid, ids
+
+
+def chat(s, tid):
+    "The chat as the page is served it, top to bottom: each row's words, or the cards at a turn's foot as (review, status)."
+    from taskuary import cardqueue
+    cardqueue._SEEN.clear()
+    out = []
+    for x in chatlog.serve(s, tid)['items']:
+        if x['kind'] == 'card': out.append([(x['review'], x['status'])]); continue
+        out.append(x.get('text') or ' '.join(st.get('text') or '' for st in x.get('steps') or []))
+        if x.get('cards'): out.append([(c['review'], c['status']) for c in x['cards']])
+    return out
+
+
+def test_what_the_agent_says_after_a_waiting_card_is_drawn_above_it_and_it_stays_there_once_settled():
+    """The owner's live app, 2026-11-26 ("you put text under the card which is never allowed ... if text goes after the card it makes the card look
+    useless"): X, Reddit and LinkedIn stood as one card; he dismissed X, the agent was woken and wrote "X draft declined. Reddit and LinkedIn
+    are still available for review." UNDER the card still waiting for him. Whatever a later turn says while a card waits stands above it -
+    while that turn works too - and the card is the last thing; settled, it stays where he last saw it and later words go under it."""
+    from unittest import mock
+    from taskuary import general
+    s, tid, (x, reddit, li) = posts_world()
+    ask, card = 'post about the portal on X, Reddit and LinkedIn', lambda st: [(x, st)]       # ...the one card of the three, by its first item
+    assert chat(s, tid) == [ask, 'Three posts are set up.', card('pending')]
+    s.decide_review(x, 'rejected', None, 'owner')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'X draft declined. Reddit and LinkedIn are still available for review.')
+    said = 'X draft declined. Reddit and LinkedIn are still available for review.'
+    assert chat(s, tid) == [ask, 'Three posts are set up.', said, card('pending')], 'the words came after the card: drawn above it - it waits while any tab does'
+    # ...a turn at work says more: the card that waits is under that too, from its first word
+    chatlog.put(s, tid, 'turn', 't:9', {'started': 2e9}, state='working')
+    chatlog.step(s, tid, 'sid1', 'm-1', {'k': 'said', 'text': 'Looking at Reddit again.'})
+    with mock.patch.object(general, 'working', return_value=True): got = chat(s, tid)
+    assert got == [ask, 'Three posts are set up.', said, 'Looking at Reddit again.', card('pending')], got
+    chatlog.update(s, tid, 't:9', state='done')
+    # ...the rest settled: the card stays under the words it waited under, and what is said now goes under it
+    s.decide_review(reddit, 'rejected', None, 'owner'); s.decide_review(li, 'rejected', None, 'owner')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'All three were turned down.')
+    got = chat(s, tid)
+    assert got == [ask, 'Three posts are set up.', said, 'Looking at Reddit again.', card('rejected'), 'All three were turned down.'], got
+    assert chat(s, tid) == got, 'and the same on the next read: a refresh, the phone'
+
+
+def test_a_card_that_waits_never_crosses_his_line_and_nothing_comes_back_over_it():
+    "The 11-25 ruling holds: his line ends what is above it - a card raised before it stays above it, and the turn it starts is under the line."
+    from taskuary import cardqueue, general
+    s, tid, (x, reddit, li) = posts_world()
+    chat(s, tid)
+    chatlog.put(s, tid, 'line', 'l-2', {'text': 'Leave the posts for now - what is on my calendar?', 'at': 2e9})
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Nothing today.')
+    got = chat(s, tid)
+    at = got.index('Leave the posts for now - what is on my calendar?')
+    assert [g for g in got[:at] if isinstance(g, list)] and got[at + 1:] == ['Nothing today.'], got
+
+
+# ── A TURN'S OPENING IS NOT ITS ANSWER (the owner, 2026-11-26: "it's broken in the response") ─────────────────────────────────────────────
+OPENING = "I'll check which calendars can be combined and whether the screenshot shows where Erin's request got stuck."
+DID = 'The reply to Erin is ready for Send. Two calendars combine today; the screenshot leaves the last result unconfirmed, so the draft asks.'
+def _acp_turn(closing=''):
+    "The recorded shape: one opening message, the work, the reply card raised, end_turn - and its closing words, where it wrote any."
+    said = lambda i, w: {'sessionUpdate': 'agent_message_chunk', 'messageId': i, 'content': {'type': 'text', 'text': w}}
+    call = lambda i, name, **a: [{'sessionUpdate': 'tool_call', 'toolCallId': i, 'title': name, 'status': 'in_progress', 'rawInput': a, '_meta': {'taskuary': {'tool': name}}},
+                                 {'sessionUpdate': 'tool_call_update', 'toolCallId': i, 'status': 'completed'}]
+    return [said('m1', OPENING), *call('c1', 'Bash', command='pytest -q tests/test_calendar.py'), *call('c2', 'Read', file_path='shot.png'),
+            *([said('m2', closing)] if closing else []), *call('c3', 'mcp__taskuary__propose_reply', text='Hi Erin - which calendar did it stop on?'),
+            *call('c4', 'mcp__taskuary__end_turn', did=DID)]
+def _trace_turn(closing=''):
+    said = lambda w: {'type': 'progress', 'name': 'text', 'detail': w}
+    call = lambda i, name, **a: [{'type': 'tool_call', 'name': name, 'detail': {'tool_call_id': i, 'args': a}}, {'type': 'tool_result', 'name': i, 'detail': {'tool_call_id': i, 'result': 'ok'}}]
+    return [{'type': 'prompt', 'name': 'prompt_sent_to_agent', 'detail': 'go'}, said(OPENING), *call('c1', 'run', command='pytest -q tests/test_calendar.py'),
+            *call('c2', 'read_file', path='shot.png'), *([said(closing)] if closing else []), *call('c3', 'propose_reply', text='Hi Erin - which calendar did it stop on?'),
+            *call('c4', 'end_turn', did=DID)]
+
+
+def _filed(road, events, handed, summary=True):
+    "The turn `events` record, filed as its road files it (general._file) with what that road hands over as the answer: the turn as the chat reads it."
+    import time
+    from unittest import mock
+    from taskuary import conversation, general, selfclose
+    s, tid = world()
+    conversation.hear(s, tid, turn=True)
+    with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')): sess = general.GeneralSession(s, tid)
+    try:
+        for e in events: chatlog.feed(s, tid, sess.sid or '', road, e)
+        selfclose.take_marks(tid)
+        if summary: selfclose.keep_mark(tid, 'summary', selfclose.summary_mark({'about': 'Erin asked for one agenda across her calendars.', 'did': DID}))
+        with mock.patch('taskuary.hooks.judge_ended'): sess._file(handed, [], time.time())
+    finally: sess.close()
+    return chatlog.read(s, tid, 'summary')['items'][-1]
+
+
+@pytest.mark.parametrize('road,turn', [('acp', _acp_turn), ('trace', _trace_turn)])
+def test_a_turn_that_wrote_only_its_opening_reads_what_it_did_as_its_answer(road, turn):
+    """Live, 2026-11-26 (invented people): a turn wrote one opening line, ran its steps, raised Erin's reply card and ended with end_turn - no
+    word after its first step. Its road hands over all it said (acp.prompt), so the chat kept "I'll check..." as the answer over the card: a
+    promise of work already done, what it found nowhere. The answer is what the turn says after its work - here, its summary's `did`."""
+    t = _filed(road, turn(), OPENING)
+    assert t['text'] == DID and t['tail'] == DID, (t['text'], t.get('tail'))
+    assert [x['text'] for x in t['steps'] if x['k'] == 'said'] == [OPENING], 'what it said as it began stays where it was said'
+
+
+@pytest.mark.parametrize('road,turn', [('acp', _acp_turn), ('trace', _trace_turn)])
+def test_a_turns_own_closing_words_stay_its_answer(road, turn):
+    "Words after its work began are its answer, the card and end_turn after them, summary or none - and an opening with nothing after it and no summary is all it said."
+    closing = 'Two calendars combine today, and the draft asks Erin which one it stopped on.'
+    assert _filed(road, turn(closing), closing)['text'] == closing
+    assert _filed(road, turn(closing), f'{OPENING}\n\n{closing}')['text'] == f'{OPENING}\n\n{closing}', 'a road that hands over both keeps both'
+    assert _filed(road, turn(), OPENING, summary=False)['text'] == OPENING, 'nothing else was said: its words are never thrown away'
+    said_only = [e for e in turn() if e.get('sessionUpdate') == 'agent_message_chunk' or e.get('name') == 'text']
+    assert _filed(road, said_only, OPENING)['text'] == OPENING, 'a turn that did no work said its answer'

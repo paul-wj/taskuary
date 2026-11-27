@@ -14,7 +14,7 @@ from taskuary.ingest import ingest_message
 from taskuary.routing import draft_task_fields
 from taskuary.store import MemoryStore
 from unittest import mock
-from taskuary import memorylines
+from taskuary import learning
 from tests.memlines import teaching
 
 # verbatim shape of the message that started this
@@ -119,7 +119,10 @@ class HarmlessExitTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(c.get('/api/policies').json()['data']), before)     # no ignore rule
         self.assertEqual(r.json()['learned'], f'msg{mid}')
-        self.assertIn('Vendor newsletter roundups are never work for you', s.get_doc('learned'))
+        # ...the lesson kept, one press one episode (the owner, 2026-11-24): not yet a line in use
+        from taskuary import memory
+        self.assertIn('Vendor newsletter roundups are never work for you', [l['text'] for l in memory.lessons(s)])
+        self.assertNotIn('Vendor newsletter roundups are never work for you', s.get_doc('learned'))
         self.assertEqual(s.get_message(mid)['Status'], 'ignored')
         self.assertFalse(r.json()['taskDeleted'])
 
@@ -176,7 +179,7 @@ class HarmlessExitTests(unittest.TestCase):
             mid = s.add_message({'TaskId': tid, 'Channel': 'email', 'Subject': 'Vendor renewal reminder',
                                  'FromEmail': 'billing@vendor.com', 'BodyText': 'your plan renews',
                                  'ExternalId': f'both-doors-{i}', 'Status': 'routed'})
-            with mock.patch.object(memorylines, 'teach') as taught:
+            with mock.patch.object(learning, 'teach') as taught:
                 r = c.post(f'/api/tasks/{tid}/not-a-task' if door == 'task' else f'/api/messages/{mid}/file').json()
             self.assertEqual(r['learned']['source'] if door == 'task' else r['learned'], f'msg{mid}')
             a = taught.call_args

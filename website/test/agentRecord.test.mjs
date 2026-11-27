@@ -120,6 +120,14 @@ test("the result reads the write-up's own parts, each once, and nothing it did n
     " def sync(site):", "+    if not site.manager:", "+        continue", "-    pass", "--- /dev/null", "+++ b/tests/test_census_sync.py", "+def test_no_manager(): pass"].join("\n");
   assert.deepEqual(diffStat(diff), { files: 2, added: 3, removed: 1 });
   assert.equal(diffStat(""), null);
+  const src = readFileSync(fileURLToPath(new URL("../src/AgentRecord.jsx", import.meta.url)), "utf8");
+  assert.match(src, /Replay the session/);
+  assert.match(src, /api\.get\(`\/api\/task-outputs\/\$\{taskId\}`\)/, "the files it made for the task are listed with its work");
+  const page = readFileSync(fileURLToPath(new URL("../src/TaskPage.jsx", import.meta.url)), "utf8");
+  assert.match(page, /const resultShown = !term\?\.alive && hasRecord && !news && \[AGENT\.saved, AGENT\.stopped, AGENT\.finished\]\.includes\(agentState\);/);
+  // ...and the name on the heading is Taskuary (the owner, 2026-10-28)
+  assert.match(page, /title=\{<span>\{!term\?\.alive \? \(chatPane && hasGeneralHistory \? `\$\{agentName\(t\)\} answered` : resultShown \? "Result" : "Agent work"\)/);
+  assert.match(page, /rowState === "agentdone" && \(\s*<Typography data-tq-handled="" [^>]*>Nothing to do\. It's handled\.<\/Typography>\)/);
 });
 
 // THE RESULT AT REST (the owner, 2026-10-27): what it did and what it based it on, and what it made listed once

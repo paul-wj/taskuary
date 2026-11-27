@@ -53,7 +53,7 @@ test("where a run goes is one prompt, and the card says the AI is answering it",
   assert.doesNotMatch(card, /ai_brain: e\.target\.value/);
   assert.match(card, /decides where each run goes/);
   assert.match(card, /openAppLink\(JUDGE_HASH\)/);
-  assert.match(source, /const WHERE_RUNS_GO = "Settings › How mail is sorted › Where reports go"/);
+  assert.match(source, /const WHERE_RUNS_GO = "Settings › Which AI does what › Where reports go"/);
   assert.match(source, /if \(judge\?\.kind === "decision"\) return \[judge\.display/);
   // the hash it sets is one the page follows
   // (the canvas opens it as a Settings card - canvasLinks.js, pinned in test/canvasLinks.test.mjs)
@@ -192,11 +192,4 @@ test("on a phone a report row's name keeps its line and the buttons wrap under i
   const row = src.slice(src.indexOf("const row = (s) =>"), src.indexOf("const wizardNote"));
   assert.match(row, /flexWrap: \{ xs: "wrap", sm: "nowrap" \}/);
   assert.match(row, /<Box sx=\{\{ flex: \{ xs: "1 1 calc\(100% - \d+px\)", sm: 1 \}, minWidth: 0 \}\}>/);
-});
-
-// A ROUTINE ON THE DEFAULT PROFILE SAYS SO (the setup walk, 2026-11-13): saved with agent "assistant" - the composer's own pick - its Who does it
-// drew blank, because "assistant" is the default's row ("") and has no row of its own
-test("a routine whose agent is the default profile shows the default's row, never a blank picker", () => {
-  const ed = readFileSync(new URL("../src/WorkflowEditor.jsx", import.meta.url), "utf8");
-  assert.match(ed, /value=\{roles\.includes\(cfg\.agent\) && cfg\.agent !== "assistant" \? cfg\.agent : ""\}/);
 });

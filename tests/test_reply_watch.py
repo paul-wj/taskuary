@@ -1,6 +1,6 @@
 """"I'll keep an eye out" that keeps it (2026-10-06): a sent reply that asks something watches for the answer, though
-the send closed the task. Their answer ends it; two quiet days offer one nudge, held while they are away; the watch
-counts its own 30 days and says when it stops. The lines nobody asked for stay in the app."""
+the send closed the task. Their answer ends it; the watch counts its own 30 days. The silence is the Advisor's to raise
+(assistant.followups), never kept off it by the watch (2026-11-24)."""
 import json
 from datetime import datetime, timedelta
 from unittest import mock
@@ -40,7 +40,7 @@ SAID = {'Which day suits you': {'asks_them': True}, 'Thanks, all done': {'asks_t
 
 
 def sending(): return (mock.patch('taskuary.outbound.reply_to_message', return_value={'channel': 'email', 'to': ['erin@vendor.example'], 'cc': []}),
-                       mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learn.learn_from'))
+                       mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learning.learn_from'))
 
 
 def send(s, rid, said=SAID):
@@ -116,7 +116,7 @@ def test_the_sweep_reaches_a_watch_on_a_closed_task(s):
     tid, rid = asked(s); send(s, rid); concierge.close_task(s, tid, 'owner')    # sent, then Mark done (two steps, 2026-10-18)
     with rail(): asks.check(s, tid)                                             # its close is told (quietly) - still watched
     assert s.get_task(tid)['AskedTold'] == 'finished'
-    with mock.patch.object(asks, 'check') as check, mock.patch.object(asks, 'nudge'): asks.sweep(s)
+    with mock.patch.object(asks, 'check') as check: asks.sweep(s)
     assert [c[0][1] for c in check.call_args_list] == [tid]
 
 
@@ -124,29 +124,10 @@ def started(s, tid, days):
     s._exec('UPDATE task SET AskedWatchAt=? WHERE TaskId=?', (ago(days=days), tid))
 
 
-def test_two_quiet_days_mark_one_nudge_and_the_phone_never_speaks_first(s):
-    tid, rid = asked(s); send(s, rid); started(s, tid, 1)
-    assert asks.nudge(s, s.get_task(tid)) is None                               # one day is not silence yet
-    started(s, tid, 3)
-    with mock.patch.object(remote_assistant, 'handoff', return_value={'channel': 'whatsapp', 'chat': 'c1@example.com'}), \
-         mock.patch.object(remote_assistant, 'send') as phone:
-        line = asks.nudge(s, s.get_task(tid))
-    assert line and 'still nothing from Erin' in line and 'nudge' in line
-    assert not phone.called and line not in dock_lines(s)                      # the phone never speaks first; the desk hears nothing
-    assert asks.nudge(s, s.get_task(tid)) is None                               # offered once
-
-
-def test_no_nudge_while_they_are_out_of_office(s):
-    tid, rid = asked(s); send(s, rid); started(s, tid, 3)
-    with mock.patch('taskuary.assistant.ooo', return_value={'erin@vendor.example': 'out until Monday'}):
-        assert asks.nudge(s, s.get_task(tid)) is None
-    assert not s.get_task(tid)['AskedNudgedAt']
-
-
 def test_thirty_days_count_from_the_watch_not_the_task(s):
     tid, rid = asked(s); send(s, rid)
     s._exec('UPDATE task SET CreatedAt=? WHERE TaskId=?', (ago(days=60), tid)); started(s, tid, 5)
-    with mock.patch.object(asks, 'check') as check, mock.patch.object(asks, 'nudge'): asks.sweep(s)
+    with mock.patch.object(asks, 'check') as check: asks.sweep(s)
     assert [c[0][1] for c in check.call_args_list] == [tid] and s.get_task(tid)['AskedWatch'] == 'reply'
 
 
@@ -167,6 +148,29 @@ def test_an_old_watch_with_no_start_of_its_own_ends_quietly(s):
     assert not s.get_task(tid)['AskedWatch'] and len(dock_lines(s)) == before
 
 
-def test_the_advisor_does_not_chase_what_the_watch_covers(s):
-    tid, rid = asked(s); send(s, rid)
-    assert tid in asks.touched(s, 1)['tids']
+def test_a_reply_watch_never_keeps_the_advisors_chase_off_a_closed_task(s):
+    """The live miss (2026-11-24): a watched reply on a closed task "covered" its thread for the Advisor, whose nudge then said nothing
+    anywhere - a vendor's silence sat a week. Past the window the watched thread is the Advisor's to chase."""
+    from taskuary import concierge
+    tid, rid = asked(s); send(s, rid); concierge.close_task(s, tid, 'owner')
+    s._exec('UPDATE task SET ClosedAt=?, AskedToldAt=? WHERE TaskId=?', (ago(days=7), ago(days=7), tid))
+    asks.touched(s, 1)                                                            # the ledger's table, made on first read
+    s._exec('UPDATE ledger SET At=?', (ago(days=7),))                             # a week since the send
+    assert s.get_task(tid)['AskedWatch'] == 'reply' and tid not in asks.touched(s, 24)['tids']
+
+
+def test_a_whatsapp_reply_that_asks_waits_on_them_by_name(s):
+    """Walk 20: a WhatsApp reply asking Gail to confirm set no wait - the task read "agent done" and nothing named her. A reply that asks waits
+    for the answer on every channel it leaves by, and the wait names the person, never the chat's id."""
+    from taskuary import waiton
+    tid = s.create_task({'Title': 'Confirm the rota with Gail', 'Kind': 'general', 'Status': 'open', 'Source': 'whatsapp'}, 'triage')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'wa-1', 'ConversationId': 'whatsapp:15550100142@s.whatsapp.net', 'Channel': 'whatsapp',
+                         'FromName': 'Gail Moreno', 'FromEmail': '15550100142@s.whatsapp.net', 'BodyText': 'Can you cover Friday?',
+                         'SentAt': ago(hours=1), 'Status': 'routed', 'Direction': 'in'})
+    rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Which day suits you for the swap?'})
+    with mock.patch('taskuary.outbound.reply_to_message', return_value={'channel': 'whatsapp', 'to': ['15550100142@s.whatsapp.net'], 'cc': []}), \
+         mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learning.learn_from'), \
+         mock.patch.object(asks, '_background', side_effect=lambda f: f()), mock.patch('taskuary.llm.build_llm', return_value=brain(SAID)):
+        assert verdicts.decide(s, s.get_review(rid), 'approve')['ok']
+    [w] = waiton.on_them(s, s.get_task(tid))
+    assert w['who'] == 'Gail Moreno' and waiton.word('them', w['who']) == "waiting for Gail's input", w

@@ -49,14 +49,14 @@ def _report(s):
         return next(i for i in funnel.build(s, keep_surfaced=True)['items'] if i.get('kind') == 'report' and i.get('mid') and not i.get('bad'))
 
 
-def test_a_report_row_offers_send_to_agent_and_never_make_it_a_task():
+def test_a_report_row_is_made_a_task_by_its_box_never_make_it_a_task():
     s = _world()
     it = _report(s)
     verbs = [c['verb'] for c in concierge.chips_for(s, it)]
-    assert 'regular_agent' in verbs and 'mine' not in verbs, verbs
+    assert 'mine' not in verbs, verbs
     assert 'mine' not in [b['verb'] for b in concierge.row_buttons(s, it)]
-    # ...nor by words or a sweep: the Assistant's Put it on my list says the one way, and pipe.mine leaves it
-    assert concierge.cannot(it, 'mine', s) and 'Send to agent' in concierge.cannot(it, 'mine', s)
+    # ...nor by words or a sweep: the Assistant's Put it on my list says the one way - his words in its box (2026-11-24) - and pipe.mine leaves it
+    assert 'its box' in concierge.cannot(it, 'mine', s)
     from taskuary import bulk
     assert bulk.refusal(it, 'mine')
 
@@ -76,7 +76,7 @@ def test_send_to_agent_on_a_report_starts_its_agent_on_the_report_and_his_words(
     from taskuary import browserview, llm
     brain = Brain()
     monkeypatch.setattr(general, 'provider_options', lambda store: [{'pick': 'connector:1', 'label': 'Northwind AI', 'model': '', 'type': 'openai'}])
-    monkeypatch.setattr(general, 'default_pick', lambda store, task=None: 'connector:1')
+    monkeypatch.setattr(general, 'default_pick', lambda store, task=None, level=True: 'connector:1')
     monkeypatch.setattr(llm, 'build_llm', lambda *a, **k: brain)
     monkeypatch.setattr(browserview, 'installed', lambda: False)
     monkeypatch.setattr(browserview, 'can_set_up', lambda: False)

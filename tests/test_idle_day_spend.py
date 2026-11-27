@@ -187,7 +187,7 @@ def test_both_looks_read_whole_even_when_nothing_changed_and_the_days_job_ideas_
     """"make sure the full advisor run happens though with the pain points etc." - the two booked looks are the full run: never "nothing
     changed", never a short check (llm.standing), whatever moved. The day's job-ideas pass (lookout: pain points, money, early warnings,
     credit) runs before the morning look - an app opened at 09:00 fires the missed 07:30 look before the Advisor's own clock ticks - and
-    still once a calendar day: the afternoon look does not run it again, the next morning does."""
+    once a calendar day, again on the afternoon look only when something new arrived: here nothing did, the next morning runs it."""
     from taskuary import lookout, reports
     s, order = store(), []
     src = assistant.source(s)
@@ -196,8 +196,8 @@ def test_both_looks_read_whole_even_when_nothing_changed_and_the_days_job_ideas_
         order.append('look'); return '{"lines": [], "notes": "watching the accruals"}'
     monkeypatch.setattr(lookout, 'CLOCK', True)
     monkeypatch.setattr(lookout, 'brain', lambda st: brain)
-    monkeypatch.setattr(lookout, 'window', lambda st: ('', set()))
-    monkeypatch.setattr(lookout, 'propose', lambda st, llm, user, shown: order.append('job ideas') or [])
+    monkeypatch.setattr(lookout, 'window', lambda st, **k: ('', {}, ['source:email']))       # a part of the work is due its look
+    monkeypatch.setattr(lookout, 'investigate', lambda st, llm, user, seen, *a: order.append('job ideas') or {'ideas': [], 'dropped': [], 'reads': []})
     cand = [{'key': 'cold:1', 'kind': 'cold', 'facts': 'Gail Moreno asked for the accruals and nothing has moved'}]
     def run(stamp):
         clock = _at(stamp)
@@ -208,6 +208,15 @@ def test_both_looks_read_whole_even_when_nothing_changed_and_the_days_job_ideas_
     assert run('2026-11-12T09:00:00') == 'Model: asked.' and order == ['job ideas', 'look']
     assert run('2026-11-12T16:30:00') == 'Model: asked.' and order == ['job ideas', 'look', 'look'], 'nothing moved, and it read whole'
     assert run('2026-11-13T07:30:00') == 'Model: asked.' and order[3:] == ['job ideas', 'look']
+    # ...AND RUN NOW IS THE FULL RUN TOO (walk 18): the post's ideas come only from the job-ideas look, and an hour after the morning's a
+    # Run now posted "nothing new" - its look never ran. Asked, it runs whatever the day's rule says
+    def now(stamp):
+        clock = _at(stamp)
+        with mock.patch.object(assistant, 'datetime', clock), mock.patch.object(lookout, '_now', clock.now), \
+             mock.patch.object(assistant, 'candidates', return_value=cand):
+            reports.run_one(s, s.get_source(src['SourceId']), brain, 'manual')
+    now('2026-11-13T08:30:00')
+    assert order[5:] == ['job ideas', 'look'], order
 
 
 def test_a_clocked_question_is_asked_whole_only_when_much_changed_and_never_drifts():

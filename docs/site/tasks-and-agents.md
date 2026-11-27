@@ -196,6 +196,28 @@ Open and Download. The complete conversation is **The whole conversation ›** u
 files a Markdown record of what it did under `~/.taskuary/artifacts/` — the outcome, not a copy of
 the terminal.
 
+### What an agent draws in its chat
+
+Where a picture says more than a paragraph, the agent draws one in its turn, on the same raised card as everything
+else it sets down. A view never sends, pays or closes anything.
+
+| It draws | What you see |
+|---|---|
+| **Numbers** | tiles with a figure, how it moved and a note; bar, line, area and pie charts; a table with its money, counts and percents lined up |
+| **Lists** | a checklist with how far along it is, numbered steps, a plain list, a note |
+| **A what-if** | a slider, toggle, select or date that moves a value on your screen, and the tiles, charts and cells worked out from it change as you move it |
+| **A question** | a choice, or a button with an answer - your pick goes back to the agent once |
+| **Who can make which times** | a row a person, their ranges as bars on one time axis with the days side by side, how many people are free in each stretch, and the best slot banded and said with its count - "Tue, Dec 1 · 3–4pm, 6 of 7" - who cannot make it and who has not replied |
+
+The agent gives the availability view only who and the hours each named. How many fit each slot and which slot is
+best - the most people for the meeting's length; between equals the longer shared stretch, then the earlier - are
+counted on the page, the same every time.
+
+A view the agent names is one view, kept up to date - a chart, a table, any of them. When new input changes it the
+agent shows it again, and it is drawn once, under the newest line, as it now is: no older copy stays above it. On a
+thread finding a time, that is the availability view under the newest reply, its bars and count filled in. With
+"reduce motion" on, it is drawn without moving.
+
 ### When the agent opens a browser
 
 With the optional `agent-browser` tool installed, the page the agent is on appears live beside
@@ -233,9 +255,7 @@ Not every job is code. A `coding` task goes to a coding agent, in a terminal in 
 spreadsheet or a dashboard, a form filled in a browser. Whatever it sets up waits for your press.
 
 Both run on a **brain** - a CLI such as Claude Code or Codex, or an API connection, with the model
-chosen on it - and follow a **profile** of instructions laid on that brain: `CODING.md` for code,
-`ASSISTANT.md` for general work by default (see [Profiles and playbooks](#profiles-and-playbooks)).
-You start one with **Send to agent** on a task, or from **+ New → Give an agent a job**, which asks
+chosen on it (see [Brains and skills](#brains-and-skills)). You start one with **Send to agent** on a task, or from **+ New → Give an agent a job**, which asks
 whether the job is general or coding - coding only with [Developer mode](#developer-mode) on.
 
 ### Developer mode
@@ -260,8 +280,8 @@ otherwise the agent continues from Taskuary's own saved history and says so.
 
 Most general asks are short - read the message, recommend, draft the reply, or ask you what to do.
 When triage reads a general task as quick, it is answered in a single call instead of an agent
-session. The call reads what the agent would - the message, the task, `LEARNED.md`, today's calendar,
-`AGENT.md` and the profile - may use only read-only look-ups, and leaves the same things a finished
+session. The call reads what the agent would - the message, the task, `LEARNED.md`, today's calendar -
+may use only read-only look-ups, and leaves the same things a finished
 run does: what it found, a draft when a reply is owed, or a question to you. Nothing on the task page
 changes: it is the same chat, and what you type in its box opens a full session.
 
@@ -337,24 +357,22 @@ task to waiting, because an external answer is now required. An ordinary reply f
 owner-controlled task is just an update: it leaves both the task status and any useful session
 alone.
 
-## Profiles and playbooks
+## Brains and skills
 
 Two levels, and the difference is worth holding onto:
 
 - A **brain** is what does the thinking — a CLI tool (Claude Code, Codex, …) or an API connector, with
   the model chosen on that connection.
-- A **profile** is instructions — a role's rules, laid on whichever brain runs it. It names no CLI
-  and no model. Install one from a skill or write one on **About you → Docs**.
-- A **playbook** is a job — when it starts, which connections it uses, the steps, what an agent
-  may do alone, what to ask first, and what counts as done.
+- A **skill** is a job — what it is, when to use it, and how it is done here, in your words.
+  It is a `SKILL.md` in a folder of its own, the format Claude Code and other agents use.
 
-`CODING.md` is the playbook for code. Every other kind of recurring job gets its own page the
-first time an agent does it: on close, Taskuary asks whether that will recur and drafts the
-playbook onto the task. Approve it, and the next message like it is matched to that playbook by
-triage, and the agent is seeded from it instead of from `CODING.md`'s repository rules.
+A recurring kind of job gets its own skill when the agent that did it offers one: a card after
+its send goes, asking whether to make a skill of this kind of job, with the skill it drafted.
+Approve it, and the next message like it is matched to that skill by triage, and every agent
+sees it by name and reads it when it fits.
 
-Each connector card lists the playbooks that name it, and the words themselves are edited on
-**Reports → Playbooks**, where each has an on/off switch.
+Each connector card lists the skills that name it, and the words themselves are edited on
+**Reports → Skills**, where each has an on/off switch.
 
 ## The task view and the Board
 

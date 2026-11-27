@@ -46,10 +46,12 @@ class LandingTests(unittest.TestCase):
 
     def test_an_own_branch_shows_its_diff_and_all_four_answers(self):
         self.branch()
-        s = landing.state(self.s, self.tid, full=True)
+        with mock.patch('taskuary.shellgate.repo_of', return_value='northwind/ledger'): s = landing.state(self.s, self.tid, full=True)
         self.assertTrue(s['ask'] and s['own'])
         self.assertEqual((s['branch'], s['base'], s['ahead'], s['changed'], s['plus'], s['minus']), ('fix-rounding', 'master', 1, 1, 1, 1))
         self.assertEqual([a['how'] for a in s['answers']], ['rebase', 'merge', 'pr', 'discard'])
+        # ...and no Open a PR where its origin is no GitHub repository: that press could only fail (the re-walk on Codex, 2026-11-25)
+        self.assertEqual([a['how'] for a in landing.state(self.s, self.tid)['answers']], ['rebase', 'merge', 'discard'])
         self.assertIn('+TWO', s['diff'])
         self.assertIn('How should it land?', s['line'])
 
@@ -253,6 +255,15 @@ class LandingTests(unittest.TestCase):
         from taskuary import general
         self.dev(); landing.land(self.s, self.tid, 'push')
         self.assertIn("pressed Push on the agent's work - it went through", general.presses(self.s, self.tid)[-1][2])
+        # ...and the card that was pressed keeps its place in the chat (the card gallery, 2026-11-25: with nothing of its own left unpushed
+        # it had no time to stand at, and was gone from the chat at its own press)
+        with mock.patch.object(landing, 'own', return_value={'commits': [], 'paths': {}, 'at': ''}):       # ...the remote has them all now
+            s = landing.state(self.s, self.tid)
+        self.assertEqual((s['landed']['how'], s['commits']), ('push', 0))
+        self.assertEqual(s['at'], s['landed']['at']); self.assertTrue(s['at'])
+        # ...and it says what it pushed once, on itself: how many went is kept for its title, and its press is no chat line under it
+        self.assertEqual(s['landed']['commits'], 1)
+        self.assertFalse([m for m in general.press_lines(self.s, self.tid) if 'went through' in m['content'][0]['text']])
 
     def test_a_card_read_again_asks_git_nothing_it_already_said_of_its_commits(self):
         """The owner's live app, 2026-11-19: /landing took 23 s - every poll asked git again for each own commit's files and whether each is on
@@ -275,8 +286,10 @@ class LandingTests(unittest.TestCase):
         self.assertEqual((p['tip'], p['ahead']), (self.sha('master'), 2))
 
     def test_the_agent_proposes_push_and_deploy_and_the_press_pushes_both(self):
+        from taskuary import card
         self.on_master_with_origin(); tip = self.sha('master')
-        landing.propose(self.s, self.tid, 'push', 'the fix counts once it is live', deploy='deploy')
+        with card.raising(self.s, self.tid, 'check it is live, then reply that it is'):      # ...the agent's own step after his press
+            landing.propose(self.s, self.tid, 'push', 'the fix counts once it is live', deploy='deploy')
         s = landing.state(self.s, self.tid)
         self.assertEqual([a['how'] for a in s['answers']], ['push', 'deploy']); self.assertEqual(s['proposal']['how'], 'deploy')
         self.assertFalse(git(self.remote, 'branch', '--list', 'deploy'), 'proposing pushes nothing')
@@ -285,7 +298,7 @@ class LandingTests(unittest.TestCase):
             out = landing.land(self.s, self.tid, 'deploy')
         self.assertTrue(out['ok']); self.assertIn('deployed it to deploy', out['says'])
         self.assertEqual((git(self.remote, 'rev-parse', 'master'), git(self.remote, 'rev-parse', 'deploy')), (tip, tip))
-        self.assertIn('Check it is live', told.call_args[0][2], 'the press is the go-ahead the agent waited on')
+        self.assertIn('pressed Push & deploy', told.call_args[0][2], 'its `then` names a step after the press: it is told')
         s = landing.state(self.s, self.tid)
         self.assertFalse(s['ask']); self.assertEqual(s['landed']['how'], 'deploy')
         # ...and the next task in this repo is offered the same deploy branch without the agent naming it
@@ -448,14 +461,19 @@ class LandingTests(unittest.TestCase):
         self.remote = tempfile.mkdtemp(); git(self.remote, 'init', '-q', '--bare')
         git(self.cwd, 'remote', 'add', 'origin', self.remote); git(self.cwd, 'push', '-q', 'origin', 'master')
         self.branch(); self.dev()
-        held, said = landing.push_asked(self.s, self.tid, 'git push -u origin fix-rounding', self.cwd)
+        # ...AND NEVER AN "Open a PR" NO PRESS COULD OPEN (the re-walk on Codex, 2026-11-25: an origin that pushes to a local folder; the card
+        # stood and his press failed "not a GitHub repository"): raised, it is answered with that and the way on - the push is a held step
+        with self.assertRaisesRegex(ValueError, r'not a GitHub repository\s+Next: point the checkout.s origin'): landing.propose(self.s, self.tid, 'pr', 'the fix is ready')
+        self.assertIsNone(landing.push_asked(self.s, self.tid, 'git push -u origin fix-rounding', self.cwd))
+        with mock.patch('taskuary.shellgate.repo_of', return_value='northwind/ledger'):
+            held, said = landing.push_asked(self.s, self.tid, 'git push -u origin fix-rounding', self.cwd)
+            s = landing.state(self.s, self.tid)
         self.assertTrue(held, said)
-        s = landing.state(self.s, self.tid)
         self.assertEqual((s['proposal']['how'], len(s['answers'])), ('pr', 4), 'all four answers, its pick marked')
         self.assertFalse(git(self.remote, 'branch', '--list', 'fix-rounding'))
 
     def test_both_gates_ask_the_card_first(self):
-        from taskuary import acpgate
+        from taskuary import gate
         self.on_master_with_origin(); self.dev()
         tc = lambda cmd: {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd, 'description': 'Push the fix'}}
         ctx = {'store': self.s, 'task_id': self.tid, 'cwd': self.cwd, 'sid': 'run1', 'owner_asks': True}
@@ -463,11 +481,11 @@ class LandingTests(unittest.TestCase):
             asked = []
             with mock.patch('taskuary.permissions.ask', side_effect=lambda *a, **k: asked.append(a) or 'reject_once'):
                 held = {}
-                out = acpgate.answerer({k: v for k, v in ctx.items() if k != 'owner_asks'}, held=held)({'toolCall': tc('git push origin master'), 'options': [
+                out = gate.answerer({k: v for k, v in ctx.items() if k != 'owner_asks'}, held=held)({'toolCall': tc('git push origin master'), 'options': [
                     {'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]})
             self.assertEqual(asked, [], 'no Allow once / Reject card beside the Push button')
             self.assertEqual(out.get('optionId'), 'n'); self.assertTrue(held['c'].startswith(shellgate.HELD), held)
-            self.assertEqual(acpgate.decide(tc('git add -A && git commit -m x && git push'), ctx)[0], acpgate.REFUSED)
+            self.assertEqual(gate.tool_call(tc('git add -A && git commit -m x && git push'), ctx)[0], gate.REFUSED)
             # ...the hook's road and an API agent's run_command (shellgate.check): the same answer, and no Approve card filed beside it
             said = shellgate.check(self.s, self.tid, 'run1', 'git push origin master', cwd=self.cwd)['hookSpecificOutput']['permissionDecisionReason']
             self.assertIn('Push button', said)
@@ -475,7 +493,7 @@ class LandingTests(unittest.TestCase):
         # ...and a repo the owner trusts to act on its own still just pushes
         with mock.patch.object(shellgate, 'trusted', return_value='northwind/ledger'):
             self.assertEqual(shellgate.check(self.s, self.tid, 'run1', 'git push origin master', cwd=self.cwd), {})
-            self.assertEqual(acpgate.decide(tc('git push origin master'), ctx)[0], acpgate.ALLOWED)
+            self.assertEqual(gate.tool_call(tc('git push origin master'), ctx)[0], gate.ALLOWED)
 
 
 class LandingDoorTests(unittest.TestCase):
@@ -547,6 +565,71 @@ class NamedCheckoutTests(unittest.TestCase):
         self.assertTrue(os.path.samefile(cwd, self.cwd)); self.assertTrue(p['command'].startswith('git push origin '))
         self.assertEqual(shellgate.replay(p)[1:], ['-c', p['command']], "the agent's Bash tool's own road")
         self.assertEqual(git(self.remote, 'rev-parse', 'master'), git(self.cwd, 'rev-parse', 'master'))
+
+    def test_a_pull_request_card_reads_its_branch_from_the_checkout_he_named(self):
+        """The card gallery, 2026-11-25: a general agent's pull request from the checkout he named showed its body alone - no branch, no
+        repository. Its card reads them off that checkout (ci.pr_plan); a folder he never named gives it nothing."""
+        from taskuary import ci
+        git(self.cwd, 'checkout', '-q', '-b', 'fix-rounding'); self.fix()
+        plan = ci.pr_plan(self.s, self.tid, {'cwd': self.cwd, 'repo': 'northwind/ledger', 'title': 'Keep cents in totals'})
+        self.assertEqual((plan['branch'], plan['base'], plan['repo']), ('fix-rounding', 'master', 'northwind/ledger'))
+        self.assertTrue(plan['title'].endswith('] Keep cents in totals'))
+        other = tempfile.mkdtemp(); git(other, 'init', '-q', '-b', 'side'); commit(other, 'x.py', 'x\n')
+        self.assertEqual(ci.pr_plan(self.s, self.tid, {'cwd': other})['branch'], '')
+
+    def test_a_pull_request_goes_into_the_repositorys_own_branch_and_is_never_raised_or_opened_with_nothing_committed(self):
+        """Walk 22, 2026-11-25, both CLIs: "open a PR with this fix - it is uncommitted in my checkout". The repository's branch is main; the
+        card read "main -> master", nothing was committed, and the press said "Opened the pull request" having pushed nothing. The card's
+        base is the repository's own; one that cannot be opened is refused at the raise with the exact fix; the press pushes the branch."""
+        from taskuary import ci, proposals, verdicts
+        git(self.cwd, 'branch', '-m', 'main'); git(self.cwd, 'push', '-q', 'origin', 'main'); git(self.cwd, 'remote', 'set-head', 'origin', 'main')
+        with open(os.path.join(self.cwd, 'totals.py'), 'w', encoding='utf-8', newline='\n') as f: f.write('def total(a): return round(sum(a), 2)\n')
+        def ask():
+            no = []
+            return proposals.queue(self.s, self.tid, {'action': 'open_pr', 'cwd': self.cwd, 'repo': 'northwind/ledger', 'title': 'Round totals'}, 'agent', no), no
+        made, no = ask()
+        self.assertIsNone(made); self.assertIn("on 'main', the branch a pull request goes into", no[0]); self.assertIn('git switch -c', no[0])
+        git(self.cwd, 'switch', '-q', '-c', 'fix-rounding')
+        made, no = ask()
+        self.assertIsNone(made); self.assertEqual(no[0], 'nothing committed on fix-rounding - commit the fix first')
+        self.fix()
+        made, no = ask()
+        rv = self.s.get_review(made['reviewId'])
+        self.assertEqual([proposals._draft(rv)['pr'][k] for k in ('branch', 'base', 'repo')], ['fix-rounding', 'main', 'northwind/ledger'])
+        pr = {'number': 7, 'url': 'https://github.com/northwind/ledger/pull/7', 'head': 'fix-rounding', 'base': 'main', 'state': 'open'}
+        with mock.patch('taskuary.ci._conn', return_value={'Secret': 'tok'}), mock.patch('taskuary.github.open_pr', return_value=pr) as op, \
+             mock.patch('taskuary.general.to_agent'):
+            out = verdicts.decide(self.s, rv, 'approve')
+        self.assertEqual((out['status'], op.call_args[0][2:4]), ('approved', ('fix-rounding', 'main')))
+        self.assertEqual(git(self.remote, 'rev-parse', 'fix-rounding'), git(self.cwd, 'rev-parse', 'HEAD'), 'the press pushed the branch it opened')
+
+    def test_a_pull_request_card_never_goes_up_for_a_repository_nobody_checked(self):
+        """Walk 25, 2026-11-26: refused for no `repo`, an agent made one up ("alexdoyle/ledger", and said so) while the checkout's own origin
+        named northwind/ledger behind a rewrite; the card went up and his Approve opened the pull request there. What the checkout says wins,
+        and the agent is answered with it; a repository only the agent names is read through the GitHub card first, and one that is not
+        there is answered with the fix. And the agent's why is drawn as the plain line it is."""
+        from taskuary import ci, proposals
+        git(self.cwd, 'checkout', '-q', '-b', 'fix-rounding'); self.fix()
+        def ask(**kw):
+            no = []
+            return proposals.queue(self.s, self.tid, {'action': 'open_pr', 'cwd': self.cwd, 'title': 'Round totals', **kw}, 'agent', no), no
+        gone = RuntimeError('GitHub said 404 Not Found: read alexdoyle/ledger')
+        with mock.patch.object(self.s, 'github_for', return_value={'Secret': 'tok', 'Type': 'github'}), mock.patch('taskuary.github.repo_info', side_effect=gone) as read:
+            made, no = ask(repo='alexdoyle/ledger')
+        self.assertIsNone(made); read.assert_called_with('tok', 'alexdoyle/ledger')
+        for want in ('alexdoyle/ledger could not be read through the GitHub card', '404 Not Found', 'git remote -v'): self.assertIn(want, no[0])
+        # ...the checkout's origin as it wrote it down, sent elsewhere by a rewrite: that is the repository, whatever the agent names
+        was = git(self.cwd, 'config', '--get', 'remote.origin.url')
+        git(self.cwd, 'config', f'url.{was}.insteadOf', 'https://github.com/northwind/ledger.git')
+        git(self.cwd, 'config', 'remote.origin.url', 'https://github.com/northwind/ledger.git')
+        self.assertEqual(ci.known_repo(self.s, self.tid, self.cwd), 'northwind/ledger')
+        with mock.patch('taskuary.github.repo_info', side_effect=AssertionError('a known repository is not asked for')):
+            made, no = ask(repo='alexdoyle/ledger')
+            self.assertIsNone(made); self.assertEqual(no[0], "this task's pull request goes to northwind/ledger, not alexdoyle/ledger - give `repo` as northwind/ledger, or leave it out")
+            made, no = ask(why='Open a pull request from `fix-rounding` into `master`')
+        rv = self.s.get_review(made['reviewId'])
+        self.assertEqual(proposals._draft(rv)['pr']['repo'], 'northwind/ledger')
+        self.assertTrue(rv['Reason'].endswith('Open a pull request from fix-rounding into master'), rv['Reason'])
 
     def test_propose_push_with_no_folder_takes_the_one_he_named(self):
         self.fix()

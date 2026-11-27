@@ -3,6 +3,7 @@ on its own task, and the close-out of a tracker task proposes "comment and move 
 GraphQL servers in memory - so the tests can prove nothing is written before the press, and that what the card carries is what goes.
 """
 import json, unittest
+from taskuary import card
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -103,7 +104,7 @@ def pending(s, tid): return s._rows("SELECT * FROM review WHERE TaskId=? AND Sta
 class EveryActReachesPeople(unittest.TestCase):
     def test_each_tracker_act_is_a_send_and_none_runs_as_a_report(self):
         for t in trackers.TYPES:
-            self.assertIn(t, reports.REGISTRY); self.assertTrue(scopes.reaches(t), t); self.assertNotIn(t, scopes.QUIET_WRITES)
+            self.assertIn(t, reports.REGISTRY); self.assertTrue(scopes.reaches(t), t)
             self.assertEqual(reports.card_of(t), trackers.TYPES[t][0])
             with self.assertRaises(RuntimeError): reports.gate(MemoryStore(), {'type': t})     # a schedule is nobody's press
 
@@ -182,7 +183,7 @@ class JiraCloseOut(unittest.TestCase):
         jira = FakeJira()
         with upstream(jira=jira):
             self.assertEqual(finish(self.s, self.tid)['closeout'], 'close_item')
-            rv = proposals.closeout_pending(self.s, self.tid)
+            rv = card.pending(self.s, self.tid, 'closeout')
             p = json.loads(rv['DraftText'])
             self.assertEqual((p['tracker'], p['item'], p['status'], p['from']), ('jira', 'NW-12', 'Done', 'In Review'))
             self.assertIn('the export reads the new view again', p['text'].lower())          # the comment, drafted from the result
@@ -199,10 +200,10 @@ class JiraCloseOut(unittest.TestCase):
         jira = FakeJira(done=False)
         with upstream(jira=jira):
             finish(self.s, self.tid)
-            p = json.loads(proposals.closeout_pending(self.s, self.tid)['DraftText'])
+            p = json.loads(card.pending(self.s, self.tid, 'closeout')['DraftText'])
             self.assertIsNone(p['status']); self.assertIn('no move to a done status from In Review', p['no_done'])
             self.assertIn('posts the comment alone', trackers.assess(self.s, p)['note'])
-            out = proposals.execute(self.s, proposals.closeout_pending(self.s, self.tid))
+            out = proposals.execute(self.s, card.pending(self.s, self.tid, 'closeout'))
         self.assertEqual([w[1] for w in jira.writes], ['/rest/api/3/issue/NW-12/comment'])
         self.assertTrue(out['commented']); self.assertIn('no move to a done status', out['not_moved'])
 
@@ -214,10 +215,23 @@ class JiraCloseOut(unittest.TestCase):
             st = trackers.assess(self.s, {'tracker': 'jira', 'item': 'NW-12'})
         self.assertEqual((st['ok'], st['state']), (False, 'unknown')); self.assertIn('could not be read', st['reason'])
 
+    def test_an_answer_of_a_shape_nobody_expected_is_said_as_that_never_as_pythons_own_error(self):
+        """Walk 25, 2026-11-26: a merge card read "GitHub could not be read just now (list indices must be integers or slices, not str)". What
+        the service said is his to read; an answer Taskuary could not take apart is said as that - on a tracker's card and GitHub's alike."""
+        from taskuary import say
+        def odd(*a, **k): return [][''.join(())]                           # ...a list where a dict was read
+        with upstream(jira=odd):
+            st = trackers.assess(self.s, {'tracker': 'jira', 'item': 'NW-12'})
+        self.assertEqual((st['ok'], st['state']), (False, 'unknown'))
+        self.assertEqual(st['reason'], 'Jira could not be read just now (its answer was not one Taskuary could read) - open the card again in a moment')
+        self.assertNotIn('indices', say.unread('GitHub', TypeError('list indices must be integers or slices, not str')))
+        self.assertEqual(say.unread('GitHub', RuntimeError('GitHub said 404 Not Found for northwind/ledger')),
+                         'GitHub could not be read just now (GitHub said 404 Not Found for northwind/ledger) - open the card again in a moment')
+
     def test_the_card_reads_the_tracker_through_the_closeout_endpoint(self):
         with upstream(jira=FakeJira()):
             finish(self.s, self.tid)
-            rid = proposals.closeout_pending(self.s, self.tid)['ReviewId']
+            rid = card.pending(self.s, self.tid, 'closeout')['ReviewId']
             with mock.patch.object(server, 'store', self.s):
                 st = TestClient(server.app).get(f'/api/reviews/{rid}/closeout').json()
         self.assertEqual((st['ok'], st['to'], st['from']), (True, 'Done', 'In Review'))
@@ -232,10 +246,10 @@ class MondayAndLinear(unittest.TestCase):
         s = MemoryStore(); armed(s, 'monday'); tid = tracker_task(s, 'monday', '4410'); g = FakeGraphQL()
         with upstream(gql=g):
             finish(s, tid)
-            p = json.loads(proposals.closeout_pending(s, tid)['DraftText'])
+            p = json.loads(card.pending(s, tid, 'closeout')['DraftText'])
             self.assertEqual((p['item'], p['status']), ('4410', 'Shipped'))                   # done_colors names label 1, whatever it says
             self.assertEqual(g.writes, [])
-            proposals.execute(s, proposals.closeout_pending(s, tid))
+            proposals.execute(s, card.pending(s, tid, 'closeout'))
         (u1, q1, v1), (u2, q2, v2) = g.writes
         self.assertIn('create_update', q1); self.assertEqual(v1['i'], '4410'); self.assertIn('export reads the new view', v1['b'])
         self.assertIn('change_simple_column_value', q2); self.assertEqual((v2['b'], v2['i'], v2['c'], v2['v']), ('88', '4410', 'status', 'Shipped'))
@@ -244,7 +258,7 @@ class MondayAndLinear(unittest.TestCase):
         s = MemoryStore(); armed(s, 'monday'); tid = tracker_task(s, 'monday', '4410')
         with upstream(gql=FakeGraphQL(monday_done=())):
             finish(s, tid)
-            p = json.loads(proposals.closeout_pending(s, tid)['DraftText'])
+            p = json.loads(card.pending(s, tid, 'closeout')['DraftText'])
         self.assertIn('marks no label as done', p['no_done'])
 
     def test_monday_assign_sets_the_people_column_to_the_one_person(self):
@@ -258,7 +272,7 @@ class MondayAndLinear(unittest.TestCase):
         s = MemoryStore(); armed(s, 'linear'); tid = tracker_task(s, 'linear'); g = FakeGraphQL()
         with upstream(gql=g):
             finish(s, tid)
-            rv = proposals.closeout_pending(s, tid)
+            rv = card.pending(s, tid, 'closeout')
             self.assertEqual(json.loads(rv['DraftText'])['status'], 'Done')
             verdicts.decide(s, rv, 'approve', final_text='Shipped "the fix" }) { injected')
         (_, q1, v1), (_, q2, v2) = g.writes

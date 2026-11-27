@@ -56,6 +56,7 @@ DENIED = (
     (r'POST', r'^/api/tasks/\d+/(resume|continue-session)$', 'resuming previous work is the owner\'s choice'),
     # an agent never answers its own question - and an answer now lets a held ask go (hooks.ask, 2026-09-28)
     (r'POST', r'^/api/tasks/\d+/worker/(answer|answers|release)$', 'answering an agent\'s question is the owner\'s'),
+    (r'POST', r'^/api/tasks/\d+/view-answer$', "his pick on a view the agent showed is his press (viewspec.answer)"),
     (r'POST', r'^/api/tasks/\d+/permission$', "answering an agent's permission request is the owner's (permissions.py)"),
     # a chat bound to an agent is a door other people talk through, and the agent's words leave by it (agentchannels.py)
     (r'POST|DELETE', r'^/api/agent-channels(/\d+)?$', "which chats reach an agent - and hear it - is the owner's to open and close"),
@@ -79,15 +80,8 @@ DENIED = (
     # ...and anything that would let it widen its own reach
     (r'POST|PUT|PATCH', r'^/api/settings', 'the settings decide what agents may do'),
     (r'PUT', r'^/api/combine/', "how far triage combines a connection's messages is the owner's setting"),
-    (r'POST|PUT|PATCH|DELETE', r'^/api/(policies|agents)', 'the rules and the agent profiles'),
-    (r'POST|PUT|PATCH|DELETE', r'^/api/(docs?|playbooks)(/|$)', 'SOUL.md, the playbooks and the rest are the owner\'s word, not an agent\'s - propose, do not write'),
-    # importing a skill does BOTH of the two above - an agent row and a rules document - through a
-    # prefix neither one covers. GET /api/skills/found is not here: it lists files on this disk that
-    # a session's own shell can already read, and writes nothing.
-    (r'POST', r'^/api/skills/import$', 'importing a skill makes a worker and writes its rules - an agent does not get to hire itself'),
-    (r'POST', r'^/api/skills/read$', 'turning a file on this machine into a proposed worker is the first half of hiring one'),
-    (r'POST', r'^/api/skills/fetch$', 'pulling a document off the internet to propose a worker is the same half, from further away'),
-    (r'POST', r'^/api/skills/list$', 'reading what a link or a folder holds is where hiring one starts, and it reaches the internet to do it'),
+    (r'POST|PUT|PATCH|DELETE', r'^/api/policies', 'the rules'),
+    (r'POST|PUT|PATCH|DELETE', r'^/api/(docs?|skills)(/|$)', 'SOUL.md, the skills and the rest are the owner\'s word, not an agent\'s - propose, do not write'),
     (r'POST', r'^/api/update$', 'replacing the program is the owner\'s decision'),
     (r'POST', r'^/api/quit$', 'stopping Taskuary stops every agent with it - the owner\'s decision'),
     (r'POST|PUT|PATCH|DELETE', r'^/api/(invoice-batches|reports/\d+/invoice-batches)(/|$)',
@@ -139,8 +133,8 @@ AGENT_WRITES = (
     (r'POST', r'^/api/hooks/claude/(floor|permit)$', "a stranger's session asking the floor, or the owner, before a tool call"),
     (r'POST', r'^/api/hooks/claude/reason$', "the Reason Network hook - a message to someone untrusted is refused, an approval goes to the owner"),
     (r'POST', r'^/api/hooks/claude/browser$', "the browser hook - an act that can't be undone is held for the owner (browsergate)"),
-    (r'POST', r'^/api/agent/gate$', "a browser or desktop command asking before it runs (gatecmd) - a press that can't be undone is held for the owner"),
-    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|check-back|todos|remind|remember|new-task)$',
+    (r'POST', r'^/api/agent/gate$', "a browser or desktop command asking before it runs (gate) - a press that can't be undone is held for the owner"),
+    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|check-back|todos|remind|remember|new-task|hand-over)$',
      "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed/--withdraw-draft/--check-back`, the todos, remind and "
      "remember tools, on the session's OWN task (owns_task); nothing leaves"),
     (r'POST', r'^/api/agent/propose$', "an act only the owner's press runs (proposals.queue), filed on the session's OWN task; nothing runs"),
@@ -148,6 +142,7 @@ AGENT_WRITES = (
     (r'POST', r'^/api/agent/browser$', "`taskuary --browser <url>`: the browser of the session's OWN task opened on a page by Taskuary (browserview.ask_open) - what its own `agent-browser open` does; nothing leaves"),
     (r'POST', r'^/api/agent/ask-stronger$', "the session's own question to a stronger model (askstronger), on its OWN task - an answer in words, nothing moves"),
     (r'POST', r'^/api/agent/note-peers$', "a note to another agent (peers.py), from the session's OWN task - framed as a peer's, it approves nothing"),
+    (r'POST', r'^/api/agent/note-lead$', "a lead for the Advisor's next run (lookout.note_lead), from the session's OWN task - a pointer it reads for itself; nothing is shown or sent"),
     (r'POST', r'^/api/agent/use-repo$', "the checkout the session's OWN task is worked in (repochoice.use) - inside the folders the owner allows, never over their pick"),
     (r'POST', r'^/api/agent/propose-land$', "how the session's OWN branch should land, marked on the owner's question (landing.propose) - it lands nothing"),
     (r'POST', r'^/api/agent/sign-form$', "`taskuary --sign-form`: a PDF on the session's OWN task filled and signed into its folder (handsign) - nothing leaves"),
@@ -167,7 +162,7 @@ AGENT_READS = (
     (r'GET', r'^/api/agent/messages(/[mM]?\d+)?$',
      "`taskuary --search/--message`: the owner's mail and messages, read-only (mailsearch.py) - never a stranger's task"),
     (r'GET', r'^/api/agent/repos$', "the find_repos tool: the git checkouts under the folders agents may look in (repochoice.find) - never a stranger's task"),
-    (r'GET', r'^/api/agent/memory$', "`taskuary --memory`: LEARNED.md, read on demand (context.MEMORY_LINE) - never a stranger's task"),
+    (r'GET', r'^/api/agent/memory$', "`taskuary --memory`: the owner's memory, looked up on demand (memory.lookup) - never a stranger's task"),
 )
 
 # ── EVERY OTHER WRITE, NAMED ────────────────────────────────────────────────────────────
@@ -179,6 +174,7 @@ OWNER_ONLY = (
     # his presses on a turn and a post card (2026-11-22): Try again under a turn that stopped, and a post put up through the agent's browser
     (r'POST', r'^/api/tasks/\d+/again$', "Try again under a turn - his press, never an agent's"),
     (r'POST', r'^/api/reviews/\d+/via-browser$', "Post via the browser on a post card - his press, never an agent's"),
+    (r'POST', r'^/api/reviews/\d+/by-email$', "Reply by email with the file - re-addresses a reply to his mail, his press"),
     # a clock the routine editor holds, said in words (reports.schedule_words) - it writes nothing, but it is the page's, not an agent's
     (r'POST', r'^/api/schedule-words$', "the routine editor's own wording of an unsaved clock - the page's"),
     # New's box, the one start from the owner's words (F1): an agent starts new work by its own new_task, which checks the owner asked
@@ -202,10 +198,13 @@ OWNER_ONLY = (
     (r'POST', r'^/api/window$', "bringing the app's window to the front is Taskuary started again by the owner (desktop.show_running)"),
     (r'PUT', r'^/api/tasks/\d+/workstream$', "which of the owner's workstreams a task belongs to is the owner's word - it teaches where its people belong"),
     (r'PUT', r'^/api/about/workstreams$', "what the owner works on - kept, renamed, personal - is the owner's word, as at setup"),
+    (r'POST', r'^/api/about/workstreams$', "a new profile is the owner's to name (About you)"),
+    (r'PUT', r'^/api/connectors/\d+/workstream$', "whose account a connection is decides what a task's agent may use - never an agent's own press (workstreams.may_use)"),
     (r'DELETE', r'^/api/tasks/\d+/check-back$', "cancelling the agent's check-back is the owner's press - the agent sets its own"),
     (r'POST', r'^/api/tasks/\d+/desktop$', "marking a task 'needs desktop' hands its agent the owner's desktop - never its own agent's press"),
     (r'POST', r'^/api/tasks/\d+/trust$', "raising a task's origin is the owner's decision (origin.raise_to) - never a session's"),
     (r'POST', r'^/api/trusted/remove$', "taking back a trust is the owner's - who starts an agent by their mail is his word (senders.untrust)"),
+    (r'POST', r'^/api/sources/\d+/always$', "approving a routine's or report's write for good is the owner's press (flow.grant)"),
     (r'POST', r'^/api/tasks/\d+/assistant/seen$', "the owner's open task keeps its agent's process warm - a session never keeps itself alive (clipool.touch)"),
     (r'POST', r'^/api/tasks/\d+/waiting/(now|[^/]+/drop)$', "what he typed and has not been heard is his to take back or send in now - never an agent's (general.drop_line)"),
     (r'POST', r'^/api/reason/(trusted|gate|folder|held/[0-9A-Za-z]+)$', "who may reach the owner's agents over Reason Network is the owner's"),
@@ -213,7 +212,7 @@ OWNER_ONLY = (
     (r'POST', r'^/api/cloudfix/setup$', 'it commits a workflow to the repository - only ever the owner pressing Set up (cloudfix.install)'),
     (r'POST|PATCH|DELETE', r'^/api/operations(/[^/]+(/(execute|preview))?)?$',
      'a proposal runs approvals, settings and hand-offs - confirming one is the owner, whatever its kind'),
-    (r'POST|PUT|PATCH|DELETE', r'^/api/reviews/\d+(/(attachment|closeout/[a-z_-]+|draft|envelope|release|reopen))?$',
+    (r'POST|PUT|PATCH|DELETE', r'^/api/reviews/\d+(/(attachment|closeout/[a-z_-]+|draft|envelope|release|held))?$',
      "a pending reply - its words, recipients and attachments - is the owner's; an agent drafts through --reply"),
     (r'POST', r'^/api/concierge/[a-z/]+$', "the owner's chat with the assistant"),
     (r'POST', r'^/api/walk/(start|next|back|open|leave)$', "the walk's moves are the owner's presses, as /api/concierge/next was - a leave closes the row"),
@@ -224,19 +223,20 @@ OWNER_ONLY = (
                         r'|split|wrap|answer|read-ask|steps/\w+/start)$', 'steering a task - and a comment here is written as the owner'),
     (r'POST|DELETE', r'^/api/tasks/\d+/waitroom(/bulk|/image|/\d+)?$', 'the waiting room is what the owner tells the agent'),
     (r'POST', r'^/api/tasks/\d+/emails$', "an email the owner starts from a task - an agent drafts one through --draft"),
-    (r'POST', r'^/api/messages/\d+/(attachments/fetch|discussion|dispatch|file|ignore-sender|mine|not-mine|reclassify'
+    (r'POST', r'^/api/messages/\d+/(attachments/fetch|discussion|dispatch|file|follow-up|ignore-sender|mine|not-mine|reclassify'
               r'|retriage|split|transcribe)$', "what a message is and where it goes is the owner's call"),
     (r'POST', r'^/api/messages/retriage-failed$', "re-judging every message triage failed on is the owner's call, as one is"),
     (r'POST|DELETE', r'^/api/funnel/(\d+/(later|pin)|mutes/\d+|rerank|settle)$', "the owner's pile"),
     (r'POST', r'^/api/board/notes/\d+/read$', "the owner's read mark"),
     (r'POST', r'^/api/notes$', "a note to self is the owner's"),
+    # a card's harness CLI asking its model (relay.py): proven by that card's own relay token, which no session's token stands in for
+    (r'POST', r'^/relay/card-\d+/.+$', "an AI card's relay answers that card's own harness, by its relay token"),
     (r'POST', r'^/api/ingest/(poll|push)$', 'putting a message in the inbox would let an agent write its own next prompt'),
     (r'POST', r'^/api/(ai/defaults|setup/(adopt-brain|dismiss|seen|walk|walk/reset)|knowledge/reindex|calendar/prep(are)?|prompt-(image|file))$',
      "set-up, the brains, the index and the owner's own starts"),
     (r'POST', r'^/api/reports/(\d+/replay|due)$', "replaying a judge or running every due report is the owner's"),
-    (r'POST', r'^/api/roles/[a-z0-9_-]+$', "a role adds a worker and a workflow and narrows a ledger's authority"),
     (r'POST', r'^/api/platform/macos/(open-settings|probe)$', "operating-system permission prompts are the owner's"),
-    (r'POST', r'^/api/deleted/\d+/restore$', "Undo and Restore put back what the owner removed - a report, a rule, a profile, a sign-in (recentlydeleted)"),
+    (r'POST', r'^/api/deleted/\d+/restore$', "Undo and Restore put back what the owner removed - a report, a rule, a sign-in (recentlydeleted)"),
     (r'POST|PUT', r'^/api/voice/(transcribe|vocabulary|open-settings|keys)$', "the owner's microphone and vocabulary"),
     (r'POST', r'^/api/terminals/[^/]+/(browser/(open|snapshot|viewport)|image|pause|wrap)$', 'the pane the owner is watching'),
 )
@@ -266,13 +266,37 @@ def denied(method: str, path: str) -> str:
     return '' if k in ('read', 'agent') else why
 
 
+def _key(server: dict, label: str) -> bytes:
+    """THE KEY A SESSION'S PROOF IS MADE WITH IS THE SERVER'S ALONE (the red team, 2026-11-24, T7): it was the agent token, which every
+    session holds - so any session could make any task's proof, and a stranger token for any task. It comes from the owner token now,
+    sealed on disk and never opened in a session (config._owner_token), under its own label per use. With no owner token every caller is
+    the owner already (scope_of), and the agent token keys it as before; b'' with no agent token - no agent scope to narrow."""
+    k = str(server.get('token') or server.get('agent_token') or '')
+    return hmac.new(k.encode(), f'taskuary {label}'.encode(), hashlib.sha256).digest() if server.get('agent_token') else b''
+
+# the routes a file is read by: the page's pictures and Downloads (server.FILE_COOKIE), and all the desktop window saves (desktop.save_download)
+FILE_READS = ('/api/attachments/', '/api/task-artifacts/', '/api/task-outputs/')
+
+def file_key(server: dict) -> str:
+    """The cookie a page's pictures and downloads are read by (server.FILE_COOKIE): keyed by the owner token, never the token itself (red team
+    #3): a file read's cookie opens file reads, and nothing else. '' with no owner token - every caller is the owner then (scope_of)."""
+    t = str(server.get('token') or '')
+    return hmac.new(t.encode(), b'taskuary file reads', hashlib.sha256).hexdigest() if t else ''
+
+_PROOF = re.compile(r'p1\.(\d{1,12})\.[0-9a-f]{32}')
+
 def task_proof(server: dict, tid) -> str:
-    """What a session on task `tid` carries (terminal.session_env) to show the task is its own. The
-    agent token is one secret every session shares, so alone it cannot tell a session drafting its
-    own reply from one rewriting a neighbour's; a keyed hash of the task id can, and needs no table.
-    '' with no agent token - there is then no agent scope to narrow."""
-    k = str(server.get('agent_token') or '')
-    return hmac.new(k.encode(), f'task:{int(tid)}'.encode(), hashlib.sha256).hexdigest()[:32] if k else ''
+    """What a session on task `tid` carries (terminal.session_env) to show the task is its own: the agent token is one secret every
+    session shares, so alone it cannot tell a session drafting its own reply from one rewriting a neighbour's. It names its task, so a
+    call proves WHICH task it speaks for (proof_tid). '' with no key - there is then no agent scope to narrow."""
+    k = _key(server, 'task proof')
+    return f'p1.{int(tid)}.' + hmac.new(k, f'task:{int(tid)}'.encode(), hashlib.sha256).hexdigest()[:32] if k else ''
+
+
+def proof_tid(server: dict, headers) -> int | None:
+    "The task a call's proof names, when the proof is the server's own; else None. Constant-time, through token_matches."
+    p = str((headers or {}).get(TASK_HDR) or '')
+    return int(m[1]) if (m := _PROOF.fullmatch(p)) and token_matches(p, task_proof(server, int(m[1]))) else None
 
 
 def owns_task(server: dict, headers, tid) -> bool:
@@ -281,7 +305,23 @@ def owns_task(server: dict, headers, tid) -> bool:
     sc = scope_of(server, headers)
     if sc == STRANGER: return stranger_tid(server, headers.get('X-Taskuary-Token')) == int(tid)
     if sc != AGENT: return True
-    return token_matches(headers.get(TASK_HDR), task_proof(server, tid))
+    return proof_tid(server, headers) == int(tid)
+
+
+def session_tid(server: dict, headers) -> int | None:
+    "The task a session's call speaks for - its stranger token's, else its proof's; None for the owner, or a session that proves none."
+    sc = scope_of(server, headers)
+    return stranger_tid(server, headers.get('X-Taskuary-Token')) if sc == STRANGER else proof_tid(server, headers) if sc == AGENT else None
+
+
+NO_PROOF = ("a session's call proves which task it is on, and this one carries no proof Taskuary made - make it from the session working "
+            "that task, whose `taskuary` command and tools send its TASKUARY_TASK_TOKEN")
+
+def unproven(server: dict, headers, method: str, path: str) -> str:
+    """'' when an agent-scope call may go on without a task proof, else why not: every write but a CLI hook reporting its own session
+    (hooks.command - installed user-wide, with no task to name) needs one; a session that dropped its proof was the owner of every door."""
+    if (method or '').upper() in READS or re.match(r'^/api/hooks/', path or ''): return ''
+    return '' if proof_tid(server, headers) is not None else NO_PROOF
 
 
 # ── A STRANGER'S SESSION (R28) ──────────────────────────────────────────────────────────────────────────────────────
@@ -293,9 +333,9 @@ def owns_task(server: dict, headers, tid) -> bool:
 _STRANGER_TOK = re.compile(r's1\.(\d{1,12})\.[0-9a-f]{32}')
 
 def stranger_token(server: dict, tid) -> str:
-    "What a stranger-origin session carries as TASKUARY_TOKEN. '' with no agent token - then there is no secret to key it."
-    k = str(server.get('agent_token') or '')
-    return f's1.{int(tid)}.' + hmac.new(k.encode(), f'stranger:{int(tid)}'.encode(), hashlib.sha256).hexdigest()[:32] if k else ''
+    "What a stranger-origin session carries as TASKUARY_TOKEN. '' with no key (_key) - then there is no secret to key it."
+    k = _key(server, 'stranger token')
+    return f's1.{int(tid)}.' + hmac.new(k, f'stranger:{int(tid)}'.encode(), hashlib.sha256).hexdigest()[:32] if k else ''
 
 def stranger_tid(server: dict, presented) -> int | None:
     "The task a presented stranger token is bound to, or None. Constant-time, through token_matches."
@@ -346,20 +386,28 @@ def stranger_denied(method: str, path: str, query, tid: int, owner_of) -> str:
 # (general.is_dock) reads across the work, as it is for. Searches the session is told of (AGENT_READS) and the feed are unchanged.
 _OWN_READS = ((re.compile(r'^/api/tasks/(\d+)(/.*)?$'), 'task'), (re.compile(r'^/api/task-outputs/(\d+)(/.*)?$'), 'task'),
               (re.compile(r'^/api/messages/(\d+)(/.*)?$'), 'message'), (re.compile(r'^/api/attachments/(\d+)$'), 'attachment'),
-              (re.compile(r'^/api/task-artifacts/(\d+)$'), 'artifact'), (re.compile(r'^/api/terminals/([^/]+)/screen$'), 'terminal'))
+              (re.compile(r'^/api/task-artifacts/(\d+)$'), 'artifact'), (re.compile(r'^/api/terminals/([^/]+)/screen$'), 'terminal'),
+              # ...and a task's drafts and cards (red team round 6: a reply's files, its close-out and a bulk card's run answered any session)
+              (re.compile(r'^/api/reviews/batch/([^/]+)$'), 'batch'), (re.compile(r'^/api/reviews/(\d+)(/.*)?$'), 'review'))
 AGENT_SCOPE_WHY = "a session reads its own task - its messages, files and agents' screens - never another task's or your own panes"
 
 def agent_read_denied(server: dict, headers, method: str, path: str, owner_of, dock=None) -> str:
     "'' when an agent-scope session may make this read, else why not. `owner_of(kind, id)`: the task a message, file or pane is on."
     if (method or '').upper() not in READS or (str(dock or '').isdigit() and owns_task(server, headers, int(dock))): return ''
     if path in ('/api/terminals', '/api/terminals/'): return AGENT_SCOPE_WHY
-    # a session started on no task (a pane the owner opened) carries no proof and keeps its reads - but never a pane's screen
-    bound = bool(headers.get(TASK_HDR))
+    # ...a session that proves no task (a pane the owner opened, or one that dropped its proof) reads no task's parts (the red team, T7)
     for p, kind in _OWN_READS:
-        if (m := p.match(path or '')) and (bound or kind == 'terminal'):
+        if m := p.match(path or ''):
             tid = int(m[1]) if kind == 'task' else owner_of(kind, m[1])
             return '' if tid and owns_task(server, headers, tid) else AGENT_SCOPE_WHY
     return ''
+
+
+def own_only(server: dict, headers, dock=None):
+    """The one task a list read is cut to for this caller: None for the owner and the Assistant's guide chat - they read across the work -
+    else the task an agent-scope session proves, 0 where it proves none (no task's rows)."""
+    if scope_of(server, headers) != AGENT or (str(dock or '').isdigit() and owns_task(server, headers, int(dock))): return None
+    return proof_tid(server, headers) or 0
 
 
 def token_matches(got, *want) -> bool:
@@ -384,7 +432,10 @@ def scope_of(cfg: dict, headers) -> str:
     if stranger_tid(cfg, tok) is not None: return STRANGER   # before the open no-token case: a stranger is never the owner
     owner = str(cfg.get('token') or '')
     if not owner: return OWNER                     # no token configured: the old, open behaviour
-    return OWNER if token_matches(tok, owner) else ANON
+    # ...a call carrying a task's proof is a session's, whatever token rides with it: the owner's token in a session's hands opens no
+    # owner's door (red team F2) - only Taskuary hands that proof out, and only to a session (terminal.session_env)
+    if token_matches(tok, owner): return AGENT if headers.get(TASK_HDR) else OWNER
+    return ANON
 
 
 # ── WHO IS ON THE OTHER END OF THE SOCKET ──────────────────────────────────
@@ -458,8 +509,8 @@ def origin_ok(headers) -> bool:
 
 
 # ── the tokens ──────────────────────────────────────────────────────────────────────────
-def ensure_tokens(read, write, server: dict) -> dict:
-    """Give this install both tokens if it has none, and persist them.
+def ensure_tokens(read, write, server: dict, held: str = '') -> dict:
+    """Give this install an agent token if it has none, and persist it - the owner token is minted in memory alone (config._owner_token).
 
     The agent token tells a session's request from a person's; without it the deny list has
     nothing to act on. The OWNER token used to be the owner's choice, on the reasoning that
@@ -471,17 +522,20 @@ def ensure_tokens(read, write, server: dict) -> dict:
     that loses is one holding a tab from before the upgrade: it reloads and is fine.
 
     `read`/`write` are config's own reader and writer, passed in rather than imported - config
-    calls this from inside load(), and importing it back would be a cycle."""
-    fresh = {k: _secrets.token_urlsafe(24) for k in ('agent_token', 'token') if not server.get(k)}
+    calls this from inside load(), and importing it back would be a cycle.
+
+    `held`: the agent token this process already read for this home. A read that shows none while another writer has the file open
+    (an editor, a restore written in place) is a torn read, not an install without one: minting there wrote a new token over the one
+    every session and the running server held, and each was refused from then on (CI, Windows: a door's 401 to its own token)."""
+    fresh = {k: held or _secrets.token_urlsafe(24) for k in ('agent_token',) if not server.get(k)}
     if not fresh: return server
     server.update(fresh)
     try:
         cur = read()
+        if cur.get('server', {}).get('agent_token') == fresh['agent_token']: return server      # whole again, and it never left
         cur.setdefault('server', {}).update(fresh)
         write(cur)
-        logger.info(f"wrote {' and '.join(sorted(fresh))} to config.toml"
-                    + (' - the page this server hands out carries the owner token' if 'token' in fresh else '')
-                    + (' - sessions run with less authority than you do' if 'agent_token' in fresh else ''))
+        logger.info('wrote agent_token to config.toml - sessions run with less authority than you do')
     except Exception as e:
         # in memory only: still enforced for this run, just regenerated on the next start
         logger.warning(f'could not persist {sorted(fresh)} ({e}) - they hold for this run only')
@@ -492,45 +546,46 @@ def ensure_tokens(read, write, server: dict) -> dict:
 # refresh tokens used to ride along, so an agent allowed to GET /api/connectors could read
 # them without opening the database. Strip only the secret-shaped keys; host/client_id stay
 # so a tool call can still name the card it is using. Owner GETs are not passed through this.
-_CONFIG_SECRETS = frozenset({
-    'password', 'token', 'api_key', 'app_key', 'client_secret', 'secret_key', 'secret_access_key',
-    'sender_password', 'user_password', 'connection_string', 'private_key', 'google_client_secret',
-    'google_refresh_token', 'refresh_token', 'access_key', 'bot_token',
-})
+# What is secret-shaped is the catalogue's one rule (connectorcatalog.map_secrets), the same one that seals them.
+from .connectorcatalog import map_secrets, secret_name as _secretish
+
+
+def masked_detail(detail):
+    """AN AUDIT ROW NEVER CARRIES A SECRET (the red team, 2026-11-24, T5): a connector's create/edit row kept the ConfigJson it saved - a
+    client secret, a TOTP key, a password, a LINE channel secret - and /api/audit/recent served it to an agent, which signed its own vendor
+    push with it. Its card's secret fields and any secret-shaped key come out, at any depth; what was changed stays said."""
+    if not isinstance(detail, str) or not detail.startswith('{'): return detail
+    try: d = json.loads(detail)
+    except ValueError: return detail
+    if not isinstance(d, dict): return detail
+    keys = set(WRITE_ONLY_CONFIG.get(str(d.get('Type') or d.get('type') or ''), ()))
+    def clean(x):
+        if isinstance(x, dict): return {k: clean(v) for k, v in x.items() if k not in keys and not _secretish(k)}
+        if isinstance(x, list): return [clean(v) for v in x]
+        if isinstance(x, str) and x.startswith('{'):
+            try: return json.dumps(clean(json.loads(x)))
+            except ValueError: return x
+        return x
+    out = json.dumps(clean(d), default=str)
+    return out if out != json.dumps(d, default=str) else detail
 
 
 def without_config_secrets(row: dict) -> dict:
-    """A connector row an agent may see: ConfigJson minus the keys that are credentials."""
+    """A connector row an agent may see: ConfigJson minus its credentials, at any depth - a headers or env map, a dsn, a key its card declares."""
     out = dict(row)
-    raw = out.get('ConfigJson')
-    if not raw: return out
-    try: cfg = json.loads(raw)
+    try: cfg = json.loads(out.get('ConfigJson') or '')
     except (TypeError, ValueError): return out
-    if not isinstance(cfg, dict): return out
-    cleaned = {k: v for k, v in cfg.items()
-               if str(k).lower() not in _CONFIG_SECRETS
-               and not str(k).lower().endswith(('_secret', '_password', '_token'))}
-    if cleaned != cfg: out['ConfigJson'] = json.dumps(cleaned)
+    if isinstance(cfg, dict) and (cleaned := map_secrets(cfg, lambda v: None, WRITE_ONLY_CONFIG.get(out.get('Type'), ()))) != cfg:
+        out['ConfigJson'] = json.dumps(cleaned)
     return out
 
 
 # WRITE-ONLY CARD FIELDS (the owner, 2026-10-21: "hide secrets"): an app's client secret is typed into
 # the card's form like any field, but once saved it is never sent back to the browser - like the
 # Secret column, it can be replaced and not read. The server keeps spending the stored value.
-# LinkedIn's refresh token lives in ConfigJson too (linkedin._save), so it is held back the same way.
-WRITE_ONLY_CONFIG = {'linkedin': ('client_secret', 'refresh_token'), 'reddit': ('client_secret', 'totp_key'),
-                     'quickbooks': ('client_secret',), 'amazon_sp': ('client_secret',), 'zoho_invoice': ('client_secret',),
-                     # the Google cards' OAuth client secret and the Gmail card's calendar refresh token came back readable in plain
-                     # boxes on reopen, beside an App Password that was masked (the UI audit, 2026-10-21)
-                     'gmail': ('google_client_secret', 'google_refresh_token'),
-                     'google_sheets': ('google_client_secret',), 'google_chat': ('google_client_secret',),
-                     # a keyed read with a second secret beside its key (apireads.json `write_only`): Schwab's app secret, NetSuite's consumer secret, Plaid's access token
-                     **__import__('taskuary.apireads', fromlist=['write_only']).write_only(),
-                     # the cards that sign in by OAuth (oauth.py) keep their app's secret here; LINE its channel secret, which checks
-                     # every push; SendGrid the key in its push address - the owner reads that through its own door, never the card
-                     **dict.fromkeys(('box', 'zoom', 'zoom_chat', 'webex', 'threads', 'hubspot', 'salesforce', 'docusign', 'basecamp_todos'),
-                                     ('client_secret',)),
-                     'line': ('channel_secret',), 'sendgrid': ('inbound_key',)}
+# Which fields they are is the card's own declaration (connectorcatalog.secret_config) - the same list that is sealed in the database.
+from .connectorcatalog import secret_config
+WRITE_ONLY_CONFIG = secret_config()
 
 
 def masked_config(row: dict) -> dict:

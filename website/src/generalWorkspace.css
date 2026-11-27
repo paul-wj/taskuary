@@ -11,6 +11,13 @@
 .tq-aui-agent-body { min-width: 0; max-width: 100%; padding: 5px 3px; overflow-wrap: anywhere; word-break: break-word; }
 .tq-aui-agent-body * { max-width: 100%; min-width: 0; box-sizing: border-box; }
 .tq-aui-agent-body p, .tq-aui-agent-body li { max-width: 110ch; }
+/* WHAT A TURN SETS DOWN stands in the one raised frame, --tq-turn-item wide (appTheme.css .tq-turn-frame); a sheet grows to its table, up to
+   the chat's width (the owner, 2026-11-23: "if it requires full page it can") */
+.tq-turn-frame.tq-published-page:has(.tq-published-table) { width: fit-content; min-width: min(100%, var(--tq-turn-item)); max-width: 100%; }
+/* ...a view's table by its own layout, as a sheet's is (publishedPages.css): the chat's fixed one squeezed ten columns into the column, a vendor
+   broken mid-word ("Payw / orth"), where it should grow to its words and scroll past the chat's width */
+.tq-aui-agent-body .tq-view-table table { width: auto; min-width: 100%; table-layout: auto; }
+.tq-aui-agent-body .tq-view-table td { overflow-wrap: break-word; word-break: normal; }
 /* right-to-left words read right to left: each paragraph takes its own direction from its first letter, so a Hebrew line's "!" ends it
    instead of opening it, and an English answer quoting one stays left to right; a bubble of them also sits right (dir=auto, GeneralWorkspace)
    (the scenario run, 2026-11-06) */
@@ -20,9 +27,6 @@
 .tq-aui-agent-body th, .tq-aui-agent-body td, .tq-aui-agent-body a { overflow-wrap: anywhere; word-break: break-word; }
 /* the choices of what the agent asked wrap under its line at any width (AgentAsks) - a line of the chat, never a box (2026-11-11) */
 .tq-aui-asking-choices { display: flex; gap: 6px; flex-wrap: wrap; }
-/* a sign-in ask is a line of the conversation, not a card (2026-11-03): its words, and the fill page's link */
-.tq-aui-signin { margin: 2px 0 10px; color: var(--tq-text, #3f423d); font-size: 13px; line-height: 1.5; }
-.tq-aui-signin a { color: var(--tq-link, #41525f); text-decoration: underline; text-underline-offset: 2px; }
 .tq-aui-asking-err { color: var(--tq-danger, #8a2f2f); font-size: 11.5px; }
 /* ...and so is the agent's own question (2026-11-04): its sentence in the answer's type, the choices under it only when it gave real ones */
 .tq-aui-asked { margin: 2px 0 10px; display: flex; flex-direction: column; gap: 8px; }
@@ -39,7 +43,8 @@
 /* A finished tool call is history. Six of them, each ending in the word COMPLETE - wrapped mid-word
    to COMPLET/E and WebFetc/h - were the loudest thing on a working page (the owner's screenshots,
    2026-09-08). The word goes; what is still RUNNING keeps its say. */
-.tq-aui-tool-complete summary { min-height: 26px; }
+/* ...one height at work and done (the owner, 2026-11-23: rows that move as commands end): a row's end never nudges the chat under it */
+.tq-aui-step summary { min-height: 26px; }
 .tq-aui-tool-complete summary em { display: none; }
 .tq-aui-tool-running summary em { color: var(--tq-warning, #8a6d1f); white-space: nowrap; }
 .tq-aui-thinking { display: flex; align-items: center; gap: 5px; margin: 0 0 10px; }
@@ -59,7 +64,7 @@
 .tq-aui-input { flex: 1; min-width: 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--tq-text, #292824); font: inherit; font-size: 13px; line-height: 1.45; padding: 5px 5px; max-height: 150px; overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tq-aui-input::placeholder { color: var(--tq-muted, #8f8b84); }
 /* ...and a PromptBox (New's box, a task's box before its agent) is as tall as its words and its example (the phone audit, 2026-11-13): one row
-   fixed, New's "build me a website - a report on ..." wrapped at 390px into a row and a half under a scrollbar, and typing ran on unseen.
+   fixed, New's example placeholder wrapped at 390px into a row and a half under a scrollbar, and typing ran on unseen.
    The chat's own composer sizes itself (assistant-ui's autosize sets its height), so this is the PromptBox's alone */
 [data-tq-prompt-box] .tq-aui-input { field-sizing: content; }
 .tq-aui-send { width: 34px; height: 34px; flex: 0 0 34px; border: 0; border-radius: 9px; display: grid; place-items: center; cursor: pointer; color: white; background: #738275; }
@@ -106,6 +111,10 @@
 .tq-aui-arrived { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 12px; padding-top: 8px; border-top: 1px dashed var(--tq-border, #d6cfc2); font-size: 12.5px; line-height: 1.45; color: var(--tq-secondary, #5f5a50); }
 .tq-aui-arrived-head { color: var(--tq-warning, #8b6f3a); font-weight: 600; font-size: 11.5px; }
 .tq-aui-arrived-subject { color: var(--tq-text, #2b2925); font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tq-aui-arrived-reply { color: var(--tq-secondary, #5f5a50); font-size: 12px; border-left: 2px solid var(--tq-border, #d8d3c8); padding-left: 8px;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.tq-aui-arrived-reply-head { font-weight: 600; }
+.tq-aui-arrived-kept { color: var(--tq-secondary, #5f5a50); font-size: 11.5px; }
 .tq-aui-arrived-words { color: var(--tq-text, #3d3a33); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* the ask, as the chat's first plain paragraph before any turn (GeneralWorkspace `reading`, the owner 2026-11-05: no boxes, no lines) */
 .tq-aui-ask { font-size: 13.5px; line-height: 1.55; color: var(--tq-text, #2b2925); margin: 0 0 14px; overflow-wrap: anywhere; }
@@ -168,7 +177,8 @@
 /* the waiting room over the box (GeneralWorkspace PendingStrip): his queued lines on his side, slim, no box - as a chat app queues a message */
 .tq-conv-pending { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin: 0 0 10px; padding: 0 2px; }
 .tq-aui-viewport:has(> .tq-conv) { overflow-anchor: none; }      /* the chat pins its own end (GeneralWorkspace): the browser's anchoring moved it back as a turn's steps folded */
-.tq-conv-past { margin: 8px 0 2px; padding: 6px 10px; border: 1px dashed var(--tq-border, #d9d4cb); border-radius: 8px; color: var(--tq-muted, #8b877e); font-size: 12.5px; }
+/* ...a card he said no to stays a card, in the one frame, its words quieter (appTheme.css .tq-turn-frame) */
+.tq-conv-past { padding: 10px 14px; color: var(--tq-muted, #8b877e); font-size: 12.5px; }
 .tq-conv-past-head { font-weight: 600; }
 .tq-conv-past-words { margin-top: 4px; white-space: pre-wrap; max-height: 4.5em; overflow: hidden; }
 .tq-conv-pending-more { font-size: 11.5px; color: var(--tq-muted, #8b877e); }
@@ -177,6 +187,8 @@
 .tq-conv-pending-act:hover { color: var(--tq-text, #292824); background: var(--tq-panel, #fff); }
 .tq-conv-pending-words { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tq-conv-pending-row > .tq-attach-chip { flex: 0 0 auto; max-width: 200px; }
+/* ...and on his sent line a pill is never wider than its bubble: in a narrow one a long file name ran out of the bubble's side */
+[data-tq-line-came] > .tq-attach-chip { max-width: min(240px, 100%); }
 .tq-aui-arrived-words.tq-aui-arrived-open { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .tq-aui-arrived-more-btn { align-self: flex-start; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--tq-muted, #8b877e); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .tq-aui-arrived-more-btn:hover { color: var(--tq-text, #292824); text-decoration: underline; }

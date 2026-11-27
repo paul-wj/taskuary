@@ -9,6 +9,7 @@ import { Box, Typography } from "@mui/material";
 
 import api from "./api";
 import { press, sure } from "./press.js";
+import { hisText } from "./heldEdits.js";
 import { openReply, useDraftJob } from "./replyDraft.js";
 import { mono } from "./theme.jsx";
 import { cleanText } from "./ui.jsx";
@@ -17,7 +18,7 @@ import { RepoPicker } from "./RepoPicker.jsx";
 import { AgentAsk } from "./RunForm.jsx";
 import { RemindPicker } from "./RemindMe.jsx";
 import { agentRuns } from "./taskFilter.js";
-import { cardFor, laneMeta } from "./funnelPile.js";
+import { AGENT_VERBS, cardFor, laneMeta } from "./funnelPile.js";
 import { afterExecute, proposalOf } from "./proposalCard.js";
 import { closeoutOf } from "./reviewProposal.js";
 import { needsYou, matchFor, CHIP_MOVE } from "./assistantGame.js";
@@ -151,8 +152,9 @@ function Draft({ item, busy, play }) {
   const action = rv.Kind === "action";
   const co = closeoutOf(rv);
   const parsed = () => { try { const p = JSON.parse(rv.DraftText || ""); return p.text || `${p.action}${p.why ? ` — ${p.why}` : ""}`; } catch { return rv.DraftText || ""; } };
-  const value = text ?? (action ? parsed() : rv.DraftText || "");
-  const who = rv.FromName || rv.FromEmail || t("them");
+  // ...his own words where he typed any on this card elsewhere (heldEdits.js): never the draft under them
+  const value = text ?? hisText(rv) ?? (action ? parsed() : rv.DraftText || "");
+  const who = rv.FromName || rv.FromEmail || "them";
   const send = () => play("approve", item.key, async () => {
     return sure(await press(api, item.rid, { verb: "approve", final_text: action ? null : value }, action ? 2 : 1), "sent");      // the one press (press.js)
   });
@@ -191,7 +193,6 @@ function Draft({ item, busy, play }) {
 // `given` is a set the Core's answer already carried; `initial` a proposal it already made.
 // THE AGENT BOX'S START, on the game's item: the hand-off's own proposal carrying the owner's words and the agent chosen
 // (concierge.propose_direct), run at once - the box was the confirmation. A repository still to choose comes back as the picker.
-const AGENT_VERBS = ["coding_agent", "regular_agent", "coder"];
 const receiptError = (done, fallbackReason) => {
   const error = new Error(done.receipt);
   if (done.receipt_i18n) error.receipt_i18n = fallbackReason

@@ -8,8 +8,9 @@ from unittest import mock
 
 import pytest
 
-from taskuary import acp, acpgate, agents, clipool, clis, permissions, shellgate
+from taskuary import acp, gate, agents, clipool, clis, permissions, shellgate
 from taskuary.store import MemoryStore
+from taskuary.testing import turn_told
 
 FAKE = [sys.executable, str(Path(__file__).parent / 'fake_acp_server.py')]
 HERE = str(Path(__file__).parent)
@@ -33,7 +34,7 @@ def test_a_plain_call_is_allowed_once_never_always():
     assert out[0].startswith('granted')                    # the answer is what it said after its last call; "Looking." is a step
     assert any(k == 'progress' and d == 'Looking.' for k, _n, d in ev)
     perm = [d for k, _n, d in ev if k == 'permission']
-    assert perm and perm[0]['answer'] == acpgate.ALLOWED
+    assert perm and perm[0]['answer'] == gate.ALLOWED
 
 
 def test_a_push_is_held_for_the_owner_and_the_step_reads_held_not_failed():
@@ -44,7 +45,7 @@ def test_a_push_is_held_for_the_owner_and_the_step_reads_held_not_failed():
         out, ev = run(profile(), env={'FAKE_ACP_ASK': 'git push origin main'}, store=s, task_id=tid)
     assert 'denied' in out[0]
     perm = next(d for k, _n, d in ev if k == 'permission')
-    assert perm['answer'] == acpgate.HELD and 'push' in perm['why']
+    assert perm['answer'] == gate.HELD and 'push' in perm['why']
     res = next(d for k, _n, d in ev if k == 'tool_result')
     assert res['is_error'] and res['result'].startswith(shellgate.HELD)          # agentSteps reads this as "held"
     assert any(json.loads(r.get('DraftText') or '{}').get('command') == 'git push origin main'
@@ -62,6 +63,25 @@ def test_a_no_that_ends_the_agents_turn_is_heard_in_the_same_conversation_and_th
     assert sid == 'sess_fake_1' and 'turn=2' in said and 'git push origin main' in said      # the same conversation went on, told of the step
     assert any(json.loads(r.get('DraftText') or '{}').get('command') == 'git push origin main'
                for r in s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,)))     # ...and its Approve card stands
+
+
+def test_a_general_runs_own_updates_are_its_chat_rows_and_its_trace_draws_none_again():
+    """ONE ACP RECORD ON BOTH ROADS (the owner, 2026-11-23: adopt the open-source model): a task chat's run over ACP hands the agent's own
+    updates in as they come (a trace that takes them - general's `visible.acp`) and the chat's rows are those: its call by the agent's own id,
+    announced with no input and drawn at once, completed in place. The trace's echo of the same call (agents.ACPSteps) writes no second row."""
+    from taskuary import chatlog, conversation
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Read the ledger for Erin', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    conversation.hear(s, tid, turn=True)
+    trace = lambda kind, name, detail=None: chatlog.feed(s, tid, 'sid1', 'trace', {'type': kind, 'name': name, 'detail': detail})
+    trace.acp = lambda u: chatlog.feed(s, tid, 'sid1', 'acp', u)
+    with mock.patch.object(agents, '_resolve_cmd', return_value=[FAKE[0]]), agents.run_context(s, tid):
+        out = agents.run_cli(profile(), 'go', trace)
+    assert out[0].startswith('granted')
+    rows = [(r['Key'], json.loads(r['Body'])) for r in s._rows("SELECT Key, Body FROM chatlog WHERE TaskId=? AND Kind='step' ORDER BY Id", (tid,))]
+    tools = [(k, b.get('title'), b.get('status')) for k, b in rows if b.get('k') == 'tool']
+    assert tools == [('s:sid1:call_1', 'read the ledger', 'completed')], rows
+    assert [b['text'].strip() for _k, b in rows if b.get('k') == 'said'][0] == 'Looking.'
 
 
 def _answering(option):
@@ -83,7 +103,7 @@ def test_a_chat_agents_held_step_is_its_approve_card_at_once_never_buttons_no_pa
     tid = s.create_task({'Title': 'Tidy the exports folder', 'Kind': 'general', 'Status': 'open'}, 'owner')
     with mock.patch.object(shellgate, 'trusted', return_value=''), mock.patch.object(permissions, 'ask', side_effect=AssertionError('buttons were asked')):
         out, ev = run(profile(), env={'FAKE_ACP_ASK': 'git push origin main'}, store=s, task_id=tid)
-    assert next(d for k, _n, d in ev if k == 'permission')['answer'] == acpgate.HELD and not permissions.pending(tid, s)
+    assert next(d for k, _n, d in ev if k == 'permission')['answer'] == gate.HELD and not permissions.pending(tid, s)
     [rv] = s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))
     assert rv['Status'] == 'pending' and 'git push origin main' in rv['DraftText']
 
@@ -97,10 +117,10 @@ def test_a_held_push_is_the_owners_buttons_and_their_answer_is_the_answer(option
         out, ev = run(profile(), env={'FAKE_ACP_ASK': 'git push origin main'}, store=s, task_id=tid)
         t.join(5)
     perm = next(d for k, _n, d in ev if k == 'permission')
-    assert perm['answer'] == (acpgate.ALLOWED if granted else acpgate.REFUSED)
+    assert perm['answer'] == (gate.ALLOWED if granted else gate.REFUSED)
     assert out[0].startswith('granted') == granted
     # ...and their no is theirs on the step, never "Taskuary refused it: the owner said no" (the owner, 2026-11-10)
-    if not granted: assert perm['why'] == acpgate.YOU_REJECTED == 'You rejected this'
+    if not granted: assert perm['why'] == gate.YOU_REJECTED == 'You rejected this'
     # answered on the spot: no Approve card waits as well
     assert not s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))
     assert not permissions.pending(tid, s)
@@ -108,10 +128,10 @@ def test_a_held_push_is_the_owners_buttons_and_their_answer_is_the_answer(option
 
 def test_the_step_says_whose_no_it_was():
     opts = [{'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]
-    for said, reads in ((acpgate.YOU_REJECTED, 'You rejected this'), ('it writes off this machine', 'Taskuary refused it: it writes off this machine')):
+    for said, reads in ((gate.YOU_REJECTED, 'You rejected this'), ('it writes off this machine', 'Taskuary refused it: it writes off this machine')):
         held = {}
-        with mock.patch.object(acpgate, 'decide', return_value=(acpgate.REFUSED, said)):
-            acpgate.answerer({}, held=held)({'toolCall': {'toolCallId': 'c1', 'kind': 'execute'}, 'options': opts})
+        with mock.patch.object(gate, 'tool_call', return_value=(gate.REFUSED, said)):
+            gate.answerer({}, held=held)({'toolCall': {'toolCallId': 'c1', 'kind': 'execute'}, 'options': opts})
         assert held == {'c1': reads}
 
 
@@ -123,7 +143,7 @@ def test_the_owners_reject_reaches_the_agent_as_the_owners_no_and_their_allow_sa
         s = STORE[0] = MemoryStore()
         tid = s.create_task({'Title': 'Fix the budget total', 'Kind': 'coding', 'Status': 'open'}, 'owner')
         told = []
-        sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: told.append((text, as_owner)))
+        sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: told.append((turn_told(s, tid, text), as_owner)))
         with mock.patch.object(shellgate, 'trusted', return_value=''), mock.patch('taskuary.workerstate._live', return_value=sess), \
              mock.patch('taskuary.terminal.stranger_now', return_value=False):
             t = _answering(option)
@@ -149,7 +169,7 @@ def test_a_step_taskuary_refuses_is_told_to_the_agent_with_the_way_on():
     call = {'toolCall': {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': 'git push origin master'}},
             'options': [{'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]}
     with mock.patch.object(shellgate, 'trusted', return_value=''), mock.patch.object(landing, 'push_asked', return_value=(False, way)),          mock.patch.object(browsergate, '_tell', lambda store, t, text, **k: told.append((t, text))):
-        assert acpgate.answerer({'store': s, 'task_id': tid, 'cwd': HERE})(call) == {'outcome': 'selected', 'optionId': 'n'}
+        assert gate.answerer({'store': s, 'task_id': tid, 'cwd': HERE})(call) == {'outcome': 'selected', 'optionId': 'n'}
     assert len(told) == 1 and told[0][0] == tid and way in told[0][1] and 'git push origin master' in told[0][1] and "Taskuary's own answer, not the owner's" in told[0][1]
 
 
@@ -158,11 +178,11 @@ def test_the_automatic_rules_still_answer_first_and_never_reach_the_owner():
     tid = s.create_task({'Title': 'Fix the budget total', 'Kind': 'coding', 'Status': 'open'}, 'owner')
     with mock.patch.object(permissions, 'ask', side_effect=AssertionError('the owner was asked')):
         out, ev = run(profile(), store=s, task_id=tid)
-    assert next(d for k, _n, d in ev if k == 'permission')['answer'] == acpgate.ALLOWED
+    assert next(d for k, _n, d in ev if k == 'permission')['answer'] == gate.ALLOWED
     # ...an outside HTTP write is no automatic refusal (the north-star audit, 2026-11-10): it is the owner's to answer, as a push is
     cmd = 'curl -X POST https://hooks.vendor.example/notify -d "{}"'
     with mock.patch.object(permissions, 'ask', return_value='reject_once') as asked:
-        assert acpgate.answerer({'store': s, 'task_id': tid, 'cwd': HERE})({'toolCall': {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}},
+        assert gate.answerer({'store': s, 'task_id': tid, 'cwd': HERE})({'toolCall': {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}},
             'options': [{'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]}) == {'outcome': 'selected', 'optionId': 'n'}
     asked.assert_called_once()
 
@@ -174,41 +194,41 @@ def test_an_http_client_that_writes_off_this_machine_is_held_as_a_card_never_ref
     """The north-star audit, 2026-11-10: the ACP road refused an outside HTTP write flat ("only the owner sends") - no card, nothing the
     owner could say yes to, while the hook road let the same command through. Both read it by shellgate.acts and hold it as a push."""
     s = MemoryStore(); tid = s.create_task({'Title': 'Notify the vendor', 'Kind': 'coding', 'Status': 'open'}, 'owner')
-    got = acpgate.decide({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}}, {'store': s, 'task_id': tid, 'cwd': HERE, 'sid': 'run1'})
-    assert got[0] == acpgate.HELD and shellgate.HELD in got[1], got
+    got = gate.tool_call({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}}, {'store': s, 'task_id': tid, 'cwd': HERE, 'sid': 'run1'})
+    assert got[0] == gate.HELD and shellgate.HELD in got[1], got
     [rv] = s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,))
     assert json.loads(rv['DraftText'])['action'] == 'shell_act' and 'send data to' in json.loads(rv['DraftText'])['what']
 
 
 def test_a_press_in_the_browser_is_left_to_the_hold_where_it_runs():
     """Over ACP a Codex session asks only for what its sandbox blocks, so a press judged here was judged on one road and not the next: the
-    hold is at the command itself (gatecmd), on every road. ACP's answer lets the line through, and the session's `agent-browser` holds it."""
+    hold is at the command itself (gate), on every road. ACP's answer lets the line through, and the session's `agent-browser` holds it."""
     s = MemoryStore(); tid = s.create_task({'Title': 'Pay the vendor', 'Kind': 'coding', 'Status': 'open'}, 'owner')
     ctx = {'store': s, 'task_id': tid, 'cwd': HERE, 'sid': 'run1', 'cli': 'codex'}
-    call = lambda c: acpgate.decide({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': c}}, ctx)
+    call = lambda c: gate.tool_call({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': c}}, ctx)
     for cmd in ('agent-browser click @e3', 'agent-desktop click @s1:e2', 'agent-browser snapshot -i'):
-        assert call(cmd) == (acpgate.ALLOWED, ''), cmd
+        assert call(cmd) == (gate.ALLOWED, ''), cmd
 
 
 @pytest.mark.parametrize('cmd', ['curl -s https://docs.northwind.example/budget', 'curl -f -s https://docs.northwind.example/a.pdf -o a.pdf',
                                  'curl -s -X POST -H "X-Taskuary-Token: $T" http://127.0.0.1:7787/api/agent/tick -d "{}"',
                                  'git status', 'rg -n approvedTotal src'])
 def test_a_read_a_fetch_and_taskuary_s_own_api_are_allowed(cmd):
-    assert acpgate.decide({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}}, {'cwd': HERE})[0] == acpgate.ALLOWED
+    assert gate.tool_call({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}}, {'cwd': HERE})[0] == gate.ALLOWED
 
 
 def test_taskuary_s_own_tools_are_allowed_and_an_outside_send_tool_is_not():
     s = MemoryStore()
     own = {'toolCallId': 'c', '_meta': {'claudeCode': {'toolName': 'mcp__taskuary__propose_reply'}}, 'rawInput': {'text': 'hi'}}
-    assert acpgate.decide(own, {'store': s, 'cli': 'claude'})[0] == acpgate.ALLOWED
+    assert gate.tool_call(own, {'store': s, 'cli': 'claude'})[0] == gate.ALLOWED
     verdicts = [{'server': 'mail', 'blocked': False, 'error': '', 'tools': [{'name': 'send_email', 'blocked': True}, {'name': 'search', 'blocked': False}]}]
     with mock.patch('taskuary.sendfilter.verdicts', return_value=verdicts):
         send = {'toolCallId': 'c', '_meta': {'claudeCode': {'toolName': 'mcp__mail__send_email'}}}
         look = {'toolCallId': 'c', 'title': 'mcp.mail.search', 'rawInput': {'server': 'mail', 'tool': 'search', 'arguments': {}}}   # codex's spelling
         unknown = {'toolCallId': 'c', '_meta': {'claudeCode': {'toolName': 'mcp__chat__post_message'}}}
-        assert acpgate.decide(send, {'store': s, 'cli': 'claude'})[0] == acpgate.REFUSED
-        assert acpgate.decide(look, {'store': s, 'cli': 'codex'})[0] == acpgate.ALLOWED
-        assert acpgate.decide(unknown, {'store': s, 'cli': 'claude'})[0] == acpgate.REFUSED          # fail closed, as the send filter is
+        assert gate.tool_call(send, {'store': s, 'cli': 'claude'})[0] == gate.REFUSED
+        assert gate.tool_call(look, {'store': s, 'cli': 'codex'})[0] == gate.ALLOWED
+        assert gate.tool_call(unknown, {'store': s, 'cli': 'claude'})[0] == gate.REFUSED          # fail closed, as the send filter is
 
 
 def test_a_rule_that_raises_refuses():
@@ -404,14 +424,6 @@ def test_codex_s_config_flags_become_its_session_config():
                    'mcp_servers.mail.disabled_tools': ['send_email']}
 
 
-def test_a_closed_connection_takes_its_whole_process_tree_on_windows():
-    c = acp.ACPClient(FAKE[0], FAKE[1:], timeout=30)
-    with mock.patch.object(acp.os, 'name', 'nt'), mock.patch.object(acp.spawn, 'run') as r:
-        c.close()
-    assert r.call_args[0][0][:2] == ['taskkill', '/PID'] and '/T' in r.call_args[0][0]
-    c.p.kill()
-
-
 # ── a CLI whose reads no command line can keep works only on the held road (the owner, 2026-11-16) ────────────────────────────
 # Codex quick work - a look with no hands, on `codex exec` - listed the owner's Documents folder and nobody was asked: even its read-only
 # sandbox reads the whole disk, and its only way to act alone was --dangerously-bypass-approvals-and-sandbox
@@ -531,6 +543,17 @@ def test_a_turn_that_says_words_then_hits_a_limit_or_a_refusal_ended_part_way_it
     assert out[0] == 'Half of it.'
 
 
+def test_an_adapter_that_answers_its_turn_with_its_servers_death_died_mid_turn(tmp_path):
+    """Walk 16: a Codex adapter outlived its app-server and answered the prompt with an error carrying that server's stderr; the rail said its
+    first line - a deprecation warning - as the cause. The same death as the adapter's own: MID_TURN, its conversation kept for the try."""
+    msg = ('The Codex app-server exited with code 4294967295. The agent starts it again on the next request. 2026-11-24T10:37:48Z ERROR '
+           'codex_app_server: `[features].multi_agent` is deprecated.')
+    rules = tmp_path / 'r.json'; rules.write_text(json.dumps([{'when': '.', 'error': msg}]))
+    with pytest.raises(clipool.PartWay) as e:
+        run(profile(), 'go', env={'FAKE_ACP_SCRIPT': str(rules)})
+    assert str(e.value) == clipool.MID_TURN and e.value.session_id
+
+
 # ── ONE FAILURE ROAD: a usage limit reads the same whatever the AI and the road (the design round, 2026-11-18) ──────────────────────
 def test_a_usage_limit_over_acp_is_the_limit_every_road_raises():
     """Over ACP the adapter says its limit in words, and the chat's road raised them raw - never RateLimited, so the router went on handing
@@ -596,6 +619,7 @@ def test_the_owner_s_own_codex_starts_with_openai_s_apps_and_plugins_off_as_an_a
     # ...only those: his plan's picture tool and fast tier stay his (the owner, 2026-11-22 - an AI card's harness closes them, his CLI does not)
     assert {k.split('.', 1)[1] for k in cfg if k.startswith('features.')} == set(harness.OWNER_CLI_OFF)
     assert 'features.image_generation' not in cfg and 'features.fast_mode' not in cfg
+    assert cfg['skills.bundled.enabled'] is False               # ...and Codex's bundled skills index rides no task of his (the review, 2026-11-23)
 
 
 def test_a_start_that_fails_once_is_tried_again_before_he_hears_of_it():

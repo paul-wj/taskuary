@@ -54,7 +54,7 @@
 //   SEARCH    Enter opened another query's hit, or nothing; focus left elsewhere than what opened; "N of N" over a cut list; a
 //             connection its name did not find or open; no search at a phone's width (the 2026-10-19 UI walk, G9)
 //   OVER      a New ... entry that asks in a dialog drew another document under it, or its Cancel left one open (2026-10-19 UI walk:
-//             + New playbook put SOUL.md under its dialog, and Cancel left the owner editing it)
+//             + New skill put SOUL.md under its dialog, and Cancel left the owner editing it)
 //   BASED     an idea's "Based on <name>'s message" (or a #msg= link) left anything but that message's own card on the table, named
 //             the Advisor for the person, or drew the old row panel ("CLEAR FROM TIMELINE", "Talk it through", "undefined in chat")
 //   HEAD      the task view's header takes more than one row - at 1366 on every road a task opens by, and at 390 (2026-10-21)
@@ -66,11 +66,11 @@
 // on throwaway homes (never the owner's 7787).
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launch } from "./browser.mjs";
+import { ownTemp } from "./browser/tempdirs.mjs";
 import { JARGON_RES } from "./src/words.js";
 import { VERBS, ALL_LABELS, CHOICES, label, verbOfRow, choice } from "./src/buttons.js";
 import { LEVEL_ORDER as SECTION_KEYS } from "./src/lanes.js";
@@ -180,7 +180,7 @@ const coverOf = (verb, word) => {
 const verbOfId = (id) => { const last = String(id || "").split(":").pop(); return verbOfRow(id) || (VERBS[last] ? last : null); };
 const byLabel = Object.fromEntries(Object.entries(VERBS).flatMap(([k, v]) => [[v.label, k], ...Object.values(v.states || {}).map((w) => [w, k])]));
 
-const web = build && only.size ? mkdtempSync(join(tmpdir(), "tq-deadend-web-")) : "";
+const web = build && only.size ? ownTemp("tq-deadend-web-") : "";        // ownTemp: gone when the check ends
 if (web && spawnSync("npx", ["vite", "build", "--outDir", web, "--emptyOutDir"], { cwd: join(root, "website"), shell: true, stdio: "ignore" }).status) {
   console.error("the page did not build"); process.exit(2);
 }
@@ -201,7 +201,7 @@ async function serve(n, opts = {}) {
   }
 }
 async function serveOn(p, { faults = false, linking = false, plant = false } = {}) {
-  const home = mkdtempSync(join(tmpdir(), "tq-deadend-"));
+  const home = ownTemp("tq-deadend-");
   const launchPy = `
 import sys, pathlib
 from taskuary import server, cli
@@ -969,9 +969,9 @@ async function links() {
     walked.push("links: Back after two opens");
   }
   // a setting by its key: the group opened over the owner's page, the knob two screens down in view - then the same from a fresh page.
-  // Two groups: Assistant, and How mail is sorted, whose AI panel stands up from a spinner ABOVE its rows after they are drawn - one
+  // Two groups: Assistant, and Which AI does what, whose AI panel stands up from a spinner ABOVE its rows after they are drawn - one
   // scroll on arrival was undone by it, the "Fallback AI programs" hit landing 1,700px over its setting (verify, 2026-10-19)
-  for (const grp of ["Assistant", "How mail is sorted"]) {
+  for (const grp of ["Assistant", "Which AI does what"]) {
     const g = encodeURIComponent(grp);
     page.step = `links knob ${grp}`;
     await open(`#settings=config&group=${g}`); await wait(4000);
@@ -1004,18 +1004,18 @@ async function links() {
     else { await hit.click(); await wait(3500); if (!(await knobAt(k))?.inView) note("PLACE", page.step, `the search hit for "${label.trim()}" opened its group with ${k} off the screen`); }
     walked.push(`links: a ${grp} setting by link, fresh and over Settings, and by search`);
   }
-  // NOTHING: a link the How mail is sorted panel draws in its own words ("still Connections") opens its place
+  // NOTHING: a link the Which AI does what panel draws in its own words ("still Connections") opens its place
   page.step = "links panel";
-  await page.goto(`${srv.base}/#settings=config&group=${encodeURIComponent("How mail is sorted")}`, { waitUntil: "load" }); await wait(6000);
+  await page.goto(`${srv.base}/#settings=config&group=${encodeURIComponent("Which AI does what")}`, { waitUntil: "load" }); await wait(6000);
   const before = await page.evaluate(() => location.hash);
   const pressed = await page.evaluate(() => {
     const b = [...document.querySelectorAll("[data-tq-browse='settings'] p button")].find((x) => x.innerText.trim() === "Connections");
     b?.click(); return !!b;
   });
-  if (!pressed) note("PLACE", page.step, "How mail is sorted drew no Connections link in its description - the panel link was not walked");
+  if (!pressed) note("PLACE", page.step, "Which AI does what drew no Connections link in its description - the panel link was not walked");
   else { await wait(3000); const after = await page.evaluate(() => location.hash);
     if (after === before || !(await page.$("[data-tq-browse='connections']"))) note("NOTHING", page.step, `the panel's Connections link left ${after} and no Connections page`);
-    walked.push("links: the How mail is sorted panel's own Connections link"); }
+    walked.push("links: the Which AI does what panel's own Connections link"); }
   // ADDRESS: Next moves the table on, and the address goes with it
   page.step = "links address";
   await page.goto(`${srv.base}/`, { waitUntil: "load" }); await wait(5000); await clickText(page, "Walk me through my tasks"); await wait(5000);
@@ -1027,24 +1027,24 @@ async function links() {
     await wait(4500);
   }
   walked.push("links: the address through four Nexts");
-  // OVER: + New playbook asks over the list it was pressed on, and Cancel leaves that list - never SOUL.md, open under the dialog
-  page.step = "links new playbook";
-  // ...Playbooks left Settings for the Reports page (Reports / Workflows / Playbooks, 0.3.9.16): the shelf's own New playbook
-  await page.goto(`${srv.base}/#report=playbooks`, { waitUntil: "load" }); await wait(5000);
-  const pb = await page.evaluate(() => { const e = [...document.querySelectorAll("[data-tq-browse='reports'] button")].find((x) => /^\+?\s*New playbook/.test(x.innerText.trim()));
+  // OVER: + New skill asks over the list it was pressed on, and Cancel leaves that list - never SOUL.md, open under the dialog
+  page.step = "links new skill";
+  // ...Skills left Settings for the Reports page (Reports / Workflows / Skills, 0.3.9.16): the shelf's own New skill
+  await page.goto(`${srv.base}/#report=skills`, { waitUntil: "load" }); await wait(5000);
+  const pb = await page.evaluate(() => { const e = [...document.querySelectorAll("[data-tq-browse='reports'] button")].find((x) => /^\+?\s*New skill/.test(x.innerText.trim()));
     e?.click(); return !!e; });
-  if (!pb) note("OVER", page.step, "Reports → Playbooks drew no New playbook to press");
+  if (!pb) note("OVER", page.step, "Reports → Skills drew no New skill to press");
   else {
     await wait(1500);
     // ...a document the owner could type into: not MUI's measuring twin of a multiline field (TextareaAutosize keeps an aria-hidden,
     // invisible copy holding "x" to size one row - it has a box, so it read as a document open under the dialog on CI, 2026-10-21)
     const under = () => page.evaluate(() => [...document.querySelectorAll("textarea")].some((t) => t.getBoundingClientRect().width > 0 && !t.closest("[role=dialog]")
       && t.getAttribute("aria-hidden") !== "true" && getComputedStyle(t).visibility !== "hidden" && t.value.trim()));
-    if (!(await page.$("[role=dialog]"))) note("NOTHING", page.step, "+ New playbook opened no dialog");
-    if (await under()) note("OVER", page.step, "+ New playbook drew a document under its dialog");
+    if (!(await page.$("[role=dialog]"))) note("NOTHING", page.step, "+ New skill opened no dialog");
+    if (await under()) note("OVER", page.step, "+ New skill drew a document under its dialog");
     await clickText(page, "Cancel"); await wait(1500);
-    if (await under()) note("OVER", page.step, "Cancel on + New playbook left a document open to edit");
-    walked.push("links: + New playbook asked over its list, and cancelled back to it");
+    if (await under()) note("OVER", page.step, "Cancel on + New skill left a document open to edit");
+    walked.push("links: + New skill asked over its list, and cancelled back to it");
   }
   await page.close(); srv.stop();
 }

@@ -288,7 +288,7 @@ def test_the_browser_is_offered_where_there_is_one_and_said_where_there_is_not(r
     names, system = _tools(road, model.bodies[0]), _system(road, model.bodies[0])
     assert ('browser_open' in names) is installed     # ...and its other hands come with the first page it opens (apiagent.BROWSER_MORE)
     if installed: assert 'browser_open' in system
-    else: assert 'NO BROWSER FOR AGENTS YET' in system and '[[TASKUARY-ASK]]' in system, 'one line and the way on, never "cannot be done from here"'
+    else: assert 'NO BROWSER FOR AGENTS YET' in system, 'said in one line, with where he sets it up'
 
 
 # ── 7. a long job: each request stays bounded, the prefix stays the same bytes, and the cache is marked where the model needs it ───
@@ -354,7 +354,7 @@ class TestTheCliRoadsReachTheSameTools:
         with mock.patch.object(server, 'store', s):
             names = {t['function']['name'] for t in apiagent.taskuary_tools(tid, 'sid-p', post=post)}
         assert posted == [agenttools.url(tid)], 'the AI card asks the same server, for the same task'
-        assert {'propose_email', 'propose_reply', 'show', 'read_attachment', 'search_messages'} <= names
+        assert {'propose', 'show', 'read_attachment', 'search_messages'} <= names
 
     def test_every_hand_a_cli_has_the_ai_card_has_by_its_own_name(self):
         """Claude Code's Read/Write/Edit/Bash/WebSearch/WebFetch and agent-browser - each one the API road offers, listed or found with find_tools

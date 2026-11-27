@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { countOf, pressOf, progress, rowOf, rowState, running } from "../src/bulkCard.js";
+import { countOf, listCap, pressOf, progress, rowOf, rowOpens, rowState, running, tabsOf } from "../src/bulkCard.js";
 
 // ONE CARD FOR A BULK JOB (taskuary/bulkcard.py; the owner, 2026-11-16). Invented people and a stand-in repository.
 const mail = (id, to, extra = {}) => ({ ReviewId: id, Kind: "slot", Status: "pending", Batch: "b1", DraftText: "Hello - about Market St.",
@@ -19,6 +19,10 @@ test("the press says what it does, by the act's own words", () => {
   assert.equal(pressOf([mail(1, "a@cedar.example")], 24), "Send 24 emails");
   assert.equal(pressOf([close(1)], 37), "Close 37 issues");
   assert.equal(countOf([close(1), close(2)]), "2 issues"); assert.equal(countOf([mail(1, "a@cedar.example")]), "1 email");
+  // ...and posts are posts to their network, by its name (the card gallery, 2026-11-25: six LinkedIn posts read "6 steps", each row "linkedin_post")
+  const post = (id) => ({ ReviewId: id, Kind: "action", Status: "pending", Batch: "b3", Reason: "the post", DraftText: JSON.stringify({ action: "run_tool", type: "linkedin_post", text: `Tip ${id}: invoices in one place.` }) });
+  assert.equal(countOf([post(1), post(2)]), "2 posts"); assert.equal(pressOf([post(1), post(2)], 2), "Post to LinkedIn - all 2");
+  assert.deepEqual(rowOf(post(3)), { id: 3, target: "LinkedIn", line: "Tip 3: invoices in one place.", flags: [] });
 });
 
 test("each row stands where its run left it, and the bar counts what is over", () => {
@@ -61,8 +65,11 @@ const R = (() => {
     render: (C, p) => { Comp = C; props = p; draw(); },
     root: () => tree,
     reset: () => { slots = []; },          // ...a test of its own: no hook state left by the one before
+    // ...the one card's own words are its props (Artifact ReviewCard): its label, what stands over its rows, its press and what is beside it
     text: () => { const out = []; const walk = (n) => { if (n == null || typeof n === "boolean") return; if (Array.isArray(n)) return n.forEach(walk);
-      if (typeof n !== "object") return void out.push(String(n)); walk(n.props.children); }; walk(tree); return out.join(" "); },
+      if (typeof n !== "object") return void out.push(String(n));
+      if (n.type === "ReviewCard") [n.props.label, n.props.before, (n.props.press || []).map((v) => v.label), n.props.tail].forEach(walk);
+      walk(n.props.children); }; walk(tree); return out.join(" "); },
   };
 })();
 
@@ -70,9 +77,9 @@ const build = async () => {
   const { build: esb } = await import("esbuild");
   const stub = { "react": "export const { useState, useRef, useCallback, useMemo, useEffect } = globalThis.__R; export default globalThis.__R;",
     "react/jsx-runtime": "export const { jsx, jsxs, Fragment } = globalThis.__R;",
-    "@mui/material": "const C = (n) => n; export const Box = C('Box'), Button = C('Button'), Checkbox = C('Checkbox'), LinearProgress = C('LinearProgress'), Typography = C('Typography');",
-    "./api": "export default globalThis.__api;", "./theme.jsx": "export const BORDER = '', DIM = '', FAINT = '', INK = '';",
-    "./ReviewDecision.jsx": "export default 'ReviewDecision';", "./ActionCard.jsx": "export default 'ActionCard';",
+    "@mui/material": "const C = (n) => n; export const Box = C('Box'), LinearProgress = C('LinearProgress'), Typography = C('Typography');",
+    "./api": "export default globalThis.__api;", "./theme.jsx": "export const DIM = '', FAINT = '';",
+    "./ReviewDecision.jsx": "export default 'ReviewDecision'; export const ActReview = 'ActReview';", "./Artifact.jsx": "export const ReviewCard = 'ReviewCard', CardLine = 'CardLine';",
     "./PassedCard.jsx": "export const MovedPast = ({ children }) => children;" };
   const out = await esb({ entryPoints: [fileURLToPath(new URL("../src/BulkCard.jsx", import.meta.url))], bundle: true, write: false, format: "esm",
     jsx: "automatic", logLevel: "silent", plugins: [{ name: "stubs", setup(b) {
@@ -148,4 +155,36 @@ test("a bulk card the chat moved past is the same card with its press, greyed, a
   assert.deepEqual([R.root().type.name, R.root().props.on], ["MovedPast", true]);
   R.reset(); R.render(BulkCard, { rows: rows.map((r) => ({ ...r, Status: "pending", DecideNote: null })), tid: 7, onChanged: () => {} }); await flush();
   assert.equal(R.root().props.on, false);
+});
+
+test("rows open to review are given most of the window, a list of lines stays short", () => {
+  assert.equal(listCap([{ id: 1 }, { id: 2 }]), 420);
+  assert.equal(listCap([{ id: 1, open: true }, { id: 2 }]), "min(80vh, 900px)");
+});
+
+// The owner, 2026-11-26: "cards or anything generated on chat never go away" - a row's own card, open to review, folded to a line the moment
+// he pressed or dismissed it
+test("a row open in its own card stays open once it is settled, and the page gives a settled row its card", async () => {
+  const open = new Set(), src0 = (await import("node:fs")).readFileSync(fileURLToPath(new URL("../src/BulkCard.jsx", import.meta.url)), "utf8");
+  assert.equal(rowOpens(11, 0, { open }), true, "the first few stand open to review");
+  assert.equal(rowOpens(13, 2, { open }), false);
+  assert.equal(rowOpens(13, 2, { open: new Set([13]) }), true, "one he opened");
+  assert.equal(rowOpens(11, 0, { open: new Set([-11]) }), false, "one he shut stays shut");
+  assert.equal(rowOpens(11, 0, { open, live: true }), true, "and through the run: nothing folds at his press");
+  assert.match(src0, /body: <div \{\.\.\.\(live \? \{ inert: "" \} : \{\}\)\}>\{own\(r\)\}<\/div>/, "looked at while the run does it, never pressed");
+  const src = (await import("node:fs")).readFileSync(fileURLToPath(new URL("../src/BulkCard.jsx", import.meta.url)), "utf8");
+  assert.match(src, /onCheck: \(\) => flip\(setSkip, r\.ReviewId\) \} : \{\}\),\s*open: shownRow\(r, i\)/, "open, and its card, whether the row waits or is settled");
+});
+
+// The owner, 2026-11-26: the same post for three networks is ONE card with a tab each; one act to many is the list card, never tabs - which
+// it is, the server says (each row's `Tab`, taskuary/cardqueue.py sets), never a count
+test("a set under tabs is read off its rows' own tab names; a list card has none", () => {
+  const row = (id, Tab, Status = "pending") => ({ ReviewId: id, Kind: "action", Status, Batch: "k1", ...(Tab ? { Tab } : {}), DraftText: "{}" });
+  assert.equal(tabsOf([row(1), row(2), row(3)], null), null, "one act to many: the list");
+  assert.deepEqual(tabsOf([row(1, "LinkedIn", "approved"), row(2, "X", "rejected"), row(3, "Bluesky")], null),
+    [{ key: "1", name: "LinkedIn", done: true, front: false }, { key: "2", name: "X", done: true, front: false, no: true }, { key: "3", name: "Bluesky", done: false, front: true }]);
+  assert.equal(tabsOf([row(1, "LinkedIn"), row(2, "X")], null)[0].front, true, "the first that waits is in front");
+  // ...walk 25, 2026-11-26: a sign-in handed over on the X tab he had pressed was drawn nowhere - the tab its step is on waits again, in front
+  assert.deepEqual(tabsOf([row(1, "X", "approved"), row(2, "LinkedIn", "approved")], null, { review: 9, card: 1 }).map((t) => [t.name, t.done, t.front]),
+    [["X", false, true], ["LinkedIn", true, false]]);
 });

@@ -45,12 +45,13 @@ import { isPollField, pollSecondsField } from "./pollFields.js";
 import { githubInboundValue } from "./githubInbound.js";
 import { ALWAYS, ENDS, HI, LO, MARKS, SAYS, clampLevel, combines, defaultLevel, kindOf } from "./combineLevel.js";
 import { useSaveNote } from "./SaveNote.jsx";
+import { AccountProfile } from "./Workstream.jsx";
 import { errorPresentation, errorText } from "./apiError.js";
 import { namesRestart, pairAgain, restartBridge, startBridge } from "./waBridge.js";
 import { waLine, waPair } from "./waStatus.js";
 import { ACCESS } from "./agentAccess.js";
 import { DraftProvider, Tick, useBoxesSave, useCardDraft, useSaveConnector, useSaveSource } from "./ConnectorDraft.jsx";
-import { cfgPatch, editedBoxes, syncState } from "./connectorDraft.js";
+import { cfgPatch, editedBoxes, savedKey, syncState } from "./connectorDraft.js";
 import { AI_SHELF, needsGateway } from "./aiShelf.js";
 import { cliCardOf, toolUpdateLine } from "./cliCard.js";
 import SavedSignins from "./SavedSignins.jsx";
@@ -71,7 +72,8 @@ import SetupWithAi from "./SetupWithAi.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { READ_META, READ_TYPES } from "./apiReads.js";
-import schema from "../../taskuary/settings_schema.json";
+import { cardKind, MAIL_CARDS } from "./connectSetup.js";
+import schema from "../../taskuary/settings_schema.json";   // the saved sign-ins' search words, the ones Settings finds the vault by
 
 function LocalTabs({ tabs, value, onChange }) {
   useLocale();
@@ -839,7 +841,7 @@ const META = {
       "Paste it under Credentials. Leave model blank for openai.gpt-oss-120b-1:0, or name another from the provider's model list.",
       "Test runs a real round trip. Turn it on for sorting, drafts and the digest."] },
   // A decision model, not a brain. It sits in this group because it is an AI card you paste a key
-  // on, but it is offered in exactly ONE picker (Settings → How mail is sorted → Where runs go): it
+  // on, but it is offered in exactly ONE picker (Settings → Which AI does what → Where reports go): it
   // emits no text at all, so chosen as the Assistant's brain it would have nothing to say.
   // The owner's ChatGPT plan through Sign in with ChatGPT (chatgptauth.py) - no key; the sign-in box at the top of
   // the card IS the credential, and it is a brain like any other once signed in.
@@ -1110,7 +1112,7 @@ const DATA_META = {
     desc: "The general ledger, AP bills, vendors, budgets and statistical accounts over the XML gateway \u2014 read as scheduled reports, and write by object once you approve it.",
     howto: ["Intacct wants a WEB SERVICES user, not your login: Company \u2192 Admin \u2192 Web Services Users \u2192 add one, give it a role that can read what you'll report on.",
       "Then Company \u2192 Setup \u2192 Security \u2192 Web Services Authorizations and add the sender id \u2014 without this every call is refused however correct the password is.",
-      "Five credentials, and they authorise different things: the SENDER pair identifies the integration (Sage issues it), the USER pair is the web services user above, and the company id picks the tenant. Only the user password is stored write-only.",
+      "Five credentials, and they authorise different things: the SENDER pair identifies the integration (Sage issues it), the USER pair is the web services user above, and the company id picks the tenant. Both passwords are stored write-only: saved, never shown again.",
       "Multi-entity? Leave the entity id blank to sit at the top level, or name one to scope every report to it.",
       "Test logs in for real and then tries to READ \u2014 a green card that only proves the password works hides the usual failure, which is a role with permission on nothing.",
       "Build the reports on the REPORTS tab: name an object (GLENTRY, APBILL, VENDOR, GLACCOUNT\u2026), the fields you want and any filters. Nobody remembers the field ids: the source card's 'What fields does APBILL have?' asks Sage itself and lists them, custom fields included, and the same lookup is a report in its own right when you want to hear about a new one.",
@@ -1469,7 +1471,7 @@ const DATA_META = {
       text: "Opens the bank's own sign-in (Teller Connect). The token for that login lands on this card; the browser never keeps it." },
     howto: ["teller.io → sign up → create an application. The dashboard hands you an application id and, for development and production, a certificate.pem and private_key.pem — save both somewhere on this machine and put their paths on the card. Sandbox needs no certificate and accepts any login at its fake banks, which is how to try the loop first.",
       "Paste the application id and pick the environment - each saves itself - then Connect a bank: the bank's sign-in opens in a modal, you sign in, and the access token for that login lands on this card. One card is one bank login - Add another for a second bank.",
-      "Test lists the accounts under the login. Build the reports on the REPORTS tab: 'Bank & card — transactions' for one account (its last four digits) or all of them, so many days back; switch on 'can become work (triage decides)' and every new transaction arrives as a message - the front door of the card-to-books playbook (docs/beyond-code.md).",
+      "Test lists the accounts under the login. Build the reports on the REPORTS tab: 'Bank & card — transactions' for one account (its last four digits) or all of them, so many days back; switch on 'can become work (triage decides)' and every new transaction arrives as a message - the front door of the card-to-books skill (docs/beyond-code.md).",
       "The development environment is free up to 100 bank logins; production is the same code with production keys and Teller's pricing.",
       "Spend as a number, not a list: the 'teller_spend' report totals what left each card over a window (days 0 = today) and adds a TOTAL row. Its headline starts with the total on purpose — an alert of 'more than 500' on this report therefore compares DOLLARS, not the number of rows, which is how you get 'tell me if I spend over 500 today'. Cents are ignored by that comparison."],
     agent: ["GET {base}/api/connectors/{cid}/teller/status{hdr}: has_app says whether the application id is saved, connected whether a token is. Neither is yours to make - the owner signs up at teller.io and signs in at their bank through Connect a bank on the card. Ask for the application id and the certificate paths, save them in ConfigJson, then ask them to press Connect a bank.",
@@ -1484,7 +1486,7 @@ const DATA_META = {
     howto: ["bridge.simplefin.org \u2192 create an account (it is $1.50/month or $15/year, billed to you, and it is the only cost here) \u2192 link your banks under Financial Institutions. There is no application to register, no approval to wait for and no client certificate.",
       "On your SimpleFIN account, My Accounts \u2192 Apps \u2192 Get a setup token. Paste it here and press Connect with a setup token. It is spent by that press: a re-connect needs a fresh one.",
       "Test lists the accounts the token carries. One token can carry SEVERAL banks, so unlike the Teller card this is usually one card for everything \u2014 pick an account per report by a word of its name.",
-      "Build the reports on the REPORTS tab: 'Bank & card \u2014 transactions (SimpleFIN)' for one account or all of them, so many days back; switch on 'can become work (triage decides)' and every new transaction arrives as a message \u2014 the front door of the card-to-books playbook (docs/beyond-code.md).",
+      "Build the reports on the REPORTS tab: 'Bank & card \u2014 transactions (SimpleFIN)' for one account or all of them, so many days back; switch on 'can become work (triage decides)' and every new transaction arrives as a message \u2014 the front door of the card-to-books skill (docs/beyond-code.md).",
       "Spend as a number, not a list: the 'simplefin_spend' report totals what left each account over a window (days 0 = today) and adds a TOTAL row. Its headline starts with the total on purpose \u2014 an alert of 'more than 500' on this report therefore compares DOLLARS, not the number of rows. Cents are ignored by that comparison.",
       "Two limits worth knowing before you schedule anything: the bridge refreshes about once a day (so 'today' means as of the last sync), and it allows 24 reads a day \u2014 this card caches one response behind all four reports and refuses past 20 rather than letting your token be disabled."],
     agent: ["GET {base}/api/connectors/{cid}/simplefin/status{hdr}: connected says whether the access URL is on the card. The setup token is NOT yours to make or to ask for casually \u2014 the owner gets it from their own SimpleFIN account and pastes it into the card. Nothing else needs saving first.",
@@ -2271,13 +2273,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     : open?.kind === "alchemy-wallet" ? <AlchemyWalletGuide onBack={back}
       onData={() => { const c = byType.alchemy; if (c) setOpen({ kind: "connector", id: c.ConnectorId }); }} />
     : !conn ? null
-    : conn.Type === "mssql" ? <MssqlDetail key={conn.ConnectorId} {...shared} />
-    : conn.Type === "winrm" ? <WinrmDetail key={conn.ConnectorId} {...shared} />
-    : conn.Type === "reason_network" ? <ReasonDetail key={conn.ConnectorId} {...shared} />
-    : conn.Type === "agent_desktop" ? <DesktopDetail key={conn.ConnectorId} {...shared} />
-    : AGENT_TOOLS.has(conn.Type) ? <AgentToolDetail key={conn.ConnectorId} {...shared} />
-    : DATA_META[conn.Type] ? <DataDetail key={conn.ConnectorId} {...shared} meta={DATA_META[conn.Type]} sources={sources} byType={byType} />
-    : <ChannelDetail key={conn.ConnectorId} {...shared} sources={sources} onNavigate={onNavigate} chatsAsk={chatsAsk} />;
+    : <ConnectionCard key={conn.ConnectorId} {...shared} sources={sources} byType={byType} onNavigate={onNavigate} chatsAsk={chatsAsk} />;
   // ...and A SYSTEM WITH TWO WAYS IN offers both, at the top of its one card (connectorCatalog.oneCardPerSystem; the owner, 2026-11-10: "it's mcp
   // vs api for cards. there should be 2 options"): its own connector and its vendor's MCP server, each with its own setup and state, either or both
   const ways = waysOf(conn, byType);
@@ -2624,39 +2620,38 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
 }
 
 /* ── "Remove connection" on every detail page: wipes creds/config, turns sources off ── */
-/* The second door to a playbook (docs/beyond-code.md): the card is where you look for "what does
-   this thing do for us", so it lists every playbook whose `uses:` line names this connection, and
-   opens each on Reports → Playbooks (#playbook=<slug>), where the words are edited. */
-function CardPlaybooks({ type }) {
-  useLocale();
+/* The second door to a skill (docs/beyond-code.md): the card is where you look for "what does
+   this thing do for us", so it lists every skill whose `uses:` line names this connection, and
+   opens each on Reports → Skills (#skill=<slug>), where the words are edited. */
+function CardSkills({ type }) {
   const [books, setBooks] = useState(null);
   useEffect(() => {
     let live = true;
-    api.get("/api/playbooks").then(({ data }) => { if (live) setBooks((data.data || []).filter((b) => (b.uses || []).includes(type))); })
+    api.get("/api/skills").then(({ data }) => { if (live) setBooks((data.data || []).filter((b) => (b.uses || []).includes(type))); })
       .catch(() => { if (live) setBooks([]); });
     return () => { live = false; };
   }, [type]);
   if (!books) return null;
-  const go = (slug) => { openAppLink(`playbook=${slug}`); };
+  const go = (slug) => { openAppLink(`skill=${slug}`); };
   return (
     <Box sx={{ mt: 3, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL }}>
       <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.75 }}>
-        Playbooks - what this connection does for you
+        Skills - what this connection does for you
       </Typography>
       {books.length === 0 && (
         <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>
-          {t("No playbook names this connection yet. One is drafted for you the first time an agent finishes a job with it; approve it on the task and the next such job runs on it.")}
+          No skill names this connection yet. One is drafted for you the first time an agent finishes a job with it; approve it on the task and the next such job runs on it.
         </Typography>
       )}
       {books.map((b) => (
         <Box key={b.slug} onClick={() => go(b.slug)} sx={{ display: "flex", alignItems: "baseline", gap: 1, py: 0.5, cursor: "pointer",
           "&:hover .pb-t": { textDecoration: "underline" } }}>
           <Typography className="pb-t" variant="body2" sx={{ color: INK, fontWeight: 600, whiteSpace: "nowrap" }}>{b.title}</Typography>
-          <Typography variant="caption" sx={{ color: FAINT }} noWrap>{t("when: {when}", { when: b.when })}</Typography>
+          <Typography variant="caption" sx={{ color: FAINT }} noWrap>{b.description}</Typography>
         </Box>
       ))}
       <Button size="small" variant="text" startIcon={<AddIcon sx={{ fontSize: 15 }} />} onClick={() => go(`new:${type}`)} sx={{ mt: 0.5 }}>
-        {t("New playbook for this connection")}
+        New skill for this connection
       </Button>
     </Box>
   );
@@ -2953,6 +2948,25 @@ function SyncNow({ conn, mine, sync, reload }) {
   );
 }
 
+// ONE CONNECTION'S OWN CARD, by its kind (connectSetup.cardKind) - the Connections page's, and the one a card's Connect brings up under it
+// (ConnectSetup, `inline`). `onConnected`: its Test passed or its sign-in came back - the card that asked goes on.
+// A SIGN-IN THE SYSTEM TURNED DOWN SAYS SO ON THE CARD (the owner, 2026-11-25: the bell said it, the card did not): the server's state
+// (connectorcatalog.signed_out, the bell's own fact) heads the card, and its own sign-in - the button or the token box - is lit, till it works
+export const LAPSED_LINE = "Sign-in expired - sign in again";
+export function ConnectionCard({ conn, sources, byType, inline = false, ...p }) {
+  const k = cardKind(conn.Type, { data: DATA_META, tools: AGENT_TOOLS }, inline), own = { conn, reload: p.reload, onBack: p.onBack, onCreated: p.onCreated };
+  const out = connStateOf(conn) === "signed_out", ref = useRef(null);
+  useEffect(() => (out && ref.current ? lightStep(ref.current) : undefined), [out, conn.ConnectorId]);
+  const card = k === "mssql" ? <MssqlDetail {...own} /> : k === "winrm" ? <WinrmDetail {...own} /> : k === "reason" ? <ReasonDetail {...own} />
+    : k === "desktop" ? <DesktopDetail {...own} /> : k === "tool" ? <AgentToolDetail {...own} />
+    : k === "data" ? <DataDetail {...own} meta={DATA_META[conn.Type]} sources={sources} byType={byType} onConnected={p.onConnected} />
+    : <ChannelDetail {...p} conn={conn} sources={sources} simple={k === "mail"} />;
+  return (<Box ref={ref} data-tq-card-signed-out={out ? conn.Type : undefined}>
+    {out && <Typography variant="body2" data-tq-lapsed="" sx={{ maxWidth: 980, mx: "auto", mb: 1, fontWeight: 600, color: "var(--tq-danger, #6b2733)" }}>
+      {LAPSED_LINE}</Typography>}
+    {card}</Box>);
+}
+
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
   useLocale();
   // EVERY FIELD SAVES ITSELF (ConnectorDraft.jsx): every control below draws from the draft and stages into it, and the draft saves it
@@ -2962,7 +2976,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const m = metaOf(conn) || { fields: [], howto: [] };
   const isAI = m.channel === "ai";
   const [tab, setTab] = useState("Setup");
-  const [step, setStep] = useState(conn.HasSecret ? (conn.LastSyncAt ? 2 : 1) : 0);
+  // ...a sign-in turned down opens on Credentials, where the token goes again (ConnectionCard lights it)
+  const [step, setStep] = useState(conn.HasSecret && connStateOf(conn) !== "signed_out" ? (conn.LastSyncAt ? 2 : 1) : 0);
   const [cfg, setCfg] = useState(parse(conn.ConfigJson));
   const [cfgSaved, setCfgSaved] = useState(cfg);     // what the boxes held when they were last saved: typed past it is unsaved
   const [secret, setSecret] = useState("");
@@ -2998,7 +3013,9 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       // Apple Messages has a second card (Automation) on this step - a passing read test must
       // not whisk the step away before the person can try the send probe
       if (data.ok && conn.Type !== "imessage") setStep(m.srcLabel ? 2 : 3);
-    } catch (e) { setTest(testFailure(e, "test call failed")); }
+      // ...the values it passed on are saved before the card that asked goes on: its press read a card not yet set up (connect-card shoot)
+      if (data.ok && onConnected) { await boxes.flush(); onConnected(); }
+    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
     setBusy(""); reload();
   };
   // the box keeps what you typed when the add is refused, so the reason can be acted on
@@ -3289,7 +3306,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     {/* a box left saves what its typing was waiting to save */}
     <Box sx={{ maxWidth: 980, mx: "auto" }} data-tq-test-state={test ? (test.ok ? "ok" : "error") : "none"} onBlur={draft.flush}>
       {note}
-      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       {MS_ACCESS.includes(conn.Type) && <MsAccess conn={conn} />}
       {/* WhatsApp has no agent box: there is nothing for an agent to do that the pairing box does not do
@@ -3300,7 +3317,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           It sits above the agent box too: one sign-in is the whole setup, the agent is the long road (B10) */}
       {conn.Type === "teams" && <TeamsAccount conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} />}
       {MS_SIGNIN.includes(conn.Type) && !(conn.Type === "teams" && cfg.account_type === "personal")
-        && <Box sx={{ mb: 2 }}><MsSignIn conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} onSignedIn={() => setStep(m.srcLabel ? 2 : 3)} /></Box>}
+        && <Box sx={{ mb: 2 }}><MsSignIn conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} onSignedIn={() => { setStep(m.srcLabel ? 2 : 3); onConnected?.(); }} /></Box>}
       {conn.Type === "chatgpt" && <Box sx={{ mb: 2 }}><ChatGptSignIn conn={conn} cfg={cfg} reload={reload} /></Box>}
       {conn.Type === "gmail" && <GoogleCalendar conn={conn} cfg={cfg} reload={reload} flush={boxes.flush} onSignedIn={() => setStep(1)}>
         {m.fields.filter(([, key]) => G_APP_KEYS.includes(key)).map((f) => <ConfigField key={f[1]} size="small" conn={conn} field={f} cfg={cfg} setCfg={setCfg} tick={boxes.tick(f[1])} onBlur={boxes.flush}
@@ -3336,13 +3353,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {tab === "Guide" && <Steps steps={m.howto || []} />}
       {/* ...nor a sign-in card (Outlook, Teams, Gmail): under its one-button sign-in, a greyed Get AI to set it up and its Connect an AI
           were two more things to read for nothing (the setup sweep, 2026-10-28) */}
-      {!NO_AI_WALK.includes(conn.Type) && <AiSetup conn={conn}
-        steps={jiraDc ? (m.howtoDC || m.howto || []) : (m.howto || [])}
-        fields={conn.Type === "jira" ? [...(m.fields || []), ["Jira deployment (Cloud or Data Center)", "deployment"]] : (m.fields || [])}
-        secretLabel={m.secretLabel}
-        agentSteps={jiraDc ? (m.agentDC || m.agent || []) : (m.agent || [])}
-        reload={reload} />}
-      <CardPlaybooks type={conn.Type} />
+      {!NO_AI_WALK.includes(conn.Type) && <AiSetup conn={conn} steps={m.howto || []} fields={m.fields || []} secretLabel={m.secretLabel} agentSteps={m.agent || []} reload={reload} />}
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={leave} channel={m.channel} />
     </Box>
     </DraftProvider>
@@ -3360,7 +3372,7 @@ function MssqlDetail({ conn, reload, onBack, onCreated }) {
   if (!conn) return null;
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
         {t("The connection only — build the scheduled reports (query + AI summary) under Reports.")}
@@ -3370,7 +3382,7 @@ function MssqlDetail({ conn, reload, onBack, onCreated }) {
       {tab === "Setup" && <MssqlConnection conn={conn} drivers={drivers} reload={reload} />}
       {tab === "Guide" && <Steps steps={MSSQL_HOWTO} />}
       <AiSetup conn={conn} steps={MSSQL_HOWTO} agentSteps={MSSQL_AGENT} reload={reload} />
-      <CardPlaybooks type={conn.Type} />
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} channel="data" />
     </Box>
   );
@@ -3445,10 +3457,10 @@ function ReasonDetail({ conn, reload, onBack, onCreated }) {
   useLocale();
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <ReasonPanel conn={conn} reload={reload} />
-      <CardPlaybooks type={conn.Type} />
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
     </Box>
   );
@@ -3474,7 +3486,7 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
   };
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5, maxWidth: 720 }}>
         {t("Your agents read and operate the desktop apps on this computer through their accessibility tree - the list of buttons and boxes each app keeps, not screenshots - with Vercel")} <a href={tool?.url || "https://github.com/vercel-labs/agent-desktop"} target="_blank" rel="noreferrer">agent-desktop</a>{t(". Only your own tasks get it, never one from someone you have not vouched for. A step that would send, pay, delete or submit waits on the task for your Approve.")}
@@ -3499,8 +3511,8 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
           startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
       </Box>
       <TestLine test={test} mt={1} />
-      {draft.st?.state === "error" && <Typography role="alert" sx={{ mt: 1, color: "var(--tq-danger, #8a3646)", fontSize: 12 }}>{t(draft.st.why)}</Typography>}
-      <CardPlaybooks type={conn.Type} />
+      {draft.err && <Typography role="alert" sx={{ mt: 1, color: "var(--tq-danger, #8a3646)", fontSize: 12 }}>{draft.err}</Typography>}
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
     </Box>
   );
@@ -3547,7 +3559,7 @@ function AgentToolDetail({ conn, reload, onBack, onCreated }) {
   const name = { claude: "Claude Code", codex: "Codex" };
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5, maxWidth: 720 }}>{CATALOGUE.find((c) => c.type === conn.Type)?.desc}</Typography>
       {st?.url && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>MCP server <code>{st.url}</code>
@@ -3570,7 +3582,7 @@ function AgentToolDetail({ conn, reload, onBack, onCreated }) {
             startIcon={sign === "signing" ? <CircularProgress size={12} /> : null}>{SIGN_LABEL[sign]}</Button>)}
       </Box>
       {(said || []).map((l) => <Typography key={l} variant="caption" sx={{ color: DIM, display: "block", mt: .5 }}>{l}</Typography>)}
-      <CardPlaybooks type={conn.Type} />
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
     </Box>
   );
@@ -3596,7 +3608,7 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
 
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
         {t("Run PowerShell ON a machine you can RDP into (your Windows credentials) — the connection only; build the scheduled reports under Reports.")}
@@ -3617,7 +3629,7 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
         </Box>
       )}
       <AiSetup conn={conn} steps={WINRM_HOWTO} fields={[["machine name", "host"]]} agentSteps={WINRM_AGENT} reload={reload} />
-      <CardPlaybooks type={conn.Type} />
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} channel="data" />
     </Box>
   );
@@ -3786,16 +3798,17 @@ function PushAddress({ conn }) {
 /* A card whose credential is minted by signing in at the provider (QuickBooks): the box says
    what the provider's app must carry (the redirect URI), whether we are connected and to which
    company, and one button that opens the sign-in. The token comes back server-side. */
-function OAuthConnect({ conn, meta, reload }) {
-  useLocale();
+function OAuthConnect({ conn, meta, reload, onConnected }) {
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [token, setToken] = useState("");
   // ...read again when the card's saved keys change: the status was read once, when the card opened, so keys pasted and saved
   // left Sign in greyed under "Save first" until the card was closed and opened again (the owner, 2026-10-21: LinkedIn)
+  // ...by everything it saved, a write-only client secret too (savedKey)
+  const saved = savedKey(conn);
   const load = useCallback(async () => { try { setSt((await api.get(meta.connect.status(conn.ConnectorId))).data); } catch { /* the card still works */ } },
-    [conn.ConnectorId, conn.ConfigJson, conn.HasSecret, meta]);   // eslint-disable-line react-hooks/exhaustive-deps
+    [saved, meta]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [load]);
   // the sign-in happens in another tab; poll while it is likely underway so the box flips to
   // "connected" without a refresh
@@ -3808,7 +3821,9 @@ function OAuthConnect({ conn, meta, reload }) {
     return () => { clearInterval(id); clearTimeout(stop); };
   }, [busy, load]);
   const [url, setUrl] = useState("");   // the sign-in page that opened in another tab - a blocked popup needs it again
-  useEffect(() => { if (st?.connected) setBusy(false); }, [st?.connected]);
+  // ...and a sign-in that came back while it was waiting is the card's press (ConnectSetup): never a card that opened signed in already
+  const was = useRef(null);
+  useEffect(() => { const now = !!st?.connected; if (now) setBusy(false); if (now && was.current === false) onConnected?.(); if (st) was.current = now; }, [st?.connected]);   // eslint-disable-line react-hooks/exhaustive-deps
   // Teller Connect is a script on THIS page, not a redirect: it opens the bank's sign-in in a
   // modal and calls back with the token, which goes straight to the server and nowhere else
   const teller = async () => {
@@ -3929,8 +3944,7 @@ function ActionDefaults({ type, cfg, setCfg, tick }) {
   </Box>;
 }
 
-function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload, onBack: leave, onCreated, byType = {} }) {
-  useLocale();
+function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload, onBack: leave, onCreated, byType = {}, onConnected }) {
   // as on a channel card, every field saves itself: what each discovered object is used for through the draft, the boxes on their own
   const draft = useCardDraft(savedConn, savedSources, reload);
   const { conn, sources } = draft;
@@ -3972,6 +3986,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
     try {
       const t = (await api.post(`/api/connectors/${conn.ConnectorId}/test`, onScreen(conn, cfg, parse(conn.ConfigJson), secret))).data;
       setTest(t);
+      if (t?.ok && onConnected) { await boxes.flush(); onConnected(); }
       // the server saved the dots that answered; show them now - as saved, so they are not saved again
       if (Array.isArray(t?.apis)) { setCfg((c) => ({ ...c, apis: t.apis })); setBase((c) => ({ ...c, apis: t.apis })); }
     } catch (e) { setTest(testFailure(e, "test call failed")); }
@@ -3985,7 +4000,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
   return (
     <DraftProvider value={draft.ctx}>
     <Box sx={{ maxWidth: 980, mx: "auto" }} onBlur={draft.flush}>
-      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} /><AccountProfile conn={conn} reload={reload} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       {MS_ACCESS.includes(conn.Type) && <MsAccess conn={conn} />}
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
@@ -4003,7 +4018,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
               <Button size="small" variant="outlined" disabled={!!busy} onClick={useShared}>{t("Use it and test")}</Button>
             </Box>
           )}
-          {meta.connect && <OAuthConnect conn={conn} meta={meta} reload={reload} />}
+          {meta.connect && <OAuthConnect conn={conn} meta={meta} reload={reload} onConnected={onConnected} />}
           {meta.push && <PushAddress conn={conn} />}
           {/* a field's 4th entry says where to get what it asks for, under the box */}
           {/* ...and a write-only one (an app's client secret, guard.WRITE_ONLY_CONFIG) is masked: once saved the server never sends it
@@ -4050,8 +4065,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
       {tab === "Setup" && meta.discovers && (
         <CloudObjects conn={conn} meta={meta} objects={objects} reload={reload} />
       )}
-  
-      <CardPlaybooks type={conn.Type} />
+      <CardSkills type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={leave} channel="data" />
     </Box>
     </DraftProvider>
@@ -4076,8 +4090,6 @@ const GITHUB_PERMS = [
    "On: your team runs on GitHub issues, so agents open and update them for the work they do. Off (default): Taskuary is the tracker - the task is the record - and agents never create issues or tracker items unless a task's ask explicitly says to."],
   ["agents_push", "Agents may push / deploy",
    "On: agents push and deploy as the work needs. Off (default): commits stay local for your review - you push - and only a task whose ask explicitly says to push may. Force-pushes and archived repositories stay forbidden either way."],
-  ["reply_comments", "Reply to issue/PR authors",
-   "On: questions from GitHub get a drafted reply, finished work drafts a closing note, and approving one posts it as a PUBLIC comment on the issue/PR. Off (default): GitHub items never get reply drafts - questions are filed with the reason they were sorted there, finished work just closes with its report, and nothing is ever posted to a public thread on your behalf."],
 ];
 
 // REPLIES ON THIS CARD (the owner, 2026-11-08: "do replying back new source as well"): a reply you Send on a task this card filed goes
@@ -4248,7 +4260,6 @@ const GithubCloseout = ({ conn, mine, reload }) => {
 
 // THE SIGNATURE MAIL FROM THIS MAILBOX CARRIES (outbound.card_signature): two mailboxes are two hats, and one global signature
 // put the first one's name and title under the second one's mail. Blank keeps the one in Settings. Held by the card's draft.
-const MAIL_CARDS = ["outlook", "gmail", "imap"];
 // the cards that sign in with Microsoft, each its own account: Outlook for mail and calendar, Teams for chats (msauth.TEAMS_SCOPES)
 const MS_SIGNIN = ["outlook", "teams"];
 const NO_AI_WALK = ["whatsapp", ...MS_SIGNIN, "gmail"];      // the cards with no Get AI to set it up
@@ -4600,8 +4611,6 @@ const PhoneChatsLink = ({ onNavigate }) => (
     Settings → Phone & chats</Button>
 );
 const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null }) => {
-  useLocale();
-  const saveConn = useSaveConnector(reload);
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
   const [guideBusy, setGuideBusy] = useState("");
@@ -4650,13 +4659,12 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
      assistant_chat and switched phone_assistant on behind it - so "which chat is it" and "when may
      it listen" could not be answered or changed separately (the owner, 2026-09-17: "we should make
      it separate section to choose what is connected to assistant and how it's connected"). */
+  // ...through the one road a chat is chosen by (remote_assistant.use_chat, as Settings picks it): it refuses a chat he is not alone in, and
+  // the chat picked is told so - this card wrote the setting around that check (walk 6)
   const useForGuide = async (jid) => {
     setGuideBusy(jid || "clear"); setErr("");
-    try {
-      const current = parse(conn.ConfigJson);
-      await saveConn({ ConnectorId: conn.ConnectorId,
-        ConfigJson: JSON.stringify({ ...current, assistant_chat: jid || "", poll_seconds: current.poll_seconds || 30 }) });
-    } catch (e) { setErr(e?.response?.data?.detail || message("could not set the Taskuary chat")); }
+    try { await api.post("/api/assistant/doorways", { channel: "whatsapp", chat: jid || "" }); await reload(); }
+    catch (e) { setErr(e?.response?.data?.detail || "could not set the Taskuary chat"); }
     setGuideBusy("");
   };
   const setStandingTo = async (on) => {
@@ -4757,7 +4765,7 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
   const [state, setState] = useState("");      // "" | ok | error
   const [detail, setDetail] = useState("");
   const [busy, setBusy] = useState(false);
-  const signedIn = cfg.auth === "user" && conn.HasSecret;
+  const signedIn = cfg.auth === "user" && conn.HasSecret && !conn.SignedOut;     // a lapsed one offers its Sign in again
   useEffect(() => {
     if (!flow) return undefined;
     let alive = true;

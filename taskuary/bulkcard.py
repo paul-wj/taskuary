@@ -12,11 +12,9 @@ import json, threading, time, uuid
 from loguru import logger
 
 KEY = 'batch:'                 # setting: batch:<key> -> the run's state
-# HOW MANY IS MANY (design round 5, I4; the owner: "I have 2 emails to send, should we send this one?" - one card at a time for a few, the bulk
-# card for many): fewer than this raised in one call stand one at a time in the line of cards (agenttools._many)
-MANY = 5
 YES = 'approve'
 LEFT = 'left out by you'      # a row he unticked: closed, never done
+CHANGED = 'it was changed after your press - nothing was done; it waits on the card as it reads now'
 _CLAIM = threading.Lock()      # a press claims the card's run (run)
 BOOT = uuid.uuid4().hex        # this process: a run marked by another was cut short by a restart (state)
 
@@ -51,6 +49,12 @@ def _save(store, st: dict) -> None:
     if st.get('tid'): store._poke('task-changed', task_id=st['tid'])
 
 
+def pressed(r: dict) -> list:
+    "What a press on this row does - the act, its words, where they go and what rides with them: what his press covers (run)."
+    from . import verdicts
+    return [r.get('Kind'), r.get('TaskId'), r.get('MessageId'), r.get('DraftText'), verdicts.content_envelope(r)]
+
+
 def _went(out: dict) -> str:
     "'' when the row's press went through, else why not - in the words its own card would have said."
     if not out.get('ok'): return str(out.get('send_error') or out.get('why') or out.get('error') or 'it did not go')[:300]
@@ -72,6 +76,9 @@ def run(store, key: str, skip=(), actor: str = 'owner', wait: bool = False) -> d
         # ...A CARD THE CHAT MOVED PAST PRESSES NOTHING (verdicts._decide's rule): asked here, before the run is marked at work - a bulk card at
         # work is never written past (proposals._older), so each row's own refusal would read it as still standing
         if tid and (past := [r for r in todo if r['ReviewId'] in proposals.written_past(store, tid)]): raise ValueError(proposals.passed_why(store, past[0]))
+        # ...HIS PRESS IS FOR THE ROWS AS THEY READ AT THE PRESS (locked rule 2, round 5): each was read again at its own turn, so its agent
+        # could rewrite who a row not yet sent goes to, or what it says, after the press. A row that differs then is not done
+        shown = {r['ReviewId']: pressed(r) for r in todo}
         st = {**state(store, key), 'key': key, 'tid': tid, 'total': len(todo), 'done': 0, 'failed': 0, 'left': 0, 'state': 'running', 'rows': {}, 'at': time.time(), 'boot': BOOT}
         _save(store, st)
     def go():
@@ -85,7 +92,8 @@ def run(store, key: str, skip=(), actor: str = 'owner', wait: bool = False) -> d
                         store.decide_review(rid, 'closed_unsent' if r['Kind'] != 'action' else 'rejected', r.get('DraftText'), actor, LEFT)
                         st['rows'][str(rid)], st['left'] = 'left', st['left'] + 1
                     else:
-                        why = _went(verdicts.decide(store, store.get_review(rid) or r, YES, actor=actor))
+                        now = store.get_review(rid) or r         # ...as it stands (its delivery state too), and only if it is what he pressed
+                        why = CHANGED if pressed(now) != shown[rid] else _went(verdicts.decide(store, now, YES, actor=actor))
                         st['rows'][str(rid)] = why or 'ok'
                         st['done' if not why else 'failed'] += 1
                 except Exception as e:
@@ -123,17 +131,20 @@ def summary(store, key: str, st: dict) -> str:
     return (f"The owner pressed the bulk card ({st.get('total', 0)} items): {st.get('done', 0)} done, {st.get('failed', 0)} failed, {st.get('left', 0)} left out by them"
             + (f", {len(rest)} not run - they stopped it" if st.get('state') == 'stopped' and rest else '') + '.'
             + (' Failed: ' + '; '.join(f'rv{rid} ({what(rid)}): {why}' for rid, why in bad[:20]) + ('…' if len(bad) > 20 else '') + '.' if bad else '')
-            + (f' Did not go and still on the card for their press: {len(again)} - never set them up again; take back any no longer wanted.' if again else '')
-            + ' Say in one line how it went and what, if anything, is still to do; set up again only a failed act that is still wanted.')
+            + (f' Did not go and still on the card for their press: {len(again)}.' if again else ''))
 
 
 def told(store, key: str, st: dict, actor: str = 'owner') -> str:
     "Its agent hears the whole run once, by the one road (general.to_agent) - and nothing is said of it again with his next line."
     from . import general
-    from .cardqueue import screen
     def heard(how):
         for rid in st.get('rows', {}): store.audit('review', int(rid), general.TOLD, actor, 'system', {'task': st['tid'], 'how': how, 'batch': key})
-    # ...with what still waits in the line behind it, as a yes, a failure or a no on one card tells it (general.approved / failed, said_no)
+    # ...an event on the task (general.to_agent -> events.note), with each card's own state beside it (events.card)
     if not st.get('tid'): return ''
-    line = screen(store, st['tid'])
-    return general.to_agent(store, st['tid'], summary(store, key, st) + (f'\n\n{line}' if line else ''), actor, heard=heard)
+    # ...WOKEN ONLY WHERE SOMETHING FAILED OR ITS CARD NAMES A NEXT STEP (the owner, 2026-11-25: his approval "sends it without further
+    # triggering the agent unless it fails of course or there are next steps") - general.approved's rule; else it is said in its next turn
+    from . import card, events
+    rs = rows(store, key)
+    if not any(v not in ('ok', 'left') for v in st.get('rows', {}).values()) and not any(card.carries_on(r, store) for r in rs):
+        events.note(store, int(st['tid']), summary(store, key, st)); return ''
+    return general.to_agent(store, st['tid'], summary(store, key, st), actor, heard=heard)

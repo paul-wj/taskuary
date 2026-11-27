@@ -85,6 +85,13 @@ def add(store, tid: int, outputs, actor: str, sender: dict = None, again: bool =
             elif found.get('candidates'): i['out']['candidates'] = found['candidates']
             if is_sender(sender, i['out']['to']): continue        # the name resolved to the sender's own address
         if twice or i['out']['to'].casefold() not in have: new.append(i)      # ...`twice`: a second letter to them, asked for (draft)
+    # ...and a second letter about the same thing is still a second line of the list: the list keeps one line per text, so it was dropped
+    # unsaid and its agent told "`to` must be one address" (walk 22, 2026-11-25) - numbered, as the second it is
+    said = {i['text'] for i in store.task_checklist(tid)} if twice else set()
+    for i in new:
+        base, n = i['text'], 2
+        while i['text'] in said: i['text'], n = f'{base} ({n})', n + 1
+        said.add(i['text'])
     return store.add_checklist_items(tid, new, actor) if new else []
 
 
@@ -136,10 +143,7 @@ def drop(store, tid: int, slot_id: str, actor: str) -> bool:
     hit = next((i for i in all_(store, tid) if i['id'] == slot_id), None)
     if not hit: return False
     rv = store.get_review(hit['rid']) if hit.get('rid') else None
-    if rv and rv.get('Status') == 'pending' and store.decide_review(rv['ReviewId'], 'rejected', None, actor, DROPPED):
-        from . import cardqueue          # ...a no, like any card's: what waits behind it is its agent's to decide on first
-        try: cardqueue.said_no(store, rv, 'reject', actor)
-        except Exception as e: logger.warning(f"rv{rv['ReviewId']}: the agent was not told of the dropped email - {e}")
+    if rv and rv.get('Status') == 'pending': store.decide_review(rv['ReviewId'], 'rejected', None, actor, DROPPED)
     mark(store, tid, slot_id, done=True, actor=actor)
     store.audit('task', tid, 'slot_dropped', actor, detail={'to': hit['out'].get('name') or hit['out'].get('to'), 'kind': hit['out'].get('kind') or 'email'})
     return _left(store, tid, f"Dropped: {hit['text']}.", actor)
@@ -151,14 +155,27 @@ def seen(store, tid: int):
 
 
 # A CHAT ID IS NO MAILBOX, whoever named it - the agent or triage's slot (the night run, 2026-11-09: "emails" went to whatsapp:1555...)
-_NO_MAILBOX = "{to} is a chat, not a mailbox - answer them in that chat (propose_reply, `answers` their line) or give their email address as `to`"
+_NO_MAILBOX = "{to} is a chat, not a mailbox - answer them in that chat (propose kind reply, `answers` their line) or give their email address as `to`"
 NO_WORDS = "the email has no words, so nothing was filed - write the email in `text`, or ask the owner what it should say"
 def _chat_id(to) -> bool:
     from .ingest import CHAT_CHANNELS
     return str(to or '').split(':')[0].strip().lower() in CHAT_CHANNELS
 
+def from_box(store, tid: int, mailbox: str, agent: str = 'agent', act: str = 'email from') -> tuple:
+    """THE ONE CHECK OF A `from` (an email's and a reply's, walk 25: an email from another profile's mailbox was the move card, a reply from
+    it was answered ok with the field dropped): (the connected mailbox's own address, '') - or ('', why) when it is none of his, or an
+    agent's task may not use it, which is the card that moves the task there (workstreams.may_use) with `act` from it as its next act."""
+    from . import outbound, workstreams
+    box = outbound._box(store, mailbox)
+    if not box:
+        have = ', '.join(m['address'] for m in outbound.mailboxes(store, None if agent == 'owner' else tid)) or 'none is connected'
+        return '', f"{' '.join(str(mailbox).split())} is not a connected mailbox - send from one of: {have}"
+    if agent != 'owner' and (mv := workstreams.move_card(store, tid, box['address'], f"{act} {box['address']}"[:200])): return '', mv['says']
+    return box['address'], ''
+
+
 def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str = '', agent: str = 'agent',
-          channel: str = 'email', name: str = '', cc=(), mailbox: str = '', guessed=(), sends: bool = True) -> dict:
+          channel: str = 'email', name: str = '', cc=(), mailbox: str = '', guessed=(), sends: bool = True, carries=()) -> dict:
     """The agent that did the work writes one output itself - the slot named by id, else the open one to the same person,
     else a slot it adds (said on the task: the owner sees the list grow). Nothing is sent: the owner approves it. `cc`: who
     else is copied - kept on the envelope, so the card shows what the agent said it did (it said "Gail on cc" and dropped her).
@@ -171,16 +188,18 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
     # ask what should i reply?"): nothing is filed, and the agent is told its two ways on
     if not text: return {'ok': False, 'why': NO_WORDS}
     from .wrapup import blank_why
-    if agent != 'owner' and (why := blank_why(text)): return {'ok': False, 'why': why}       # a blank left to fill is no letter (wrapup.blanks)
+    if agent != 'owner' and (why := blank_why(text, store)): return {'ok': False, 'why': why}       # a blank left to fill is no letter (wrapup.blanks)
     mailbox = str(mailbox or '').strip()
     if mailbox:
-        from . import outbound
         if channel != 'email': return {'ok': False, 'why': f'{channel} has no From - only an email leaves from a mailbox'}
-        box = outbound._box(store, mailbox)
-        if not box:
-            have = ', '.join(m['address'] for m in outbound.mailboxes(store)) or 'none is connected'
-            return {'ok': False, 'why': f'{mailbox} is not a connected mailbox - send from one of: {have}'}
-        mailbox = box['address']
+        mailbox, why = from_box(store, tid, mailbox, agent, f'email {to} from')
+        if why: return {'ok': False, 'why': why}
+    elif channel == 'email' and agent != 'owner':         # no From named and none it may leave from: said now, never found out at his press
+        from . import outbound, words
+        from .agenttools import refusal
+        try: outbound.new_from(store, tid)
+        except outbound.Fixable as e:
+            return {'ok': False, 'why': refusal(f'Nothing was drafted: {e}', f"tell the owner in one line, with the place a mailbox is connected: {words.link('mail')}")}
     cc = [a for a in (split(x)[1] for x in ([cc] if isinstance(cc, str) else cc or [])) if a]
     if cc and channel != 'email': return {'ok': False, 'why': f'{channel} has no cc - only an email can copy somebody in'}
     if bad := [a for a in cc if not is_address(a)]: return {'ok': False, 'why': f"cc is a list of email addresses, one to an entry - {', '.join(bad)} is not one"}
@@ -234,7 +253,8 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
     rewrote = r0['ReviewId'] if agent != 'owner' and r0 and r0.get('Status') == 'pending' and str(r0.get('DraftBy') or '').startswith('agent:') \
               and not _written_before(store, tid, r0) else None
     added = False
-    if hit and hit.get('done'): return {'ok': False, 'why': f"the email to {hit['out'].get('to')} was already sent or dropped"}
+    if hit and hit.get('done'): return {'ok': False, 'why': f"the email to {hit['out'].get('to')} was already sent or dropped - for another letter "
+                                                                "to them, call it again with `slot: \"new\"`"}
     if hit and want and '@' in want and str(hit['out'].get('to')).casefold() != want:
         # a slot that named a person: the address the agent found is where this one goes (never guessed by us)
         hit = _point(store, tid, hit, ' '.join(str(to).split()), agent)
@@ -242,7 +262,12 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         if not want: return {'ok': False, 'why': 'name the slot (--slot) or who it goes to (--to)'}
         made = add(store, tid, [{'to': to, 'about': subject, 'kind': channel, **({} if agent == 'owner' else {'by': 'agent'}), **({'name': name} if name else {})}], f'agent:{agent}', again=True,
                    twice=second)
-        if not made: return {'ok': False, 'why': f'could not add an email to {to}'}
+        # ...NEVER A BARE NO (walk 6, CLI F9: "could not add an email to paula@..." and no next step): what stands in its way, and the way on
+        if not made:
+            same = [i for i in open_(store, tid) if str(i['out'].get('to')).casefold() == want]
+            return {'ok': False, 'why': f"no email to {to} was added - " + (
+                f"one to them is already this task's (slot {same[0]['id']}): rewrite it with `slot` set to that id, or `slot: \"new\"` for a second letter"
+                if same else "`to` must be one address or one person's name; to answer someone who wrote on this task, propose kind reply with `to`")}
         hit, added = made[0], True
         store.add_comment(tid, agent, 'agent', f'{agent} added an email to {to} to what this task owes.')
     o = hit['out']; kind = o.get('kind') or 'email'
@@ -266,12 +291,24 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
     # ...and one the owner has prompted past is old news (the owner, 2026-11-10: "The second you write ptompt on email action it should go gray and
     # then it should generate new email action box under it with new email.."): the agent's letter is a new card in its turn, the old one its
     # record, as a reply's is (wrapup.agent_reply); saved twice in its own turn it is rewritten in place
+    # ...AND ONE HE HAS TYPED HIS OWN WORDS INTO IS HIS (store.hold_review_edit; wrapup.agent_reply's rule for a reply): never rewritten under
+    # him - his version is closed as replaced with his words on it, the agent's letter is a new card, and the agent is told what he had left
+    his, stands = '', False
     if rv and rv.get('Status') == 'pending' and agent != 'owner':
         from . import wrapup
-        if wrapup._turn_after(store, tid, rv): store.decide_review(rv['ReviewId'], 'closed_unsent', None, agent, note=wrapup.REPLACED); rv = None
+        from .store import his_words
+        # ...only where the agent wrote OTHER words (the owner, 2026-11-26): the same letter saved again is no rewrite - his version stands
+        from .signatures import agent_signed
+        # ...NOR THE SAME WORDS TO SOMEONE ELSE, UNDER ANOTHER SUBJECT OR WITH ANOTHER FILE (wrapup.his_hand, repoints - red team round 6): that is
+        # another letter too, and one he has put his hand to that this save leaves as it is stands whole, its envelope not written again
+        same = wrapup._words(rv.get('DraftText')) == wrapup._words(agent_signed(store, rv, text) or text) and not wrapup.repoints(rv, json.loads(deliver), carries)
+        mine = wrapup.his_hand(store, rv)
+        his, stands = '' if same else his_words(rv), mine and same
+        if (mine and not same) or wrapup._turn_after(store, tid, rv):
+            store.decide_review(rv['ReviewId'], 'closed_unsent', his or None, agent, note=wrapup.REPLACED); rv = stands = None
     if rv and rv.get('Status') == 'pending':
         rid = rv['ReviewId']
-        if not store.set_review_deliver(rid, deliver): return {'ok': False, 'why': 'that email is already being sent'}
+        if not stands and not store.set_review_deliver(rid, deliver): return {'ok': False, 'why': 'that email is already being sent'}
     else:
         rid = store.add_review({'TaskId': tid, 'Kind': KIND, 'Status': 'pending', 'Deliver': deliver,
                                 'Reason': 'your email - approve to send' if agent == 'owner' else f"{agent} wrote this email - approve to send"})       # who it goes to is on the card once
@@ -282,11 +319,13 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         from .signatures import agent_signed
         text = agent_signed(store, store.get_review(rid), text) or text
     store.update_review_draft(rid, text, None, by=f'agent:{agent}')
+    from .outbound import leaves_from
     return {'ok': True, 'review_id': rid, 'slot': hit['id'], 'added': added, **(routine_sends(store, tid, rid, agent, missing) if sends else {}),
-            **({'to_missing': to_missing(missing)} if missing else {}),
+            **({'from': sent_from} if (sent_from := leaves_from(store, store.get_review(rid) or {})) else {}),
+            **({'to_missing': to_missing(missing)} if missing else {}), **({'replaced_the_owners_version': his} if his else {}),
             **({'rewrote': rid, 'says': f"This rewrote your earlier email to {to} in this turn - one card stands, holding these words. For a second, "
                                         f"separate email to them, call again with slot=\"{NEW_SLOT}\"."} if rewrote == rid else {})}
-NEW_SLOT = 'new'                 # propose_email's `slot` for a second letter to someone this turn already wrote to
+NEW_SLOT = 'new'                 # propose (kind email)'s `slot` for a second letter to someone this turn already wrote to
 
 
 def _written_before(store, tid: int, rv: dict) -> bool:
@@ -319,7 +358,7 @@ def routine_sends(store, tid: int, rid: int, agent: str, missing: str = '') -> d
 
 
 # ...said to the agent in the same words whichever road the draft took: the tool or `taskuary --draft` returns it at once; a draft MARKER in an
-# API-backed answer (the HIPAA AI's) is read after the turn ends, so its next turn hears it with what is waiting (general.latest_block)
+# API-backed answer (the HIPAA AI's) is read after the turn ends, so its next turn hears it with what is waiting (events.py)
 def to_missing(who: str) -> str:
     return (f"no address for {who} in the owner's mail or directory - the card's To is empty and waits for the owner; "
             "find one (someone at that organisation in the owner's mail) and draft again with it as `to`")

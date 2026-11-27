@@ -1,41 +1,56 @@
 // ONE DECISION, WHEREVER IT IS SHOWN. What they wrote, what we would say back, and the verdict
 // buttons - extracted from the review queue so the task page can hold the decision instead of
-// sending you to another tab to make it (2026-09-22). A proposal (a playbook, a setting, an
+// sending you to another tab to make it (2026-09-22). A proposal (a skill, a setting, an
 // action) renders through the same card: proposalPresentation() gives it its own title, its
 // destination and its own labels, and nothing is sent to a sender.
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, Box, Button, Typography, CircularProgress, Menu, MenuItem } from "@mui/material";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { seedEdit, holdEdit, onHeld, keepEdits, flushEdit, unsaved } from "./heldEdits.js";
+import { Alert, Box, Button, CircularProgress, Typography, Menu, MenuItem } from "@mui/material";
 import api from "./api";
 import ReplyFiles from "./ReplyFiles.jsx";
 import { holdInView } from "./inView.js";
 import { filesPromised, filesShort } from "./replyFiles.js";
-import { proposalFrom, proposalPresentation, resultOf, reviewText } from "./reviewProposal.js";
-import { cardOf } from "./actionCard.js";
-import ActionCard from "./ActionCard.jsx";
+import { outcomeOf, proposalFrom, proposalPresentation, receiptOf, resultOf, reviewStatusLabel, reviewText } from "./reviewProposal.js";
+import { actionFor, asLeft, cardOf, changed, faceOf, fieldsOf, hasBox, headOf, lengthOf, pressable as actPressable, pressOf, shownOf, stateOf, textKey, triesAgain, valuesOf, viaBrowserSaid, wordsOf } from "./actionCard.js";
 import { asLive, MovedPast } from "./PassedCard.jsx";
+import { FileDialog } from "./PublishedPages.jsx";
 import { withoutSignature } from "./signature.js";
 import { OFFER_HINT, OFFER_LABEL, useCloseoutState } from "./closeoutState.js";
-import { PANEL2, BORDER, DIM, FAINT, INK, label } from "./theme.jsx";
-import { CcRow, DraftField, SubjectRow, ToRow, timeAgo, cleanText, splitQuoted } from "./ui.jsx";
-import { deliveryBcc, deliveryCc, deliveryFiles, deliveryMeta, deliverySubject, needsAddress, pressWords, replyContext, sentCardOf, sentTo } from "./replyDelivery.js";
-import SentCard from "./SentCard.jsx";
-import { cardLook, hearMarks, markOf, pressMark, WENT } from "./sentLine.js";
+import { PANEL2, BORDER, DIM, FAINT, INK } from "./theme.jsx";
+import { timeAgo, cleanText, splitQuoted } from "./ui.jsx";
+import { deliveryBcc, deliveryCc, deliveryFiles, deliveryMeta, deliverySubject, drawnEnvelope, needsAddress, pressWords, replyContext, sentCardOf, sentTo, versionPick, versionsOf } from "./replyDelivery.js";
+import { cardLook, endPress, hearMarks, markOf, pressMark, sentMark, sentSaid, sentTitle, WENT } from "./sentLine.js";
+import { fmtDateTime } from "./dates.js";
 import { acted, announce, repeatClick, useLit, useVerbs } from "./actionRow.js";
 import { useFoldBar } from "./foldBar.js";
-import { hint as btnHint, label as btn } from "./buttons.js";   // theme.jsx owns `label`
-import { boxText, editAfterRefile, useDraftJob } from "./replyDraft.js";
+import { hint as btnHint, label as btn } from "./buttons.js";
+import { boxText, editAfterRefile, heldWords, useDraftJob } from "./replyDraft.js";
 import ApprovalInterrupt from "./ApprovalInterrupt.jsx";
 import { interruptOf, resolveInterrupt } from "./approvalInterrupt.js";
 import { draftState, failureHead, failureWhy, replySendFailure, reviewDeliveryState, savedSendFailure, sendFix, timedOut } from "./sendState.js";
-import { landedSend, press } from "./press.js";
+import { failLine, landed, landedSend, press } from "./press.js";
 import { openAppLink } from "./appLinks.js";
+import { setupType } from "./connectSetup.js";
+import { howToOpen } from "./bugReportOpen.js";
+// ...the connection's own setup under the card that needs it: the Connections page's code, loaded only when a Connect is pressed
+const ConnectSetup = React.lazy(() => import("./ConnectSetup.jsx"));
+const setupUnder = (href, onClose, onConnected) => href && <React.Suspense fallback={null}>
+  <ConnectSetup href={href} onClose={onClose} onConnected={() => { onClose(); onConnected(); }} /></React.Suspense>;
+// Connect brings the connection's setup up under the card, where it is one connection's card; any other link still opens where it points
+const connectRun = (href, setAt) => () => (setupType(href) ? setAt((x) => (x ? "" : href)) : openAppLink(href));
+// ...its setup comes up UNDER the card: the chat keeps what he pressed where it stood (GeneralWorkspace's fold), never its end
+const OPENS_UNDER = { "data-tq-opens-under": "" };
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { runOperation } from "./taskOps.js";
 import { draftCanSend, useCapabilities } from "./capabilities.js";
 import { blankAsk, blankRefusal, blankSpans } from "./blanks.js";
+import { outputRow } from "./taskOutputs.js";
+import { ReviewCard } from "./Artifact.jsx";
+import { answeredAny, answersFor, answersOf, askFields } from "./questionsCard.js";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 const SkillPackageReview = React.lazy(() => import("./SkillPackageReview.jsx"));
+const hint = btnHint;
 
 // What they wrote, above what we would say back. The queue used to show only the draft: you
 // approved an answer without the question in front of you, or opened the task to find it. Four
@@ -86,13 +101,11 @@ export const InvoiceLine = ({ meta }) => {
 // "+ loop someone in" while the edited words stood - Send would have gone without her)
 // ...and ONE DRAFT IN TWO PLACES reads the same in both (the agent's draft, 2026-11-02: Close out and the pop-up over the terminal): an edit in
 // either is told to the other card on the same draft, so a Send from either sends what the owner last typed
-const edits = new Map(), heard = new Set();
-const heldEdit = (r) => { const e = edits.get(r?.ReviewId); return e && e.filed === reviewText(r) ? e : null; };
-const hold = (r, part) => {
-  const e = { text: null, cc: null, bcc: null, subject: null, ...heldEdit(r), ...part, filed: reviewText(r) };
-  if (e.text == null && e.cc == null && e.bcc == null && e.subject == null) edits.delete(r.ReviewId); else edits.set(r.ReviewId, e);
-  heard.forEach((f) => f(r.ReviewId));
-};
+// ...kept by the card's review, wherever it is drawn (heldEdits.js: one store for every card that takes his words)
+const heldEdit = (r) => seedEdit(r?.ReviewId, r?.OwnerEdit);
+const hold = (r, part) => holdEdit(r.ReviewId, part);
+// ...and on the server as he types (heldEdits.js): what is in a box is his there too, never written over
+keepEdits((id, edit) => api.post(`/api/reviews/${id}/held`, { edit }));
 // SEND AND CLOSE OUTLIVES THE PRESS (the owner, 2026-11-03): a send nobody could confirm comes back as Check delivery or Send anyway, and the
 // card may be drawn again meanwhile - which of Close out's two sends was pressed is held per draft, so the confirmed send still closes, or not
 const closing = new Set();
@@ -100,27 +113,10 @@ const closing = new Set();
 const CAL_ACT = { accept: btn("accept_invite"), decline: btn("decline_invite"), propose: t("Propose"), schedule: t("Invite") };
 // ...and ITS PRESS SAYS THE ACT (the owner, 2026-11-08: "fix it like email or all other actions"): the card the agent set up is pressed as
 // what it does - Accept, Decline, Propose this time, Send invite - where an email's says Send
-export const CAL_PRESS = { accept: btn("accept_invite"), decline: btn("decline_invite"), propose: t("Propose this time"), schedule: t("Send invite") };
-// ...and an invite's other answers beside it, each setting that one up instead (POST /api/messages/{mid}/calendar - the row's own draft; a new
-// time with none named is the first free one): nothing reaches the calendar before the lit press
-const HIDE = { display: "none" };   // a folded button stays mounted, unseen: its width is the one useFoldBar measured while it was drawn
+export const CAL_PRESS = { accept: btn("accept_invite"), decline: btn("decline_invite"), propose: "Propose this time", schedule: "Send invite" };
+// ...and an invite's other answers beside it (POST /api/messages/{mid}/calendar - the row's own road): Accept and Decline tell the calendar at
+// their press, in place of this answer; a new time is set up instead (with none named, the first free one) and waits for the lit press
 const CAL_OTHER = { accept: btn("accept_invite"), decline: btn("decline_invite"), propose: btn("propose_time") };
-// The times are the server's words (calwrite.when): the envelope carries them as they will be said.
-export const CalendarLine = ({ meta }) => {
-  useLocale();
-  const action = { accept: btn("accept_invite"), decline: btn("decline_invite"), propose: t("Propose"), schedule: t("Invite") }[meta.act] || t("Answer");
-  return (
-    <Box data-tq-calendar={meta.act} sx={{ display: "grid", gap: 0.25, mb: 1, px: 1.25, py: 0.8, bgcolor: "var(--tq-inset, #eef1ec)", border: "1px solid var(--tq-border, #d9e0d6)", borderRadius: 1.5 }}>
-      <Typography variant="caption" sx={{ color: INK, fontWeight: 600 }}>
-        {action} · {meta.subject || t("the meeting")}{meta.when ? ` · ${meta.when}` : ""}</Typography>
-      <Typography variant="caption" sx={{ color: DIM }}>
-        {meta.act === "schedule" ? t("Invites {people}", { people: (meta.to || []).join(", ") || t("them") }) : t("{person} is told", { person: (meta.to || [])[0] || t("The organizer") })}
-        {meta.act === "propose" && meta.was ? t(" · instead of {time}", { time: meta.was }) : ""}</Typography>
-      {!!meta.link && <Typography variant="caption" data-tq-calendar-link={meta.link} sx={{ color: DIM }}>{t("With a {link} link, made when it is sent", { link: meta.link })}</Typography>}
-      {!!meta.clash && <Typography variant="caption" sx={{ color: "var(--tq-danger, #7a2f3c)" }}>{t("This {clash}.", { clash: meta.clash })}</Typography>}
-    </Box>
-); };
-
 // WHAT A SHARE SHARES, OVER ITS PRESS (the owner, 2026-11-08: "the agent shows the dashboard inline in the chat"): the dashboard as Reports
 // draws it, from its last run - lazy, so a card with none never loads the charts
 const Dashboard = React.lazy(() => import("./dashboard/Dashboard.jsx"));
@@ -161,7 +157,7 @@ export const BlankAsk = ({ line, onSend, onCancel }) => (
 // `closeOnSend`: the task page's Close out (the owner, 2026-10-29: "wait until the send actually succeeds, then close the task"): a reply
 // that went is the close too - onSent({ closes }) says so, only after the server's receipt; a send that failed leaves it open, its error here.
 // `toRow`: the decision's buttons are drawn by the action row above the chat line (layout B), not here - the same handlers, registered.
-// `onEmailInstead`: the task's Send out results - a chat reply that has to carry a file is answered by email instead (U17).
+// A chat reply that has to carry a file is the same card by email instead (U17; wrapup.by_email) - wherever the card is drawn.
 // `went`: on a card whose Send went, what the press did to the task beside it ({closing, kept}, TaskPage sentHere) - its sent card says it.
 // ...an act a connector declares a card for (a post, a tracker comment) is drawn as that card (ActionCard.jsx), wherever its proposal shows -
 // the same decide road, its own face
@@ -172,13 +168,13 @@ export const MoreCardsCtx = React.createContext(false);
 export default function ReviewDecision({ past = false, ...props }) {
   const proposal = proposalFrom(props.review);
   if (proposal?.action === "publish_skill") {
-    return <React.Suspense fallback={<CircularProgress size={18} />}><SkillPackageReview key={proposal.generation_id} generationId={proposal.generation_id} onChanged={props.onChanged} onOpenTask={props.onOpenTask} /></React.Suspense>;
+    return <MovedPast on={past}><React.Suspense fallback={<CircularProgress size={18} />}><SkillPackageReview key={proposal.generation_id} generationId={proposal.generation_id} onChanged={props.onChanged} onOpenTask={props.onOpenTask} readOnly={past} /></React.Suspense></MovedPast>;
   }
   const r = past ? asLive(props.review) : props.review, act = cardOf(r);
-  return act ? <ActionCard row={act} tid={r?.TaskId} onChanged={props.onChanged} past={past} />
+  return act ? <ActReview row={act} tid={r?.TaskId} onChanged={props.onChanged} past={past} />
     : <MovedPast on={past}><Decision {...props} review={r} past={past} toRow={!past && props.toRow} /></MovedPast>;
 }
-function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = null, onSent = null, onRemind = null, closeOnSend = false, toRow = false, simulated = false, onDrop = null, onEmailInstead = null, why = "", went = null, past = false }) {
+function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = null, onSent = null, onRemind = null, closeOnSend = false, toRow = false, simulated = false, onDrop = null, why = "", went = null, past = false }) {
   // ...a card moved past shows the words it was filed with, never an edit held for the live card of the same review
   const heldOf = (x) => (past ? null : heldEdit(x));
   const [text, setTextNow] = useState(() => heldOf(r)?.text ?? null);   // the owner's edit; null means "the draft as filed"
@@ -190,19 +186,25 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   const setBcc = (v) => { hold(r, { bcc: v ?? null }); setBccNow(v); };
   const setSubj = (v) => { hold(r, { subject: v ?? null }); setSubjNow(v); };
   const [ccOpen, setCcOpen] = useState(false), [bccOpen, setBccOpen] = useState(false), [cmdOpen, setCmdOpen] = useState(false);
+  // ...a change's new words as he leaves them, box by box (proposals.as_left saves exactly these), and its marks of where they change on or off
+  const [words2, setWords2Now] = useState(() => heldOf(r)?.words ?? {}), [marksOn, setMarksOn] = useState(true);
+  const setWords2 = (f) => { const n = f(words2); hold(r, { words: Object.keys(n).length ? n : null }); setWords2Now(n); };
+  // ...and his answers to the agent's questions, by place (questionsCard.js), held as his other edits are
+  const [answers, setAnswersNow] = useState(() => heldOf(r)?.answers ?? []);
+  const answer = (i, v) => { const n = [...answers]; n[i] = v; hold(r, { answers: answeredAny(n) ? n : null }); setAnswersNow(n); };
   const rNow = useRef(r); rNow.current = r;
   useEffect(() => { const f = (id) => { if (id !== rNow.current.ReviewId) return; const e = heldOf(rNow.current); setTextNow(e?.text ?? null); setCcNow(e?.cc ?? null);
     setBccNow(e?.bcc ?? null); setSubjNow(e?.subject ?? null); };
-    heard.add(f); return () => { heard.delete(f); }; }, []);
+    return onHeld(f); }, []);
   // SENT STAYS SENT until the page's re-read takes the card away (the owner, 2026-10-26: "when you hit send on close out email it grey's
   // out and then turns blue again then closes"): busy still ends when the decide answers, as 2026-10-18 ruled, but the button after it
   // reads "Sent" and stays off - a blue Send again over a reply already gone invited a second press
   // ...and the send's press is the REVIEW'S (sentLine.markOf, 2026-11-17): this card drawn again mid-send, or after it went, reads where it stands
   // (the demo's own review is its own: its number may be a real one's)
-  const rid = simulated ? `demo:${r.ReviewId}` : r.ReviewId, mark = useSyncExternalStore(hearMarks, () => (past ? null : markOf(rid))), look = cardLook(r, mark);
+  const rid = simulated ? `demo:${r.ReviewId}` : r.ReviewId, mark = useSyncExternalStore(hearMarks, () => (past ? null : markOf(rid)), () => (past ? null : markOf(rid))), look = cardLook(r, mark);
   const setMark = (m) => pressMark(rid, m);
   const [busyHere, setBusyHere] = useState(false);
-  const setBusy = (b) => { setBusyHere(b); if (!b && markOf(rid)?.state === "going") setMark(null); };
+  const setBusy = (b) => { setBusyHere(b); if (!b) endPress(rid); };
   const setSent = (s) => setMark(s ? { state: "sent" } : null);
   const sent = look === "sent", busyNow = busyHere || look === "going";
   const busy = busyNow || sent;
@@ -212,10 +214,10 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   // ...in the card's own words: an invite's Accept says Accepting… then Accepted (pressWords)
   const pw = pressWords(r);
   const sentOr = (w) => (sent ? pw.done : w);
-  const spinning = (w) => (sent ? pw.done : <><CircularProgress size={11} data-tq-sending="" sx={{ color: "inherit", mr: 0.75 }} />{w}</>);
   // ...said by the send that was pressed: Close out has two, and "Sending…" stood on both
   const [pressedHere, setPressed] = useState("approve"), pressed = mark?.pressed || pressedHere;
   const [err, setErr] = useState("");
+  const [setupAt, setSetupAt] = useState("");      // the connection whose setup stands under the card (ConnectSetup): its Connect pressed
   const [sendErr, setSendErr] = useState("");       // approved, but the channel refused it
   // ...and after a reload the review says so itself (savedSendFailure) - until the owner closes the line, or presses again
   const [shutErr, setShutErr] = useState(false);
@@ -229,9 +231,13 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
     const w = was.current; was.current = { rid: r.ReviewId, filed };
     if (w.rid !== r.ReviewId) { const e = heldOf(r); setTextNow(e?.text ?? null); setCcNow(e?.cc ?? null); return; }
     if (w.filed === filed) return;
-    const keep = !!interrupt || compare?.reviewId === r.ReviewId;
-    if (keep && text != null) hold(r, { text });           // the owner's edit beside the refreshed draft stays theirs, held for the new one
-    setTextNow(editAfterRefile({ text, held: heldOf(r), keep }));
+    // ...BUT NEVER OVER WORDS HE TYPED (the owner, 2026-11-26): they stay in the box whatever is filed under them - the server writes no draft
+    // over words it holds for him, so a new draft here is one he asked for himself (Redraft, a rewrite: his words taken back there), or one
+    // filed in the moment before his keystrokes were saved, which keeps them
+    const keep = !!interrupt || compare?.reviewId === r.ReviewId || unsaved(r.ReviewId) || !!String(heldWords(r.OwnerEdit)).trim();
+    const now = editAfterRefile({ text, keep });
+    if (now == null && text != null) hold(r, { text: null });
+    setTextNow(now);
   }, [r.ReviewId, filed]);   // eslint-disable-line react-hooks/exhaustive-deps
   // A BLANK LEFT IN IT (the owner, 2026-10-30): Send pressed over a "[REASON]" says "Fill in [REASON] first" under the button, and the
   // line follows the box - it names what is still blank as the owner types, and is gone once nothing is
@@ -241,6 +247,7 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   const delivery = reviewDeliveryState(r);
   const filedDelivery = delivery.frozen ? { ...r, Deliver: JSON.stringify(delivery.envelope) } : r;
   const proposal = proposalPresentation(r);
+  const changedWords = Object.fromEntries((proposal?.texts || []).filter((t) => words2[t.key] != null && words2[t.key] !== t.now).map((t) => [t.key, words2[t.key]]));
   // A REPLY OPENED AT ONCE is drawn before its draft exists (replyDraft.js, 2026-10-01): "Drafting…" until the model is done,
   // then the task is read again and the draft is in the box; one that could not be written says why here
   const jobNow = useDraftJob(r.ReviewId), job = past ? null : jobNow;
@@ -307,7 +314,7 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   const closeThen = t("then the task closes");
   // A CHAT REPLY THAT PROMISES A FILE (U17): WhatsApp and the other chats carry words only, so a send went out with the promise and
   // without the file. The move becomes answering by email with the file; sending the words alone stays beside it.
-  const chatFile = !!onEmailInstead && !proposal && !co && !isSlot && !r.Stale && !delivery.frozen && canSendIt
+  const chatFile = !proposal && !co && !isSlot && !r.Stale && !delivery.frozen && canSendIt
     && String(r.Channel || "email").toLowerCase() !== "email" && (deliveryFiles(filedDelivery).length > 0 || filesPromised(r));
   const thenLine = delivery.frozen ? "" : simulated ? t("This approves the fictional reply and completes the demo task. No email is sent.")
     : co ? (closesIt && sendable && !simulated && !r.Stale ? t("{closeCo} {coThen}, then sends your reply to {recipient} - {closeThen}; {approveLabel} does the same and {stays}.", { closeCo, coThen: co.then, recipient: replyContext(r, { presentation: true }), closeThen, approveLabel: co.approveLabel, stays })
@@ -407,7 +414,8 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   const envelopeEdits = (verb) => verb !== "approve" || proposal || delivery.frozen ? {}
     : isEmail ? { bcc: bccNow, subject: subj != null && subj !== subjFiled ? subj : null }
     : newMeeting ? { subject: subj != null && subj !== subjFiled ? subj : null } : {};
-  const decide = async (verb, anyway = false, close = undefined, blanksOk = false) => {
+  // `always`: "Always approve this step" on a routine's write card - it runs now, and that step as saved runs unpressed after (flow.grant)
+  const decide = async (verb, anyway = false, close = undefined, blanksOk = false, always = false) => {
     if (delivery.active || (delivery.frozen && verb !== "approve")) return;
     if (verb === "approve" && !blanksOk && askBlank({ verb, anyway, close })) return;
     setAsked(null);
@@ -419,12 +427,17 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
     setBusy(true); setErr(""); setSendErr("");
     try {
       const out = await press(api, r.ReviewId,
-        { verb, final_text: verb === "approve" && !delivery.frozen ? value : null,
+        { verb, final_text: verb === "approve" && !delivery.frozen ? value : null, ...(r.Kind === "action" ? { shown: proposalFrom(r) } : delivery.frozen ? {} : { shown: drawnEnvelope(r) }),
           // only on the send: rejecting or "no reply needed" copies nobody on nothing
           cc: verb === "approve" && !proposal && !delivery.frozen ? ccNow : null, anyway, blanks_ok: blanksOk, ...envelopeEdits(verb),
           // ...Send and close says so WITH the send: the server closes as it goes, before the task's agent is told it went - told first, a
           // parked agent was working again by the time the page asked for the close, and the task stayed open (the agent walk, 2026-11-10)
-          ...(closesIt && shut && verb === "approve" ? { closes: true } : {}) }), data = out.data;
+          ...(closesIt && shut && verb === "approve" ? { closes: true } : {}),
+          ...(always && verb === "approve" ? { always: true } : {}),
+          // ...a change card's boxes he changed, by their keys (workflows.edit_change): what he edited is what is saved
+          ...(verb === "approve" && Object.keys(changedWords).length ? { fields: changedWords } : {}),
+          // ...and his answers to the agent's questions, one a question (proposals.answers_of)
+          ...(verb === "approve" && proposal?.asks ? { fields: { answers: answersFor(proposalFrom(r), answers) } } : {}) }), data = out.data;
       // NO ANSWER IN A MINUTE is not "nothing was sent": the server may be sending still. The card reads the review again and its
       // DeliveryState draws Sending… or Check delivery (reviewDeliveryState) - the check it already has, not a line of ours
       if (!data) { if (out.kind === "unknown") onChanged?.(); else setErr(out.why || "That didn't go through - nothing was sent. Try the button again."); setBusy(false); return; }
@@ -456,6 +469,8 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
       // ...and a send with no page behind it - one of the task's emails - is Sent from its answer on too: its Send and Don't send lit again
       // until the re-read came (the walk, 2026-11-17)
       else if (data.ok && verb === "approve" && !proposal) setSent(true);
+      // ...and an act's Approve that landed stays pressed until the re-read has it decided - never Approve lit again between (walk 9)
+      else if (data.ok && verb === "approve") setMark({ state: "landed", pressed: "approve" });
       onChanged?.();
     } catch (e) {
       // NO ANSWER IN A MINUTE is not "nothing was sent": the server may be sending still. The card reads the review again and its
@@ -469,6 +484,14 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
 
   // A held draft is one the session's findings will rewrite. Sometimes the sender needs telling
   // something today anyway - a reply stuck behind an agent that never finished is worse.
+  // THE SAME CARD, BY EMAIL (walk 6, H7: "Reply by email with the file" opened Email a summary, an empty To and a second voice - the agent's
+  // words, its files and the person gone): its words and files stay, bound to that person's email on the task (wrapup.by_email)
+  const byEmail = async () => {
+    setBusy(true); setErr("");
+    try { const { data } = await api.post(`/api/reviews/${r.ReviewId}/by-email`); if (!data?.ok) setErr(data?.why || "It could not go by email."); else onChanged?.(); }
+    catch (e) { setErr(e?.response?.data?.detail || "It could not go by email."); }
+    setBusy(false);
+  };
   const release = async () => {
     if (delivery.frozen) return;
     setBusy(true);
@@ -482,8 +505,9 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
     if (delivery.frozen || redrafting || repeatClick(no("redraft"), e)) return;
     announce(no("redraft"));
     setRedrafting(true);
-    try { await api.post(`/api/reviews/${r.ReviewId}/draft`); setText(null); onChanged?.(); }
-    catch (e) { setErr(e?.response?.data?.detail || { key: "Redraft failed" }); }
+    // ...his own press for other words takes his back first (heldEdits.js): no draft is written over words he still holds
+    try { setText(null); await flushEdit(r.ReviewId); await api.post(`/api/reviews/${r.ReviewId}/draft`); onChanged?.(); }
+    catch (e) { setErr(e?.response?.data?.detail || "Redraft failed"); }
     finally { acted(no("redraft")); setRedrafting(false); }
   };
 
@@ -505,7 +529,6 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
     const stop = holdInView(el);
     return () => { stop(); el?.removeAttribute("data-tq-lit"); };
   }, [lit, r.ReviewId]);
-  const solid = toRow && lit !== no("approve") ? "outlined" : "contained";
   // ...Close out's Send and close IS the primary (the owner, 2026-11-03: "make it the primary button"): filled as it stands, and it steps
   // back only while another move on this card is lit - an advised Send or Redraft - so one button is ever filled
   // ...and only for a move DRAWN beside it (the product audit, 2026-11-08): a lit Redraft this card does not draw left Send and close outlined
@@ -530,8 +553,6 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   const redraftLabel = redrafting && r.DraftText ? t("Redrafting…") : drafting ? t("Drafting…") : redraftWord;
   // the Advisor lit Redraft and said why: the warning and its button go over the draft (warnTop), not a line beside the buttons under it
   const warnTop = !!why && canRedraft && !r.Stale && !delivery.frozen && lit === no("redraft");
-  const redraftDrawn = canRedraft && !r.Stale && !delivery.frozen && !warnTop;
-  const closeVariant = lit === no("approve") || (lit === no("redraft") && redraftDrawn) ? "outlined" : "contained";
   // the alternative (Decline) sends WHAT IS IN THE BOX, edited or not - and with the box empty it just closes the pull request, sending nothing
   const altSends = sendable && !!words.trim();
   const altTitle = co?.alt ? t(altSends ? "{label} {effect}, then sends the text above exactly as you have it - edit it first if it reads as an accept." : "{label} {effect}. The box is empty, so nothing is sent.", { label: co.alt.label, effect: co.alt.then }) : "";
@@ -548,10 +569,11 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   // ITS CHANNEL IS NOT CONNECTED (the owner, 2026-11-08): the card says so and its one move is Connect, which opens that connection's card -
   // the draft waits as it is, and Send is back once it is connected (server: outbound.connect_fix, `Connect` on the review) - and a mail card
   // that is connected but cannot send says why the same way, its fix as the move (`waits` is its own end of the line)
-  const connect = !proposal && !delivery.frozen ? r.Connect : null;
+  // ...and an act on a connection not set up (outbound.review_connect, the owner 2026-11-25): its Connect where its Approve would be
+  const connect = (!proposal || proposalFrom(r)?.action === "run_tool") && !delivery.frozen ? r.Connect : null;
   const moves = r.Status !== "pending" || look === "sent" ? [] : [
     ...(connect ? [
-      { id: no("connect"), label: connect.label, tone: "p", disabled: off, run: () => openAppLink(connect.href), title: `${connect.says} - opens its connection` },
+      { id: no("connect"), label: connect.label, tone: "p", disabled: off, run: connectRun(connect.href, setSetupAt), title: `${connect.says} - sets up its connection here`, attrs: OPENS_UNDER },
       // ...and a card that is connected but cannot send keeps the Copy it drew before (`waits`): the draft can still go out by hand
       ...(connect.waits ? [{ id: no("copy"), label: copied ? `✓ ${btn("copy", "done")}` : btn("copy"), tone: "s", disabled: off || !words.trim(), run: copyIt, title: copyTitle }] : []),
     ] : delivery.frozen ? [
@@ -568,10 +590,13 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
         why: blocked ? gh.reason.split(" - ")[0] : sendable && !words.trim() ? t("write the reply first") : "" },
       ...(co.alt ? [{ id: no("alt"), label: altSends ? t("{label} & send your text", { label: co.alt.label }) : co.alt.label, tone: "s", title: altTitle, disabled: off, run: () => decideBoth(co.alt.verb) }] : []),
     ] : proposal ? [
-      { id: no("approve"), label: busy ? sentOr(proposal.busyLabel) : proposal.approveLabel, tone: "p", disabled: off || (proposal.kind === "closeout" && blocked), send: proposal.kind === "closeout" && !!words.trim(), run: () => decide("approve"),
-        why: proposal.kind === "closeout" && blocked ? gh.reason.split(" - ")[0] : "",
-        title: proposal.kind === "closeout" && blocked ? gh.reason : proposal.kind === "playbook" ? t("Save this process in Reports → Playbooks; nothing is sent to the sender")
-          : proposal.kind === "closeout" ? t("{label} - the text above goes with it", { label: proposal.approveLabel }) : t("Run the proposed action; nothing is sent to the sender") },
+      { id: no("approve"), label: busy ? sentOr(proposal.busyLabel) : proposal.approveLabel, tone: "p", disabled: off || (proposal.kind === "closeout" && blocked) || (!!proposal.asks && !answeredAny(answers)), run: () => decide("approve"),
+        why: proposal.kind === "closeout" && blocked ? gh.reason.split(" - ")[0] : proposal.asks && !answeredAny(answers) ? "answer a question first" : "",
+        title: proposal.asks ? "Sends your answers to the agent, which goes on from them" : proposal.kind === "closeout" && blocked ? gh.reason : proposal.kind === "skill" ? "Save this process in Reports → Skills; nothing is sent to the sender"
+          : proposal.kind === "closeout" ? `${proposal.approveLabel} - the text above goes with it` : "Run the proposed action; nothing is sent to the sender" },
+      // ...A ROUTINE'S OWN WRITE STEP can be approved for good (the owner, 2026-11-25): this step, as saved, runs unpressed on its later runs
+      ...(proposalFrom(r)?.flow_run?.key ? [{ id: no("always"), label: "Always approve this step", tone: "s", disabled: off, run: () => decide("approve", false, undefined, false, true),
+        title: "Run it now, and let this routine run this exact step without asking again - take it back under Settings → Agent permissions" }] : []),
     ] : !canSendIt ? [
       // NO CLOSE UNDER A DRAFT THAT CANNOT LEAVE (the owner, 2026-10-22: "there should be no mark done under reply if you can't send
       // out message ... mark done is on the tasks"): the draft is there to copy, Redraft beside it, and the task's own Mark done closes
@@ -580,8 +605,8 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
     ] : r.Stale ? [
       { id: no("approve"), label: redrafting ? t("Redrafting…") : drafting ? t("Drafting…") : btn("redraft"), tone: "p", disabled: off, run: redraft, title: btnHint("redraft") },
     ] : chatFile ? [
-      { id: no("email-file"), label: "Reply by email with the file", tone: "p", disabled: off, run: onEmailInstead,
-        title: `A ${r.Channel} message cannot carry a file - this writes an email with the file on it, which waits here for your yes` },
+      { id: no("email-file"), label: "Reply by email with the file", tone: "p", disabled: off, run: byEmail,
+        title: `A ${r.Channel} message cannot carry a file - the same words and file go as an email to them instead, waiting here for your yes` },
       { id: no("approve"), label: busy ? sentOr(pw.busy) : `${sendWord} without the file`, tone: "s", disabled: off || !words.trim(), why: words.trim() ? "" : "write the reply first",
         run: () => decide("approve"), title: `Sends only the words to ${replyContext(r)} - no file goes with them` },
     ] : twoSends ? [
@@ -616,14 +641,10 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
   const fix = sendFix(r, failure);
   useVerbs(`fix:${r.ReviewId}`, fix && !past ? [{ id: no("fix"), group: "decide", tone: "s", label: fix.label, title: "Opens where this is fixed",
     run: () => openAppLink(fix.href) }] : [], !!fix && toRow);
-  // THE CARD'S LAST LOOK IS ITS OWN (the walk, 2026-11-17): once its Send went it is the sent card, here where it stood - never its form lit
-  // again, nor gone until another card says it somewhere else. `went`: what the press did to the task beside it (TaskPage sentHere)
-  if (look === "sent" && !proposal && !co) return <SentCard {...sentCardOf(r, WENT.includes(r.Status) ? "" : value)} {...(went || {})} />;
-
   // THE LINE'S ONE ▾: the open Send its pair gave up (`send`), then whichever other answers the width could not hold - each the press its button is
-  const calTitle = (w) => `Sets up "${w}" in place of this answer - nothing reaches the calendar until you press it`;
+  const calTitle = (w, a) => (a === "propose" ? `Sets up "${w}" in place of this answer - nothing reaches the calendar until you press it` : btnHint(`${a}_invite`));
   const foldMore = (send) => {
-    const rest = [...(folded ? send : []), ...calOthers.filter(([a]) => !bar.shown(`cal:${a}`)).map(([a, w]) => ({ id: `cal:${a}`, label: switching === a ? "Setting up…" : w, title: calTitle(w),
+    const rest = [...(folded ? send : []), ...calOthers.filter(([a]) => !bar.shown(`cal:${a}`)).map(([a, w]) => ({ id: `cal:${a}`, label: switching === a ? "Setting up…" : w, title: calTitle(w, a),
       disabled: off || !!switching, run: () => { setSendAt(null); answerInstead(a); } }))];
     return rest.length > 0 && <>
       <Button size="small" variant="outlined" disabled={rest.every((x) => x.disabled)} onClick={(e) => setSendAt(e.currentTarget)} title={rest.map((x) => x.label).join(", ")}
@@ -632,326 +653,323 @@ function Decision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = nul
         {rest.map((x) => <MenuItem key={x.id} dense disabled={x.disabled} title={x.title} data-tq-verb={x.id} sx={{ fontSize: 13 }} onClick={x.run}>{x.label}</MenuItem>)}
       </Menu></>;
   };
-  if (r.Status === "held") {
-    return (
-      <Box sx={{ mt: 0.5, bgcolor: "var(--tq-inset, #e3e6e1)", border: "1px solid var(--tq-border, #d2d6cf)", borderRadius: 1.5, px: 1.25, py: 0.75 }}>
-        <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", fontWeight: 600, display: "block" }}>
-          {t("Waiting on the agent working this task")}
-        </Typography>
-        <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.25 }}>
-          {t("This reply was drafted from the message alone, before anyone had looked at the problem — so it would be promising what nobody has checked yet. When the session is wrapped up, it comes back here rewritten from what the agent actually found.")}
-        </Typography>
-        <Box sx={{ display: "flex", gap: 0.75, mt: 0.75, alignItems: "center" }}>
-          <Button size="small" variant="outlined" disabled={off || delivery.frozen} onClick={release}>{t("Answer now anyway")}</Button>
-          {onOpenTask && <Button size="small" sx={{ color: DIM }} onClick={() => onOpenTask(r.TaskId)}>{t("Open the task")}</Button>}
-        </Box>
-        {r.DraftText && (
-          <Typography variant="caption" sx={{ whiteSpace: "pre-wrap", color: FAINT, display: "block", mt: 0.75 }}>
-            {r.DraftText.slice(0, 300)}
-          </Typography>
-        )}
-        {err && <Alert severity="error" sx={{ mt: 1 }} onClose={() => setErr("")}>{typeof err === "object" ? translateDescriptor({ source: err.key, values: err.key === "{close} didn't go through." ? { close: btn("close") } : err.params }) : err}</Alert>}
-      </Box>
-    );
-  }
+  // A REPLY HELD FOR ITS AGENT is the same card: what it waits on, its words, and Answer now anyway
+  if (r.Status === "held") return (
+    <ReviewCard id={r.ReviewId} kind="reply" state="held" label="Waiting on the agent working this task"
+      before={<Typography variant="caption" sx={{ color: DIM, display: "block", mb: 0.75 }}>This reply was drafted from the message alone, before anyone had
+        looked at the problem — so it would be promising what nobody has checked yet. When the session is wrapped up, it comes back here rewritten from
+        what the agent actually found.</Typography>}
+      fields={r.DraftText ? [{ key: "draft", type: "text", value: r.DraftText.slice(0, 300), dim: true }] : []}
+      press={[{ id: no("release"), label: "Answer now anyway", tone: "s", disabled: off || delivery.frozen, run: release },
+        ...(onOpenTask ? [{ id: no("open"), label: "Open the task", tone: "q", run: () => onOpenTask(r.TaskId) }] : [])]}
+      under={err && <Alert severity="error" sx={{ mt: 1 }} onClose={() => setErr("")}>{err}</Alert>} />);
 
-  // ...an approved act reads as what it did, never its JSON (resultOf)
-  const done = resultOf(r);
-  if (done) return (
-    <Box data-tq-act-result="" sx={{ mt: 0.75, p: 1, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>
-      <Typography variant="body2" sx={{ color: INK, overflowWrap: "anywhere" }}>
-        <b>{done.said}</b>{done.what ? ` · ${done.what}` : ""}{done.url && <> · <a href={done.url} target="_blank" rel="noreferrer">{done.url.replace(/^https?:\/\//, "").slice(0, 80)}</a></>}</Typography>
-      {done.command && <details><summary style={{ fontSize: 12, color: DIM, cursor: "pointer" }}>What it runs</summary>
-        <Typography component="code" variant="caption" sx={{ whiteSpace: "pre-wrap", color: DIM, display: "block" }}>{done.command}</Typography></details>}
-    </Box>);
-  if (r.Status !== "pending") {
-    return (r.FinalText || r.DraftText) ? (
-      <Typography variant="caption" sx={{ whiteSpace: "pre-wrap", color: DIM, display: "block", mt: 0.75,
-        bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5, p: 1 }}>
-        {(r.FinalText || r.DraftText).slice(0, 500)}
-      </Typography>
-    ) : null;
-  }
-
+  // THE ONE CARD IN EVERY STATE (Artifact ReviewCard): waiting, going, sent, done, not sent - the same component where it stood, its words
+  // read-only once it went and its press row turned to what the press did. Never a second card swapped in at the press (the owner, 2026-11-17:
+  // "when you click buttons on card it flickers then presses"; 2026-11-24: one card, the after-state on it)
+  const done = resultOf(r), wentNow = look === "sent" && !proposal && !co;
+  // ...its words as saved once pressed (the receipt: proposals.receipt keeps his edit), else as proposed
+  const changeTexts = (done && receiptOf(r)?.texts) || proposal?.texts || [];
+  const sp = wentNow ? { ...sentCardOf(r, WENT.includes(r.Status) ? "" : value), ...(went || {}) } : null;
+  const over = !wentNow && !done && r.Status !== "pending";
+  const shut = wentNow || !!done || over;                 // its words stand as they went: nothing to edit
+  const after = sp ? { mark: "sent", label: sentMark(sp), line: `${sentSaid(sp)}${sp.at ? ` · ${fmtDateTime(sp.at)}` : ""}` }
+    : done ? ((o) => ({ mark: o.mark, label: o.label, line: o.line, ...(o.url ? { link: { href: o.url, text: o.url.replace(/^https?:\/\//, "").slice(0, 80) } } : {}) }))(outcomeOf(r))
+    : over ? { mark: r.Status === "rejected" ? "dismissed" : "discard", label: `✗ ${upFirst(reviewStatusLabel(r.Status))}` } : null;
   // ...TO, THEN CC AND BCC AS A MAIL CLIENT DRAWS THEM (the owner, 2026-11-13: "make it look normal"): "Cc" and "Bcc" at the To line's end,
   // each opening its own row under it, labelled as To is - never a CC label beside its own "Add CC"
   const linkSx = { ...FOCUS_RING, fontSize: 12, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } };
-  const ccLinks = isEmail && !proposal && !isCal && !(busy || delivery.frozen) && (!ccNow.length && !ccOpen || !bccNow.length && !bccOpen) &&
+  const editing = !(busy || delivery.frozen || shut);
+  const ccLinks = isEmail && !proposal && !isCal && editing && (!ccNow.length && !ccOpen || !bccNow.length && !bccOpen) &&
     <Box sx={{ display: "flex", gap: 1.25, ml: "auto", flexShrink: 0 }}>
       {!ccNow.length && !ccOpen && <Typography {...pressable(() => setCcOpen(true))} data-tq-add-cc="" sx={linkSx}>Cc</Typography>}
       {!bccNow.length && !bccOpen && <Typography {...pressable(() => setBccOpen(true))} data-tq-add-bcc="" sx={linkSx}>Bcc</Typography>}
     </Box>;
+  // ITS FIELDS, AS ITS KIND'S DATA (the owner, 2026-11-24: "fields come from the kind's data"): the one card draws each
+  const email = isEmail && !proposal && !isCal, post = proposal?.post, pic = post?.picture ? outputRow(r.TaskId, post.picture) : null;
+  const marksFold = { key: "marks", type: "fold", label: marksOn ? "Hide what changed" : "Show what changed", open: marksOn, onToggle: () => setMarksOn((o) => !o) };
+  const fields = [
+    ...(newMeeting && !delivery.frozen && !shut ? [{ key: "subject", type: "line", label: "Subject", value: subjNow, editable: !off, onChange: setSubj, placeholder: "(no subject)" }] : []),
+    ...(isCal ? [{ key: "meeting", type: "read", label: CAL_ACT[meta.act] || "Answer", value: [meta.subject || "the meeting", meta.when].filter(Boolean).join(" · ") },
+      { key: "who", type: "read", label: meta.act === "schedule" ? "Invites" : "Tells", value: meta.act === "schedule" ? (meta.to || []).join(", ") || "them" : (meta.to || [])[0] || "the organizer",
+        note: [meta.act === "propose" && meta.was ? `instead of ${meta.was}` : "", meta.link ? `with a ${meta.link} link, made when it is sent` : ""].filter(Boolean).join(" · ") },
+      ...(meta.clash ? [{ key: "clash", type: "read", label: "Clashes", value: `This ${meta.clash}.` }] : [])]
+    // ...WHICH MAILBOX IT LEAVES FROM, where he has two (outbound.shown_from; walk 25: the agent said "goes from" one, the card said none)
+    : email ? [...(r.From ? [{ key: "from", type: "read", label: "From", value: r.From }] : []),
+      { key: "to", type: "to", value: replyContext(filedDelivery), editable: editing && !off, needs: needsTo, who: String(meta.needs || [].concat(meta.to || []).join(", ")),
+        onSave: async (to) => { await api.put(`/api/reviews/${r.ReviewId}/envelope`, { to }); onChanged?.(); }, trail: ccLinks },
+      ...(editing ? [...(ccOpen || ccNow.length ? [{ key: "cc", type: "people", label: "CC", value: ccNow, editable: true, onChange: setCc, autoOpen: ccOpen && !ccNow.length, onClose: () => setCcOpen(false) }] : []),
+        ...(bccOpen || bccNow.length ? [{ key: "bcc", type: "people", label: "BCC", value: bccNow, editable: true, onChange: setBcc, autoOpen: bccOpen && !bccNow.length, onClose: () => setBccOpen(false) }] : [])]
+        : [...(ccNow.length ? [{ key: "cc", type: "people", label: "CC", value: ccNow }] : []), ...(bccNow.length ? [{ key: "bcc", type: "people", label: "BCC", value: bccNow }] : [])]),
+      { key: "subject", type: "line", label: "Subject", value: subjNow, editable: editing && !off, onChange: setSubj, placeholder: "(no subject)" }]
+    // ...and never a place its title already names (walk 19: "Click the "Sign in" button on 127.0.0.1" over "On 127.0.0.1")
+    : proposal?.destination === "" || saysPlace(proposal?.lead || proposal?.title, proposal?.destination) ? []
+    : [{ key: "to", type: "read", label: proposal?.destinationLabel || "To", value: proposal?.destination || replyContext(filedDelivery) }]),
+    // ...A CHANGE TO SOMETHING STORED (reviewProposal.changeOf): what else it changes as facts, then its new words whole, each its own box, marked
+    // where they change - and the switch for the marks, where there is a before to mark against
+    ...(proposal?.rows || []).map((x, i) => ({ key: `row-${i}`, type: "read", label: x.label, value: x.was ? `${x.was} → ${x.now}` : x.now })),
+    // ...THE AGENT'S QUESTIONS, each a pick and a line of his (questionsCard.js) - and, pressed, what he answered where it stood
+    ...(proposal?.asks ? askFields(proposalFrom(r), done ? answersOf(receiptOf(r)) : answers, shut || off ? null : answer) : []),
+    ...(proposal?.after?.length ? [{ key: "after", type: "facts", label: "After your press", rows: proposal.after }] : []),
+    ...changeTexts.map((t) => ({ key: t.key, type: "change", label: t.label, was: t.was, value: words2[t.key] ?? t.now, marks: marksOn, editable: !(off || shut),
+      onChange: (v) => setWords2((w) => ({ ...w, [t.key]: v })) })),
+    ...(changeTexts.some((t) => t.was) ? [marksFold] : []),
+    ...(co ? [{ key: "closes", type: "read", label: co.destinationLabel, value: co.destination, note: "· first, then the reply goes out" }] : []),
+    // ...A HELD PRESS THAT SENDS A FORM IS THE POST AS IT WILL GO (walk 15 S12, reviewProposal.heldPost): its words and picture, read-only
+    ...(post ? [...(post.title ? [{ key: "post-title", type: "heading", value: post.title }] : []), ...post.lines.map((l, i) => ({ key: `post-line-${i}`, type: "read", value: l })),
+      ...(post.body ? [{ key: "post-body", type: "text", value: post.body }] : []),
+      ...(pic ? [{ key: "post-picture", type: "picture", value: post.picture, file: pic }] : [])] : []),
+    ...(proposal?.folded && !shut ? [{ key: "fold", type: "fold", label: `${cmdOpen ? "Hide" : "Show"} the ${proposal.foldWord || "command"}`, open: cmdOpen, onToggle: () => setCmdOpen((o) => !o) }] : []),
+    // ...the words, the card's own box: while the AI writes it, its spinner IN the box (the owner, 2026-10-30: "spin in the box of drafting")
+    // ...AND THE VERSIONS ITS AGENT GAVE OF IT ARE A PICK ON THIS ONE CARD (versionsOf; walk 22, 2026-11-25: "Yes - Thursday" and "No - keep Friday"
+    // stood as one card holding only the last): the one picked fills the box, his to change, and Send sends the box
+    ...(!shut && !proposal ? versionPick(versionsOf(r), value, !(off || delivery.frozen), setText) : []),
+    ...(proposal?.asks ? [] : shut ? (sp?.text || (over && (r.FinalText || r.DraftText)) ? [{ key: "draft", type: "text", value: sp?.text || String(r.FinalText || r.DraftText).slice(0, 500), clamp: true, dim: over }] : [])
+      : [{ key: "draft", type: "text", box: true, label: "Reply draft", value, ...(proposal?.was != null ? { type: "change", label: "The skill will say", was: proposal.was, marks: marksOn } : {}), editable: !(off || delivery.frozen || proposal?.readOnly), onChange: (v) => setText(v), marks: blanks,
+        spin: drafting, boxRef: draftRef, hidden: (proposal?.folded && !cmdOpen) || proposal?.bare,
+        placeholder: proposal?.kind === "closeout" ? proposal.placeholder : isCal ? "A note with your answer - or leave it empty" : drafting ? "Drafting…" : r.DraftText ? "" : proposal ? "Proposal details unavailable" : "No draft yet — write the reply here" },
+        // ...and a skill's page, the same switch under it (a new one against nothing: all of it added)
+        ...(proposal?.was != null ? [marksFold] : [])]),
+  ];
+  // ...its press row, the moves the action row registers (one list, `moves`): what the card itself draws of them, and an invite's other answers
+  const presses = shut ? [] : [...moves.filter((v) => !v.closes && !(v.id === no("redraft") && (warnTop || delivery.frozen)))
+    .map((v) => ({ ...v, spin: busy && /…$/.test(String(v.label)), tone: v.id === no("reject") ? "x" : v.tone,
+      ...(v.id === no("approve") && paired ? { hidden: folded, attrs: { "data-tq-bar-item": "send", "data-tq-send": "open" } } : v.id === no("send_close") ? { attrs: { "data-tq-send": "close" } } : {}) })),
+    ...calOthers.map(([a, w]) => ({ id: `cal:${a}`, label: switching === a ? "Setting up…" : w, tone: "s", disabled: off || !!switching, run: () => answerInstead(a), title: calTitle(w, a),
+      hidden: !bar.shown(`cal:${a}`), attrs: { "data-tq-cal-instead": a, "data-tq-bar-item": `cal:${a}` } })),
+    // ...and one email of several can be let go: it drops that slot and closes nothing (slots.settled)
+    ...(isSlot && onDrop && !delivery.frozen ? [{ id: no("drop"), label: "Don't send", tone: "s", disabled: off, run: onDrop, title: "Drop this email - it is never sent, and the task stays open" }] : [])];
+  const pairSend = paired ? [{ id: no("approve"), label: moves.find((v) => v.id === no("approve"))?.label, title: twoSends ? sendTitle : coTitle, disabled: off || (!words.trim() && !isCal),
+    run: () => { setSendAt(null); if (twoSends) decide("approve", false, false); else decideBoth("approve", false); } }] : [];
   return (
-    <Box sx={{ mt: 0.5 }}>
-      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1 }}>{typeof err === "object" ? translateDescriptor({ source: err.key, values: err.key === "{close} didn't go through." ? { close: btn("close") } : err.params }) : err}</Alert>}
-      {/* THE PRESS IS SAID AT ONCE, ON THE BUTTON HE PRESSED (the owner, 2026-11-16: Accept and close showed nothing for 15 seconds): it spins
-          with what it is doing, and nothing else on the card moves until it is the pressed card (the owner, 2026-11-17: "when you click buttons
-          on card it flickers then presses" - a line drawn over the card at the press pushed it down, its subject folded, then the sent card
-          jumped back up: three shapes in a quarter second) */}
-      {/* ...ONE FAILURE, SAID ONCE ON THE CARD (round 3, 2026-11-22: an unconfirmed send stood as an orange banner and a red block saying the same
-          thing): where the failure block stands, it says it - with its reason - and the banner goes */}
-      {!going && delivery.line && !failure?.unknown && <Alert severity={delivery.state === "unknown" ? "warning" : "info"} sx={{ mb: 1 }}>{delivery.line}</Alert>}
-      <ApprovalInterrupt it={interrupt} onResolve={(choice) => {
-        // the click did not send; the owner's edit stays theirs, the refreshed draft is shown beside it
-        const res = resolveInterrupt(interrupt, choice, { [r.ReviewId]: value });
-        setText(res.edits[r.ReviewId] ?? value); setCompare(res.compare); setInterrupt(null);
-      }} />
-      {/* a close-out says what it closes, whatever an older row's Reason worded it as */}
-      {proposal?.kind === "closeout" ? (
-        <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", display: "block", mb: 0.5 }}>{proposal.context}</Typography>
-      ) : proposal?.lead ? (<Box data-tq-held-lead="" sx={{ mb: 0.75 }}>
-        {/* a held step says what it does and why it waits, in words - its raw line is under Show the command (the owner, 2026-11-09) */}
-        <Typography variant="body2" sx={{ color: INK, fontWeight: 600, overflowWrap: "anywhere" }}>{proposal.lead}</Typography>
-        <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", display: "block" }}>{proposal.leadWhy}</Typography>
-      </Box>) : r.Reason && !failure && (r.DraftText || !/draft/i.test(r.Reason)) && (   // a failed send's reason is the red line below, once
-        <Typography data-tq-review-reason="" variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", display: "block", mb: 0.5 }}>{r.Reason}</Typography>
-      )}
-      {meta.kind === "zoho_invoice" && <InvoiceLine meta={meta} />}
-      {/* !!: the task detail carries the raw row, where Stale is the NUMBER 0 - and React draws a 0 */}
-      {!!r.Stale && !delivery.frozen && <Alert severity="warning" sx={{ mb: 1 }}>
-        {t("New messages arrived after this draft. Refresh the draft before sending it.")}
-        {r.LatestPreview && <Box sx={{ mt: 0.5, fontSize: 11.5 }}>{t("Latest: {preview}", { preview: r.LatestPreview })}</Box>}
-      </Alert>}
-      {/* the writer said what it needs: a plain line, never a red failure - its way on is Send to agent / Continue, lit by the Advisor */}
-      {/* ...and a draft that FAILED says so the same plain way, Draft with AI under it to try again (the owner, 2026-11-03) - the arrival's
-          failure was written on the review and shown nowhere, so its empty box read as a reply nobody had tried */}
-      {/* ...and an EMPTY one, or a rewrite that came back with nothing over the draft that stands (2026-11-04): a blank box read as a draft */}
-      {!proposal && !drafting && !err && ["needs", "failed", "empty", "kept"].includes(draftState(r).state) && !!draftState(r).line && (
-        <Typography variant="body2" data-tq-draft-needs="" sx={{ color: DIM, mb: 1 }}>{draftState(r).line}</Typography>
-      )}
-      {!proposal && <Inbound r={r} />}
-      {/* an EMAIL draft's recipient is the owner's to correct (ToRow); a proposal's destination and a chat's room are not - and a
-          calendar answer goes to the calendar: what it will be told stands in their place, with no copies and no files */}
-      {meta.share?.report != null && <SharedDashboard report={meta.share.report} title={meta.share.title} />}
-      {newMeeting && !delivery.frozen && r.Status === "pending" && <SubjectRow subject={subjNow} onChange={setSubj} disabled={off} />}
-      {isCal ? <CalendarLine meta={meta} /> : !proposal && String(r.Channel || deliveryMeta(r).channel || "").toLowerCase() === "email" ? (
-        <Box data-tq-to-line="" sx={{ display: "flex", alignItems: "baseline", columnGap: 2, flexWrap: "wrap" }}>
-        <ToRow to={replyContext(filedDelivery)} disabled={off || delivery.frozen} needs={needsTo} who={String(meta.needs || [].concat(meta.to || []).join(", "))}
-          onSave={async (to) => { await api.put(`/api/reviews/${r.ReviewId}/envelope`, { to }); onChanged?.(); }} />
-        {ccLinks}</Box>
-      ) : (
-      <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.8, mb: 0.75, minWidth: 0 }}>
-        <Typography sx={{ ...label, flexShrink: 0 }}>{proposal?.destinationLabel || t("To")}</Typography>
-        <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>
-          {proposal?.destination || replyContext(filedDelivery, { presentation: true })}
-        </Typography>
-      </Box>
-      )}
-      {co && (
-        <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.8, mb: 0.75, minWidth: 0 }}>
-          <Typography sx={{ ...label, flexShrink: 0 }}>{co.destinationLabel}</Typography>
-          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>{co.destination}</Typography>
-          <Typography variant="caption" sx={{ color: FAINT }} noWrap>{t("· first, then the reply goes out")}</Typography>
-        </Box>
-      )}
-      {/* THE ONE EMAIL CARD (the owner, 2026-11-08): the reply and the agent's email alike - To, CC, BCC folded until asked for, Subject, files */}
-      {isEmail && !proposal && !isCal && (sent || delivery.frozen ? (
-        <Typography variant="caption" data-tq-delivery-cc sx={{ display: "block", color: DIM, mb: 0.75 }}>
-          CC: {ccNow.length ? ccNow.join(", ") : "none"}{bccNow.length ? ` · BCC: ${bccNow.join(", ")}` : ""}{subjNow ? ` · ${subjNow}` : ""}
-        </Typography>
-      ) : <>
-        {(ccOpen || ccNow.length > 0) && <CcRow cc={ccNow} setCc={setCc} channel="email" autoOpen={ccOpen && !ccNow.length} onClose={() => setCcOpen(false)} />}
-        {(bccOpen || bccNow.length > 0) && <CcRow cc={bccNow} setCc={setBcc} channel="email" label="BCC" autoOpen={bccOpen && !bccNow.length} onClose={() => setBccOpen(false)} />}
-        <SubjectRow subject={subjNow} onChange={setSubj} disabled={off} />
-      </>)}
-      {!proposal && !isCal && <ReplyFiles reviewId={r.ReviewId} files={deliveryFiles(filedDelivery)}
-        promised={filesPromised(r)} short={filesShort(filedDelivery, deliveryFiles(filedDelivery))} channel={r.Channel} onChanged={onChanged} toRow={toRow} disabled={off || delivery.frozen} />}
-      {/* ...a chat reply copies nobody: its CC row is the email card's alone (above) */}
-      {/* why there is no Send (outbound.send_block, PW-044) is the Copy button's hover under the draft, not a line over it (2026-10-22) */}
-      {/* THE WARNING SITS OVER THE DRAFT IT IS ABOUT, ITS REDRAFT IN IT (the owner, 2026-10-28: "redraft warning on top of the reply should
-          have the redraft button on it, not below the message box") */}
-      {warnTop && <Box data-tq-redraft-warn="" sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 0.75, px: 1.25, py: 0.75,
-        border: "1px solid var(--tq-edge-brass, #e3c9a8)", bgcolor: "var(--tq-panel, #fbf3e8)", borderRadius: 1.5 }}>
-        <Typography component="span" data-tq-lit-why="" sx={{ flex: "1 1 220px", minWidth: 0, color: "var(--tq-warning, #6b4a1f)", fontSize: 13, overflowWrap: "anywhere" }}>{why}</Typography>
-        <Button size="small" variant="contained" disableElevation disabled={off} onClick={redraft} title={btnHint("redraft")}>
-          {redraftLabel}</Button>
-      </Box>}
-      {/* ...named for the Assistant when the owner asks it about this draft (pageView.js): the reply's own box, filled through its onChange */}
-      {/* ...and while the AI writes it, its spinner IN the box (the owner, 2026-10-30: "spin in the box of drafting") */}
-      {proposal?.folded && <Typography {...pressable(() => setCmdOpen((o) => !o))} data-tq-show-command="" aria-expanded={cmdOpen}
-        sx={{ ...FOCUS_RING, display: "inline-block", fontSize: 11.5, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, mb: cmdOpen ? 0.5 : 0,
-          "&:hover": { textDecoration: "underline" } }}>{`${cmdOpen ? "Hide" : "Show"} the ${proposal.foldWord || "command"}`}</Typography>}
-      <Box ref={draftRef} data-tq-draft-box="" data-tq-field="draft" data-tq-label="Reply draft" sx={{ position: "relative", ...((proposal?.folded && !cmdOpen) || proposal?.bare ? { display: "none" } : {}) }}>
-        {drafting && <CircularProgress size={14} data-tq-drafting-spin="" sx={{ position: "absolute", top: 12, right: 12, zIndex: 1, color: FAINT }} />}
-        <DraftField value={proposal?.readOnly && value.startsWith("Approve runs: ") ? t("Approve runs: {command}", { command: value.slice("Approve runs: ".length) }) : value} onChange={(e) => setText(e.target.value)} marks={blanks}
-        placeholder={proposal?.kind === "closeout" ? proposal.placeholder : isCal ? t("A note with your answer - or leave it empty") : drafting ? t("Drafting…") : r.DraftText ? "" : proposal ? t("Proposal details unavailable") : t("No draft yet — write the reply here")}
-        inputProps={{ readOnly: off || delivery.frozen || !!proposal?.readOnly, style: { fontSize: 12.5, lineHeight: 1.45 } }} /></Box>
-      {compare?.reviewId === r.ReviewId && (
-        <Box sx={{ mt: 0.75, border: "1px solid var(--tq-border, #d2d6cf)", borderRadius: 1.5, px: 1.25, py: 0.75, bgcolor: PANEL2 }}>
-          <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", fontWeight: 600, display: "block" }}>
-            {t("Refreshed draft - written after the new message. Your edit stays in the box above.")}
-          </Typography>
-          <Typography variant="body2" sx={{ color: INK, whiteSpace: "pre-wrap", fontSize: 12.5, mt: 0.5 }}>{compare.refreshed || t("(no refreshed draft - hit Redraft)")}</Typography>
-          <Box sx={{ display: "flex", gap: 0.75, mt: 0.75 }}>
-            <Button size="small" variant="outlined" disabled={off || delivery.frozen || !compare.refreshed}
-              onClick={() => { setText(compare.refreshed); setCompare(null); }}>{t("Use the refreshed draft")}</Button>
-            <Button size="small" sx={{ color: DIM }} onClick={() => setCompare(null)}>{t("Keep mine")}</Button>
-          </Box>
-        </Box>
-      )}
-      <Box ref={setMoves} data-tq-moves="" data-tq-two-sends={paired ? (folded ? "folded" : "both") : undefined}
-        sx={{ display: "flex", gap: 0.75, mt: 0.75, flexWrap: paired ? "nowrap" : "wrap", ...(paired ? { "& > button": { whiteSpace: "nowrap", flexShrink: 0 } } : {}) }}>
-        {/* ONE approve: it sends whatever is in the box above, edited or not. Two buttons
-            asked you to declare something the text already shows. */}
-        {/* a channel that cannot carry the reply must SAY so: github with replies
-            off gets 'No response required' as THE action, not a send that bounces */}
-        <>
-        {/* ...its channel not connected: Connect is the one move drawn under the draft, as on a post (the owner's render check, 2026-11-08: the
-            card said "No mailbox is connected" over a lit Send and close) */}
-        {connect && r.Status === "pending" ? (
-          <Button size="small" variant="contained" disableElevation data-tq-connect="" disabled={off} onClick={() => openAppLink(connect.href)}
-            title={`${connect.says} - opens its connection`}>{connect.label}</Button>
-        ) : delivery.frozen ? (<>
-          <Button size="small" variant={solid} disableElevation disabled={off || !delivery.canCheck}
-            onClick={() => decide("approve")} title={delivery.line}>
-            {delivery.active ? spinning(pw.busy) : busy ? "Checking delivery…" : delivery.label}
-          </Button>
-          {unconfirmed && <Button size="small" variant="outlined" disabled={off} onClick={sendAnyway} title={btnHint("approve", "unknown")} data-tq-view-btn={no("anyway")} data-tq-send="">{btn("approve", "unknown")}</Button>}
-          {unconfirmed && r.TaskId && <Button size="small" variant="outlined" disabled={off} onClick={doneAnyway} title={btnHint("close")}>{btn("close")}</Button>}
-        </>) : co && !r.Stale ? (
-          /* ONE PRESS FOR THE LAST TWO ACTS (the owner, 2026-09-27: "shouldn't we combine this?"): the merge or
-             close runs first, and the reply above goes out only once it succeeded. A reply this channel cannot
-             carry leaves just the close-out. */
-          /* ...and on the task page's Close out, TWO (the owner, 2026-11-03): Approve and close first and filled, Approve beside it - folded into
-             the ▾ beside Approve and close when the line is tight, as Close out's Send is */
-          <>
-          {twoApproves ? (<>
-            <Button size="small" variant={closeVariant} disableElevation disabled={off || blocked || !words.trim()}
-              onClick={() => decideBoth("approve", true)} title={blocked ? gh.reason : closeCoTitle} data-tq-send="close">
-              {busy && pressed === "send_close" ? sentOr(co.busyLabel) : closeCo}</Button>
-            {foldMore([{ id: no("approve"), label: co.approveLabel, title: coTitle, disabled: off || blocked || !words.trim(), run: () => { setSendAt(null); decideBoth("approve", false); } }])}
-            <Button size="small" variant={lit === no("approve") ? "contained" : "outlined"} disableElevation disabled={off || blocked || !words.trim()}
-              onClick={() => decideBoth("approve", false)} title={coTitle} data-tq-send="open" data-tq-bar-item="send" style={folded ? HIDE : undefined}>
-              {busy && pressed !== "send_close" ? sentOr(co.busyLabel) : co.approveLabel}</Button>
-          </>) : (
-            <Button size="small" variant={solid} disableElevation disabled={off || blocked || (sendable && !words.trim())}
-              onClick={() => decideBoth("approve")} title={blocked ? gh.reason : thenLine}>
-              {busy ? sentOr(co.busyLabel) : co.approveLabel}</Button>
-          )}
-          {co.alt && <Button size="small" variant="outlined" disabled={off}
-            onClick={() => decideBoth(co.alt.verb)} title={altTitle}>
-            {altSends ? t("{label} & send your text", { label: co.alt.label }) : co.alt.label}</Button>}
-          </>
-        ) : proposal ? (
-          <Button size="small" variant={solid} disableElevation disabled={off || (proposal.kind === "closeout" && blocked)} data-tq-view-btn={no("approve")} data-tq-send={proposal.kind === "closeout" && !!words.trim() ? "" : undefined}
-            onClick={() => decide("approve")}
-            title={proposal.kind === "closeout" && blocked ? gh.reason : proposal.kind === "playbook"
-              ? t("Save this process in Reports → Playbooks; nothing is sent to the sender")
-              : proposal.kind === "closeout" ? t("{label} - the text above goes with it", { label: proposal.approveLabel })
-              : t("Run the proposed action; nothing is sent to the sender")}>
-            {busy ? sentOr(proposal.busyLabel) : proposal.approveLabel}
-          </Button>
-        ) : !canSendIt ? (
-          /* COPY, BESIDE REDRAFT (the owner, 2026-10-22): the draft goes to the clipboard and the task stays open - its badge says it
-             went; the reason nothing here can send it is the hover */
-          <Button size="small" variant={lit === no("copy") ? "contained" : "outlined"} disableElevation disabled={off || !words.trim()} onClick={copyIt}
-            title={copyTitle} data-tq-copy={copied ? "done" : ""}>
-            {copied ? `✓ ${btn("copy", "done")}` : btn("copy")}</Button>
-        ) : r.Stale ? (
-          /* THE ROAD OUT OF THE WARNING. A stale draft disabled the only button on the card
-             and left a faint "Refresh draft" at the far end of the row, so the answer to "a
-             new message arrived" was a dead end (the owner, 2026-09-21: "can't hit approve &
-             send since there is warning? just reprocess it then"). Refreshing IS the primary
-             action while the thread is ahead of the draft. */
-          <Button size="small" variant={solid} disableElevation disabled={off}
-            onClick={redraft} title={btnHint("redraft")}>
-            {redrafting ? t("Redrafting…") : drafting ? t("Drafting…") : btn("redraft")}
-          </Button>
-        ) : chatFile ? (
-          <>
-            <Button size="small" variant={solid} disableElevation disabled={off} onClick={onEmailInstead}
-              title={`A ${r.Channel} message cannot carry a file - this writes an email with the file on it, which waits here for your yes`}>
-              Reply by email with the file</Button>
-            <Button size="small" variant="outlined" disabled={off || !words.trim()} onClick={() => decide("approve")}
-              title={`Sends only the words to ${replyContext(r)} - no file goes with them`}>
-              {busy ? spinning(pw.busy) : `${sendWord} without the file`}</Button>
-          </>
-        ) : twoSends ? (
-          /* CLOSE OUT'S TWO SENDS (the owner, 2026-11-03): Send and close first and filled, Send beside it - and on a line too tight for both,
-             Send folds into the ▾ beside Send and close, never the other way round, and the line never wraps (2026-10-23) */
-          <>
-            <Button size="small" variant={closeVariant} disableElevation disabled={off || (!words.trim() && !isCal)} onClick={() => decide("approve", false, true)}
-              title={closeTitle} data-tq-send="close">
-              {busy && pressed === "send_close" ? spinning(pw.busy) : `${closeWord}${copying}`}</Button>
-            {foldMore([{ id: no("approve"), label: `${sendWord}${copying}`, title: sendTitle, disabled: off || (!words.trim() && !isCal), run: () => { setSendAt(null); decide("approve", false, false); } }])}
-            <Button size="small" variant={lit === no("approve") ? "contained" : "outlined"} disableElevation disabled={off || (!words.trim() && !isCal)}
-              onClick={() => decide("approve", false, false)} title={sendTitle} data-tq-send="open" data-tq-bar-item="send" style={folded ? HIDE : undefined}>
-              {busy && pressed !== "send_close" ? spinning(pw.busy) : `${sendWord}${copying}`}</Button>
-          </>
-        ) : (
-          // ...a calendar answer's note may be empty (verdicts: `cal`), so an invite with none still has its Send - New → Meeting's pick
-          // drafts one with no note, and the button sat grey over it (2026-10-28)
-          <Button size="small" variant={solid} data-tq-view-btn={no("approve")} data-tq-send={!simulated ? "" : undefined}
-            disabled={off || (!words.trim() && !isCal)}
-            onClick={() => decide("approve")}
-            title={simulated ? t("Complete this temporary demo; no email is sent") : t("Sends this response to {recipient}", { recipient: replyContext(r, { presentation: true }) })}>
-            {/* the one word for the send, as everywhere (buttons.json) */}
-            {busy ? spinning(simulated ? "Simulating…" : pw.busy)
-              : simulated ? "Simulate approval" : `${sendWord}${ccNow.length ? `, copying ${ccNow.length}` : ""}`}
-          </Button>
-        )}
-        {/* Redraft beside the send, under the draft it rewrites - not at the far end of the row, and not on the task's bar */}
-        {canRedraft && !r.Stale && !delivery.frozen && !warnTop && <Button data-tq-redraft-btn="" size="small" variant={lit === no("redraft") ? "contained" : "outlined"} disableElevation disabled={off} onClick={redraft}
-          title={btnHint("redraft")}>
-          {redraftLabel}</Button>}
-        {calOthers.map(([a, w]) =>
-          <Button key={a} size="small" variant="outlined" data-tq-cal-instead={a} data-tq-bar-item={`cal:${a}`} style={bar.shown(`cal:${a}`) ? undefined : HIDE} disabled={off || !!switching} onClick={() => answerInstead(a)}
-            title={calTitle(w)}>
-            {switching === a ? "Setting up…" : w}</Button>)}
-        {/* ...and one email of several can be let go: it drops that slot and closes nothing (slots.settled) */}
-        {isSlot && onDrop && !delivery.frozen && <Button size="small" variant="outlined" disabled={off} onClick={onDrop}
-          title={t("Drop this email - it is never sent, and the task stays open")}>{t("Don't send")}</Button>}
-        {/* no "No reply needed" - Mark done on the task is that (the owner, 2026-09-24: "no button should be that") */}
-        {proposal?.alt && <Button size="small" variant="outlined" disabled={off || delivery.frozen} onClick={() => decide(proposal.alt.verb)}
-          title={`${proposal.alt.label} - ${proposal.alt.then}`}>{proposal.alt.label}</Button>}
-        {(co || proposal?.kind === "closeout") && onRemind && <Button size="small" disabled={off || delivery.frozen} onClick={(e) => onRemind(e)} title={remindTitle}>{btn("defer")}</Button>}
-        {/* a close-out card is Close out / Decline / Remind me and nothing else (the owner, 2026-09-28: "what does reject
-            reply mean here? don't think we need that") - the reply is edited or redrafted in place, never rejected apart;
-            and a plain draft is Close out, Redraft (at the row's end) or the task bar's own Mark done (2026-10-01) */}
-        {proposal && proposal.kind !== "closeout" && <Button size="small" color="error" disabled={off || delivery.frozen} onClick={() => decide("reject")} title={rejectTitle}>{proposal.rejectLabel}</Button>}
-        {/* WHY IT IS LIT, BESIDE IT (the owner, 2026-10-28): the Advisor's reason for lighting Redraft over Send stood in the folded Agent
-            section, and Close out showed a lit Redraft with no word of why. `why`: the task's Advisor line, said where its button is lit */}
+    <ReviewCard id={r.ReviewId} kind={proposal ? proposal.kind : isCal ? "calendar" : email ? "email" : "reply"} state={sp ? "sent" : done ? "done" : over ? "not-done" : going ? "going" : "waiting"}
+      data-tq-card-frame="" {...(done ? { "data-tq-act-result": "" } : {})} {...(sp ? { "data-tq-sent-here": sp.id || "" } : {})}
+      label={proposal ? proposal.lead || proposal.title : kindLabel(r, meta, email)} fields={fields} lit={lit} press={presses} after={after}
+      barRef={setMoves} nowrap={paired} {...(paired ? { "data-tq-two-sends": folded ? "folded" : "both" } : {})}
+      tail={!shut && <>{foldMore(pairSend)}
+        {/* WHY IT IS LIT, BESIDE IT (the owner, 2026-10-28): the Advisor's reason, said where its button is lit */}
         {why && !warnTop && String(lit || "").startsWith(`${r.ReviewId}:`) && <Typography component="span" data-tq-lit-why="" variant="body2"
-          sx={{ alignSelf: "center", color: "var(--tq-link, #55697a)", fontSize: 12.5, minWidth: 0, overflowWrap: "anywhere" }}>{why}</Typography>}
-        </>
-      </Box>
-      {connect && <Typography data-tq-not-connected="" variant="body2" sx={{ color: DIM, mt: 0.75 }}>{connect.says} - {connect.waits || "the draft waits here until it is"}.</Typography>}
-      {fillLine && <Alert severity="warning" data-tq-fill-in="" sx={{ mt: 0.75 }} onClose={() => setFillIn(false)}>{fillLine} - nothing was sent.</Alert>}
-      {asked && <BlankAsk line={asked.line} onCancel={() => setAsked(null)}
-        onSend={() => (asked.both ? decideBoth(asked.verb, asked.close, true) : decide(asked.verb, asked.anyway, asked.close, true))} />}
-      {/* what the one word does HERE - the buttons never change, this line does */}
-      {thenLine && <Typography data-tq-then-line="" variant="caption" sx={{ color: DIM, display: "block", mt: 0.5 }}>{thenLine}</Typography>}
-      {(coFail || (gh && (blocked || gh.note))) && (() => {
-        const text = coFail ? coFail.text.replace(/ - nothing was merged or sent$/, "") : blocked ? gh.reason : gh.note;
-        const offers = coFail ? coFail.offers : gh.offers;
-        const run = async (o) => {
-          if (o === "anyway") return closeout ? decideBoth("merge_anyway") : decide("merge_anyway");
-          setBusy(true); setErr(""); setSaid(""); setCoFail(null);
-          try { setSaid(await act(o)); } catch (e) { setErr(e?.response?.data?.detail || { key: "GitHub refused it" }); }
-          setBusy(false);
-        };
-        return (
-          <Alert severity={coFail || blocked ? "warning" : "info"} sx={{ mt: 1 }} onClose={coFail ? () => setCoFail(null) : undefined}
+          sx={{ alignSelf: "center", color: "var(--tq-link, #55697a)", fontSize: 12.5, minWidth: 0, overflowWrap: "anywhere" }}>{why}</Typography>}</>}
+      before={!shut && <>
+        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1 }}>{err}</Alert>}
+        {/* ...ONE FAILURE, SAID ONCE ON THE CARD (round 3, 2026-11-22): where the failure block stands, it says it - and the banner goes */}
+        {!going && delivery.line && !failure?.unknown && <Alert severity={delivery.state === "unknown" ? "warning" : "info"} sx={{ mb: 1 }}>{delivery.line}</Alert>}
+        <ApprovalInterrupt it={interrupt} onResolve={(choice) => {
+          const res = resolveInterrupt(interrupt, choice, { [r.ReviewId]: value });
+          setText(res.edits[r.ReviewId] ?? value); setCompare(res.compare); setInterrupt(null);
+        }} />
+        {proposal?.kind === "closeout" ? <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", display: "block", mb: 0.5 }}>{proposal.context}</Typography>
+          : proposal?.lead ? <Typography data-tq-held-lead="" variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", display: "block", mb: 0.75 }}>{proposal.leadWhy}
+            {proposal.fill && <> <FillLink tid={r.TaskId} />, then press I'm done.</>}</Typography>
+          : r.Reason && !failure && (r.DraftText || !/draft/i.test(r.Reason)) && <Typography data-tq-review-reason="" variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", display: "block", mb: 0.5 }}>{r.Reason}</Typography>}
+        {meta.kind === "zoho_invoice" && <InvoiceLine meta={meta} />}
+        {/* !!: the task detail carries the raw row, where Stale is the NUMBER 0 - and React draws a 0 */}
+        {!!r.Stale && !delivery.frozen && <Alert severity="warning" sx={{ mb: 1 }}>
+          New messages arrived after this draft. Refresh the draft before sending it.
+          {r.LatestPreview && <Box sx={{ mt: 0.5, fontSize: 11.5 }}>Latest: {r.LatestPreview}</Box>}</Alert>}
+        {/* a draft the writer could not write, or one that came back empty, says so plainly (the owner, 2026-11-03) */}
+        {!proposal && !drafting && !err && ["needs", "failed", "empty", "kept"].includes(draftState(r).state) && !!draftState(r).line &&
+          <Typography variant="body2" data-tq-draft-needs="" sx={{ color: DIM, mb: 1 }}>{draftState(r).line}</Typography>}
+        {!proposal && <Inbound r={r} />}
+        {meta.share?.report != null && <SharedDashboard report={meta.share.report} title={meta.share.title} />}
+        {/* THE WARNING SITS OVER THE DRAFT IT IS ABOUT, ITS REDRAFT IN IT (the owner, 2026-10-28) */}
+        {warnTop && <Box data-tq-redraft-warn="" sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 0.75, px: 1.25, py: 0.75,
+          border: "1px solid var(--tq-edge-brass, #e3c9a8)", bgcolor: "var(--tq-panel, #fbf3e8)", borderRadius: 1.5 }}>
+          <Typography component="span" data-tq-lit-why="" sx={{ flex: "1 1 220px", minWidth: 0, color: "var(--tq-warning, #6b4a1f)", fontSize: 13, overflowWrap: "anywhere" }}>{why}</Typography>
+          <Button size="small" variant="contained" disableElevation disabled={off} onClick={redraft} title={btnHint("redraft")}>{redraftLabel}</Button>
+        </Box>}</>}
+      files={!proposal && !isCal && (!shut || deliveryFiles(filedDelivery).length > 0) && <ReplyFiles reviewId={r.ReviewId} files={deliveryFiles(filedDelivery)} promised={filesPromised(r)} short={filesShort(filedDelivery, deliveryFiles(filedDelivery))}
+        channel={r.Channel} onChanged={onChanged} toRow={toRow} disabled={off || delivery.frozen || shut} over={shut} />}
+      under={shut ? done?.command && <details><summary style={{ fontSize: 12, color: DIM, cursor: "pointer" }}>What it runs</summary>
+        <Typography component="code" variant="caption" sx={{ whiteSpace: "pre-wrap", color: DIM, display: "block" }}>{done.command}</Typography></details> : <>
+        {connect && <Typography data-tq-not-connected="" variant="body2" sx={{ color: DIM, mt: 0.75 }}>{connect.says} - {connect.waits || "the draft waits here until it is"}.</Typography>}
+        {connect && setupUnder(setupAt, () => setSetupAt(""), () => decide("approve"))}
+        {fillLine && <Alert severity="warning" data-tq-fill-in="" sx={{ mt: 0.75 }} onClose={() => setFillIn(false)}>{fillLine} - nothing was sent.</Alert>}
+        {asked && <BlankAsk line={asked.line} onCancel={() => setAsked(null)}
+          onSend={() => (asked.both ? decideBoth(asked.verb, asked.close, true) : decide(asked.verb, asked.anyway, asked.close, true))} />}
+        {/* what the one word does HERE - the buttons never change, this line does */}
+        {thenLine && <Typography data-tq-then-line="" variant="caption" sx={{ color: DIM, display: "block", mt: 0.5 }}>{thenLine}</Typography>}
+        {(coFail || (gh && (blocked || gh.note))) && (() => {
+          const text = coFail ? coFail.text.replace(/ - nothing was merged or sent$/, "") : blocked ? gh.reason : gh.note;
+          const offers = coFail ? coFail.offers : gh.offers;
+          const run = async (o) => {
+            if (o === "anyway") return closeout ? decideBoth("merge_anyway") : decide("merge_anyway");
+            setBusy(true); setErr(""); setSaid(""); setCoFail(null);
+            try { setSaid(await act(o)); } catch (e) { setErr(e?.response?.data?.detail || "GitHub refused it"); }
+            setBusy(false);
+          };
+          return <Alert severity={coFail || blocked ? "warning" : "info"} sx={{ mt: 1 }} onClose={coFail ? () => setCoFail(null) : undefined}
             action={offers?.length ? <Box sx={{ display: "flex", gap: 0.5 }}>{offers.map((o) => (
-              <Button key={o} size="small" color="inherit" disabled={off || delivery.frozen} title={OFFER_HINT[o]} onClick={() => run(o)}
-                data-tq-view-btn={no(o)} data-tq-send={o === "anyway" && !!closeout && sendable ? "" : undefined}>{OFFER_LABEL[o]}</Button>
-            ))}</Box> : null}>
-            {coFail || blocked ? <b>{t("Not now - nothing is merged or sent.")} </b> : null}{text}
-          </Alert>
-        );
-      })()}
-      {said && <Alert severity="success" sx={{ mt: 1 }} onClose={() => setSaid("")}>{t("{said}. Press {approve} again once the checks pass.", { said, approve: btn("approve", "action") })}</Alert>}
-      {failure && (
-        <Alert data-tq-send-failed="" severity="error" sx={{ mt: 1 }} onClose={() => { setSendErr(""); setShutErr(true); }}>
+              <Button key={o} size="small" color="inherit" disabled={off || delivery.frozen} title={OFFER_HINT[o]} onClick={() => run(o)}>{OFFER_LABEL[o]}</Button>
+            ))}</Box> : null}>{coFail || blocked ? <b>Not now - nothing is merged or sent. </b> : null}{text}</Alert>;
+        })()}
+        {said && <Alert severity="success" sx={{ mt: 1 }} onClose={() => setSaid("")}>{said}. Press {btn("approve", "action")} again once the checks pass.</Alert>}
+        {failure && <Alert data-tq-send-failed="" severity="error" sx={{ mt: 1 }} onClose={() => { setSendErr(""); setShutErr(true); }}>
           <b>{failureHead(failure, !!proposal)}</b> {failureWhy(failure)}
-          {/* a proposal's failure is the act's own sentence ("The held step failed: ..."): no reply, no draft, nothing to send again */}
+          {/* a proposal's failure is the act's own sentence: no reply, no draft, nothing to send again */}
           {(failure.unknown || !proposal) && <Box sx={{ mt: 0.5, fontSize: 11.5 }}>
-            {failure.unknown ? t("Check the original attempt before sending by any other route. A missing receipt will not cause Taskuary to send it again.")
-              : fix ? t("The draft stays on the task - {fix} below, then send it again.", { fix: fix.label }) : t("The draft stays on the task. Correct the delivery problem, then send it again.")}
-          </Box>}
-        </Alert>
-      )}
-    </Box>
+            {failure.unknown ? "Check the original attempt before sending by any other route. A missing receipt will not cause Taskuary to send it again."
+              : fix ? `The draft stays on the task - ${fix.label} below, then send it again.` : "The draft stays on the task. Correct the delivery problem, then send it again."}
+          </Box>}</Alert>}</>}>
+      {!shut && compare?.reviewId === r.ReviewId && <Box sx={{ mt: 0.75, border: "1px solid var(--tq-border, #d2d6cf)", borderRadius: 1.5, px: 1.25, py: 0.75, bgcolor: PANEL2 }}>
+        <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", fontWeight: 600, display: "block" }}>
+          Refreshed draft - written after the new message. Your edit stays in the box above.</Typography>
+        <Typography variant="body2" sx={{ color: INK, whiteSpace: "pre-wrap", fontSize: 12.5, mt: 0.5 }}>{compare.refreshed || "(no refreshed draft - hit Redraft)"}</Typography>
+        <Box sx={{ display: "flex", gap: 0.75, mt: 0.75 }}>
+          <Button size="small" variant="outlined" disabled={off || delivery.frozen || !compare.refreshed} onClick={() => { setText(compare.refreshed); setCompare(null); }}>Use the refreshed draft</Button>
+          <Button size="small" sx={{ color: DIM }} onClick={() => setCompare(null)}>Keep mine</Button>
+        </Box>
+      </Box>}
+    </ReviewCard>
   );
 }
 
+// A PLACE THE CARD'S OWN TITLE ALREADY SAYS (its last words: "... on 127.0.0.1"), said once - by the title
+export const saysPlace = (title, place) => { const t = String(title || "").trim().toLowerCase(), p = String(place || "").trim().toLowerCase();
+  return !!p && (t.endsWith(` ${p}`) || t.endsWith(` ${p}.`)); };
+
+// WHAT A CARD IS, IN PLAIN WORDS, over its fields: a reply by its channel, an email, an invite's answer, a share
+const BY = { email: "by email", outlook: "by email", gmail: "by email", whatsapp: "on WhatsApp", teams: "on Teams", slack: "on Slack", telegram: "on Telegram",
+  sms: "by text", github: "on GitHub" };
+const upFirst = (x) => (x ? String(x)[0].toUpperCase() + String(x).slice(1) : "");
+const kindLabel = (r, meta, email) => meta.share ? `Share ${meta.share.title || "a dashboard"}` : r.Kind === "slot" || (email && !r.MessageId) ? "Email"
+  : `Reply${BY[String(r.Channel || meta.channel || "").toLowerCase()] ? ` ${BY[String(r.Channel || meta.channel || "").toLowerCase()]}` : ""}`;
+
+// A REPLY THAT WENT, AS A RECORD IN ITS TURN (TaskPage sentHere): the same card, its words as they went and the press it took
+export function SentReview(p) {
+  return <ReviewCard id={p.id || ""} kind="reply" state="sent" data-tq-sent-here={p.id || ""} label={sentTitle(p)}
+    fields={[{ key: "draft", type: "text", value: p.text, clamp: true, dim: true }]}
+    after={{ mark: "sent", label: sentMark(p), line: `${sentSaid(p)}${p.at ? ` · ${fmtDateTime(p.at)}` : ""}` }} />;
+}
+
+// THE WAY TO THE FILL PAGE, ON THE SIGN-IN'S OWN CARD (pagestep `fill`; the card gallery, 2026-11-25: it was a chat line over the card, the step
+// said twice): a one-time page where he types the sign-in, and Taskuary types it into the browser - the agent never sees it
+export function FillLink({ tid }) {
+  const [err, setErr] = useState("");
+  const go = async (e) => {
+    e?.preventDefault?.(); setErr("");
+    try {
+      const app = howToOpen(window) === "app";
+      const { data } = await api.post(`/api/tasks/${tid}/signin/link${app ? "?open=1" : ""}`);
+      if (!app) window.open(data.url, "_blank", "noopener");
+    } catch (x) { setErr(x?.response?.data?.detail || x?.message || "The page did not open - try again"); }
+  };
+  return <>or <a href="#" onClick={go} data-tq-signin-link="" style={{ color: "var(--tq-link, #41525f)", textDecoration: "underline", textUnderlineOffset: 2 }}
+    title="A one-time page to type the sign-in - Taskuary types it into the browser and the agent never sees it">fill it in securely</a>
+    {err && <span role="alert" style={{ color: "var(--tq-danger, #8a2f2f)" }}> - {err}</span>}</>;
+}
+
+// AN ACT A CONNECTOR DECLARES (the owner, 2026-11-05: "each connector should have settings what the action view looks like no?"): a post with its
+// picture and who sees it, a tracker comment, a new GitHub issue - its fields read off the catalogue (actionCard.js), each line and its words his
+// to change while it waits, its press named by the act ("Post to LinkedIn", "Create issue"). The press is the one decide road every proposal
+// takes (/api/reviews/{id}/decide -> proposals.execute); a post on a network not connected goes up through the agent's browser at his press,
+// its final Post held for him (the owner, 2026-11-22: "card first, sign-in at the press"). `past`: the chat moved past it, greyed (MovedPast)
+// `step`: {review, what} - the step of that browser road held for him now (chatlog.advance): THIS card's next press, drawn here (walk 22,
+// 2026-11-25: the final Post was held and nothing anywhere could be pressed)
+export function ActReview({ row: was, tid, live = true, onChanged, past = false, step = null }) {
+  const given = past ? asLive(was) : was;
+  // ...A PRESS ANSWERED IS THE CARD'S STATE AT ONCE (the card round, 2026-11-18): the status the server answered with stands over a row that still
+  // says pending, until that row says it too - one answered elsewhere (`already`) holds greyed instead, its words not this card's to say
+  const [settled, setSettled] = useState(null);
+  const answered = !!settled && given?.Status === "pending", row = answered && settled.mine ? { ...given, Status: settled.Status, ActError: settled.ActError || given.ActError } : given;
+  const held = answered && !settled.mine ? "held" : "";
+  const p = row?.post || {}, act = actionFor(p.type), st = stateOf(row, live), tk = textKey(act);
+  // ...HIS WORDS AND PICKS ARE KEPT BY THE CARD'S REVIEW (heldEdits.js): drawn again elsewhere in the chat - set down under a later turn, a
+  // tab come back to - the card reads them back, never the proposal's again. One moved past shows what it was filed with
+  const kept = past ? null : seedEdit(row?.ReviewId, row?.OwnerEdit);
+  const [text, setTextNow] = useState(kept?.text ?? String(p[tk] || "")), [vals, setValsNow] = useState(() => kept?.vals ?? valuesOf(act, p)), [copied, setCopied] = useState(false);
+  const setText = (v) => { if (!past) holdEdit(row.ReviewId, { text: v }); setTextNow(v); };
+  // ...his picks and lines are kept as the press sends them too (`fields`: only what he moved), so a press from another screen sends them
+  const setVals = (f) => { const n = f(vals), m = changed(act, p, n); if (!past) holdEdit(row.ReviewId, { vals: n, fields: Object.keys(m).length ? m : null }); setValsNow(n); };
+  // ...and one review drawn twice reads the same in both, as a reply's two cards do
+  useEffect(() => (past ? undefined : onHeld((id) => { const e = id === row?.ReviewId && seedEdit(id); if (e?.text != null) setTextNow(e.text); if (e?.vals) setValsNow(e.vals); })), [row?.ReviewId, past]);
+  const [pressing, setBusy] = useState(""), [err, setErr] = useState(""), [viewing, setViewing] = useState(null), [setupAt, setSetupAt] = useState("");
+  const done = answered && settled.mine && ["approved", "edited"].includes(settled.Status) ? settled : null;
+  const busy = pressing || held;
+  if (!act) return null;
+  // ...gone by it, it reads what he pressed - his words, his picks - not the proposal's until the row comes back with them
+  // ...AND ONE HIS PRESS FAILED ON READS WHAT HE PRESSED TOO (the owner, 2026-11-26: a post he had edited failed and its card went back to the
+  // agent's words) - asLeft, until the row comes back with them (its FinalText, verdicts)
+  const shown = answered && settled.mine ? asLeft(act, p, text, vals) : p, edit = !!st.live && !done && !busy;
+  const fs = fieldsOf(act, shown, !!st.live && !done), post = act.kind === "post", w = wordsOf(act, done || st.live ? vals : p);
+  // ...EVERY POST CARRIES ITS PICTURE (the owner, 2026-11-20): one its network takes no upload for is shown all the same, to save and add by hand
+  const img = fs.find((f) => f.type === "image" && f.value) || (p.image ? { key: "image", value: p.image, manual: true } : null);
+  const pic = img ? outputRow(tid ?? row?.TaskId, img.value) : null;
+  const box = fs.find((f) => f.key === tk), max = box?.max, n = lengthOf(box, text), over = max && n > max;
+  const go = done?.url || st.url, gone = !!done || st.done;
+  // ...a press that failed before this card was drawn is still said on it: the review keeps it (store.review_act_failed)
+  const failed = err || (!busy && !gone && ["pending", "superseded"].includes(row?.Status) && row?.ActError) || "";
+  const moved = changed(act, p, vals), edits = Object.keys(moved).length ? { fields: moved } : {};
+  const decide = async (verb) => {
+    setBusy(verb); setErr("");
+    const o = await press(api, row.ReviewId, pressOf(verb, act, p, text, vals), 2);
+    const line = landed(o) || o.kind === "already" ? "" : failLine(o, post ? "posted" : "sent"), status = o.data?.status;
+    if (status && status !== "pending") setSettled({ Status: status, ActError: line, url: o.data.result?.url || "", mine: o.kind !== "already" });
+    else setErr(line);
+    if (o.kind !== "error") onChanged?.();
+    setBusy("");
+  };
+  const viaBrowser = async () => {
+    setBusy("browser"); setErr("");
+    try { const { data } = await api.post(`/api/reviews/${row.ReviewId}/via-browser`, { final_text: text, ...edits });
+      if (data?.ok) setSettled({ Status: data.status || "approved", mine: true, browser: true }); else setErr(data?.why || "It could not be handed over.");
+      onChanged?.(); }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || "It could not be handed over."); }
+    setBusy("");
+  };
+  // ...the held step's own press: the one decide road, on the step's review - what it did is this card's next state, as the list says it
+  const decideStep = async (verb) => {
+    setBusy(`step:${verb}`); setErr("");
+    const o = await press(api, step.review, { verb }, 2);
+    setErr(landed(o) || o.kind === "already" ? "" : failLine(o, "done"));
+    if (o.kind !== "error") onChanged?.();
+    setBusy("");
+  };
+  const set = (k) => (v) => setVals((x) => ({ ...x, [k]: v }));
+  const has = (f) => f.value || f.editable;
+  // ITS FIELDS FROM ITS DECLARATION: its picks under the label, a heading line bold, its other lines, its words, its picture once
+  const fields = [
+    ...fs.filter((f) => f.type === "choice").map((f) => ({ ...f, value: edit || done ? vals[f.key] : f.value, editable: edit, onChange: set(f.key) })),
+    // ...each line labelled, as its card declares it says it: money in its unit, a thing by its name with its id (shownOf)
+    ...fs.filter((f) => ["line", "money"].includes(f.type) && has(f)).sort((a, b) => !!b.heading - !!a.heading)
+      .map((f) => ({ ...f, type: f.heading ? "heading" : "line", value: f.editable ? vals[f.key] : shownOf(f, shown), editable: edit && f.editable, onChange: set(f.key) })),
+    ...(hasBox(act) ? [{ key: tk, type: "text", label: fs.find((f) => f.key === tk)?.label || "Words", box: !!st.live && !gone, value: st.live && !gone ? text : shown[tk],
+      editable: edit && !gone, onChange: setText, dim: !gone && !st.live, over: over ? `${n} of ${max} characters` : "" }] : []),
+    ...(pic ? [{ key: "image", type: "picture", value: img.value, file: pic, alt: p.alt || pic.name,
+      note: img.manual && !gone ? `${row?.network || "This network"} gets the words from here - open the picture to save it, and add it yourself` : "" }] : []),
+  ];
+  const ok = !busy && actPressable(act, p, text, vals) && !over;
+  // ...his no, as every card draws it (tone x)
+  const dismiss = { id: "dismiss", label: "Dismiss", tone: "x", disabled: !!busy, run: () => decide("reject"), attrs: { "data-tq-act-dismiss": "" } };
+  // ...his one Try again on a card whose press failed where a second try could get past it: the press alone - the server holds his words
+  const again = async () => { setBusy("approve"); setErr(""); const o = await press(api, row.ReviewId, { verb: "approve" }, 2);
+    if (!landed(o) && o.kind !== "already") setErr(failLine(o, post ? "posted" : "sent")); if (o.kind !== "error") onChanged?.(); setBusy(""); };
+  const pressRow = triesAgain(row) && !past ? [{ id: "approve", label: busy === "approve" ? w.busy : btn("try_again"), tone: "p", spin: busy === "approve", disabled: !!busy,
+    run: again, title: hint("try_again"), attrs: { "data-tq-act-again": "" } }]
+    : gone || !st.live ? [] : row?.connect ? [
+    ...(post ? [{ id: "browser", label: busy === "browser" ? "Handing it over…" : "Post via the browser", tone: "p", spin: busy === "browser", disabled: !ok || !text.trim(), run: viaBrowser,
+      attrs: { "data-tq-act-browser": "" } }] : []),
+    { id: "connect", label: row.connect.label, tone: post ? "s" : "p", run: connectRun(row.connect.href, setSetupAt), attrs: { "data-tq-act-connect": "", ...OPENS_UNDER } },
+    { id: "copy", label: copied ? `✓ ${btn("copy", "done") || "Copied"}` : btn("copy"), tone: "s", disabled: !text.trim(), title: hint("copy"), attrs: { "data-tq-act-copy": "" },
+      run: () => { try { navigator.clipboard?.writeText(text); setCopied(true); } catch { /* the words stay on the card */ } } }, dismiss]
+    : [{ id: "approve", label: busy === "approve" ? w.busy : w.press, tone: "p", spin: busy === "approve", disabled: !ok, run: () => decide("approve"),
+      title: act.note || hint("approve", post ? "post" : "action"), attrs: { "data-tq-act-press": "" } }, dismiss];
+  const stepRow = step && gone && !past && st.said.startsWith("Handed") ? [
+    { id: "approve", label: step.press === "done" ? "I'm done" : btn("approve", "action"), tone: "p", spin: busy === "step:approve", disabled: !!busy, run: () => decideStep("approve"), attrs: { "data-tq-act-step": step.review } },
+    { ...dismiss, run: () => decideStep("reject") }] : null;
+  const after = stepRow ? null : gone ? { mark: "approved", label: `✓ ${done ? (done.browser ? "Handed to the agent" : w.done) : st.said.startsWith("Handed") ? "Handed to the agent" : st.said}`,
+    line: done?.browser || st.said.startsWith("Handed") ? viaBrowserSaid(row?.network).replace(/^Handed to the agent - /, "") : "",
+    ...(go ? { link: { href: go, text: `See it on ${row?.network}` } } : {}) }
+    : !st.live && !st.failed ? { mark: "dismissed", label: `✗ ${st.said}` } : null;
+  return (<MovedPast on={past}>
+    <ReviewCard id={row?.ReviewId} kind={act.kind} state={stepRow ? "waiting" : gone ? "done" : st.live ? "waiting" : "not-done"} data-tq-act={row?.ReviewId} data-tq-act-kind={act.kind}
+      face={post ? faceOf(row) : ""} label={post ? `${row?.as || `Your ${row?.network || ""} account`} · ${row?.network || "post"}` : headOf(act, shown) || act.title}
+      fields={fields} press={stepRow || pressRow} after={after} failed={failed || (stepRow && err) || ""} onView={setViewing}
+      before={stepRow && <Typography data-tq-act-step-says="" sx={{ fontSize: 12.5, color: INK, mb: 0.75 }}>{step.press === "done" ? "Your step on the page, open beside this card" : "Waiting for your press - the next step of putting this up"}: {step.what}
+        {step.fill && <> - <FillLink tid={tid ?? row?.TaskId} /></>}</Typography>}
+      tail={st.live && !gone && row?.connect && <Typography data-tq-not-connected="" sx={{ fontSize: 11.5, color: FAINT }}>{row.connect.says}{post
+        ? " - Post via the browser has the agent put it up there, and its last Post waits for you" : row.connect.waits ? ` - ${row.connect.waits}` : ""}</Typography>}
+      under={<>{row?.connect && st.live && !gone && setupUnder(setupAt, () => setSetupAt(""), () => decide("approve"))}
+        <FileDialog file={viewing} onClose={() => setViewing(null)} /></>} />
+  </MovedPast>);
+}

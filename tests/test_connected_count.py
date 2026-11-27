@@ -42,34 +42,35 @@ def _api(s):
 
 def test_a_card_switched_on_and_never_signed_in_is_not_connected_on_any_surface():
     """The live shape: LinkedIn switched on, no sign-in. The page (State) said not connected; triage's connected_systems and the agent's
-    roads said it could be posted to; the phone and search had their own rules. One answer now."""
-    from taskuary import doorway_browse, general, ingest, search
+    brief said it could be posted to; the phone and search had their own rules. One answer now."""
+    from taskuary import doorway_browse, docsync, ingest, search
     s = MemoryStore()
     cid = _card(s, 'linkedin', Active=1)
     page = _api(s)[cid]['State']
     assert page['state'] == 'not_signed_in' and page['fix'] == '#connector=linkedin'
     assert not any('(linkedin)' in n for n in ingest.connected_systems(s)), 'triage is told what the page says'
-    assert 'LinkedIn' not in general.roads(s) and f'connector_id {cid}' not in general.roads(s), "the agent's brief is told the same"
+    assert f'connector_id {cid}' not in docsync.agent_systems(s), "the agent's brief is told the same"
     assert doorway_browse._connected(s)['linkedin'] == page['line'].lower(), 'the phone says the card\'s own line'
     hit = next(h for h in search._connectors(s, ['linkedin']) if h['id'] == 'con:linkedin')
     assert hit['sub'] == 'not connected'
     s.save_connector({'ConnectorId': cid, 'Secret': 'tok'}, 't')                    # ...and signed in, every surface turns together
     assert _api(s)[cid]['State']['state'] == 'connected'
-    assert any('(linkedin)' in n for n in ingest.connected_systems(s)) and f'connector_id {cid}' in general.roads(s)
+    assert any('(linkedin)' in n for n in ingest.connected_systems(s)) and f'connector_id {cid}' in docsync.agent_systems(s)
     assert doorway_browse._connected(s)['linkedin'] == 'connected'
 
 
 def test_a_card_failing_for_a_moment_is_still_known_to_triage_and_the_agent_as_failing():
     """A signed-in card whose last read failed is his system still: triage and the agent's brief name it with its state instead of
     dropping it (it vanished from both on the first cut of the one answer); the page and the phone count it as not connected."""
-    from taskuary import general, ingest
+    from taskuary import docsync, ingest
     s = MemoryStore()
     cid = _card(s, 'linkedin', Active=1, Secret='tok')
     n = cc.connected_count(s, None)
     s.touch_connector(cid, 'timed out')
     assert _api(s)[cid]['State']['state'] == 'failing' and cc.connected_count(s, None) == n - 1
     assert any(n.startswith('LinkedIn') and n.endswith('(linkedin) - not answering right now') for n in ingest.connected_systems(s))
-    assert f'connector_id {cid}' in general.roads(s) and 'not answering right now' in general.roads(s)
+    brief = docsync.agent_systems(s)
+    assert f'connector_id {cid}' in brief and 'not answering right now' in brief
 
 
 def test_a_card_with_no_sign_in_of_its_own_is_connected_once_on():
@@ -95,6 +96,24 @@ def test_gmails_refused_sign_in_reads_signed_out_on_the_card_and_the_bell_alike(
     assert outbound.auth_fix(RuntimeError(err))['label'] == 'Sign in again', 'a send on it is fixed the same way'
     page = (ROOT / 'website' / 'src' / 'ConnectorsView.jsx').read_text(encoding='utf-8')
     assert 'SIGNED_OUT' not in page and 'LastError.test' not in page, 'the page never reads error text for it'
+
+
+def test_a_rejected_token_reads_signed_out_on_its_card_and_clears_when_it_works_again():
+    """A revoked GitHub token answered 401 on every repo read: the card said "last test failed" over a sign-in to do. A 401 is the
+    credentials refused, whatever system says it - the card and the bell both say sign in again, once, and a read that works clears both."""
+    from taskuary import problems
+    s = MemoryStore()
+    cid = _card(s, 'github', Active=1, Secret='tok')
+    for _ in range(2): s.touch_connector(cid, 'org/app: 401 Client Error: Unauthorized for url: https://api.github.example/repos/org/app/issues')
+    assert _api(s)[cid]['State']['state'] == 'signed_out'
+    assert [p['kind'] for p in problems.collect(s) if p['connector'] == str(cid)] == ['signed_out'], 'one bell item, however many reads failed'
+    s.touch_connector(cid)
+    assert _api(s)[cid]['State']['state'] == 'connected' and not [p for p in problems.collect(s) if p['connector'] == str(cid)]
+    chatgpt = _card(s, 'chatgpt', Active=1, Secret='rt')
+    s.touch_connector(chatgpt, 'the ChatGPT sign-in has lapsed - sign in again on the ChatGPT card')
+    assert _api(s)[chatgpt]['State']['state'] == 'signed_out'
+    for err in ('GitHub refused the read (permissions or rate limit)', 'timed out after 401 seconds'):
+        assert not cc.signed_out({'Active': 1, 'LastError': err}), err
 
 
 def test_a_failing_data_card_is_not_connection_ok_in_the_picker():

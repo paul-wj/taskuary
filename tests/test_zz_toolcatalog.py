@@ -491,12 +491,12 @@ class AppReadTests(unittest.TestCase):
 
     def test_settings_read_by_key_or_label_and_a_group_lists_its_knobs(self):
         s = self._store()
-        self.assertIn('Sort new mail with AI (How mail is sorted): on', concierge.read_op(s, 'setting.read', {'key': 'intent_classify_enabled'}))
+        self.assertIn('Sort new mail with AI (Which AI does what): on', concierge.read_op(s, 'setting.read', {'key': 'intent_classify_enabled'}))
         self.assertIn('Sort new mail with AI', concierge.read_op(s, 'setting.read', {'label': 'sort new mail with AI'}))
         self.assertIn('No setting by that name', concierge.read_op(s, 'setting.read', {'label': 'warp drive'}))
-        out = concierge.read_op(s, 'settings.list', {'group': 'How mail is sorted'})
+        out = concierge.read_op(s, 'settings.list', {'group': 'Which AI does what'})
         self.assertIn('Sort new mail with AI', out); self.assertNotIn('Background sync', out)
-        self.assertIn('How mail is sorted', concierge.read_op(s, 'settings.list', {}))         # no group: the groups
+        self.assertIn('Which AI does what', concierge.read_op(s, 'settings.list', {}))         # no group: the groups
 
     def test_connections_and_agents(self):
         s = self._store()
@@ -513,8 +513,8 @@ class AppReadTests(unittest.TestCase):
         s = self._store()
         self.assertTrue(toolcatalog.is_read('knowledge.search')); self.assertIn('knowledge.search', toolcatalog.block())
         self.assertEqual(toolcatalog.valid('knowledge.search', {}), 'knowledge.search needs query')
-        from taskuary import memoryedit
-        memoryedit.remember(s, 'Gail Moreno approves every PO over 5k')      # a kept fact is a LEARNED.md line (2026-10-27)
+        from taskuary import memory
+        memory.remember(s, 'Gail Moreno approves every PO over 5k')      # a kept fact is a LEARNED.md line (2026-10-27)
         from tests import fake_embed           # ...found by meaning (embeddings), never by shared words (2026-10-28)
         with fake_embed.meaning({'po': ['approves']}):
             self.assertIn('Gail Moreno approves', concierge.read_op(s, 'knowledge.search', {'query': 'who approves a PO'}))

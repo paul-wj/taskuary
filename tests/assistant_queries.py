@@ -35,7 +35,7 @@ class Q:
     would say it, 1-5 - ranks the unsupported list."""
     def __init__(self, cat, text, table, ideal, expect, tools=None, freq=3, sort=None, live=None, note='', phone=False, view=None, seed=None):
         self.cat, self.text, self.table, self.expect, self.freq, self.sort, self.view = cat, text, table, expect, freq, sort, view
-        self.seed = seed      # seed(store) -> key or None: a row the demo world lacks (a watched task, the habits row), its key on the table
+        self.seed = seed      # seed(store) -> key or None: a row the demo world lacks (a watched task, a meeting), its key on the table
         self.live, self.note, self.phone = live, note, phone      # live: the task whose agent session runs; note: why it grades so; phone: a phone chat
         self.ideal = ideal if isinstance(ideal, list) else [ideal]
         kinds = [json.loads(a[6:])['kind'] for a in self.ideal if isinstance(a, str) and a.startswith('CALL: ')]
@@ -59,8 +59,7 @@ CASES = [
     Q('navigation', f'open {T4}', 'todo', f'Here: [{T4}](#task=4).', 'link:#task=4', tools=('pages',), freq=5),
     Q('navigation', 'open the invoice 88213 task', 'todo', [c('tasks.list', contains='invoice 88213'), f'That is [{T4}](#task=4).'], 'read:tasks.list', freq=4),
     Q('navigation', "pull up Marcus's month-end close", None, [c('tasks.list', contains='month-end close'), f'That is [{T1}](#task=1).'], 'read:tasks.list', freq=4),
-    Q('navigation', 'where do I set up the AI?', None, 'Under [Connections → AI](#settings=config&group=How%20mail%20is%20sorted).', 'link:#settings', tools=('pages',), freq=3),
-    Q('navigation', 'open the agent profiles', None, 'Here: [Profiles](#profiles).', 'link:#profiles', tools=('pages',), freq=2),
+    Q('navigation', 'where do I set up the AI?', None, 'Under [Connections → AI](#settings=config&group=Which%20AI%20does%20what).', 'link:#settings', tools=('pages',), freq=3),
     Q('navigation', 'show me the workflows', None, 'Here: [Workflows](#report=workflows).', 'link:#report=workflows', tools=('pages',), freq=2),
     Q('navigation', 'go to reports', None, 'Here: [Reports](#report=reports).', 'link:#report=reports', tools=('pages',), freq=4),
     Q('navigation', 'show me my dashboards', None, 'Here: [Dashboards](#report=dashboards).', 'link:#report=dashboards', tools=('pages',), freq=3),
@@ -89,7 +88,7 @@ CASES = [
     Q('bulk', 'clear all my to-dos', 'todo', c('pipe.clear', select={'lane': 'yours'}), 'words', freq=2,
       note='what is on the owner is never swept by typed words: each has its own button, and the line says so'),
     Q('bulk', 'clear them all', 'todo', c('pipe.clear', select={}), 'words', tools=('pipe.clear',), freq=3),
-    Q('bulk', 'stop sending me mail from Platform Updates', 'fyi', c('not_ours_sender'), 'light:not_ours', tools=('not_ours_sender', 'preference.exclude_sender'), freq=3),
+    Q('bulk', 'stop sending me mail from Platform Updates', 'fyi', c('not_ours_sender'), 'proposal:preference.exclude_sender', tools=('not_ours_sender', 'preference.exclude_sender'), freq=3, note='an FYI draws one move, Send to agent (2026-11-25): his words still ask for it, as its card for his press'),
     Q('bulk', 'snooze everything from Ruth until Monday', 'todo', c('pipe.defer', select={'sender': 'Ruth'}, until='monday 9am'), 'did:pipe.defer', freq=3),
     Q('bulk', 'close all the tasks from Priya', 'todo', c('pipe.close', select={'sender': 'Priya'}), 'did:pipe.close', freq=2),
     Q('bulk', 'archive all the read mail', 'todo', 'Read mail is already off the rail - it stays on the Timeline.', 'words', tools=(), freq=2),
@@ -131,7 +130,7 @@ CASES = [
     # ...and the row's own id, which the canvas lists it by: forward was no tool, and the turn dropped it with nothing said
     Q('item', 'hand it to gail@vendor.example', 'todo', c('forward', who='gail@vendor.example'), 'hand:gail@vendor.example', freq=2),
     Q('item', 'ask Marcus which account it is', 'todo', c('task.clarify', text='Which account is short?'), 'light:reply', freq=3),
-    Q('item', 'put it on my list', 'fyi', c('mine'), 'light:mine', freq=3),
+    Q('item', 'put it on my list', 'fyi', c('mine'), 'proposal:task.create_from_message', freq=3, note='an FYI draws one move, Send to agent (2026-11-25): his words still ask for it, as its card for his press'),
     Q('item', 'next', 'todo', c('next'), 'next', freq=5),
     Q('item', 'skip this one', 'todo', c('next'), 'next', freq=4),
     # ...and with nothing on the table the walk words bring the first row up as its card - never a task read out in words, and a later
@@ -264,9 +263,9 @@ BRING_UP = [
     ('where do I change my signature', 'signature', '#settings=config&group=Replies&key=email_signature'),
     ('the sync interval', 'sync interval', '#settings=config&group=Sync%20%26%20startup&key=poll_minutes'),
     ('desktop notifications', 'desktop notification', '#settings=config&group=Notifications&key=hand_desktop'),
-    ('which AI sorts my mail', 'AI that sorts your mail', '#settings=config&group=How%20mail%20is%20sorted&key=triage_ai'),
+    ('which AI sorts my mail', 'AI that sorts your mail', '#settings=config&group=Which%20AI%20does%20what&key=triage_ai'),
     # ...by the name it has on screen since 2026-11-15 ("Taskuary"): that is the word a model that has seen the page searches by
-    ('the assistant model', 'model for Taskuary', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_model'),
+    ('the assistant model', 'model for Taskuary', '#settings=config&group=Which%20AI%20does%20what&key=concierge_model'),
     ('how many days back it catches up', 'catch-up window', '#settings=config&group=Sync%20%26%20startup&key=startup_sync_days'),
     ('the FYI batching setting', 'fyi read together', '#settings=config&group=Assistant&key=fyi_batch'),
     ('my second Outlook', 'outlook', '#connector=outlook'),
@@ -290,7 +289,6 @@ BRING_UP = [
     ('my SOUL doc', 'soul', '#about=docs&doc=soul'),
     ('what it learned', 'learned', '#about=memory'),     # About you's Memory since 2026-11-06
     ('the audit log', 'audit log', '#settings=audit'),
-    ('agent profiles', 'profiles', '#profiles'),
     ('the mail rules', 'mail rules', '#settings=policies'),
     ('my phone settings', 'phone & chats', '#settings=phone'),
     ('the agent channels', 'agent channels', '#settings=phone'),
@@ -303,7 +301,7 @@ BRING_UP = [
     ('install the latest release', 'install the latest release', '#settings=updates&key=update'),
     # ...and its siblings: a connection or a brain is its own screen too, never an agent's job
     ('connect my mail', 'email connections', '#connections=Email'),
-    ('change the assistant brain', 'Taskuary brain', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_ai'),
+    ('change the assistant brain', 'Taskuary brain', '#settings=config&group=Which%20AI%20does%20what&key=concierge_ai'),
     ('the Hub', 'hub', '#hub'),
 ]
 CASES += [Q('bring-up', t, None, find(q), f'link:{h}', freq=4) for t, q, h in BRING_UP]
@@ -409,8 +407,8 @@ POWERS = [
     Q('row', 'keep an eye on it until Paula answers', 'todo', c('task.watch', what='reply'), 'light:watch', freq=3),
     Q('row', 'this is a coding task', 'todo', c('task.set_kind', kind='coding'), 'light', freq=2),
     Q('row', 'it is a duplicate of TQ-0002', 'todo', c('task.merge', into='TQ-0002'), 'light', freq=2),
-    Q('row', 'block this sender', 'fyi', c('block_sender'), 'light', freq=3),
-    Q('row', 'archive this', 'fyi', c('message.archive'), 'pressed:not_ours', freq=3, note="an FYI's row files it with Not ours - its one way off the pipe"),
+    Q('row', 'block this sender', 'fyi', c('block_sender'), 'proposal:preference.sender_rule', freq=3, note='an FYI draws one move, Send to agent (2026-11-25): his words still ask for it, as its card for his press'),
+    Q('row', 'archive this', 'fyi', c('message.archive'), 'pressed:not_ours', freq=3, note="his words file an FYI with Not ours, though its row draws only Send to agent (2026-11-25)"),
     Q('row', 'accept it', 'invite', c('accept_invite'), 'light:accept_invite', freq=3),
     Q('row', 'prepare me for this meeting', 'invite', [c('prepare'), 'Prepare comes with the meeting on your calendar - accept it first and it is there.'],
       'words', freq=3, note="Prepare is a calendar meeting's button; an invite's row has Accept, Decline and Propose"),
@@ -454,7 +452,7 @@ POWERS = [
     Q('row', 'can we do thursday instead', 'invite', c('propose_time', text='thursday'), 'light:propose_time', freq=3),
     Q('row', 'triage this again', 'fyi', [c('message.retriage'), 'Triage already sorted this one as an FYI - Should be a task makes it one.'], 'words', freq=1,
       note="Sort it again is for a message triage could not sort; an FYI's row has none"),
-    Q('row', 'make this a task', 'fyi', c('task.create_from_message', kind='task'), 'light:mine', freq=3),
+    Q('row', 'make this a task', 'fyi', c('task.create_from_message', kind='task'), 'proposal:task.create_from_message', freq=3, note='an FYI draws one move, Send to agent (2026-11-25): his words still ask for it, as its card for his press'),
     Q('row', 'put it in northwind/importers', 'coding', c('task.set_repo', repo='northwind/importers'), 'light', freq=1),
     Q('row', 'email what it found to gail@northwind.example', 'agent', c('task.share', who='gail@northwind.example'), 'light:share_result', freq=2,
       note="Email a summary is one of Share's ways now - Share comes up lit"),
@@ -463,8 +461,6 @@ POWERS = [
       c('report.route', title='AP ageing', line='alert', how='rule', rule='count', count=10), 'open:#report=', freq=2),
     Q('people', 'that is wrong about Gail', None, [c('memory.about', who='Gail'), 'Nothing in the memory about Gail yet, so nothing to take out.'],
       'read:memory.about', freq=2),
-    Q('app', 'set me up as an AP rep', None, c('role.apply', role='ap_rep'),
-      'open:#profiles', freq=2, note="on the desk a role is Profiles' own Set up - its questions are asked there"),
 ]
 CASES += POWERS
 
@@ -554,8 +550,8 @@ AREA_TASK = [
 CASES += AREA_TASK
 
 # THE WORK RAIL AND ITS WALK (the rail audit, 2026-11-02; the owner: "test it all works ... to be able to help the user on every page"): Next
-# and Back, a section by its heading, the FYI's All read, Watching, the Advisor's ideas and its habits row, sets put away or closed. The demo
-# world has no watched task, idea or habit: each case that needs one seeds it (invented lines, nobody real)
+# and Back, a section by its heading, the FYI's All read, Watching, the Advisor's ideas, sets put away or closed. The demo
+# world has no watched task or idea: each case that needs one seeds it (invented lines, nobody real)
 T2 = 'TQ-0002'
 def watched(s):
     from taskuary import funnel, watch
@@ -566,19 +562,6 @@ def wa_group(s):
     from taskuary import wanames
     s.save_connector({'Type': 'whatsapp', 'Name': 'WhatsApp', 'Active': 1}, 't')
     s.set_setting(wanames.KEY, json.dumps({TEAM_GROUP: 'Northwind team'}), 't')
-def habits_row(s):
-    "Two habits on the one row: one the Advisor adopted, one it asks about (habits.tick, as tests/test_habits_row.py builds it)."
-    from datetime import datetime
-    from taskuary import funnel, habits, learn, learnedgraph as lg
-    day = datetime.now().strftime('%Y-%m-%d')
-    ln = lambda k, t, sc, ev: lg.fmt({'key': k, 'text': t, 'ev': ev, 'score': sc, 'seen': day, 'status': 'proposed'})
-    doc = s.get_doc('learned') or '# LEARNED\n'
-    if learn.PROP_START not in doc: doc += f"\n## Proposed rules — your call\n{learn.PROP_START}\n{learn.PROP_END}\n"
-    add = '\n'.join([ln('sso threads', '{{owner_first}} closes sign-in help threads directly; they need no drafted reply', 12, [f'rv{i}' for i in range(1, 9)]),
-                     ln('fwd fyi', 'Forwarded FYI mail from the facilities team needs no reply', 5, ['rv20', 'rv21'])])
-    s.save_doc('learned', doc.replace(learn.PROP_END, add + '\n' + learn.PROP_END), 'reflect')
-    habits.tick(s); funnel.invalidate()
-    return f"idea:{s._one('SELECT * FROM idea WHERE Key=?', (habits.KEY,))['IdeaId']}"
 def idea_row(s):
     from datetime import datetime
     from taskuary import funnel
@@ -615,16 +598,10 @@ AREA_RAIL = [
       note="the row's Watch it reads Stop watching while it watches - lit for the owner"),
     Q('rail', 'watch TQ-0002 for me', None, c('task.watch', ref=T2), 'light:watch', freq=3),
     Q('rail', 'close all the watched ones', None, [c('tasks.list'), c('pipe.close', select={'keys': [T2]})], 'did:pipe.close', freq=1, seed=watched),
-    # ── the Advisor's rows: an idea, and the one habits row (habits.py) ──
+    # ── the Advisor's rows: an idea ──
     Q('rail', 'put the advisor idea on my list', 'idea', c('mine'), 'light:mine', freq=2, seed=idea_row),
     Q('rail', 'no more ideas like this', 'idea', c('not_ours_kind'), 'light:not_ours', freq=2, seed=idea_row,
       note="one of the idea's Not ours choices - it was refused as no button"),
-    Q('rail', 'what habits did you learn about me?', 'habit', 'You close sign-in help threads yourself, so I will not draft replies to them.', 'words',
-      tools=('words',), freq=2, seed=habits_row),
-    Q('rail', 'adopt the one about forwarded fyi', 'habit', c('memory.wrong', key='fwd fyi', how='keep'), 'did:memory.wrong', freq=2, seed=habits_row,
-      note='keep was no `how` - refused'),
-    Q('rail', 'the sign-in one is not right', 'habit', c('memory.wrong', key='sso threads', how='wrong'), 'did:memory.wrong', freq=2, seed=habits_row),
-    Q('rail', 'no to the fyi one', 'habit', c('memory.wrong', key='fwd fyi', how='wrong'), 'did:memory.wrong', freq=1, seed=habits_row),
     # ── a meeting coming up: Prepare and Send to agent on its row, the agent box's words leading (the owner, 2026-11-02) ──
     Q('rail', 'send this meeting to an agent to prep me - pull the open issues with these people', 'meeting',
       c('regular_agent', text='Prep me for this meeting: pull the open issues with Gail Moreno and Paula Vance'), 'did:task.create_from_text', freq=4, seed=meeting_row,
@@ -637,7 +614,6 @@ AREA_RAIL = [
       freq=2, seed=meeting_row, note='the model says the job is not the meeting\'s (`new`); code never decides that'),
     # ── about the rail itself ──
     Q('rail', 'why is this one at the top?', 'todo', [c('docs.search', query='work rail'), 'Rows sit in the order they arrived.'], 'read:docs.search', freq=2),
-    Q('rail', 'what is the habits row', None, [c('docs.search', query='habits row'), 'One row for every habit the Advisor learned.'], 'read:docs.search', freq=1),
     Q('rail', 'my rail is empty, where did everything go?', None, [c('activity.list', days=1), 'You cleared them this morning.'], 'read:activity.list', freq=2),
     Q('rail', 'open the headcount report', None, find('headcount report'), 'link:#msg=9', freq=2),
     Q('rail', 'collapse the FYI section', None, 'The FYI heading folds with its own arrow - that press is yours.', 'words', tools=('words',), freq=1,
@@ -861,13 +837,13 @@ AREA_SETTINGS = [
     # ...SOUL, JOB, LEARNED and COUNSEL ride every turn (concierge._system), so they are answered in words; the other docs are read whole
     Q('settings', 'what does my SOUL.md say about me', None, 'That you run AP at Northwind and work in the ledger.', 'words', tools=('words',), freq=2),
     Q('settings', "what's in my STYLE.md", None, [c('docs.search', section='your doc style'), 'Short, plain, signed Alex.'], 'read:docs.search', freq=2),
-    Q('settings', 'add that I also run vendor onboarding', None, c('memory.remember', note='I also run vendor onboarding', section='care'),
+    Q('settings', 'add that I also run vendor onboarding', None, c('memory.remember', note='I also run vendor onboarding'),
       'did:memory.remember', view=DOCJOB, freq=3, note="JOB.md is never the chat's to write: a fact about the job is LEARNED's (memoryedit)"),
     Q('settings', "update my JOB.md, I don't handle payroll any more", None,
-      c('memory.remember', note="I don't handle payroll any more", section='care'), 'did:memory.remember', freq=3),
-    Q('settings', "I'm the AP lead now", None, c('memory.remember', note="I'm the AP lead now", section='soul'), 'did:memory.remember', view=DOCSOUL, freq=2),
-    Q('settings', 'be shorter with me from now on', None, c('memory.remember', note='be shorter with me', section='counsel'), 'did:memory.remember', freq=2),
-    Q('settings', "always sign off 'Best, Alex'", None, c('memory.remember', note="sign off 'Best, Alex'", section='style'), 'did:memory.remember', freq=2),
+      c('memory.remember', note="I don't handle payroll any more"), 'did:memory.remember', freq=3),
+    Q('settings', "I'm the AP lead now", None, c('memory.remember', note="I'm the AP lead now", doc='soul'), 'did:memory.remember', view=DOCSOUL, freq=2),
+    Q('settings', 'be shorter with me from now on', None, c('memory.remember', note='be shorter with me', doc='counsel'), 'did:memory.remember', freq=2),
+    Q('settings', "always sign off 'Best, Alex'", None, c('memory.remember', note="sign off 'Best, Alex'"), 'did:memory.remember', freq=2),
     Q('settings', 'rewrite my JOB.md from my mail', None, [v(op='point', target='generate_from_history')], 'view:point:generate_from_history',
       tools=('words',), view=DOCJOB, freq=2),
     Q('settings', 'write my SOUL doc with me', None, [v(op='point', target='write_it_from_a_few_questions')], 'view:point:write_it_from_a_few_questions',
@@ -903,7 +879,7 @@ CASES += AREA_SETTINGS
 # Assistant fills it and presses its tabs; a job asked for in words is written into New on its tab - an agent's pressed for the owner (2026-11-02)
 TABS = [{'id': i, 'label': l} for i, l in (('send_something', '✉️Send something'), ('give_an_agent_a_job', 'Give an agent a job'),
         ('note_to_self', '💡Note to self'), ('meeting', '📅Meeting'), ('set_a_goal', '🎯Set a goal'), ('report', '📊Report'),
-        ('dashboard', '📈Dashboard'), ('routine', '🔁Routine'), ('playbook', '📖Playbook'), ('close_new_task', 'Close new task'))]
+        ('dashboard', '📈Dashboard'), ('routine', '🔁Routine'), ('skill', '📖Skill'), ('close_new_task', 'Close new task'))]
 NEWAGENT = {'area': 'new', 'title': '', 'text': 'What are we starting? Give an agent a job WHO WORKS IT A live session A general agent',
             'fields': [{'key': 'about', 'label': 'What should it find out or write', 'kind': 'text', 'value': ''},
                        {'key': 'brain', 'label': 'Brain', 'kind': 'choice', 'value': 'the brain it runs on'},
@@ -1007,8 +983,8 @@ AREA_NEW = [
       c('task.create_from_text', kind='general', text='summarise the open AP', recurs={'schedule': 'every friday at 4', 'objective': 'summarise the open AP'}),
       'did:task.create_from_text', freq=3),
     Q('new', 'set up a report of AP over 30 days', None, c('setup', text='a report of AP over 30 days'), 'did:task.create_from_text', sort={'kind': 'report'}, freq=3),
-    Q('new', 'make me a playbook for leave balance requests', None, c('setup', text='a playbook for leave balance requests'), 'new:playbook',
-      sort={'kind': 'playbook'}, freq=2),
+    Q('new', 'make me a skill for leave balance requests', None, c('setup', text='a skill for leave balance requests'), 'new:skill',
+      sort={'kind': 'skill'}, freq=2),
 ]
 CASES += AREA_NEW
 
@@ -1217,15 +1193,15 @@ AREA_SELF_KNOWLEDGE = [
       view=LEARNEDDOC, freq=2),
     Q('self-knowledge', 'reflect now', None, v(op='point', target='reflect_now'), 'view:point:reflect_now', tools=('words',), view=LEARNEDDOC, freq=1),
     Q('self-knowledge', 'remember I never want the payroll vendor newsletters as tasks', None,
-      c('memory.remember', note='I never want the payroll vendor newsletters as tasks', section='care'), 'did:memory.remember', view=LEARNEDDOC, freq=3),
+      c('memory.remember', note='I never want the payroll vendor newsletters as tasks'), 'did:memory.remember', view=LEARNEDDOC, freq=3),
     Q('self-knowledge', 'do you read my LEARNED.md?', None, 'Yes - the lines in use, with SOUL.md and JOB.md, on every page.', 'words', tools=('words',), freq=1),
     # ── the owner's documents: each fact goes where its reader reads it (memory.remember's section), a document's own buttons pressed ──
-    Q('self-knowledge', "from now on sign my emails 'Best, Alex'", None, c('memory.remember', note="sign every email 'Best, Alex'", section='style'),
+    Q('self-knowledge', "from now on sign my emails 'Best, Alex'", None, c('memory.remember', note="sign every email 'Best, Alex'"),
       'did:memory.remember', view=STYLEDOC, freq=3),
     Q('self-knowledge', 'regenerate my style from my sent mail', None, v(op='point', target='generate_from_history'), 'view:point:generate_from_history',
       tools=('words',), view=STYLEDOC, freq=2),
-    Q('self-knowledge', 'be shorter with me', None, c('memory.remember', note='be shorter with me', section='counsel'), 'did:memory.remember', freq=3),
-    Q('self-knowledge', "add to this that I'm the AP lead now", None, c('memory.remember', note="I'm the AP lead now", section='soul'), 'did:memory.remember',
+    Q('self-knowledge', 'be shorter with me', None, c('memory.remember', note='be shorter with me', doc='counsel'), 'did:memory.remember', freq=3),
+    Q('self-knowledge', "add to this that I'm the AP lead now", None, c('memory.remember', note="I'm the AP lead now", doc='soul'), 'did:memory.remember',
       view=SOULDOC, freq=2, note="the document's box is no field: the line is kept by memory.remember, never typed over the document"),
     Q('self-knowledge', 'what does my JOB.md say I am responsible for?', None,
       'The finance and census systems: the GL export, the AP importers, the census database and the helpdesk.', 'words', tools=('words',), freq=2,
@@ -1361,7 +1337,6 @@ def _guards(stack, sort=None, live=None, agenda=None):
     stack.enter_context(mock.patch.object(terminal, 'for_task', lambda tid, **k: {'sid': f's{tid}'} if live and int(tid) == int(live) else None))
     stack.enter_context(mock.patch.object(concierge, 'stop_turn', lambda tid: bool(live) and int(tid) == int(live)))      # the x's road, never a real session
     stack.enter_context(mock.patch.object(ingest, '_spawn'))
-    stack.enter_context(mock.patch.object(ingest, 'ask_later'))     # ...nor the model reading a promoted mail's ask (a hand-off makes its task)
     # ...and no agent starts, nothing is typed into a session: the dispatch door answers as a start would (concierge._start_agent, 2026-11-02),
     # and the waiting room holds every note as for an agent at work (concierge._tell_now)
     from taskuary import server, waitroom

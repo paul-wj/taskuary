@@ -106,22 +106,6 @@ def test_the_drafted_reply_is_never_kept_in_the_summary():
     assert STEP in [i['text'] for i in on_you(s, tid)]
 
 
-def _ingest(s, live=''):
-    v = {'intent': 'reply_only', 'why': 'asks the pay date', 'title': 'Pay date', 'summary': 's',
-         'thread': {'asking': 'Gail wants the pay date', 'your_part': 'say when', 'others': [], 'asks': [], 'aside': [], 'on_you': [STEP]}}
-    msg = {'external_id': 'p1', 'channel': 'email', 'subject': 'Pay date', 'body': 'When is the pay run?',
-           'from_name': 'Gail Moreno', 'from_email': 'gail@northwind.example'}
-    with mock.patch('taskuary.ingest._spawn'), mock.patch.object(ingest, 'live_agent', return_value=live):
-        return ingest.ingest_message(s, msg, llm=lambda *a, **k: json.dumps(v))['task_id']
-
-
-def test_triage_on_you_only_where_no_agent_runs():
-    s = MemoryStore(); tid = _ingest(s)
-    assert s.get_task(tid)['Kind'] == 'reply' and [i['text'] for i in on_you(s, tid)] == [STEP]
-    s2 = MemoryStore(); tid2 = _ingest(s2, live='general')
-    assert on_you(s2, tid2) == []
-
-
 # ── fix round 1 ──────────────────────────────────────────────────────────────────────────
 def test_a_block_cut_short_never_reaches_the_screen():
     # a live line is cut to 300 or 400 characters before it is drawn (agents.py), so the tag can arrive with half its JSON - or half itself
@@ -176,7 +160,7 @@ def test_a_summary_with_no_on_you_list_leaves_the_steps():
 
 def test_a_restated_step_keeps_its_place_and_note():
     s = MemoryStore(); tid = task(s)
-    s.set_on_you(tid, [STEP], 'assistant'); s.merge_task_checklist(tid, ['find the pay date'], 'triage', src=4)
+    s.set_on_you(tid, [STEP], 'assistant'); s.merge_task_checklist(tid, ['find the pay date'], 'owner')
     s.note_checklist_item(tid, on_you(s, tid)[0]['id'], 'AP said Thursday', 'owner')
     s.set_on_you(tid, [STEP, 'reply to Gail'], 'assistant')
     items = s.task_checklist(tid)
@@ -211,7 +195,7 @@ def test_said_twice_for_one_person_becomes_a_style_line():
 def test_not_the_ask_is_an_owner_correction():
     s = MemoryStore(); tid = task(s)
     s.add_comment(tid, 'owner', general.USER_TYPE, 'No, the ask is the pay date, not the bonus')
-    with mock.patch('taskuary.learn.learn_from') as lf:
+    with mock.patch('taskuary.learning.learn_from') as lf:
         assert general.take_corrections(s, tid, [{'kind': 'ask', 'review': None, 'said': 'the ask is the pay date, not the bonus'}]) == 1
     lf.assert_called_once(); assert 'owner_correction' in lf.call_args[0][1] and 'the pay date, not the bonus' in lf.call_args[0][1]
 
@@ -221,7 +205,7 @@ def test_the_memory_learns_the_owners_own_words_never_the_agents_account_of_them
     model only says a correction was made; what is learned is what the owner typed."""
     s = MemoryStore(); tid = task(s)
     s.add_comment(tid, 'owner', general.USER_TYPE, 'Wrong one - Paula wants the vendor list, the invoices can wait')
-    with mock.patch('taskuary.learn.learn_from') as lf:
+    with mock.patch('taskuary.learning.learn_from') as lf:
         assert general.take_corrections(s, tid, [{'kind': 'ask', 'review': None, 'said': 'Alex prefers vendor work over invoices in general'}]) == 1
     said = lf.call_args[0][1]
     assert 'Paula wants the vendor list, the invoices can wait' in said and 'prefers vendor work' not in said
@@ -237,7 +221,7 @@ def test_the_models_statement_of_a_correction_is_trusted():
 
 def test_an_empty_or_secret_correction_or_one_with_no_owner_message_is_dropped():
     s = MemoryStore(); tid = task(s); rid = draft_for(s, tid, 'ray@northwind.example')
-    with mock.patch('taskuary.learn.learn_from') as lf:
+    with mock.patch('taskuary.learning.learn_from') as lf:
         assert general.take_corrections(s, tid, [{'kind': 'ask', 'review': None, 'said': 'wrong ask'}]) == 0      # nobody corrected anything
         s.add_comment(tid, 'owner', general.USER_TYPE, 'Use the new portal key')
         assert general.take_corrections(s, tid, [{'kind': 'redraft', 'review': None, 'said': '  '},
@@ -258,7 +242,7 @@ def test_the_rows_recommended_move_reads_the_agents_own_word():
     turn(s, tid, f'Done.\n{block(on_you=[], nothing_left=True)}')
     assert rulebook.agent_word(s, tid) == 'nothing_left' and rulebook.recommended_task(s, tid)['verb'] == 'close'
     turn(s, tid, f'Still Friday.\n{block()}')
-    assert rulebook.agent_word(s, tid) == 'on_you' and rulebook.recommended_task(s, tid) is None, 'a step of its list is on the owner'
+    assert rulebook.agent_word(s, tid) == '', 'a step of its list with no card and no question waits on nobody (the owner, 2026-11-25)'
 
 
 def test_a_pending_draft_is_not_nothing_left():
@@ -281,7 +265,8 @@ def test_a_turns_draft_keeps_its_own_words_after_a_later_redraft():
     _, sess = turn(s, tid, f'Drafted it.\n{block()}', draft='Hi Gail, the run is Friday.')
     turn(s, tid, f'Redrafted it.\n{block()}', sess, draft='Hi Gail, the run moved to Thursday.')
     turn(s, tid, f'Nothing new on the draft.\n{block()}', sess)
-    rid, rid2 = [r['ReviewId'] for r in s._rows('SELECT ReviewId FROM review WHERE TaskId=? ORDER BY ReviewId', (tid,))]
+    # ...the third turn left the second draft as it was: it stands again as a fresh card under his line (cardqueue.keep), never a turn's draft
+    rid, rid2 = [r['ReviewId'] for r in s._rows('SELECT ReviewId FROM review WHERE TaskId=? ORDER BY ReviewId', (tid,))][:2]
     answers = [m for m in general.shown_history(s, tid) if m.get('summary')]
     assert [[d['text'] for d in m.get('drafts_then', [])] for m in answers] == [['Hi Gail, the run is Friday.'], ['Hi Gail, the run moved to Thursday.'], []]
     assert [m['summary'].get('drafted', []) for m in answers] == [[{'review': rid}], [{'review': rid2}], []]

@@ -15,6 +15,7 @@ import DiffView from "./DiffView.jsx";
 import { plural } from "./timeWords.js";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { MovedPast, PressedButton } from "./PassedCard.jsx";
+import Artifact from "./Artifact.jsx";
 import { ALERT_INK, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 
 const btn = { minHeight: 32, py: 0, px: 1.4, fontSize: 12.5, textTransform: "none" };
@@ -75,7 +76,8 @@ export default function LandingCard({ taskId, onChanged, onState, inChat = false
     setBusy("");
   };
   const label = (h) => (s.answers || []).find((a) => a.how === h)?.label || h;
-  const sub = [tip, `+${s.plus || 0} −${s.minus || 0}`, s.ask && s.proposal?.why].filter(Boolean).join(" · ");
+  // ...its size while it has one: pushed from the shared base none of its own is left to count, and "+0 −0" said nothing
+  const sub = [tip, (s.changed || !s.landed) && `+${s.plus || 0} −${s.minus || 0}`, s.ask && s.proposal?.why].filter(Boolean).join(" · ");
   const link = { ...FOCUS_RING, display: "inline-block", fontSize: 11.5, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } };
   const press = (h, tone0, tone = tone0) => (
     <Button key={h} size="small" disableElevation disabled={!!busy} data-tq-land={h} variant={tone === "p" ? "contained" : tone === "s" ? "outlined" : "text"}
@@ -87,11 +89,13 @@ export default function LandingCard({ taskId, onChanged, onState, inChat = false
   // ONE TITLE, ONE LINE UNDER IT, THE FILES FOLDED, ONE FILLED BUTTON (the owner, 2026-11-09: "compact the land" - it listed every changed file
   // over Push and Push & deploy): the press it waits on and how big it is, the commit and where it goes once, the files and the diff a press
   // away; once pressed it STAYS in its turn as the press it took and what came of it, as the held steps' card does (HeldSteps)
+  // ...in the chat it stands in the one raised frame every card of a turn does (Artifact); in a Close out it is a part of that panel
+  const Frame = inChat ? Artifact : Box;
   return (<MovedPast on={s.passed}>
-    <Box data-tq-landing="" data-tq-act-state={s.passed ? "passed" : s.ask ? "waiting" : s.landed ? "pressed" : "resting"}
-      sx={inChat ? { my: 1, px: 1.25, py: 0.9, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)" } : { mt: 1.1, pt: 1, borderTop: `1px solid ${BORDER}` }}>
+    <Frame data-tq-landing="" data-tq-act-state={s.passed ? "passed" : s.ask ? "waiting" : s.landed ? "pressed" : "resting"}
+      sx={inChat ? { px: 1.5, py: 1.25 } : { mt: 1.1, pt: 1, borderTop: `1px solid ${BORDER}` }}>
       <Typography data-tq-landing-title="" sx={{ fontSize: 13.5, fontWeight: 700, color: INK, lineHeight: 1.3, overflowWrap: "anywhere" }}>{w.title}</Typography>
-      <Typography noWrap data-tq-landing-sub="" title={[sub, w.shared].filter(Boolean).join(" - ")} sx={{ fontSize: 11.5, color: FAINT }}>{sub}</Typography>
+      {!!sub && <Typography noWrap data-tq-landing-sub="" title={[sub, w.shared].filter(Boolean).join(" - ")} sx={{ fontSize: 11.5, color: FAINT }}>{sub}</Typography>}
       {!!s.files?.length && <Box sx={{ display: "flex", gap: 1.5, mt: 0.4 }}>
         <Typography {...pressable(() => setFiles((o) => !o))} data-tq-landing-files="" aria-expanded={filesOpen} sx={link}>
           {filesOpen ? "Hide the files" : "Show the files"}</Typography>
@@ -136,6 +140,6 @@ export default function LandingCard({ taskId, onChanged, onState, inChat = false
           {url && <> · <a href={url} target="_blank" rel="noreferrer">{url.replace(/^https?:\/\//, "").slice(0, 70)}</a></>}</Typography>
       </Box>}
       {err && <Typography role="alert" variant="body2" sx={{ mt: 0.7, color: ALERT_INK }}>{err}</Typography>}
-    </Box></MovedPast>
+    </Frame></MovedPast>
   );
 }

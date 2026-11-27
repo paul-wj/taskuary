@@ -89,7 +89,9 @@ def test_sending_one_letter_leaves_the_other_waiting_when_its_sent_copy_comes_ba
     login = 'Hi Erin - your login: user erin, host files.northwind.example.'
     out = slots.draft(s, tid, login, to='erin@vendor.example', subject='Your login', agent='assistant'); assert out['ok'], out
     s.decide_review(out['review_id'], 'approved', login, 'owner'); slots.settled(s, s.get_review(out['review_id']), True, 'owner')
+    from taskuary import ledger
     s._exec("UPDATE review SET DeliveryState='sent' WHERE ReviewId=?", (out['review_id'],))
+    ledger.sent(s, out['review_id'])          # ...on the one record of what went, as the mailbox's confirmation writes it (finish_review_delivery)
     s.add_message({'TaskId': tid, 'ExternalId': 'graph:SENT1', 'Channel': 'email', 'SourceName': 'alex@northwind.example', 'FromName': 'Alex Doyle',
                    'FromEmail': 'alex@northwind.example', 'Direction': 'out', 'Subject': 'Your login', 'BodyText': login, 'Status': 'routed'})
     conversation.hear(s, tid, turn=True)
@@ -104,7 +106,7 @@ def test_an_email_set_up_again_after_his_send_failed_keeps_his_pressed_card():
     s = MemoryStore(); tid = s.create_task({'Title': 'Q4 review room', 'Kind': 'general', 'Status': 'in_progress', 'OriginBase': 'owner'}, 'owner')
     rid = slots.draft(s, tid, 'Hi Paula - 3pm.', to='paula@northwind.example', subject='Q4 review')['review_id']
     with mock.patch.object(outbound, 'send_out', side_effect=RuntimeError('550 mailbox unavailable')), \
-         mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learn.learn_from'):
+         mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learning.learn_from'):
         assert verdicts.decide(s, s.get_review(rid), 'approve', 'Hi Paula - 3pm, and bring the Friday figures.')['delivery'] == 'failed'
     again = slots.draft(s, tid, 'Hi Paula - 3pm.', to='paula@northwind.example', subject='Q4 review')
     assert again['ok'] and again['review_id'] != rid

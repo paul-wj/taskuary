@@ -24,7 +24,7 @@ Click everything once, screenshot it, LOOK at the shot:
   AI harness choice), Live interaction. Type in a box (autosave shows it saved), Test, Sync now (what it pulls / what it got), Enable,
   Remove (one confirm - cancel it).
 - **Settings**: every section, every switch flipped and flipped back, every picker.
-- **Reports, dashboards, Hub, About you, AI routing, Profiles, Playbooks**: open, edit, run, Send to agent.
+- **Reports, dashboards, Hub, About you, AI routing, Profiles, Skills**: open, edit, run, Send to agent.
 - **The rail**: Next, Back, search (open a closed task, type in it), FYI Send to agent (chip on the Agent box), Mark done, Remind me
   (confirm a date), Not for me, Watch it, Change.
 - **New**: an ask, an ask with a file, an ask that restates an open task.
@@ -37,6 +37,14 @@ with no sign it saved; a dead end with no next move; a blank beat, a jump or a f
 ## 2. The agent's work (the task interface)
 
 On every road, with files attached through every door (New, a task's line, Send to agent, Continue) - check the agent's OWN log read them:
+
+- **Views in the chat (json-render, the `show` tool)** - on every road, ask for things that read faster as a picture: numbers over
+  time, a comparison of options, a list with statuses, a few headline figures. The agent should show them by itself with `show` (no
+  prompting) - a chart, a table, tiles, a checklist - inline in its turn, in order with its words. Judge each by eye against the
+  original json-render repo's look (vercel-labs/json-render examples): clean axes and labels, real data, no raw JSON or markdown
+  tables in its place, light and dark both right. Compact: a view never takes over the screen - the words above and below it stay in
+  sight on a laptop window; a long table scrolls inside itself. Record the turn (`recorder.mjs`): no jump or flicker when the view
+  lands or the turn ends. A view that should have been shown and was written as text instead is a finding.
 
 - make: an image, a chart, a PDF, a spreadsheet, a deck, a web page; read and edit a local sheet; find a file; summarize a PDF
 - look up a fact and a price (web search is the model's own, fast; the browser only for a sign-up or a click)
@@ -55,7 +63,33 @@ his own message: where triage put it, whether its agent started at once, what it
 after. Timelines on one task: a draft exists and he answers outside the app; the sender writes again; two mails in one poll; a restart
 in the middle.
 
-## 4. Then fix
+## 4. The phone (WhatsApp)
+
+Start the app with `REAL_FAKE_WA=0` (or a port): a stand-in bridge (`fake_wa_bridge.py`) sits on the WhatsApp card's bridge address,
+the card is switched on and his own chat picked as the Assistant's, listening any time - through the same API the card and Settings
+press. Everything behind the bridge is real: the poll, the phone Assistant, the task agents on the walk's AI. His thumb is `phone.mjs`:
+`say "<words>"`, `tap <n|words> [poll]`, `send <file> ["words"]`, `read [all]`, `wait <s>`, `restart` (the bridge restarted), `drop` /
+`back` (WhatsApp's link down / up). Each waits for the app to answer and prints the bubbles as he reads them - a poll's choices
+numbered, a file with where it was saved, `LOOK:` on markdown, raw links, JSON, addresses and builder words, `UNASKED` on a bubble no
+line of his started. Judge the bubbles as he would on a small screen; check the desktop (`user.mjs look`) beside them.
+
+- **Walk all his tasks from the phone**: "walk me through" and the opener's poll; Next, Back, pick by number and by tap, every row kind
+  (a reply, an agent's card, an FYI, a report, a coding task, a stopped one, an urgent one); More choices past twelve; the end of the walk.
+- **One task's agent, turn by turn**: ask about a task, tell its agent to do something; it works (does the phone say so, and not more
+  than once?); its card arrives as words and a poll - tap Approve, Edit (his new words), Reject; tap twice; tap an older poll; tap after
+  the agent stopped; type the choice instead of tapping. After each press: what the card on the desktop says, what the agent was told.
+- **Desktop and phone at once on the same task**: press on the desktop while the poll is up on the phone, then tap the phone; type on
+  both; open the task on the desktop mid-walk - the same fact must read the same on both.
+- **A picture and a PDF from the phone** (`send`), with and without words: it reaches the agent - check the agent's OWN log read it -
+  and is shown on his line on the desktop. A voice note too (no voice card: it must say why, once).
+- **Restart mid-conversation**: the app (`touch $REAL_OUT/restart`) between his line and the answer, and the bridge (`phone.mjs restart`)
+  with a poll up - a tap on a poll from before it must not be met with silence. `drop`, then a line, then `back`.
+- **The silence rule**: nothing reaches the phone he did not start - `wait 120` after the walk, and an agent finishing, a new mail, a
+  report on its schedule meanwhile. Any `UNASKED` bubble is a finding (the 30-minute window is `remote_assistant.SESSION_MINS`).
+- **Odd words**: builder words, markdown, raw links, addresses, ids where a name belongs, a number list printed twice (words and poll),
+  a bubble cut mid-sentence, a poll choice cut so two read the same.
+
+## 5. Then fix
 
 For each finding: screenshot, the screen, the quote, the cause in the code (file:line). Group them into DESIGN flaws - one state said
 by one function, navigation that replaces, plain words from one wording function, one road per action - and fix the pattern at its
@@ -84,13 +118,13 @@ Screenshots of the walk that found them were taken on 0.4.1.2. Fix each PATTERN 
 **C. Builder words and raw values on screen** - plain words from one wording function, the app's own font.
 - "Run CLI agents over ACP... Agent Client Protocol", "Default: on - unchanged" on every row, "fine-grained PAT", "Board's repo
   picker", "coding agent's issue loop", "Baileys", "JOB.md", "0 reports (built under Reports)", "triage".
-- Reports rows in monospace; a run line "0.0s · nothing to say - no post · read 0 sender/subject lines"; all-caps "PLAYBOOKS - WHAT
+- Reports rows in monospace; a run line "0.0s · nothing to say - no post · read 0 sender/subject lines"; all-caps "SKILLS - WHAT
   THIS CONNECTION DOES FOR US"; Profiles rows "OUTSIDE information", "OUR OWN figures".
 - Step lines centred and quoting raw search queries; "next: the reply to gail@northwind.example" (an address, not a name).
 - File chips cut to "Q... 44 KB"; "a chat message cannot carry one".
 
 **Smaller**: an agent's decision left as prose ("For you to do: decide...") instead of a card; "Thinking..." under a finished answer;
-the header chip cut off ("Claude C..."); help text boxes narrower than their fields; "+ New playbook" wrapping alone; Hub's JOB.md
+the header chip cut off ("Claude C..."); help text boxes narrower than their fields; "+ New skill" wrapping alone; Hub's JOB.md
 tooltip covering search; New on "Working..." ~20 s before the task appeared.
 
 **Not yet walked**: search, FYI Send to agent, Settings toggles (the tool found no names for them), a Remind me date saved, autosave.

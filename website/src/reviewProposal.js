@@ -1,6 +1,9 @@
 import { label } from "./buttons.js";
 import { whyFailed } from "./stepWhy.js";
+import { asksLine, asksOf, isAsks } from "./questionsCard.js";
 import { t } from "./i18n.js";
+
+const approve = () => t(label("approve", "action"));
 
 export const proposalFrom = (review) => {
   if (review?.Kind !== "action") return null;
@@ -17,8 +20,8 @@ export const proposalFrom = (review) => {
 // ONE SET OF WORDS FOR EVERY SYSTEM (the owner, 2026-09-27: "if we have button to close out per system it will be
 // endless"): Approve / Decline / Remind me (the task's own - 2026-10-02: "not yet is really remind me later"). Only `then` - what it does THERE - differs; a new connector adds a line.
 // ...and Approve is the one word for every proposal (buttons.json: approve's `action` state) - "Merge & close", "Run action" and
-// "Save playbook" were three more names for the same press
-const approve = () => t(label("approve", "action"));
+// "Save skill" were three more names for the same press
+const APPROVE = label("approve", "action");
 export const CLOSEOUT = {
   merge_pr: { get label() { return approve(); }, busy: "merging…", then: "merges the pull request on GitHub", reject: null,
     // the other answer, where the system has one: the work is not wanted - the PR closes unmerged
@@ -34,34 +37,56 @@ export const closeoutOf = (review) => {
     alt: co.alt ? { ...co.alt, label: t(co.alt.label), busy: t(co.alt.busy), then: t(co.alt.then) } : co.alt } : null;
 };
 
-// a playbook's file name from its title - playbooks.slugify's rule: lower case, every other run of characters one "-", cut, trimmed
+// a skill's file name from its title - skills.slugify's rule: lower case, every other run of characters one "-", cut, trimmed
 const slugify = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "");
 
-// a proposal whose words ARE a playbook page: a new one (the agent's on-close draft) or the ledger's block on one (build step 5)
-export const PAGES = new Set(["write_playbook", "amend_playbook"]);
+// a proposal whose words ARE a skill's SKILL.md: a new one its agent drafted, or a change to one he has (the ledger's block, its lessons)
+export const PAGES = new Set(["save_skill"]);
 
 // a tool run's place (proposals.WHERE_KEYS, the same order) and what it carries: the text it writes, the query or script it runs,
 // else its other settings one per line - the plumbing (the action, the run it belongs to, the connection id) left out
 const WHERE_KEYS = ["path", "to", "folder", "table", "url", "bucket", "key", "container", "blob", "channel", "list", "database", "item"];
-const PLUMBING = new Set(["action", "type", "flow_run", "connector_id", "why", "network", ...WHERE_KEYS]);
+const PLUMBING = new Set(["action", "type", "flow_run", "connector_id", "why", "network", "image_sha256"]);
+const whereKey = (p) => (p?.network ? "" : WHERE_KEYS.find((x) => p?.[x]) || "");
 export const toolWhere = (p) => {
   if (p?.network) return String(p.network);            // ...a post says its network as he knows it (proposals.queue), never "x post"
-  const k = WHERE_KEYS.find((x) => p?.[x]);
+  const k = whereKey(p);
   const sys = String(p?.type || "").replace(/_/g, " ");
   return k ? `${String(p[k])} · ${sys}` : sys || t("a connected system");
 };
-export const toolBody = (p) => {
-  const body = p?.text ?? p?.body ?? p?.message ?? p?.query ?? p?.script;
-  if (body != null && body !== "") return String(body);
-  return Object.entries(p || {}).filter(([k, v]) => !PLUMBING.has(k) && v !== "" && v != null)
-    .map(([k, v]) => `${k.replace(/_/g, " ")}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n");
-};
+// ...EVERY FIELD THE PRESS RUNS IS ON THE CARD (red team F1): a `script` beside harmless `text` was never drawn and ran at the press. The box
+// holds the words alone - the words are what an edit sends - and every other field it runs stands beside them as a read-only row (toolFacts).
+// Only the plumbing, and the place the "Where" line already names, are left out
+const BODY_KEYS = ["text", "body", "message", "query", "script"];
+const bodyKey = (p) => BODY_KEYS.find((x) => p?.[x] != null && p[x] !== "");
+// ...AND A THING NAMED WITH ITS ID IS ONE ROW, BY NAME (reports.CHECKS; walk 22, 2026-11-25: "vendor id: 58 / account id: 7" was all a bill's card
+// said): "Vendor: Payworth (id 58)" - the id still on the card, beside what it is the id of
+const facts = (p) => { const k = bodyKey(p), w = whereKey(p), said = (v) => (typeof v === "string" ? v : JSON.stringify(v));
+  const named = (x) => x.endsWith("_id") && p[x.slice(0, -3)] != null && p[x.slice(0, -3)] !== "";
+  return Object.entries(p || {}).filter(([x, v]) => x !== k && x !== w && !PLUMBING.has(x) && v !== "" && v != null && !named(x))
+    .map(([x, v]) => ({ label: upFirst(x.replace(/_/g, " ")), now: said(v) + (p[`${x}_id`] != null && p[`${x}_id`] !== "" ? ` (id ${said(p[`${x}_id`])})` : "") })); };
+export const toolFacts = (p) => (bodyKey(p) ? facts(p) : []);
+export const toolBody = (p) => { const k = bodyKey(p); return k ? String(p[k]) : facts(p).map((f) => `${f.label.toLowerCase()}: ${f.now}`).join("\n"); };
 
+// A CHANGE'S CARD (workflows.change_card): its new words to edit ({key, label, was, now}) and the facts it changes besides ({label, was, now}),
+// led by the title and why it changes in one line
+const changeOf = (title, p) => ({ title, lead: title, leadWhy: p?.why ? upFirst(String(p.why).replace(/[.\s]*$/, ".")) : "", destination: "",
+  texts: Array.isArray(p?.texts) ? p.texts : [], bare: Array.isArray(p?.texts), ...afterOf(p) });
+// ...and the routine as the press leaves it (workflows.after: [{label, now, was?}]) - a fact said there is not said twice as a row above it
+export const afterOf = (p) => { const after = Array.isArray(p?.after) ? p.after : [], said = new Set(after.map((a) => a.label));
+  return { after, rows: (Array.isArray(p?.rows) ? p.rows : []).filter((r) => !said.has(r.label)) }; };
+const onOff = (v) => (v === true || v === "1" ? "on" : v === false || v === "0" ? "off" : String(v ?? ""));
+// ...each switch a settings card changes, as it was and as it will be: its rows while it waits, and what it says it changed once pressed
+const settingRows = (p) => (Array.isArray(p?.changes) ? p.changes : []).filter((c) => c && c.name)
+  .map((c) => ({ label: `${c.connector ? `${c.connector}: ` : ""}${upFirst(String(c.name).replaceAll("_", " "))}`, was: c.was == null ? "" : onOff(c.was), now: onOff(c.value) }));
+const rowSaid = (x) => (x.was ? `${x.was} → ${x.now}` : x.now);
 export const reviewText = (review) => {
   const proposal = proposalFrom(review);
   if (CLOSEOUT[proposal?.action]) return proposal.text || "";      // never the JSON envelope: an empty box sends nothing extra
   // a workflow repair reads as what was wrong and what changes, never the step list's JSON (flow.repair)
-  if (["repair_workflow", "change_setup"].includes(proposal?.action)) return [proposal.why, proposal.changes].filter(Boolean).join("\n\n");
+  // ...a change's new words - its boxes are its own fields (texts); the box itself is drawn only for a card filed before them
+  if (["repair_workflow", "change_setup"].includes(proposal?.action)) return Array.isArray(proposal.texts) ? proposal.texts.map((t) => t.now).join("\n\n")
+    : [proposal.why, proposal.changes].filter(Boolean).join("\n\n");
   if (proposal?.action === "run_tool") return toolBody(proposal);
   // a part of the task going to a task of its own (proposals.break_out): the new task's title, what it is, and each thing that moves
   if (proposal?.action === "break_out") return [proposal.summary, proposal.moves].filter(Boolean).join("\n\n");
@@ -73,6 +98,8 @@ export const reviewText = (review) => {
   // the WHAT is the context line already (proposals.queue's Reason); the box is the exact command Approve runs, once - with no AI the card
   // said "agent-browser click @e12" three times over (2026-10-25)
   if (["browser_act", "shell_act", "desktop_act"].includes(proposal?.action)) return proposal.command ? `Approve runs: ${proposal.command}` : proposal.what || "";
+  if (proposal?.action === "page_step") return "";             // ...his step is the card's own line: no box of words under it
+  if (isAsks(proposal)) return "";                              // ...and its questions are its fields (questionsCard.js)
   if (PAGES.has(proposal?.action) && proposal.text) return proposal.text;
   // ...AND NO CARD SHOWS ITS OWN JSON (the card round, 2026-11-12: a setting's change stood as `{"action": "settings", "changes": [...]}` in a
   // box he could type into): any other proposal's box holds what it carries, in words - or nothing, and the card draws no box (`bare`)
@@ -86,11 +113,13 @@ export const changeWords = (p) => (Array.isArray(p?.changes) ? p.changes : []).f
 const saysOf = (review) => String(review?.Reason || "").replace(/^the (agent proposes|workflow asks) to /, "").trim();
 // ...AS EVERY CARD'S LEAD, one road (design round 5, 2026-11-19; round 4 did routines): what Approve does in words, bold over the card, and that
 // nothing happens before it - a step in a connected system, a part moved out, a routine's change and any other proposal alike
-const leadOf = (review, why) => { const says = saysOf(review); return says ? { lead: upFirst(says), leadWhy: why } : {}; };
+// ...said once (the owner, 2026-11-24: "it says on top it changes 3 times ... we don't need it a bunch of times"): no "nothing happens until you
+// approve" under it - nothing on any card acts before its press, and the press says what it does
+const leadOf = (review) => { const says = saysOf(review); return says ? { lead: upFirst(says), leadWhy: "" } : {}; };
 
-// WHAT A WAITING CARD SAYS OVER ITSELF IN THE CHAT - what its Approve does, in one line: a drafted playbook's, a held act's. Said with the one
+// WHAT A WAITING CARD SAYS OVER ITSELF IN THE CHAT - what its Approve does, in one line: a drafted skill's, a held act's. Said with the one
 // card, wherever that card stands (a turn of the task's chat, the foot of a walk's)
-const PAGE_NOTE = "Approve saves this playbook to Reports → Playbooks, and triage starts matching new mail against its when line. Nothing is sent to anyone.";
+const PAGE_NOTE = "Approve saves this skill to Reports → Skills, where triage and the next agent find it by its description. Nothing is sent to anyone.";
 export const askNote = (r) => { const a = proposalFrom(r)?.action; return PAGES.has(a) ? PAGE_NOTE : ["browser_act", "desktop_act"].includes(a) ? heldActsLine([r]) : ""; };
 // THE LINE OVER A HELD STEP'S CARD IN THE CHAT, said for what was held: a held delete read "The agent's browser waits for your yes" (2026-11-03)
 export const heldActsLine = (reviews = []) => {
@@ -112,6 +141,17 @@ export const heldLead = (p) => {
   const about = String(p?.about || "").trim(), what = String(p?.what || "").trim(), [lead, why] = HELD[p?.action] || HELD.shell_act;
   return { lead: upFirst(about || what) || lead,
     leadWhy: `Held before it ran - ${p?.why || why}${about && what ? `: it would ${what}` : ""}.`, folded: !!p?.command };
+};
+
+// ...AND A HELD PRESS THAT SENDS A FORM SHOWS WHAT IT SENDS (walk 15 S12: "check it on the card before you press" over a card that showed only
+// `agent-browser click @e12`): the boxes the agent filled on that page, kept with the card (browsergate `fields`) - its short lines first, the
+// first as the title, then its long words, and the picture a file box holds where the task made it. Null when the form holds nothing to read
+const FAKE = /^.*[\\/]/;
+export const heldPost = (p) => {
+  const fs = (Array.isArray(p?.fields) ? p.fields : []).filter((f) => f && !["checkbox", "radio", "hidden", "password"].includes(f.t) && String(f.v ?? "").trim());
+  const lines = fs.filter((f) => f.t !== "textarea" && f.t !== "file").map((f) => String(f.v).trim()), body = fs.filter((f) => f.t === "textarea").map((f) => String(f.v)).join("\n\n");
+  const picture = String(fs.find((f) => f.t === "file")?.v || "").replace(FAKE, "");
+  return lines.length || body || picture ? { title: lines[0] || "", lines: lines.slice(1), body, picture } : null;
 };
 
 export const proposalPresentation = (review) => {
@@ -161,22 +201,32 @@ export const proposalPresentation = (review) => {
     };
   }
   if (PAGES.has(proposal?.action)) {
-    const title = String(proposal.text || "").match(/^#\s+(.+)$/m)?.[1]?.trim();
-    // "new" (or none) is filed under its TITLE (playbooks.write -> slugify), so that is the file it names: the card said new.md
-    // over a W-9 playbook the approve then saved as send-our-w-9-to-a-customer-who-asks.md (walk 2026-10-21)
+    const title = (String(proposal.text || "").match(/^#\s+(.+)$/m) || String(proposal.text || "").match(/^name:\s*(.+)$/m))?.[1]?.trim();
+    // "new" (or none) is filed under its own name (skills.write -> slugify), so that is the folder it names: the card said new.md
+    // over a W-9 skill the approve then saved as send-our-w-9-to-a-customer-who-asks (walk 2026-10-21)
     const given = String(proposal.slug || "").trim();
-    const slug = (given && given !== "new" ? given : slugify(title)) || "playbook";
-    const amend = proposal.action === "amend_playbook";
+    const slug = (given && given !== "new" ? given : slugify(title)) || "skill";
+    const amend = !!(proposal.block || proposal.lessons || proposal.was_text);          // a change to one he has, not a new one
+    const learned = !!(proposal.block || proposal.lessons), used = Array.isArray(proposal.used_by) ? proposal.used_by : [];
     return {
-      kind: "playbook",
-      title: title ? t("Playbook · {title}", { title }) : t("New playbook"),
-      context: amend ? t("What the outcome ledger counted about this kind of work, added to its playbook · nothing is sent")
-        : t("Playbook proposal · nothing will be sent to the conversation"),
-      destinationLabel: t("Save to"),
-      destination: t("Reports → Playbooks → {slug}.md", { slug }),         // where playbooks live (PlaybookShelf.jsx)
-      approveLabel: approve(),
-      busyLabel: t("saving…"),
-      rejectLabel: t("Discard proposal"),
+      kind: "skill",
+      // ...the agent's own offer asks him in one line (agenttools.SKILL_OFFER), and names the skill under it
+      title: proposal.offer && !amend ? String(proposal.offer) : amend && !learned ? `Change skill: ${title || slug}` : title ? `Skill · ${title}` : "New skill",
+      context: learned ? "What was learned about this kind of work, added to its skill · nothing is sent"
+        : amend ? "Proposed · the skill changes only if you approve"
+        : proposal.offer ? `Skill · ${title || slug} · nothing will be sent to the conversation`
+        : "Skill proposal · nothing will be sent to the conversation",
+      destinationLabel: "Save to",
+      destination: `Reports → Skills → ${slug}`,         // where skills live (SkillShelf.jsx)
+      // ...the page it replaces, where there is one (proposals.change_card): the box marks where this one changes it
+      // ...and a new one against nothing, so all of it reads as added (the owner, 2026-11-26)
+      was: String(proposal.was_text || ""),
+      // ...its agent's own change to a page he has leads with why, in one line, as a routine's change does (changeOf)
+      ...(amend && !learned ? { lead: `Change skill: ${title || slug}`, leadWhy: proposal.why ? upFirst(String(proposal.why).replace(/[.\s]*$/, ".")) : "" } : {}),
+      ...(used.length ? { rows: [{ label: "Used by", now: used.join(", ") }] } : {}),
+      approveLabel: APPROVE,
+      busyLabel: "saving…",
+      rejectLabel: "Discard proposal",
     };
   }
   // A TOOL RUN IN WORDS (the owner, 2026-10-21): what it will write, send or run, and where - never the proposal's JSON. The
@@ -186,16 +236,33 @@ export const proposalPresentation = (review) => {
     kind: "action",
     title: proposal.flow_run ? "A routine step waits for your yes" : "Run a step in a connected system",
     context: review.Reason || "Proposed action · nothing will be sent to the conversation",
-    ...leadOf(review, "Nothing runs until you approve."),
+    ...leadOf(review),
     destinationLabel: "Where",
     destination: toolWhere(proposal),
-    approveLabel: approve(),
-    busyLabel: t("running…"),
-    rejectLabel: t("Dismiss", {}, "task-action"),
+    rows: toolFacts(proposal),
+    approveLabel: APPROVE,
+    busyLabel: "running…",
+    rejectLabel: "Dismiss",
     readOnly: true,
   };
   // A HELD BROWSER ACT (browsergate.py, 2026-10-25): what the agent's browser would do and on which page, in words - Approve runs that
   // exact command there, so the words are read-only like a tool run's
+  // A STEP ON THE AGENT'S PAGE ONLY HE CAN DO (pagestep.py, the owner 2026-11-25: "the browser should be treated like a card, so only one at a
+  // time"): what he does and on which site, in the words it was handed over with - its press is his I'm done, the step's own hand-back
+  if (proposal?.action === "page_step") return {
+    kind: "action",
+    title: "Your step on the agent's page",
+    context: "",
+    // ...a sign-in the fill page can type says that way too, on this card alone (`fill`: ReviewDecision's FillLink)
+    lead: upFirst(String(proposal.what || "A step on the page only you can do")), fill: !!proposal.fill,
+    leadWhy: proposal.fill ? "The page is open beside this card - sign in there" : "The page is open beside this card - do the step there, then press I'm done.",
+    destinationLabel: "On",
+    destination: proposal.site || "",
+    approveLabel: "I'm done",
+    busyLabel: "handing back…",
+    rejectLabel: "Dismiss",
+    readOnly: true, bare: true,
+  };
   if (proposal?.action === "browser_act") return {
     kind: "action",
     title: t("The agent's browser waits for your yes"),
@@ -205,7 +272,8 @@ export const proposalPresentation = (review) => {
     // ...the SITE, never its raw address (the owner's live app, 2026-11-19: "On https://app.box.example/folder/..." under the step)
     // ...by the name the server gives it (its `name`: signin.site_name - a bare address by its page's title), never "127.0.0.4"
     destination: proposal.name || proposal.site || proposal.url || "the agent's browser",
-    approveLabel: approve(),
+    post: heldPost(proposal),
+    approveLabel: APPROVE,
     busyLabel: "running…",
     rejectLabel: "Dismiss",
     readOnly: true,
@@ -240,18 +308,46 @@ export const proposalPresentation = (review) => {
     rejectLabel: t("Dismiss", {}, "task-action"),
     readOnly: true,
   };
+  // A PUBLIC COMMENT ON GITHUB (proposals 'comment_issue'): where it goes, its words his to change while it waits - what he left in the box is
+  // what is posted (proposals.execute) - and its press named by what it does
+  if (proposal?.action === "comment_issue") return {
+    kind: "action",
+    title: "Comment on GitHub",
+    context: review.Reason || "Nothing is posted until you press Comment",
+    destinationLabel: "On",
+    destination: proposal.repo ? `${proposal.repo}${proposal.number != null ? `#${proposal.number}` : ""}` : "the issue or pull request this task came from",
+    approveLabel: "Comment",
+    bare: !reviewText(review).trim(),
+    busyLabel: "Commenting…",
+    rejectLabel: "Dismiss",
+  };
+  // A PULL REQUEST SAYS WHAT IT OPENS (the card gallery, 2026-11-25: its body alone, under "On this task"): its title, the repository and the
+  // branch into its base, as the server read them for the press (ci.pr_plan) - its body the box, read-only as it goes
+  if (proposal?.action === "open_pr" && proposal.pr) return {
+    kind: "action",
+    title: "Open a draft pull request",
+    context: review.Reason || "Proposed · nothing is opened until you approve",
+    ...leadOf(review),
+    destinationLabel: "In",
+    destination: proposal.pr.repo || "",
+    rows: [{ label: "Title", now: proposal.pr.title }, ...(proposal.pr.branch ? [{ label: "Branch", now: `${proposal.pr.branch} → ${proposal.pr.base}` }] : [])],
+    approveLabel: APPROVE,
+    busyLabel: "opening…",
+    rejectLabel: "Dismiss",
+    readOnly: true,
+    bare: !String(proposal.body || "").trim(),
+  };
   // A PART OF THE TASK THAT IS ANOTHER MATTER (proposals.break_out, the owner 2026-11-10): the new task's title leads, what moves is read-only -
   // Approve runs the task page's own split with exactly those messages and to-dos
   if (proposal?.action === "break_out") return {
     kind: "action",
     title: "Move this part to a task of its own",
     context: review.Reason || "Proposed · nothing moves until you approve",
-    ...leadOf(review, "Nothing moves until you approve."),
-    destinationLabel: "Its own task",
-    destination: proposal.title || "",
-    approveLabel: approve(),
-    busyLabel: t("moving…"),
-    rejectLabel: t("Dismiss", {}, "task-action"),
+    ...leadOf(review),
+    destination: "",
+    approveLabel: APPROVE,
+    busyLabel: "moving…",
+    rejectLabel: "Dismiss",
     readOnly: true,
   };
   // A SCRIPT THE AGENT WROTE ON THE JOB, KEPT AS A ROUTINE (proposals 'save_routine', the owner 2026-11-10) - Approve saves exactly that as a
@@ -263,7 +359,7 @@ export const proposalPresentation = (review) => {
     title: `Create the ${proposal.kind || "routine"}${proposal.title ? ` "${proposal.title}"` : ""}`,
     context: review.Reason || "Proposed · nothing is saved until you approve",
     lead: upFirst(String(proposal.why || proposal.title || "A routine")),
-    leadWhy: `Runs ${proposal.runs || "when you run it"}${proposal.based_on ? ` · built from ${proposal.based_on}` : ""}. Nothing is saved until you approve.`,
+    leadWhy: `Runs ${proposal.runs || "when you run it"}${proposal.skill ? ` · uses your skill ${proposal.skill}` : ""}${proposal.based_on ? ` · built from ${proposal.based_on}` : ""}.`,
     destinationLabel: "It does",
     destination: String(proposal.prompt || ""),
     approveLabel: approve(),
@@ -277,7 +373,7 @@ export const proposalPresentation = (review) => {
     context: review.Reason || "Proposed · nothing is saved or run until you approve",
     lead: upFirst(String(proposal.why || proposal.title || "A routine")),
     leadWhy: `Runs ${proposal.runs || "when you run it"}, on this computer${Array.isArray(proposal.steps) && proposal.steps.length
-      ? `: ${proposal.steps.map((s, i) => (i ? String(s).toLowerCase() : String(s))).join(", then ")}` : ""}. Nothing is saved or run until you approve.`,
+      ? `: ${proposal.steps.map((s, i) => (i ? String(s).toLowerCase() : String(s))).join(", then ")}` : ""}.`,
     folded: true, foldWord: "script",
     destinationLabel: "It runs",
     destination: `${proposal.runs || "when you run it"} · ${proposal.title || ""}`,
@@ -287,48 +383,60 @@ export const proposalPresentation = (review) => {
     readOnly: true,
   };
   // ...a run's own repair, or its agent's change to the routine it runs (workflows.change_of): one card, the steps change only on Approve
+  // ...EACH AS WHAT IT WILL BE (the owner, 2026-11-24: "to edit text it should show the edited text?"): its new words, each set its own box,
+  // marked where they change (workflows.change_card: texts), what else changes read off (rows), and why in one line - never "old -> new"
   if (proposal?.action === "repair_workflow") return {
     kind: "action",
-    title: proposal.flow_run ? "Repair this routine's steps" : `Change the routine${proposal.title ? ` "${proposal.title}"` : ""}`,
     context: proposal.flow_run ? "A step failed · the AI wrote a fix · the steps change only if you approve" : "Proposed · the routine changes only if you approve",
-    ...leadOf(review, "The steps change only if you approve."),
-    destinationLabel: "Changes",
-    destination: "the routine's saved steps",
-    approveLabel: approve(),
+    ...changeOf(proposal.flow_run ? `Repair routine: ${proposal.title || "its steps"}` : `Change routine: ${proposal.title || "this routine"}`, proposal),
+    approveLabel: APPROVE,
     busyLabel: "saving…",
     rejectLabel: "Dismiss",
   };
   // ...and a report's or dashboard's own setup changed the same way (workflows.setup_change): its question, schedule or name, old -> new
   if (proposal?.action === "change_setup") return {
     kind: "action",
-    title: `Change the ${proposal.kind || "report"}${proposal.title ? ` "${proposal.title}"` : ""}`,
     context: `Proposed · the ${proposal.kind || "report"} changes only if you approve`,
-    ...leadOf(review, `The ${proposal.kind || "report"} changes only if you approve.`),
-    destinationLabel: "Changes",
-    destination: `the ${proposal.kind || "report"}'s saved setup`,
-    approveLabel: approve(),
+    ...changeOf(`Change ${proposal.kind || "report"}: ${proposal.title || `this ${proposal.kind || "report"}`}`, proposal),
+    approveLabel: APPROVE,
     busyLabel: "saving…",
     rejectLabel: "Dismiss",
+  };
+  // THE AGENT'S QUESTIONS, ASKED TOGETHER (proposals 'questions'): each its own field, one press that sends every answer
+  if (isAsks(proposal)) return {
+    kind: "questions",
+    title: proposal.title || "The agent has a few questions",
+    lead: proposal.title || "The agent has a few questions",
+    leadWhy: asksLine(proposal),
+    destination: "",
+    asks: asksOf(proposal),
+    approveLabel: "Send answers",
+    busyLabel: "sending your answers…",
+    rejectLabel: "Dismiss",
+    readOnly: true,
+    bare: true,
   };
   // A SETTING THE AGENT ASKS TO CHANGE (proposals 'settings'): which one and to what, in words, and why - Approve changes exactly that
   if (proposal?.action === "settings") return {
     kind: "action",
-    title: t("Change a setting"),
-    context: review.Reason || t("Proposed · nothing changes until you approve"),
-    lead: t("Change {settings}", { settings: changeWords(proposal) || t("a setting") }),
-    leadWhy: proposal.why ? upFirst(String(proposal.why)) : t("Nothing changes until you approve."),
-    destinationLabel: t("In"),
-    destination: t("Settings"),
-    approveLabel: approve(),
-    busyLabel: t("saving…"),
-    rejectLabel: t("Dismiss", {}, "task-action"),
+    title: "Change a setting",
+    context: review.Reason || "Proposed · nothing changes until you approve",
+    lead: Array.isArray(proposal.changes) && proposal.changes.some((c) => c && "was" in c) ? `Change ${proposal.changes.length > 1 ? "settings" : "a setting"}`
+      : `Change ${changeWords(proposal) || "a setting"}`,
+    leadWhy: proposal.why ? upFirst(String(proposal.why)) : "",
+    destination: "",
+    // ...each switch as it is and as it will be, read off - a fact, never words to type over (proposals.change_card: `was`)
+    rows: settingRows(proposal),
+    approveLabel: APPROVE,
+    busyLabel: "saving…",
+    rejectLabel: "Dismiss",
     readOnly: true,
     bare: true,
   };
   // ...AND ANY OTHER PROPOSAL SAYS WHAT IT DOES IN THE SERVER'S OWN WORDS FOR IT (the card round, 2026-11-12: "Action · land" over the proposal's
   // JSON): its lead is what the gate wrote on the review, its box what it carries - none where it carries nothing
   const says = saysOf(review), act = String(proposal?.action || "proposed action").replaceAll("_", " ");
-  const said = leadOf(review, "Nothing is done until you approve.");
+  const said = leadOf(review);
   return {
     kind: "action",
     title: review.Subject || review.Title || upFirst(says) || t("Proposed action"),
@@ -357,7 +465,10 @@ export const reviewStatusLabel = (status) => REVIEW_STATUS[status] ? t(REVIEW_ST
 // it did in words, its link, and the command it ran folded - read off the receipt the server keeps (proposals.receipt). Null while it waits
 const VERB = { shell_act: "ran", browser_act: "ran on the page", desktop_act: "ran", comment_issue: "commented", close_issue: "closed",
   merge_pr: "merged", land: "landed", open_pr: "opened the pull request", push_direct: "pushed", close_item: "closed", run_tool: "done",
-  break_out: "moved to its own task", save_routine: "saved the routine" };
+  break_out: "moved to its own task", save_routine: "saved the routine", repair_workflow: "changed the routine", change_setup: "changed it", settings: "changed",
+  save_skill: "saved the skill", questions: "answered" };
+// ...and what it kept at the press: the proposal as he left it, with what it did (proposals.receipt) - null before
+export const receiptOf = (review) => { try { return JSON.parse(review?.FinalText || "") || null; } catch { return null; } };
 export const resultOf = (review) => {
   if (review?.Kind !== "action" || !["approved", "edited"].includes(review?.Status)) return null;
   let p = {};
@@ -366,8 +477,22 @@ export const resultOf = (review) => {
   const r = p.result || {}, url = r.url || (/https?:\/\/[^\s'"<>()\]]+/.exec(String(r.said || "")) || [""])[0].replace(/[.,)]+$/, "");
   // ...a yes the page refused (browsergate._perform's `refused`) is over, and did nothing: it never reads "ran on the page"
   if (r.refused) return { said: "Approved · not done", what: String(r.refused), url: "", command: String(p.command || "") };
-  const what = String(p.about || p.what || r.performed || r.commented || r.closed || r.merged || (r.task || r.source ? r.said : "") || "").trim();
+  // ...a settings card by the switches it changed, each to what ("Poll minutes: 15 → 10")
+  const set = p.action === "settings" ? settingRows(p).map((x) => `${x.label}: ${rowSaid(x)}`.replace(/\s+/g, " ")).join(" · ") : "";
+  const what = String(p.about || p.what || set || r.performed || r.commented || r.closed || r.merged || (r.task || r.source ? r.said : "") || "").trim();
   return { said: `Approved · ${VERB[p.action] || "done"}`, what, url, command: String(p.command || "") };
+};
+// WHAT A PRESS DID, ON EVERY CARD THAT TOOK ONE, FROM ONE FUNCTION (the card gallery, 2026-11-25: a settings card he approved read "✓ Approved"
+// and nothing of what changed; a tracker move "✓ Approved · Where NW-12 · jira move" - while a declared act's card read "✓ Commented"): its mark
+// says what it did in the act's own word ("✓ Changed", "✓ Opened the pull request"), its line what and where, its link. A card he dismissed, or
+// whose press failed, says that. {mark, label, line, url} - PassedCard and ReviewDecision both draw this
+export const outcomeOf = (review) => {
+  const done = resultOf(review), p = done && proposalPresentation(review), title = p?.lead || p?.title || "";
+  const same = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+  // ...what it did where that is more than its title; else where, for a step held on a page or in a folder - a tool run's sentence names its place
+  if (done) return { mark: "approved", label: `✓ ${upFirst(done.said.replace(/^Approved · (?!not done)/, ""))}`, url: done.url,
+    line: (!same(done.what, title) && done.what) || (p?.destination && proposalFrom(review)?.action !== "run_tool" ? `${p.destinationLabel} ${p.destination}` : "") };
+  return failedAsk(review) ? { mark: "failed", label: "✗ Failed", line: String(review.ActError), url: "" } : { mark: "dismissed", label: "✗ Dismissed", line: "Nothing was done.", url: "" };
 };
 
 // ONE CARD FOR A TURN'S HELD STEPS (the owner, 2026-11-09: "this should be one action button and one card. make it smaller and more
@@ -411,11 +536,13 @@ export const heldCard = (reviews) => {
     error: String(r.ActError || "") }));
   const waiting = steps.filter((s) => s.state === "waiting"), ran = steps.filter((s) => s.state === "ran");
   // ...the step a press failed on, in one sentence: the card's own "Step 2 failed:" leads it, never a second "The held step failed:" after it
-  const bad = steps.find((s) => s.state === "failed") || waiting.find((s) => s.error), k = steps.indexOf(bad) + 1;
+  // ...and a step that RAN after it - the agent's retry, joined to this card - is the outcome (walk 21: a post that went out read "Failed")
+  const after = steps.map((s) => s.state).lastIndexOf("ran");
+  const bad = steps.find((s, i) => s.state === "failed" && i > after) || waiting.find((s) => s.error), k = steps.indexOf(bad) + 1;
   // ...the one line that says what went wrong (stepWhy.whyFailed), never a program's traceback (the walk, 2026-11-22: "It failed: Read tq3 in Temp
   // failed: Traceback (most recent call last):") - its agent hears the whole of it (general.failed)
   const why = bad ? whyFailed(bad.error.replace(/^The held step failed:\s*/, "")).replace(/^Why: /, "") : "";
-  const pressed = waiting.length ? null : steps.some((s) => s.state === "failed") ? "failed" : ran.length ? "approved" : "dismissed";
+  const pressed = waiting.length ? null : bad ? "failed" : ran.length ? "approved" : "dismissed";
   return { title: n > 1 ? `${lead(ps[0])} - ${n} steps` : lead(ps[0]), why: `Held before it ran - ${whys.join("; ")}.`,
     folder: folderSaid(ps[0]), place: ps[0].where || ps[0].cwd || "", steps, waiting: waiting.map((s) => s.id), pressed,
     // ...a read outside the task's folders runs nothing: its yes lets the task read there (readgate.ALLOWED, the owner 2026-11-16)
@@ -435,7 +562,7 @@ export const keptHeld = (reviews, comments) => {
 // other ask, and a turn's held steps while any of them waits (the ones that ran ticked in it) - and `past` each turn's pressed card, with when
 // its turn held it (GeneralWorkspace's turn cards)
 // ...AND SO DOES EVERY OTHER PROPOSAL ONCE DECIDED (decidedAsk; the owner, 2026-11-10: "it should stay where it is with buttons grayed out"): an
-// approved playbook left its turn at the press, and Taskuary's note to its agent stood where it had been
+// approved skill left its turn at the press, and Taskuary's note to its agent stood where it had been
 export const splitHeld = (reviews, asks) => {
   const gs = heldGroups([...(reviews || []).filter(isHeldStep), ...(asks || []).filter((r) => !isHeldStep(r))].sort((a, b) => a.ReviewId - b.ReviewId));
   const waits = (g) => g.reviews.some((r) => r.Status === "pending");

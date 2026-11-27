@@ -19,8 +19,8 @@ test('Current follows only an explicit canonical migration or lineage alias', ()
 
 test("every lane the server knows has a word, a mark and a role the theme can colour", () => {
   // `stopped` is inserted, never a reorder: lane_index IS the rail's sort order (funnel._order).
-  // `theirs` follows `yours`: your task, waiting on somebody else (2026-09-25)
-  assert.deepStrictEqual(LANES, ["blocked", "time", "approve", "asked", "yours", "theirs", "queued", "stopped", "saved", "broken", "unjudged", "forgotten", "report", "fyi", "working"]);
+  // `theirs` follows `yours`: your task, waiting on somebody else (2026-09-25) - and `watching` after it: somebody else's to handle (2026-11-25)
+  assert.deepStrictEqual(LANES, ["blocked", "time", "approve", "asked", "yours", "theirs", "watching", "queued", "stopped", "saved", "broken", "unjudged", "forgotten", "report", "fyi", "working"]);
   // the owner's OWN work is a lane, not a kind override: a kind beats its lane (rowMeta), which is
   // right when the kind says more and wrong here - "on you" would have beaten "waiting to start" on
   // every queued row, because both carry kind 'todo' (the owner, 2026-09-16: "shouldn't this show
@@ -203,7 +203,7 @@ test("the waving agent is the one lane sized to be seen", () => {
   // "can't see the hand waving. used to say agent waving?" (the owner, 2026-09-11). The mark and
   // the word were both in the table; nothing wore them, because row_lane never said `blocked`.
   const meta = LANE_META.blocked;
-  assert.equal(meta.word, "agent waiting on you");          // ...the same word timelineState.waving uses
+  assert.equal(meta.word, "waiting for your input");          // ...the same word timelineState.waving uses
   assert.equal(meta.mark, "👋");
   assert.equal(meta.loud, true);
   // LOUD IS EXACTLY "this is on you". The two tables disagreed while they were two - the Timeline
@@ -220,7 +220,7 @@ test("the waving agent is the one lane sized to be seen", () => {
 // reply waiting for your yes were indistinguishable (the owner, 2026-09-22). These two words must
 // never collapse into one again, and they are the vocabulary's, not this rail's.
 test("a waving agent and a waiting reply are two different words", () => {
-  assert.equal(rowMeta({ lane: "blocked" }).word, "agent waiting on you");
+  assert.equal(rowMeta({ lane: "blocked" }).word, "waiting for your input");
   assert.equal(rowMeta({ lane: "approve" }).word, "ready to send");
   assert.notEqual(rowMeta({ lane: "blocked" }).word, rowMeta({ lane: "approve" }).word);
 });

@@ -66,12 +66,13 @@ class DeskTests(unittest.TestCase):
     def test_a_draft_with_no_mailbox_to_send_it_says_so(self):
         # the visual audit, 2026-11-13: "Drafted it on TQ-0002 - it waits for your Send" over a card whose only button was Connect email
         tid = self.s.create_task({'Title': 'chat', 'Kind': 'general', 'Status': 'open'}, 'owner')
-        made = {'taskId': tid + 1, 'ref': 'TQ-0099', 'draft': 'Hi Gail'}
+        made = {'taskId': tid + 1, 'ref': 'TQ-0099', 'draft': 'Hi Gail', 'reviewId': 7}
         params = {'channel': 'email', 'to': 'gail@northwind.example', 'about': 'the Q3 numbers'}
-        with mock.patch('taskuary.outbox.compose', return_value=made), mock.patch('taskuary.outbound.send_channels', return_value=[]):
+        with mock.patch('taskuary.outbox.compose', return_value=made), mock.patch('taskuary.capabilities.can_send_draft', return_value=False):
             said = concierge._made_now(self.s, tid, 'outbox', params)['say']
         self.assertIn('Connect email', said); self.assertNotIn('waits for your Send', said)
-        with mock.patch('taskuary.outbox.compose', return_value=made), mock.patch('taskuary.outbound.send_channels', return_value=['email']):
+        # ...and it reads what the card reads (walk 20: "nothing can send email yet" over a card whose Send worked - a report's send list said so)
+        with mock.patch('taskuary.outbox.compose', return_value=made), mock.patch('taskuary.outbound.send_channels', return_value=[]),              mock.patch('taskuary.capabilities.can_send_draft', side_effect=lambda st, rid: rid == 7):
             self.assertIn('waits for your Send', concierge._made_now(self.s, tid, 'outbox', params)['say'])
 
     def test_a_name_with_its_address_is_that_address(self):
@@ -105,7 +106,7 @@ class DeskTests(unittest.TestCase):
 
     def test_a_setting_opens_its_group_with_the_knob_named(self):
         out = self._turn('setting.set', label='sort new mail with AI', value='off')
-        self.assertTrue(out['open'].startswith('#settings=config&group=How%20mail%20is%20sorted&key=intent_classify_enabled'), out['open'])
+        self.assertTrue(out['open'].startswith('#settings=config&group=Which%20AI%20does%20what&key=intent_classify_enabled'), out['open'])
         self.assertIn('Sort new mail with AI', out['say']); self.assertNotEqual(self.s.get_settings()['intent_classify_enabled'], '0')
 
     def test_a_connection_opens_its_card(self):
@@ -209,7 +210,7 @@ class ActsTests(unittest.TestCase):
     def test_a_setting_by_label_is_validated_against_the_schema(self):
         done = concierge.run_proposal(self.s, self._turn('setting.set', label='sort new mail with AI', value='off')['proposal'])
         self.assertEqual(self.s.get_settings()['intent_classify_enabled'], '0')
-        self.assertIn('Sort new mail with AI (How mail is sorted): off', concierge.receipt(self.s, done))
+        self.assertIn('Sort new mail with AI (Which AI does what): off', concierge.receipt(self.s, done))
         bad = concierge.run_proposal(self.s, self._turn('setting.set', setting='poll_minutes', value='often')['proposal'])
         self.assertEqual(bad['status'], 'error'); self.assertIn('takes a number', bad['error'])
         self.assertEqual(self.s.get_settings()['poll_minutes'], '10')

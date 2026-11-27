@@ -38,7 +38,6 @@ class Base(unittest.TestCase):
                         mock.patch.object(wrapup, 'resolution_text', return_value='Fixed the cron user.'),
                         mock.patch.object(wrapup, 'finish', return_value={'drafting': False}),
                         mock.patch('taskuary.proposals.collect', return_value=[]),
-                        mock.patch('taskuary.playbooks.draft', return_value=None),
                         mock.patch('taskuary.handbook.enabled', return_value=False)]
         for p in self.patches: p.start(); self.addCleanup(p.stop)
     def tearDown(self): term.SESSIONS.clear(); term.SESSIONS.update(self._sessions)
@@ -120,8 +119,6 @@ class ExplicitFinishTests(Base):
                 mock.patch.object(cli, '_post', return_value=(None, out)), contextlib.redirect_stdout(printed):
             cli.main()
         self.assertEqual(printed.getvalue().strip(), out['says']); self.assertNotIn('task closed', printed.getvalue())
-        line = selfclose.owner_closes_line()
-        self.assertIn('never say you closed, marked done or reopened it', line)
 
     def test_a_second_finish_for_the_same_run_does_nothing_twice(self):
         term.SESSIONS['run1'] = live(self.tid)
@@ -192,6 +189,3 @@ class NoReplyTests(Base):
         term.SESSIONS['run1'] = live(self.tid)
         selfclose.declare(self.s, self.tid, 'fixed the cron', 'agent')
         self.assertFalse(wrapup.finish.call_args.kwargs.get('no_reply'))
-
-    def test_the_agent_is_told_the_flag_exists(self):
-        self.assertIn('--no-reply', selfclose.SEED_LINE)

@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { bareAddresses, deliveryCc,deliveryFiles, deliveryMeta, deliveryTo, needsAddress, replyContext, sentTo } from "../src/replyDelivery.js";
+import { bareAddresses, deliveryCc,deliveryFiles, deliveryMeta, drawnEnvelope, deliveryTo, needsAddress, replyContext, sentTo } from "../src/replyDelivery.js";
 
 const deliver = (obj) => ({ Deliver: JSON.stringify(obj) });
+
+// red team round 6: the press named only the To it drew - a copy, a subject, a mailbox or a file changed since went under the words he read
+test("a press carries the whole envelope its card drew, each file by its content", () => {
+  const r = deliver({ channel: "email", to: ["erin@northwind.example"], cc: ["gail@northwind.example"], subject: "Q3 figures", mailbox: "alex@northwind.example",
+    seen: 4, attachments: [{ name: "q3.xlsx", path: "C:/x/q3.xlsx", size: 9, sha256: "ab12" }] });
+  assert.deepEqual(drawnEnvelope(r), { to: ["erin@northwind.example"], cc: ["gail@northwind.example"], subject: "Q3 figures", mailbox: "alex@northwind.example",
+    attachments: [{ name: "q3.xlsx", sha256: "ab12" }] });
+  assert.deepEqual(drawnEnvelope({}), { to: null, cc: null, subject: null, mailbox: null, attachments: [] });
+});
 
 test("a missing, empty or broken Deliver blob reads as no envelope", () => {
   assert.deepEqual(deliveryMeta(null), {});
@@ -93,7 +102,7 @@ test("the card holds Send and opens To while the address is missing", async () =
   const { readFileSync } = await import("node:fs");
   const rd = readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
   assert.match(rd, /needsTo && \[no\("approve"\), no\("send_close"\), no\("anyway"\)\]\.includes\(v\.id\) \? \{ \.\.\.v, disabled: true/);
-  assert.match(rd, /needs=\{needsTo\}/);
+  assert.match(rd, /needs: needsTo/, "its To field asks for the address");
 });
 // THE RECEIPT NAMES EVERYONE IT WENT TO (the walk, 2026-11-17): a mail to Erin copying Gail read "To erin@" on its sent card while the agent
 // said it went to both. The To box keeps the To alone (its save is the To); what went - the sent card and the line at the press - names the Cc too.
@@ -106,7 +115,19 @@ test("what went names the copied, as the agent says it; the To line keeps the To
   assert.equal(sentTo(deliver({ to: ["erin@northwind.example"] })), "erin@northwind.example");
   const { readFileSync } = await import("node:fs"), src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
   assert.match(src("replyDelivery.js"), /export const sentCardOf = [^\n]*\n[^\n]*to: sentTo\(review\)/);   // ...one reading of a sent card, wherever drawn
-  assert.match(src("TaskPage.jsx"), /<SentCard \{\.\.\.sentCardOf\(r\)\}/);
+  assert.match(src("TaskPage.jsx"), /<SentReview \{\.\.\.sentCardOf\(r\)\}/);
   assert.match(src("ReviewDecision.jsx"), /said: verb === "approve" \? \{[^}]*to: sentTo\(r\)/);
 });
 
+
+test("versions of one letter are a pick on its one card: the box holds one, a pick puts another in, his own words say so", async () => {
+  // walk 22 (2026-11-25): "Yes - Thursday" and "No - keep Friday" stood as one card holding only the last
+  const { versionPick, versionsOf } = await import("../src/replyDelivery.js");
+  const vs = versionsOf({ Versions: JSON.stringify(["Yes - Thursday.", "No - Friday."]) });
+  assert.deepEqual(vs, ["Yes - Thursday.", "No - Friday."]); assert.deepEqual(versionsOf({ Versions: null }), []); assert.deepEqual(versionsOf({ Versions: "[\"one\"]" }), []);
+  let picked = null; const [f] = versionPick(vs, "Yes - Thursday.", true, (t) => { picked = t; });
+  assert.equal(f.type, "choice"); assert.equal(f.value, 0); assert.deepEqual(f.choices.map((c) => c.label), ["Version 1 of 2", "Version 2 of 2"]);
+  f.onChange("1"); assert.equal(picked, "No - Friday.");
+  assert.deepEqual(versionPick(vs, "Yes, but at 3.", true, () => {})[0].choices.at(-1), { value: "", label: "Your words" });
+  assert.deepEqual(versionPick([], "x", true, () => {}), []);
+});

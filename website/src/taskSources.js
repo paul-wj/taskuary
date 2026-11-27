@@ -1,11 +1,11 @@
 // THE TASK SECTION'S FACTS (the redesign of section 1, 2026-10-16): what triage decided, as read-only pills in the header,
 // and where the task came from, as conversations - pure, so node --test reads them without React or MUI.
-import { assignedAgent } from "./agentIdentity.js";
 import { routeIntent, routeWhy } from "./triageVerdict.js";
 import { level } from "./priority.js";
 import { t } from "./i18n.js";
 import { repoLabel } from "./repoNames.js";
 import { CATALOGUE } from "./connectorCatalog.js";
+import { senderName } from "./personName.js";
 
 const CHANNEL_NAMES = { email: "Email", whatsapp: "WhatsApp", telegram: "Telegram", slack: "Slack", teams: "Teams", github: "GitHub",
   monday: "Monday", jira: "Jira", linear: "Linear", imessage: "iMessage", discord: "Discord", report: "Report", assistant: "Assistant",
@@ -19,7 +19,7 @@ const CHATS = new Set(["whatsapp", "teams", "slack", "telegram", "imessage", "di
 export const isChat = (ch) => CHATS.has(ch);
 
 export const isMine = (m) => m?.Status === "context" || m?.Direction === "out" || !!m?.mine;
-export const senderOf = (m) => (isMine(m) ? t("You") : m?.FromName || m?.FromEmail || channelName(m?.Channel));
+export const senderOf = (m) => (isMine(m) ? "You" : senderName(m) || channelName(m?.Channel));
 const oneLine = (s) => String(s || "").replace(/\s+/g, " ").trim();
 // ...cut on a word, never mid-word ("qualifying donor" stood as the end of a sentence, 2026-10-28)
 const clip = (s, n) => s.length <= n ? s : `${s.slice(0, n).replace(/\s+\S*$/, "")}…`;
@@ -168,7 +168,7 @@ export function askLine(text, max = 220) {
 }
 
 // WHAT TRIAGE DECIDED, as facts you read - never a control (the owner, 2026-10-16: "why are there dropdowns by the triage results?
-// you can't change it"). The task row is the live answer for who, profile, repository and priority; the verdict names the intent.
+// you can't change it"). The task row is the live answer for who, repository and priority; the verdict names the intent.
 // in plain words: "Who does it: an agent · general" was the app's own bookkeeping read out to a finance user (2026-10-17 audit)
 const INTENT = { task: "task", reply_only: "reply", watch: "watch", fyi: "fyi" };   // TaskPage.sortedLine reads these ids into its own words
 const WHO = { general: "an agent", coding: "a coding agent" };
@@ -179,6 +179,9 @@ const STARTED_BY = { schedule: "its schedule", manual: "you (Run now)", assistan
 // WHERE A TASK CAME FROM, in plain words: "from email · created 1m ago by triage" named the machinery (the walk's WORDS, 2026-10-17).
 // The sorter that made it is "sorted", the owner is "you", anything else just made it.
 const SORTERS = new Set(["triage", "router", "routing", "classifier"]), OWNER = new Set(["owner", "manual", "you", "user"]);
+// ...a task he made himself (New, a line he typed): never someone else's to watch (the owner, 2026-11-25: "If you create a task not sure we need Watch it")
+export const madeByHim = (task = {}) => { const by = String(task?.CreatedBy || "").trim().toLowerCase(), src = String(task?.Source || "").trim();
+  return !SORTERS.has(by) && (OWNER.has(by) || !src || src === "manual"); };
 export function madeLine(task = {}, ago = "") {
   const by = String(task?.CreatedBy || "").trim().toLowerCase(), src = String(task?.Source || "").trim();
   const how = SORTERS.has(by) ? t("sorted {time}", { time: ago }) : OWNER.has(by) || !src || src === "manual" ? t("made by you {time}", { time: ago }) : t("made {time}", { time: ago });
@@ -209,7 +212,6 @@ export function headerFacts({ verdict = null, route = null, task = {}, workflow 
   const intent = INTENT[said] || "";
   // the owner's pick, else the coding agent's own (use_repo, repochoice.py) - triage names none any more (the owner, 2026-11-06)
   const repo = kind === "coding" ? repoTag(task?.Tags) || repoTag(task?.Tags, "agent-repo") || "" : "";
-  const profile = kind === "general" ? assignedAgent(task?.Assignee) || verdict?.profile || "" : "";
   const pri = level(task?.Priority);
   const by = run ? startedBy(task, workflow) : "";
   return {
@@ -224,8 +226,7 @@ export function headerFacts({ verdict = null, route = null, task = {}, workflow 
       // ...a run of steps with no agent step is done by those steps (workflows.of_task by_code), not by the agent its kind names
       run && workflow?.by_code ? { key: "who", label: "Who does it", value: "its steps", tone: "agent" }
         : { key: "who", label: "Who does it", value: WHO[kind] || "yours", tone: WHO[kind] ? "agent" : "" },
-      profile && { key: "profile", label: "Agent", value: profile },
-      repo && { key: "repo", label: "Repository", value: repoLabel(repo), mono: true },
+      repo && { key: "repo", label: "Repository", value: repo, mono: true },
       // a start that stopped on "which repository?" (funnel.HELD_REPO) says so where the repository would be; the pick is on the bar
       !repo && kind === "coding" && /(?:^|[\s,])held:repo(?:$|[\s,])/.test(String(task?.Tags || "")) && { key: "repo", label: "Repository", value: "none - not started", tone: "alert" },
       { key: "priority", label: "Priority", value: pri, tone: pri === "urgent" ? "alert" : pri === "important" ? "info" : "" },

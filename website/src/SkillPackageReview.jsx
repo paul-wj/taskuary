@@ -56,7 +56,7 @@ export function SkillPackageFiles({ pack, kind, source, digest, baseDigest = nul
   </Box>;
 }
 
-export default function SkillPackageReview({ generationId, onChanged, onOpenTask }) {
+export default function SkillPackageReview({ generationId, onChanged, onOpenTask, readOnly = false }) {
   useLocale();
   const [record, setRecord] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false), [feedback, setFeedback] = useState('');
   const load = useCallback(async () => {
@@ -85,7 +85,7 @@ export default function SkillPackageReview({ generationId, onChanged, onOpenTask
   };
   const pack = record?.package;
   const blocked = (pack?.validation || []).some(v => v.required && v.state !== 'passed');
-  const actionable = record && ['needs_review', 'failed', 'interrupted'].includes(record.state);
+  const actionable = !readOnly && record && ['needs_review', 'failed', 'interrupted'].includes(record.state);
   return <Box data-tq-skill-generation={generationId} sx={{ minWidth: 0 }}>
     {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
     {!record && !error && <CircularProgress size={18} />}

@@ -253,7 +253,7 @@ def collect(store, task_id):
         queued = proposals.queue(store, task_id, {'action': 'publish_skill', 'generation_id': generation['id'],
             'digest': detail['digest'], 'base_digest': generation.get('base_digest')}, 'skill-library')
         if not queued: raise ValueError('the Skill publication review could not be created')
-        current = state.update(store, 'generation', generation['id'], {'review_id': queued['reviewId']})
+        current = state.get(store, 'generation', generation['id'])
         current = _hold_finished(store, current)
         state.notify(store, task_id=task_id)
         return current

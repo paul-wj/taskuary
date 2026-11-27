@@ -32,6 +32,9 @@ DIGEST_AI_CHARS = 80000
 # places must agree on it: the composer writes it, and the routing judge cuts at it.
 RAW_MARK = '\n\n--- raw data ---\n'
 SUMMARY_TOKENS = 1500     # a report summary is prose, not a triage verdict - give it room
+# what a run's record keeps of what its model read: 30,000 cut the Advisor's look short once it moved to the normal model (the owner,
+# 2026-11-24) - four times that, as its ceiling rose (lookout.RUN_TOKENS)
+INPUTS_KEPT = 120_000
 
 
 def row_limit(cfg):
@@ -134,10 +137,14 @@ CONNECTION_KEYS = frozenset({'base_url', 'site', 'account', 'gateway', 'server',
                              'consumer_secret', 'token_id', 'tenant', 'org_uuid', 'cert_file', 'key_file',
                              # ...and WHAT PROGRAM a card starts (mcp.py's stdio server): an agent's `cmd`/`env` replaced the owner's
                              # server with a command of its choosing, spawned to list its tools before any gate (2026-11-18)
-                             'cmd', 'env'})
+                             'cmd', 'env',
+                             # ...and a SQL Server card's other ways to say where (mssql.py, round 5): a tool call's `dsn` opened any database
+                             # file on this computer - Taskuary's own, every card's secret in it - and `driver` or `auth` rewrote the string
+                             'dsn', 'driver', 'auth'})
 # ...save where one of those names is the executor's WHAT: a page reader's `url` is the page it reads (its key goes to its own provider,
 # never there) - stripped, run_system {"type": "reader", "url": ...} answered "no url to read" every time
-ASKED = {'reader': {'url'}, 'firecrawl': {'url'}, 'scrapingbee': {'url'}}
+# ...and a QuickBooks bill's `account` is the expense account it posts to: stripped, every agent's bill answered "no expense account given"
+ASKED = {'reader': {'url'}, 'firecrawl': {'url'}, 'scrapingbee': {'url'}, 'quickbooks_bill': {'account'}, 'quickbooks_expense': {'account'}}
 # ...and the other way: where a name that is a WHAT elsewhere (a Redis or Robinhood call's `args`) is the card's own place - an MCP stdio
 # server's `args` are its command line; the tool's own arguments are `tool_args`
 PLACED = {'mcp': {'args'}}
@@ -352,27 +359,28 @@ def reads_said(reads: dict) -> str:
 
 
 def run_agent(cfg):
-    """{"agent": "researcher", "skill": "weekly-user-review", "prompt": "...", "cwd": "C:/repo", "model": "..."} -
-    the AI itself as the source: a coding CLI agent (Connections -> AI CLI agents) runs your saved
+    """{"skill": "weekly-user-review", "prompt": "...", "cwd": "C:/repo", "model": "..."} -
+    the AI itself as the source: the AI Settings names runs your saved
     SKILL (a slash command - "/weekly-user-review") and/or a prompt, on the schedule, and what it
     answers is the report. "cwd" is optional: a project-level skill lives in its repo, a user-level
     one runs from anywhere. The AI summary pass is usually unnecessary - the agent already wrote prose.
 
     This is the "run my Claude skill every Monday" report: the agent researches, reads the systems
     it has tools for, and files what it found onto the Timeline like any other report."""
-    from .llm import make_cli_llm
+    from .llm import make_cli_llm, _scrub
     store = cfg.get('store')
     if store is None: raise RuntimeError('the agent source needs the store (run it through the reports pipeline)')
     skill, prompt = str(cfg.get('skill') or '').strip().lstrip('/'), str(cfg.get('prompt') or '').strip()
     if not skill and not prompt: raise RuntimeError('give the agent a skill (/name) or a prompt - or both')
     # A workflow is not a code change, so the CODING agent is the wrong thing to fall back to (the
     # owner, 2026-09-10: a workflow is not code, so it should not always go to the coding agent). An unnamed
-    # workflow runs on the default brain - a CLI tool, no profile - since default_agent is now the coding profile.
+    # workflow runs on the default brain - a CLI tool.
     from . import agents as hub_agents
-    # the agent it names, else the one resolver's CLI (agents.resolve_brain) - and with no CLI at all, the AI connection there is:
-    # an install with only an API card runs its reports too (the owner, 2026-10-21)
-    pick = '' if cfg.get('agent') else hub_agents.resolve_brain(store, 'coding')
-    name = str(cfg.get('agent') or (pick[4:] if pick.startswith('cli:') else '')).strip()
+    # the CLI it names (an old report's `agent`, saved when it named a brain), else the one resolver's (agents.resolve_brain) - and with no
+    # CLI at all, the AI connection there is: an install with only an API card runs its reports too (the owner, 2026-10-21)
+    own = str(cfg.get('agent') or '').strip()
+    pick = f'cli:{own}' if own in dict(hub_agents.connection_brains(store)) else hub_agents.resolve_brain(store, 'coding')
+    name = pick[4:] if pick.startswith('cli:') else ''
     # Agent-backed reports are read-only even when their source lives in a repository folder.
     # Only the Workflows door persists this explicit grant; executor type alone grants nothing.
     writes = cfg.get('access') == 'write'
@@ -381,17 +389,16 @@ def run_agent(cfg):
     # custom CLI. A skill that is not there remains the provider's normal `/skill-name` command.
     owned = None
     if skill:
-        from . import config
-        candidate = config.home() / 'skills' / skill / 'SKILL.md'
-        try: owned = candidate.read_text(encoding='utf-8') if candidate.is_file() else None
-        except OSError: owned = None
+        from . import skills
+        owned = skills.read(skill)
     # ...and a run that only looks can look at the web as well, so the files it may open are the report's own (web_reads): the
     # folder it names and the paths its prompt and skill name - which is why the skill is read ahead of the brain
     reads = None if writes else web_reads(cfg, f'{prompt}\n{owned or ""}')
     llm = None
     if name:
-        try: llm = make_cli_llm(store, name, cfg.get('model') or None, cwd=cfg.get('cwd') or None,
-                                cli_tools=writes, read_only=not writes, research=not writes, reads=reads)
+        # ...what it is asked scrubbed, as every brain's is (llm._Scrubbed): a CLI's instructions go by a road of their own, past run_cli's
+        try: llm = _scrub(make_cli_llm(store, name, cfg.get('model') or None, cwd=cfg.get('cwd') or None,
+                                       cli_tools=writes, read_only=not writes, research=not writes, reads=reads))
         except hub_agents.NoAI: llm = None
     if llm is None:
         api = pick if pick.startswith('connector:') else hub_agents.resolve_brain(store, 'general')
@@ -402,17 +409,6 @@ def run_agent(cfg):
     if llm is None:
         from . import words
         raise RuntimeError(f"{hub_agents.NO_AI} to run this report - connect one on {words.name('ai_apps')}")
-    # ...and it runs as THAT worker. A workflow pointed at `researcher` was getting the researcher's
-    # CLI and none of the researcher's rules, because this road never loaded an operator document at
-    # all. Only when the workflow NAMES its agent: an unnamed one keeps the behaviour it always had,
-    # so no existing workflow suddenly acquires a rules block it was never written against.
-    if str(cfg.get('agent') or '').strip():
-        from .terminal import rules_text
-        try: rules = rules_text(store, profile=name)
-        except Exception as e:
-            logger.debug(f'reports: no rules document for {name} - {e}')
-            rules = ''
-        if rules: prompt = (f'RULES ({name.upper()}.md): {rules}' + (f'\n\n{prompt}' if prompt else ''))
     ask = (f'TASKUARY SKILL /{skill}\n\n{owned}\n\nRUN INPUT\n{prompt}' if owned is not None
            else (f'/{skill}' + (' ' if prompt else '') if skill else '') + prompt)
     # Two runs twenty minutes apart came back as two different documents - 106 lines with a
@@ -551,16 +547,6 @@ def script_file(path) -> 'Path':
     return p
 
 
-def _kill_tree(p) -> None:
-    try:
-        if os.name == 'nt': spawn.run(['taskkill', '/PID', str(p.pid), '/T', '/F'], capture_output=True, timeout=15)
-        else:
-            import signal
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-    except Exception as e: logger.debug(f'python_script: the tree of {p.pid} was not killed - {e}')
-    try: p.kill()
-    except Exception: pass
-
 
 def script_rows(out: str):
     "The rows a script printed - a JSON array of objects, JSON lines, or a delimited table with a header - else None: it printed text."
@@ -611,11 +597,10 @@ def run_python_script(cfg):
             run_it.write_text(src, encoding='utf-8')
         # -I: no site of the user's, no PYTHON* variable, no script folder on the path - the script and the standard library
         p = spawn.popen([*script_python(), '-I', str(run_it)], cwd=tmp, env=script_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
-                        **({} if os.name == 'nt' else {'start_new_session': True}))
+                        stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')     # ...in a group of its own (spawn.popen)
         try: out, err = p.communicate(str(cfg.get('input') or ''), timeout=limit)
         except subprocess.TimeoutExpired:
-            _kill_tree(p)
+            spawn.end(p); p.kill()
             try: p.communicate(timeout=5)
             except Exception: pass
             raise RuntimeError(f'{name} ran past its {plural(limit, "second")} and was stopped')
@@ -949,6 +934,33 @@ def _lazy(module, fn):
     except Exception: run.__doc__ = f'{module}.{fn}'
     return run
 
+
+# A WRITE IS CHECKED AGAINST ITS SYSTEM BEFORE ITS CARD IS DRAWN (proposals.queue - one stage for every executor that declares one): type ->
+# check(cfg) -> the fields as they will go, each thing it names by NAME with its id (the card says the name, the write runs on the id). It
+# raises ValueError where the write cannot happen as asked (a vendor the books do not have): the agent is answered with that, and no card
+# stands. A check that cannot reach its system says nothing either way - the card stands as asked. A new write executor adds its own here
+CHECKS = {t: _lazy('quickbooks', 'check') for t in ('quickbooks_bill', 'quickbooks_expense')}
+def checked(store, p: dict) -> dict:
+    "`p` (a run_tool proposal) as its system's own check reads it; `p` itself where its type declares none or the system cannot be read now."
+    if not (fn := CHECKS.get(str(p.get('type') or ''))): return p
+    try: cfg = resolve_cfg(store, p)
+    except Exception: return p                 # ...not connected: its card says so, with Connect
+    try: return {**p, **fn(cfg)}
+    except ValueError: raise
+    except Exception as e:
+        from loguru import logger
+        logger.debug(f"reports: {p.get('type')} was not checked against its system before its card - {e}"); return p
+
+
+def pair(res) -> tuple:
+    """AN EXECUTOR'S ANSWER AS (headline, body), WHICHEVER SHAPE IT GAVE: the pair itself, or the {rows, columns} a connector's own module
+    returns. Every reader of an executor reads it here - unpacked as a pair, a dict gave its two KEYS (walk 22, 2026-11-25: an agent's read of
+    linkedin_me answered headline "rows", output "columns"; before it, a LinkedIn post's card)."""
+    if not isinstance(res, dict): head, body = res; return head, body or ''
+    rows = res.get('rows') or []
+    return str(res.get('headline') or f"{len(rows)} row{'s' * (len(rows) != 1)}"), json.dumps(rows, default=str)
+
+
 REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             # the web as a source: plain REST, a key on a card, nothing new in the exe
             'exa': _research('exa'), 'tavily': _research('tavily'),
@@ -1070,7 +1082,7 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             # files & sheets people already keep: a Google Sheet, a SharePoint list, a file in a library
             'google_sheets': _lazy('sheets', 'run_google_sheets'),
             'sharepoint_list': _lazy('sharepoint', 'run_sharepoint_list'), 'sharepoint_file': _lazy('sharepoint', 'run_sharepoint_file'),
-            # ...and an agent's file saved into a library or onto the owner's OneDrive: a write that reaches nobody (scopes.QUIET_WRITES)
+            # ...and an agent's file saved into a library or onto the owner's OneDrive: a write, so an agent's waits for his press (scopes.reaches)
             'sharepoint_save': _lazy('sharepoint', 'run_sharepoint_save'), 'onedrive_save': _lazy('sharing', 'run_onedrive_save'),
             # the knowledge base: documents indexed in this store (knowledge.py) - searched, and refreshed on a schedule
             'kb_search': _lazy('knowledge', 'run_kb_search'), 'kb_reindex': _lazy('knowledge', 'run_kb_reindex'),
@@ -1166,14 +1178,17 @@ def _connector(store, typ, connector_id=None, with_secret=False):
     return c if c and c.get('Type') == typ else None
 
 
-def tool_card(store, t: str, connector_id=None):
+def tool_card(store, t: str, connector_id=None, tid=None):
     """THE card an agent's call to tool `t` runs on: the one it names (None when that number is no card), else the one of its type that
     is on and a tool - never the first row, which read one company's books as another's, or refused "not an agent tool" beside the
-    card that is one. With none such, the first of the type, for the refusal that says why; ValueError naming them when several are."""
+    card that is one. With none such, the first of the type, for the refusal that says why; ValueError naming them when several are.
+    `tid`: the task whose agent calls - of several, the ones its task may use (workstreams.may_use): a card for each profile is no choice."""
     from .store import roles_of
+    from .workstreams import may_use
     if connector_id not in (None, ''): return store.get_connector(int(connector_id))
     rows = store.connectors_by_type(card_of(t))
     live = [c for c in rows if c.get('Active') and 'tool' in roles_of(c)]
+    if len(live) > 1: live = [c for c in live if may_use(store, tid, c['ConnectorId'])] or live
     if len(live) > 1:
         raise ValueError(f'{len(live)} {card_of(t)} connections are agent tools - say which with connector_id: '
                          + ', '.join(f"{c.get('Name') or c['Type']} ({c['ConnectorId']})" for c in live))
@@ -1226,10 +1241,9 @@ def azure_connection(store, connector_id=None) -> dict:
 
 
 def intacct_connection(store, connector_id=None) -> dict:
-    """Five credentials, of which exactly one is a secret worth hiding: the API USER's
-    password. The sender pair identifies the integration and the company id names the tenant -
-    neither is a password to this company's books, and burying them write-only would only mean
-    nobody can ever check the sender id for a typo."""
+    """Five credentials, two of them passwords: the API user's (the card's Secret) and the sender's
+    (sealed in the config, write-only - the card declares it, connectorcatalog.json). The ids stay
+    readable on the card, so a typo in the sender id can still be seen."""
     return _card(store, 'intacct', 'user_password', connector_id)
 
 
@@ -1471,10 +1485,10 @@ AI_SYSTEM = ('You summarize scheduled report data for a busy operator. Follow th
              'may be cut mid-way) - never describe a capped or truncated slice as complete, and say '
              'plainly when something the instruction asks about is not present in the rows you got.')
 
-# The rows come back as a spreadsheet and a chart, and the model that just read every row knows
-# which column is the measure better than a heuristic hunting for "all numeric" does.
-CHART_SYSTEM = ('\n\nThe rows are also turned into a bar chart for the reader. If ONE column is a '
-                'measure worth plotting, end your answer with a single line:\n'
+# The rows come back as a spreadsheet, and as a chart only when the answer asks for one (artifacts.chart_asked): the model that
+# just read every row knows whether a picture answers the instruction, and which column is the measure.
+CHART_SYSTEM = ('\n\nA bar chart of the rows is drawn for the reader only if ONE column is a '
+                'measure worth plotting and you end your answer with a single line:\n'
                 'CHART: <value column> | <label column> | <short chart title>\n'
                 'Use the exact column names from the data. Omit the line entirely when the rows are '
                 'not worth plotting (no measure, one row, or every value the same) - a chart of '
@@ -1591,11 +1605,11 @@ JUDGE_AI = 'judge_ai'       # the app-wide "where runs go" brain; blank means th
 
 
 def judge_memory(store, cfg: dict = None) -> str:
-    """What the owner has said they care about - and do not - as the routing judge reads it: the whole of LEARNED.md, as triage reads
+    """What the owner has said they care about - and do not - as the routing judge reads it: the whole memory, as triage reads
     it (the owner, 2026-10-27: "triage needs the entire thing"). The judge read no memory at all, so a report finding about a process the owner had said they
     no longer care about went on to triage and made a task (the owner, 2026-10-27: "if I don't care about something the system knows it")."""
-    from . import learned_cut
-    try: return learned_cut.whole(store, 'triage', target=f"report:{(cfg or {}).get('title') or ''}")
+    from . import memory
+    try: return memory.whole(store, 'triage', target=f"report:{(cfg or {}).get('title') or ''}")
     except Exception as e:
         logger.debug(f'the routing judge reads no memory this run: {e}')
         return ''
@@ -1726,46 +1740,6 @@ def headline_from(summary: str, fallback: str) -> str:
 
 UNCHANGED = 'Nothing new since the last run: its sources returned the same rows, so the AI summary was not asked for again.'
 
-# A SMALL CHANGE KEEPS THE LAST REPORT (the owner, 2026-11-11: "if it's only a small thing can we use the same report and say only
-# these things were updated"). Beside the data's hash a scheduled report keeps the summary it last WROTE and the rows it wrote it
-# from (`<mark>:kept`). A run whose rows differ from those by a few lines lands as that summary under an "Updated since HH:MM"
-# list of the changed rows, built here by plain code - no model. It is written again in full when the change is not small, when
-# updates have stacked up on one summary, when a day has passed, or when its instruction changed - and says which it was.
-SMALL_ROWS = 6        # rows new + gone since the summary was written: past ~3 changed rows its sentences describe data that has moved
-MAX_UPDATES = 3       # small updates stacked on one summary before it is written again, however small each was
-KEEP_CHARS = AI_CHARS  # rows are kept for comparing only up to what the model was shown: past that the summary never saw the rest
-
-
-def _prompt_key(cfg) -> str: return hashlib.sha256(str(cfg.get('ai_prompt') or '').encode('utf-8', 'replace')).hexdigest()[:16]
-def _rows(text) -> list: return [l.strip() for l in str(text or '').splitlines() if l.strip()]
-
-
-def kept_report(store, mark: str) -> dict:
-    "The summary a scheduled report last wrote, with what it was written from - {} when there is none to stand."
-    try: k = json.loads(store.get_setting(f'{mark}:kept') or '{}')
-    except ValueError: k = {}
-    return k if isinstance(k, dict) and k.get('ai') and k.get('at') else {}
-
-
-def since_kept(kept: dict, cfg: dict, summary: str, now: datetime = None) -> tuple:
-    """(small, words) for this run's rows against the kept summary's: small True -> `words` is the "Updated since" block that
-    stands above the kept summary; False -> `words` is why it is written again ('' with nothing kept to compare)."""
-    from collections import Counter
-    if not kept: return False, ''
-    at, was = str(kept['at']), kept.get('rows')
-    day, clock = at[:10], at[11:16]
-    if kept.get('prompt') != _prompt_key(cfg): return False, 'Rebuilt: its instruction changed.'
-    if was is None or len(summary) > KEEP_CHARS: return False, ''                      # too long to compare row by row: written each time
-    if day != (now or datetime.now()).strftime('%Y-%m-%d'): return False, f'Rebuilt: the last full report was from {day}.'
-    old, new = Counter(_rows(was)), Counter(_rows(summary))
-    added, gone = list((new - old).elements()), list((old - new).elements())
-    n = len(added) + len(gone)
-    if n > SMALL_ROWS: return False, f'Rebuilt: {n} rows changed since {clock}.'
-    if int(kept.get('updates') or 0) >= MAX_UPDATES: return False, f'Rebuilt: {MAX_UPDATES} small updates had stacked up on the report from {clock}.'
-    lines = [f'new: {l[:300]}' for l in added] + [f'gone: {l[:300]}' for l in gone] or ['the same rows, in another order']
-    return True, (f"Updated since {clock}: {plural(n, 'row')} changed. The report below is the one written at {clock}; "
-                  f"the AI was not asked again.\n" + '\n'.join(lines))
-
 
 def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = None, mark: str = None):
     """Run the executor(s), then (optionally) the AI pass: cfg['ai_prompt'] + a configured
@@ -1813,13 +1787,8 @@ def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = 
     from .brainroute import auto_held
     if mark and cfg.get('ai_prompt') and llm and (held := auto_held(store)):
         return head, f'No AI summary this run: {held}.{RAW_MARK}{summary[:4000]}'
-    # ...and a few rows' difference from what the last summary was written from: that summary stands, under the rows that changed
-    kept = kept_report(store, mark) if seen and cfg.get('ai_prompt') and llm else {}
-    small, says = since_kept(kept, cfg, summary)
-    if small:
-        store.set_setting(mark, seen, 'report')
-        store.set_setting(f'{mark}:kept', json.dumps({**kept, 'updates': int(kept.get('updates') or 0) + 1}), 'report')
-        return headline_from(kept['ai'], head), f"{says}\n\n{kept['ai']}{RAW_MARK}{summary[:4000]}"
+    # ...and rows that changed AT ALL are answered again: an earlier answer under a list of the changed rows read as three unrelated
+    # pieces, none of them saying whether the check passed (his live app, 2026-11-25 - it replaced the 2026-11-11 "updated since" road)
     if cfg.get('ai_prompt') and llm:
         try:
             # a prompt that names a source gets that source's rows in its place; the rest, and a
@@ -1842,12 +1811,8 @@ def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = 
         # report exists for the summary (the owner, 2026-09-27)
         if not ai: raise RuntimeError('the model returned an empty summary - it may have spent its budget thinking. '
                                       'Try a shorter prompt, or a non-reasoning model for report summaries.')
-        if seen:
-            store.set_setting(mark, seen, 'report')
-            store.set_setting(f'{mark}:kept', json.dumps({'at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'ai': ai, 'updates': 0,
-                'prompt': _prompt_key(cfg), 'rows': summary if len(summary) <= KEEP_CHARS else None}), 'report')
-        # ...written again over a kept one says why, under the summary (the first line stays the summary's own: headline_from)
-        return headline_from(ai, head), f"{ai}{f'{chr(10) * 2}{says}' if says else ''}{RAW_MARK}{summary[:4000]}"
+        if seen: store.set_setting(mark, seen, 'report')
+        return headline_from(ai, head), f"{ai}{RAW_MARK}{summary[:4000]}"
     if cfg.get('ai_prompt') and not llm:
         from . import words
         return head, f"{NO_BRAIN} - [connect one under {words.name('ai')}]({words.href('ai_apps')}) and it is written at its next run.{RAW_MARK}{summary}"
@@ -2195,7 +2160,7 @@ def run_report_source(store, src: dict, llm=None, trigger: str = 'schedule') -> 
     if out.get('flow'): return out
     rec.update({'ms': int((time.time() - t0) * 1000), 'subject': out.get('subject'), 'message_id': out.get('message_id'),
                 'failed': bool(out.get('failed', run_failed(out.get('subject')))), 'files': out.get('files'),
-                'said': out.get('said'), 'reviewed': out.get('reviewed'), 'inputs': str(out.get('inputs') or '')[:30000],
+                'said': out.get('said'), 'reviewed': out.get('reviewed'), 'inputs': str(out.get('inputs') or '')[:INPUTS_KEPT],
                 'lines': out.get('lines') or [], 'summary': str(out.get('summary') or '')[:2000]})
     # A run that fails by RETURNING a FAILED subject never raised, so the except branch above - the only
     # place that filled `error` - never ran, and the row was written Failed=1 with Error NULL. Everything
@@ -2238,6 +2203,17 @@ def _run_report_source(store, src: dict, cfg: dict, llm=None, trigger: str = 'sc
         from . import dashboards
         return dashboards.file_run(store, src, cfg, trigger)
     logger.debug(f'report run: {title} ({cfg.get("type", "rest")}, ai={bool(cfg.get("ai_prompt"))})')
+    # A REPORT THAT WRITES TO A SYSTEM RUNS THAT WRITE ONLY WHERE HE ALWAYS APPROVED IT (the owner, 2026-11-25: "saved report can write on
+    # schedule if you authorize it on setup"): a write step he has not is a routine's write - its run is a task, and the write its card with
+    # "Always approve this step" on it (flow.grant); once pressed, its runs land here as every report's do
+    from . import flow
+    if flow.held_writes(store, src.get('SourceId'), cfg):
+        out = workflows.run(store, src, actor='schedule' if trigger == 'schedule' else 'owner', trigger=trigger)
+        if out.get('busy'):
+            return {'message_id': None, 'subject': f"{title} - not started: {out['ref']} is still working", 'files': 0, 'said': 0,
+                    'summary': f"the last run, {out['ref']}, is still working - one run at a time", 'task_id': out['task_id']}
+        return {'message_id': None, 'subject': f"{title} → {out['ref']} (its write waits for your yes)", 'files': 0, 'said': 0, 'flow': True,
+                'summary': f"its write waits for your yes on {out['ref']} ({trigger})", 'task_id': out['task_id']}
     if cfg.get('type') == 'zoho_monthly_invoices':
         from .invoice_workflow import run_report
         return run_report(store, src, cfg)
@@ -2249,8 +2225,10 @@ def _run_report_source(store, src: dict, cfg: dict, llm=None, trigger: str = 'sc
         from . import assistant
         from . import assistantblocks as blk
         chosen = blk.resolve(store, cfg)
-        # the day's job ideas land BEFORE the clock's look, which carries them (assistant.job_ideas: once a day, by its own rule)
-        if trigger == 'schedule': assistant.job_ideas(store, wait=True)
+        # the day's job ideas land BEFORE the clock's look, which carries them (assistant.job_ideas: once a day, by its own rule) - and before
+        # Run now, asked whole: the post's ideas come only from that look, and Run now never ran it (walk 18: "nothing new to post" all walk,
+        # while the post's own notes saw a price read ten times too high)
+        assistant.job_ideas(store, wait=True, asked=trigger != 'schedule')
         out = assistant.run(store, report_llm(store, cfg, llm), force=True, instruction=cfg.get('ai_prompt'),
                             watch_source_ids=cfg.get('watch_source_ids') or [], watch_sources=cfg.get('watch_sources') or [],
                             systems_only=not blk.reads_taskuary(chosen), blocks=chosen,

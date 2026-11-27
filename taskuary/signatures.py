@@ -82,8 +82,41 @@ def agent_signed(store, rv: dict, text: str, msg: dict = None) -> str:
     from .responder import chat_said, own_names, signed
     text = str(text or '').strip()
     if not text: return text
-    if is_email(store, rv, msg): return signed(text, for_review(store, rv, msg), own_names(store))
-    return chat_said(store, text)
+    if not is_email(store, rv, msg): return chat_said(store, text)
+    sig = for_review(store, rv, msg)
+    out = signed(text, sig, own_names(store))
+    if (rv or {}).get('ReviewId'): _say_ending(store, rv['ReviewId'], replaced(text, out, sig))
+    return out
+
+
+ENDING, _SEP = 'Your saved signature replaced the ending the agent wrote', ' · '
+def replaced(text: str, out: str, sig: str) -> str:
+    "The ending the agent wrote that the signer took off for the saved block - '' when it wrote none, or wrote the block itself."
+    from .chatformat import plain_text
+    mine = unsigned(text, sig)
+    words, kept = (plain_text(mine) or mine).split(), unsigned(out, sig).split()
+    return ' '.join(words[len(kept):]) if sig.strip() and len(words) > len(kept) and words[:len(kept)] == kept else ''
+
+
+def _say_ending(store, rid: int, gone: str):
+    """THE CARD SAYS WHERE ITS ENDING IS NOT THE AGENT'S (walk 6, 2026-11-23: the agent ended a letter as he asked, the signer put his saved block
+    on, and it left with his full name - said to the agent alone, never on the card he pressed). One line under the card's reason, on every
+    road that files an agent's email; the line a re-save left is replaced, never stacked."""
+    from . import words
+    was = str((store.get_review(rid) or {}).get('Reason') or '').split(_SEP + ENDING)[0]
+    now = was + (f'{_SEP}{ENDING} ("{gone[:80]}") - {words.name("replies")} changes it' if gone else '')
+    if now != str((store.get_review(rid) or {}).get('Reason') or ''): store.update_review_reason(rid, now)
+
+
+# THE SIGNATURE UNDER EVERY POST (the owner, 2026-11-26: a post went up ending with a lone word its agent wrote where his own footer belongs -
+# "It should be static"): Settings → Replies → Social post signature, put under a post's words as its card is built (proposals.queue), exactly as
+# saved and once - a post already ending with it is left as written. The card holds the result, so what he reads is what goes, and a later
+# change to the setting touches no card already raised. Blank: nothing is added.
+POST = 'post_signature'
+def post(store) -> str: return str(store.get_setting(POST) or '').strip()
+def post_signed(store, text) -> str:
+    t, sig = str(text or '').rstrip(), post(store)
+    return f'{t}\n\n{sig}' if t and sig and unsigned(t, sig) == t else str(text or '')
 
 
 def told(store) -> str:
@@ -95,16 +128,12 @@ def told(store) -> str:
     # ...AND A SIGN-OFF HE ASKS FOR BECOMES THE SAVED ONE (the walk, 2026-11-21: told "I sign every email 'Best, Alex'", Codex withdrew its own
     # card when the signer put "Alex Doyle" back, and left the email as prose with nothing to press): kept through remember (keep), never fought
     sig = ' / '.join(l.strip() for l in signature_for(store).splitlines() if l.strip())
-    return (f'HOW AN EMAIL IS SIGNED: Taskuary puts the owner\'s saved signature ("{sig[:200]}") under every email and takes your own sign-off '
-            f"off. When he tells you how he signs, keep it with remember, section signature, `note` the block itself as it goes under an email - its lines on lines of their own, never a sentence about it: it becomes the saved one ({words.name('replies')}) "
-            "for every email, the drafts waiting too.") if sig else ''
+    return f'HOW AN EMAIL IS SIGNED: Taskuary puts the owner\'s saved signature ("{sig[:200]}") under every email, in place of a sign-off of yours.' if sig else ''
 
 
 SIG_LINES, SIG_WIDTH = 6, 70          # a sign-off block's shape: name, title, company, a phone, a line or two more
-def keep(store, sig: str, actor: str = 'owner') -> str:
-    """HOW THE OWNER SIGNS, SAID TO ANY AGENT OR THE ASSISTANT, IS THE SAVED SIGNATURE (the walk, 2026-11-21: kept as a memory line, it never
-    reached a card - the signer reads Settings' Email signature, not the memory): the block signature_for puts under every email, its lines
-    as given ("Best,\nAlex"). The one it replaces is kept in the audit row."""
+def shape(sig: str) -> str:
+    "The signature block as it goes under an email, its lines as given - ValueError where it is no sign-off block."
     block = '\n'.join(l.strip() for l in str(sig or '').replace('\\n', '\n').strip().strip('"\'').splitlines() if l.strip())
     if not block: raise ValueError('say the signature, as it goes under an email')
     # ...AND ONLY A SIGN-OFF BLOCK IS ONE (round 4, 2026-11-22: "Training spend requires sign-off from Marcus Reed (...). Email signature: Alex."
@@ -114,6 +143,14 @@ def keep(store, sig: str, actor: str = 'owner') -> str:
         raise ValueError(f'not kept as the signature: a signature is the short block that goes under an email ("Best," then "Alex" on its own '
                          f'line) - at most {SIG_LINES} lines of {SIG_WIDTH} characters. Keep just that block with section signature, and any '
                          'other fact with remember in its own section')
+    return block
+
+
+def keep(store, sig: str, actor: str = 'owner') -> str:
+    """HOW THE OWNER SIGNS, SAID TO ANY AGENT OR THE ASSISTANT, IS THE SAVED SIGNATURE (the walk, 2026-11-21: kept as a memory line, it never
+    reached a card - the signer reads Settings' Email signature, not the memory): the block signature_for puts under every email, its lines
+    as given ("Best,\nAlex"). The one it replaces is kept in the audit row."""
+    block = shape(sig)
     was = str(store.get_setting('email_signature') or '')
     # ...AND THE DRAFTS WAITING FOR HIS SEND CARRY IT TOO (the fix1 walk, 2026-11-21: told the old draft kept the old sign-off, the agent asked
     # him "tell me if you want it set up again"): each email still unsent that ends with the block it had is re-signed - plain code, the

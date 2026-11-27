@@ -6,7 +6,8 @@ check?" had no answer, and finished work was silent. An ask IS a task, marked wi
 state is its rail lane in the rail's own words; a move into a lane that needs the owner, or its end, is said once. No
 memory store, no model call.
 """
-import hashlib, json, threading, time
+import json, threading, time
+from email.utils import parseaddr
 from datetime import datetime, timedelta
 
 from loguru import logger
@@ -100,7 +101,10 @@ def _title(t: dict) -> str:
     return s if len(s) <= TITLE_SAID else s[:TITLE_SAID - 1].rstrip() + '…'
 
 
-def _sig(text) -> str: return hashlib.sha1(str(text or '').strip().encode()).hexdigest()[:10]
+def _sig(store, rv) -> str:
+    "An email as a pick shows it - its words, who it goes to, what rides with it (verdicts.draft_revision: the words alone let its To be swapped)."
+    from . import verdicts
+    return verdicts.draft_revision(store, rv)
 
 
 def phone_text(store, t: dict, lane: str, says: str) -> tuple:
@@ -128,30 +132,31 @@ def phone_text(store, t: dict, lane: str, says: str) -> tuple:
                           + ('' if addr else ' - no address yet (reply with it, or drop it)') + (f' - "{subject}"' if subject else '')
                           + '\n' + str(rv.get('DraftText') or '').strip())
             if addr:
-                rows.append((f'Send to {who}', {'t': 'send', 'rid': rv['ReviewId'], 'sig': _sig(rv.get('DraftText'))})); ready.append(rv)
+                rows.append((f'Send to {who}', {'t': 'send', 'rid': rv['ReviewId'], 'sig': _sig(store, rv)})); ready.append(rv)
             else: rows.append((f'Drop the one to {who}', {'t': 'drop', 'tid': tid, 'slot': i['id']}))
         if len(ready) > 1:
             rows.append((f"Send {'both' if len(ready) == 2 else f'all {len(ready)}'} ready ones",
-                         {'t': 'sendall', 'sends': [[rv['ReviewId'], _sig(rv.get('DraftText'))] for rv in ready]}))
+                         {'t': 'sendall', 'sends': [[rv['ReviewId'], _sig(store, rv)] for rv in ready]}))
         reply = None if emails else store.waiting_on_owner(tid, ('draft', 'draft_reply'))
         if reply and str(reply.get('DraftText') or '').strip():
             blocks.append(str(reply['DraftText']).strip())
-            rows.append(('Send the reply', {'t': 'send', 'rid': reply['ReviewId'], 'sig': _sig(reply.get('DraftText'))}))
+            rows.append(('Send the reply', {'t': 'send', 'rid': reply['ReviewId'], 'sig': _sig(store, reply)}))
     rows.append((f'Open {task_ref(tid)}', {'t': 'open', 'key': f'task:{tid}'}))
     return '\n\n'.join(blocks) + '\n\n' + '\n'.join(f'{n} · {label}' for n, (label, _) in enumerate(rows, 1)), rows
 
 
 def send_picked(store, sends: list) -> str:
-    """A phone pick's send: each email exactly as it was shown - one rewritten since is not sent, but said."""
-    from . import verdicts
+    """A phone pick's send: each email exactly as it was shown - one rewritten since is not sent, but said. Pressed by the one press road
+    (card.press), so a thread that moved since stops it as it stops the desk's Send."""
+    from . import card, verdicts
     said = []
     for rid, sig in sends:
         rv = store.get_review(int(rid)) or {}
         to = ', '.join((json.loads(rv.get('Deliver') or '{}') or {}).get('to') or []) or 'the sender'
         if rv.get('Status') != 'pending': said.append(f'the one to {to} was {verdicts.already(rv)}'); continue
-        if sig and _sig(rv.get('DraftText')) != sig: said.append(f'the email to {to} changed since I showed it - not sent; open it to see it again'); continue
-        out = verdicts.decide(store, rv, 'approve')
-        said.append(f'Sent to {to}' if out.get('ok') and not out.get('send_error') else f"not sent to {to} - {out.get('send_error') or out.get('status')}")
+        if sig and _sig(store, rv) != sig: said.append(f'the email to {to} changed since I showed it - not sent; open it to see it again'); continue
+        got = card.press(store, int(rid), 'approve')
+        said.append(f'Sent to {to}' if got['ok'] else f"not sent to {to} - {got['did'].removeprefix('Not sent - ')}")
     return '. '.join(s[:1].upper() + s[1:] for s in said) + '.'
 
 
@@ -227,11 +232,11 @@ def _answer(store, tid: int) -> dict | None:
     return next((m for m in rows if not is_ours(m) and (not me or str(m.get('FromEmail') or '').lower() != me)), None)
 
 
-def _who(m: dict, first: bool = True) -> str:
-    """A person as the owner calls them: 'Erin' from "Blake, Erin" - or the address when there is no name."""
-    from .triage import person_name
-    n = person_name((m or {}).get('FromName'))
-    return (n.split()[0] if first else n) if n else str((m or {}).get('FromEmail') or 'them')
+def _who(m: dict, first: bool = True, store=None) -> str:
+    """A person as the owner calls them: 'Erin' from "Blake, Erin" - or, with no name, the address or the chat (waiton.person)."""
+    from .waiton import person, readable
+    n = person(m, store)
+    return (n.split()[0] if first else n) if n else readable((m or {}).get('FromEmail')) or 'them'
 
 
 def _reply(store, t: dict) -> str | None:
@@ -244,35 +249,42 @@ def _reply(store, t: dict) -> str | None:
     line = f"{task_ref(t['TaskId'])} {str(t.get('Title') or '').strip()} - {_who(m, first=False)} answered: {words}"
     if not _say(store, t, line): return None
     store._exec('UPDATE task SET AskedSeenMid=? WHERE TaskId=?', (m['MessageId'], t['TaskId']))
-    if t.get('AskedWatch') == 'reply': store._exec('UPDATE task SET AskedWatch=NULL WHERE TaskId=?', (t['TaskId'],))
+    # ...on a task an agent works, the turn that reads it ends the watch (waiton.settle): a holding reply is no answer (walk 17, K2)
+    from .general import handles
+    if t.get('AskedWatch') == 'reply' and not handles(t): store._exec('UPDATE task SET AskedWatch=NULL WHERE TaskId=?', (t['TaskId'],))
     return line
 
 
 # ── "I'll keep an eye out" that keeps it: a sent reply that asks something watches for the answer ──
 # Sending closes the task, so an ordinary reply had no "waiting on them" at all, and the sweep forgot any watch on a task
 # over 30 days old however recently it began (2026-10-06). Now the watch starts at the send and counts its own 30 days;
-# their answer ends it; a quiet stretch offers one nudge - held while they are out of office; at 30 days it stops, and
-# says so. The lines nobody asked for at that moment (the nudge, the end) stay in the app.
-NUDGE_DAYS = 2                     # assistant.CHASE_STEPS' first step: silence worth a word
+# their answer ends it; at 30 days it stops. The silence itself is the Advisor's to raise, per thread (assistant.followups): the
+# watch's own nudge was said nowhere - the desktop hears no background line - and still kept the Advisor's chase off the thread
+# (touched), so a vendor follow-up on a closed task sat a week unanswered with nothing saying so (the owner, 2026-11-24).
 
 
 def _background(fn):
     threading.Thread(target=fn, name='taskuary-reply-watch', daemon=True).start()
 
 
-def watch_reply(store, rv: dict, body: str, now: datetime = None, llm=None) -> None:
+def watch_reply(store, rv: dict, body: str, now: datetime = None, llm=None, to: list = None) -> None:
     """After a reply really left: the model reads it (sentjudge.judge_text) and, when it ASKED them something, the watch
     for their answer starts - on the task the send just closed too. In the BACKGROUND: a regex (assistant._ASKS) decided
     this on the button's own thread, and a model call there would make Approve wait on it (the owner, 2026-10-11:
-    "Everything should be ai"; buttons never wait on AI). The task's comment says the watch began."""
-    tid, msg = rv.get('TaskId'), store.get_message(rv['MessageId']) if rv.get('MessageId') else None
-    if not tid or not msg or msg.get('Channel') != 'email' or not str(body or '').strip(): return None
+    "Everything should be ai"; buttons never wait on AI). The task's comment says the watch began.
+    ...AND A NEW MAIL (`to`: whom it went to) that asked them something puts the task waiting for their input (waiton.declare - walks 14-16:
+    "agent done" right after the email that asked Erin for the numbers, nothing saying it waited on her); their reply moves it back."""
+    tid, msg = rv.get('TaskId'), store.get_message(rv['MessageId']) if rv.get('MessageId') and not to else None
+    # ...on every channel a reply leaves by (walk 20: a WhatsApp reply asking Gail to confirm set no wait, and the task read "agent done")
+    if not tid or not (msg or to) or not str(body or '').strip(): return None
     via = door()                                # the door it was sent from - read here, on the asking thread
     def go():
-        from . import sentjudge
+        from . import sentjudge, waiton
         try:
-            v = sentjudge.judge_text(store, body, msg.get('Subject') or '', _who(msg, first=False), llm)
-            if v and v['asks_them']: _start_watch(store, tid, msg, now, via)
+            v = sentjudge.judge_text(store, body, (msg or {}).get('Subject') or '', _who(msg, first=False) if msg else str(to[0]), llm)
+            if v and v['asks_them']:
+                if msg: _start_watch(store, tid, msg, now, via)
+                else: waiton.declare(store, tid, parseaddr(str(to[0]))[1] or str(to[0]), 'assistant')
         except Exception as e: logger.warning(f'asks: the reply watch on {tid} was not judged - {e}')
     _background(go)
     return None
@@ -291,23 +303,6 @@ def _start_watch(store, tid: int, msg: dict, now: datetime = None, via: str = No
 def _waiting_on(store, t: dict) -> dict:
     """Whose answer a watch waits for: the message the owner answered (what was seen when it began)."""
     return (store.get_message(t['AskedSeenMid']) if t.get('AskedSeenMid') else None) or {}
-
-
-def nudge(store, t: dict, now: datetime = None) -> str | None:
-    """Two days of silence on a reply watch: offered once - never to someone whose auto-reply says they are away."""
-    from . import assistant
-    from .store import task_ref
-    now = now or datetime.now()
-    if t.get('AskedWatch') not in ('reply', 'any') or t.get('AskedNudgedAt') or not t.get('AskedWatchAt'): return None
-    try: quiet = now - datetime.fromisoformat(str(t['AskedWatchAt'])[:19])
-    except ValueError: return None
-    if quiet < timedelta(days=NUDGE_DAYS): return None
-    m = _waiting_on(store, t)
-    if str(m.get('FromEmail') or '').lower() in assistant.ooo(store): return None     # held while they are away
-    line = f"{task_ref(t['TaskId'])} {_title(t)} - still nothing from {_who(m)}. Want a short nudge ready?"
-    if not _say(store, t, line, desktop=True): return None
-    store._exec('UPDATE task SET AskedNudgedAt=? WHERE TaskId=?', (now.isoformat(' ', 'seconds'), t['TaskId']))
-    return line
 
 
 def stop_watching(store, t: dict, quiet: bool = False) -> str | None:
@@ -395,7 +390,7 @@ def sweep(store, now: datetime = None):
     for r in store._rows("SELECT TaskId FROM task WHERE AskedVia IS NOT NULL AND COALESCE(AskedWatchAt, CreatedAt)>=? AND "
                          "(Status NOT IN ('done','dropped') OR IFNULL(AskedTold,'')<>'finished' OR AskedWatch IN ('reply','any')) "
                          "ORDER BY TaskId", (since,)):
-        try: check(store, r['TaskId']); nudge(store, store.get_task(r['TaskId']) or {}, now)
+        try: check(store, r['TaskId'])
         except Exception as e: logger.warning(f"asks: could not check {r['TaskId']} - {e}")
 
 
@@ -471,14 +466,14 @@ def touched(store, hours: float) -> dict:
     reached. The Advisor's follow-ups on any of these are not news yet."""
     cut = _since(hours)
     tids = {r['TaskId'] for r in store._rows(
-        # ...and a reply being watched: the watch offers its own nudge, so the Advisor's chase would be the same line twice
-        "SELECT TaskId FROM task WHERE (AskedVia IS NOT NULL AND Status NOT IN ('done','dropped')) OR AskedWatch IN ('reply','any') OR ClosedAt>=? "
+        # ...never a reply watch: it waits for the answer, and the chase after a quiet stretch is the Advisor's (see watch_reply)
+        "SELECT TaskId FROM task WHERE (AskedVia IS NOT NULL AND Status NOT IN ('done','dropped')) OR ClosedAt>=? "
         f"OR (AskedToldAt>=? AND AskedTold IN ({','.join('?' * len(SAID))}))", (cut, cut, *SAID))}
     people = set()
-    for r in store._rows("SELECT TaskId, Deliver FROM review WHERE DeliveryState='sent' AND DecidedAt>=?", (cut,)):
+    from . import ledger                                   # ...what went, off the record of it (ledger.py)
+    for r in ledger.rows(store, ('sent', 'act'), since=cut):
         if r.get('TaskId'): tids.add(r['TaskId'])
-        try: people |= {str(a).lower() for a in (json.loads(r.get('Deliver') or '{}') or {}).get('to') or []}
-        except (TypeError, ValueError): pass
+        people |= set(r['detail'].get('to') or [])
     ids = sorted(tids)
     convs = {r['ConversationId'] for r in store._rows(
         f"SELECT DISTINCT ConversationId FROM message WHERE ConversationId IS NOT NULL AND TaskId IN ({','.join('?' * len(ids))})", ids)} if ids else set()

@@ -51,6 +51,24 @@ class TaskOutputsTests(unittest.TestCase):
             self.assertEqual(outputs.row(self.tid, self.dir / name, name).get('dims'), dims, name)
         self.assertNotIn('dims', outputs.row(self.tid, self.dir / 'notes.md', 'notes.md'))
 
+    def test_a_video_carries_its_own_shape_an_upright_one_upright(self):
+        """The owner, 2026-11-23: an upright video the agent made stood the chat's whole width, letterboxed in a 16:9 frame. Its shape is read
+        off its header as a picture's is - an MP4's track header, turned as a phone's matrix turns it, and a WebM's pixel sizes."""
+        import struct
+        def box(k, body): return struct.pack('>I4s', 8 + len(body), k) + body
+        def mp4(w, h, turned=False):
+            m = (0, 1 << 16, 0, -(1 << 16), 0, 0, 0, 0, 1 << 30) if turned else (1 << 16, 0, 0, 0, 1 << 16, 0, 0, 0, 1 << 30)
+            tkhd = b'\0\0\0\x03' + b'\0' * 20 + b'\0' * 16 + struct.pack('>9i', *m) + struct.pack('>II', w << 16, h << 16)
+            sound = b'\0\0\0\x03' + b'\0' * 36 + struct.pack('>9i', *m) + b'\0' * 8      # ...an audio track has no size: the video's is read
+            return box(b'ftyp', b'isom\0\0\0\0') + box(b'moov', box(b'trak', box(b'tkhd', sound)) + box(b'trak', box(b'tkhd', tkhd)))
+        webm = b'\x1aE\xdf\xa3' + b'\0' * 20 + b'\xe0\x88' + b'\xb0\x82' + struct.pack('>H', 720) + b'\xba\x82' + struct.pack('>H', 1280)
+        for name, body, dims in (('upright.mp4', mp4(720, 1280), [720, 1280]), ('phone.mov', mp4(1280, 720, True), [720, 1280]),
+                                 ('wide.mp4', mp4(1280, 720), [1280, 720]), ('clip.webm', webm, [720, 1280])):
+            (self.dir / name).write_bytes(body)
+            self.assertEqual(outputs.row(self.tid, self.dir / name, name).get('dims'), dims, name)
+        (self.dir / 'cut.mp4').write_bytes(box(b'ftyp', b'isom') + b'\0\0')
+        self.assertNotIn('dims', outputs.row(self.tid, self.dir / 'cut.mp4', 'cut.mp4'), 'a file cut short has no shape, and no error')
+
     def test_the_folder_is_the_one_the_agent_picked(self):
         self.assertEqual(outputs.folder(17), config.home() / 'scratch' / 'outputs' / 'TQ-0017')
 
@@ -158,13 +176,16 @@ class TaskOutputsTests(unittest.TestCase):
         got = self.client.get(f'/api/tasks/{self.tid}/assistant').json()
         self.assertIn('vendor comparison.xlsx', {r['name'] for r in got['outputs']})
 
-    def test_a_download_link_carries_the_token_in_its_query(self):
-        "An <a href> cannot send a header: the outputs route takes the token in the query, as attachments do."
+    def test_a_download_link_is_read_by_the_page_s_cookie_never_a_token_in_its_query(self):
+        "An <a href> cannot send a header: the outputs route reads the cookie the page was handed (server.FILE_COOKIE) - never ?token= (T8c)."
         cfg = {**server.cfg, 'server': {**server.cfg['server'], 'token': 'owner-secret'}}
         with mock.patch.object(server, 'cfg', cfg):
             url = f'/api/task-outputs/{self.tid}/notes.md'
             self.assertEqual(self.client.get(url).status_code, 401)
-            self.assertEqual(self.client.get(url, params={'token': 'owner-secret'}).status_code, 200)
+            self.assertEqual(self.client.get(url, params={'token': 'owner-secret'}).status_code, 401)
+            self.client.cookies.set(server.FILE_COOKIE, guard.file_key(cfg['server']))
+            try: self.assertEqual(self.client.get(url).status_code, 200)
+            finally: self.client.cookies.clear()
 
     def test_a_strangers_session_reaches_only_its_own_tasks_outputs(self):
         d = lambda p: guard.stranger_denied('GET', p, {}, self.tid, lambda k, a: None)
@@ -181,13 +202,8 @@ class TaskOutputsTests(unittest.TestCase):
         with mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: seen.append(system) or 'Done.'):
             sess.send_prompt('make the comparison a spreadsheet')
         self.assertIn(str(outputs.folder(self.tid)), seen[0])
-        self.assertIn('Never write a URL', seen[0])
+        self.assertIn('YOUR OUTPUTS FOLDER', seen[0])
 
-    def test_the_brief_names_the_folder_and_forbids_made_up_addresses(self):
-        said = outputs.brief(self.tid)
-        self.assertIn(str(outputs.folder(self.tid)), said)
-        self.assertIn('Never write a URL', said)
-        self.assertTrue(outputs.folder(self.tid).is_dir())
 
 
 def _stamp(p: Path, n: int):
@@ -248,16 +264,6 @@ class OneOfEachTests(unittest.TestCase):
         from taskuary import remote_assistant
         self.assertEqual(sorted(r['name'] for r in remote_assistant.task_files(self.store, {'tid': self.tid})),
                          ['build_sheet.py', 'pricing comparison v9.xlsx', 'rates.csv', 'run.log', 'summary.pdf'])
-
-    def test_every_worker_hears_one_final_file(self):
-        from taskuary import terminal
-        # ...said once, in AGENT.md's Files you make (or appended to an older copy): the outputs brief no longer repeats it (2026-11-09)
-        self.assertNotIn('one final file', outputs.brief(self.tid))
-        self.assertIn('one final file', self.store.doc('agent') or open(Path(outputs.__file__).parent / 'templates' / 'agent.md', encoding='utf-8').read())
-        older = terminal.with_fence_rule('Rules from before files had a rule.')
-        self.assertIn('one final file', older)
-        self.assertIn('scratch work', older)
-        self.assertEqual(terminal.with_fence_rule(older), older)
 
     def test_the_assistant_finds_the_excel_on_the_task_about_vendor_pricing(self):
         from taskuary import concierge
@@ -390,3 +396,24 @@ class TasksSharingAFileHearItChange(unittest.TestCase):
         self.assertEqual((got, self.told), ([], []), 'reading changes nothing, and nobody is told')
         self.assertEqual(sharedfiles.users(self.s, self.pack, 'Q3 board pack working.xlsx'), {self.research})
         self.assertEqual(sharedfiles.named('Get-ChildItem C:/work', self.research), {})
+
+
+def test_a_tasks_agent_works_in_a_folder_of_its_own_never_the_shared_scratch():
+    """Walk 9, 2026-11-23: every general agent ran in the one scratch folder, and a Glob for the file attached to its ask listed another
+    task's deck, report and charts. Its own folder is where it works; another task's scratch work is not its to read."""
+    import json as _json
+    from taskuary import agents, llm, readgate
+    s = MemoryStore()
+    s.upsert_agent('claude', 'coding', 'cli', _json.dumps({'cmd': 'claude', 'args': ['-p']}))
+    got = {}
+    def run_cli(prof, prompt, trace, **kw): got['cwd'] = prof.get('cwd'); return ('ok', 's1', None)
+    with mock.patch.object(agents, 'run_cli', run_cli), mock.patch.object(agents, 'cli_has_flag', return_value=False), \
+         mock.patch.object(agents, '_resolve_cmd', return_value=['claude']):
+        llm.make_cli_llm(s, 'claude', cli_tools=True, task_id=7)('sys', 'user')
+    assert Path(got['cwd']).resolve() == outputs.work_folder(7).resolve()
+    assert Path(got['cwd']).resolve() != (config.home() / 'scratch').resolve()
+    other = outputs.work_folder(3) / 'draft.md'; other.write_text('theirs', encoding='utf-8')
+    with mock.patch.object(readgate, '_open', return_value=[]):          # ...the test's home sits in the temp folder, which is open to all
+        held, never = readgate.judge(s, 7, [str(other)], got['cwd'])
+        assert held or never, "another task's scratch work is not this task's"
+        assert readgate.judge(s, 7, [str(outputs.work_folder(7) / 'mine.md')], got['cwd']) == ([], '')

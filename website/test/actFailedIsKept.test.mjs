@@ -22,7 +22,7 @@ test("an act that failed is said on its card after a reload, as its own sentence
   // ...and a send that failed still reads as a send
   assert.equal(savedSendFailure({ Status: "pending", DeliveryState: "failed", Reason: "Not sent: refused.", ActError: WHY }).message, "refused.");
   // ...waiting (a close-out) or settled by the failure (the owner, 2026-11-16: no Try again - its agent sets up what goes next)
-  assert.match(read("ActionCard.jsx"), /\["pending", "superseded"\]\.includes\(row\?\.Status\) && row\?\.ActError/, "a connector's act card reads it off its row");
+  assert.match(read("ReviewDecision.jsx"), /\["pending", "superseded"\]\.includes\(row\?\.Status\) && row\?\.ActError/, "a connector's act card reads it off its row");
 });
 
 test("a held step that failed says which, and the card still waits with Approve", () => {
@@ -49,6 +49,17 @@ test("a held step that failed is over: the card says which and why once, and tha
   assert.equal(c.said, "1 of 3 ran, step 2 failed - the agent was told and goes on from there");
   assert.equal(c.error, "Step 2 failed: error: failed to push some refs");
   assert.doesNotMatch(c.said, /the rest wait/);
+});
+
+// WALK 21: the post's first step failed on its quoting, the agent's retry joined the same card, the second Approve posted it once - and the
+// card read "Failed - 1 of 2 ran, step 1 failed" while the agent said the post was sent. A step that ran after the one that failed is the outcome
+test("a retry that ran after the step that failed is the card's outcome", () => {
+  const bad = step(1, "curl -d '{\"text\":\"hi\"}' https://chirp.example/api", "Send data to chirp.example", "superseded", { ActError: "The held step failed: The string is missing the terminator" });
+  const again = step(2, "Invoke-RestMethod -Method Post https://chirp.example/api", "Send data to chirp.example", "approved", { FinalText: JSON.stringify({ action: "shell_act", result: { said: "ok" } }) });
+  const c = heldCard([bad, again]);
+  assert.equal(c.pressed, "approved");
+  assert.deepEqual(c.steps.map((s) => s.state), ["failed", "ran"], "the step that failed keeps its mark");
+  assert.equal(c.error, "");
 });
 
 test("a yes the page refused reads as not done, with the one plain line", () => {

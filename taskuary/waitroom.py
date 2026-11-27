@@ -247,7 +247,7 @@ def _lines(store, tid: int) -> list:
 
 def _handed(store, tid: int, notes: list, how: str, takes: bool = False):
     """The notes handed over: the waiting room's marked, and the owner's kept lines taken as his lines of the conversation (store.take_lines) -
-    the record of what he typed - once the session holds them, never before (codingchat.waiting reads them in that order). `takes`: the
+    the record of what he typed - once the session holds them, never before (chatlog.beside reads them in that order). `takes`: the
     session takes his lines itself as its turn begins (acpcoding._begins) - that is the hand-over, written once, there."""
     from . import general
     store.deliver_waiting([x['WId'] for x in notes if x.get('WId') is not None], how)
@@ -311,6 +311,10 @@ def _deliver(store, tid: int, new: int = None) -> dict:
     # own answer - the card, the box, their reply on the channel - is what lets the question go
     if st == 'asking' and any((x.get('CreatedBy') or '') == TEAMMATE for x in notes):
         return {'delivered': 0, 'state': 'held_teammate', 'left': len(pending)}
+    # ...A STEP HANDED TO HIM ON THE PAGE IS ANSWERED BY HIS PRESS ALONE (workerstate.page_step): Taskuary's notes go in as the next turn
+    if st == 'asking' and not any(_by(x) == 'owner' for x in notes):
+        from . import workerstate as ws
+        if ws.page_step(ws.asking_of(store, t)): st = 'parked'
     # ...a coding agent over ACP is answered as a chat is: by its next turn, his words drawn as his and the turn at work from them - typed as a
     # bare answer, his line was nobody's and the chat read "working" for the rest of the run (the audit, 2026-11-10)
     if st == 'asking' and term.is_acp(t):
@@ -420,7 +424,7 @@ def reopen_coding(store, tid: int, notes: list, said: str, actor: str = 'router'
         if row: store.add_comment(tid, 'router', 'agent', f"{last.get('Brain') or row['Agent']} could not reopen its conversation ({say.said(e)}); "
                                   f"starting a fresh {last.get('Brain') or 'agent'} session with the handover instead.")
         sent = continuity.sent_block(store, tid, quote=0, cmd='`taskuary --follow-up --reply "<text>"`')
-        got = term.start_on_task(store, tid, last.get('Agent') or hub_agents.default_agent(store), actor=actor, cwd=last.get('Cwd') or None,
+        got = term.start_on_task(store, tid, last.get('Agent') or hub_agents.coding_role(store), actor=actor, cwd=last.get('Cwd') or None,
                                  instruction='\n\n'.join(x for x in (said, *((continuity.RESUME_PROMPT, sent) if last else ())) if x), brain=last.get('Brain') or None)
         how = 'seeded'
     t = term.SESSIONS.get((got or {}).get('sid')) or next((x for x in list(term.SESSIONS.values()) if x.task_id == tid and x.alive), None)

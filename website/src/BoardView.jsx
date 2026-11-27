@@ -15,6 +15,8 @@ import GridViewIcon from "@mui/icons-material/GridView";
 import ForumIcon from "@mui/icons-material/Forum";
 import AddIcon from "@mui/icons-material/Add";
 import api from "./api";
+import { t as tr } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { durSince } from "./timeWords.js";
 import AgentWall from "./AgentWall.jsx";
 import NewSheet from "./NewSheet.jsx";
@@ -22,15 +24,13 @@ import { agentName, saidOf } from "./agentWork.js";
 import { isAgentKind, isGeneralKind } from "./autostart.js";
 import { onLive } from "./live.js";
 import { ALERT, GRADIENT, PANEL, PANEL2, BORDER, CATPPUCCIN, DIM, FAINT, INK, ROLES, card, hoverable, mono } from "./theme.jsx";
-import { ChannelIcon, ActionChip, useAgents, codingProfile, timeAgo, Empty, IDLE_WAITING, isWaiting, TellAgent, WorkPane, TaskuaryMark, assignedAgent } from "./ui.jsx";
+import { ChannelIcon, ActionChip, useAgents, codingAgent, timeAgo, Empty, IDLE_WAITING, isWaiting, TellAgent, WorkPane, TaskuaryMark, assignedAgent } from "./ui.jsx";
 import { AGENT } from "./taskLifecycle.js";
 import QueuedStart from "./QueuedStart.jsx";
 import { label } from "./buttons.js";
 import { LANE_META, KIND_META } from "./funnelPile.js";
 import { remindWaiting } from "./taskFilter.js";
-import { AGENT_SHOWN, shownAgent, instructionsHint } from "./kinds.js";
-import { t as tr } from "./i18n.js";
-import { useLocale } from "./LocaleProvider.jsx";
+import { AGENT_SHOWN, shownAgent } from "./kinds.js";
 
 // Not every ask is about a codebase - "what does this policy mean", "draft me a note", "prepare
 // me for this meeting". The task carries `repo:none`, which is the one answer the picker could
@@ -43,19 +43,16 @@ const elapsed = (since) => (since ? durSince(since) : "");
 
 const repoOf = (t) => (String(t?.Tags || "").match(/repo:([^\s,]+)/) || [])[1] || null;
 
-// WHICH agent is on the card, said out loud: the stable profile name is the worker identity;
-// its underlying CLI only chooses the hue. Collapsing "Atlas" back to "claude" made several
-// separately named workers indistinguishable on the Board.
+// WHICH agent is on the card, said out loud; its underlying CLI only chooses the hue.
 const AGENT_HUES = { claude: "#7d9a7c", codex: "#6f8a6e", gemini: "#55697a",
                      cursor: "#6f8a6e", copilot: "#8a8276" };
-// a profile name says nothing about which model family answers - resolve every display through
-// the profile's actual command, so the board speaks CLI names (claude, codex, gemini)
-export const cliName = (name, cmds = {}) =>
-  String(cmds[name] || name || "").split(/[\\/]/).pop().replace(/\.(cmd|exe|bat|ps1)$/i, "").toLowerCase();
+// the board speaks CLI names (claude, codex, gemini), a path or an .exe read as the CLI it is
+export const cliName = (name) =>
+  String(name || "").split(/[\\/]/).pop().replace(/\.(cmd|exe|bat|ps1)$/i, "").toLowerCase();
 
-const agentBadge = (name, runStatus, isLive, cmds = {}) => {
+const agentBadge = (name, runStatus, isLive) => {
   if (!isLive && runStatus !== "running") return null;
-  const cmd = cliName(name, cmds);
+  const cmd = cliName(name);
   const hit = Object.entries(AGENT_HUES).find(([k]) => cmd.includes(k));
   if (!name) return null;
   return { word: String(name), cli: cmd, color: hit?.[1] || "var(--tq-warning, #867f74)" };
@@ -283,7 +280,7 @@ export default function BoardView({ onOpenTask, active = true }) {
     if (!feedTask || !(tasks || []).some((t) => t.TaskId === feedTask)) setFeedTask(liveIds.length === 1 ? liveIds[0] : (liveIds[0] || null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedOpen]);
-  const { agents, models, cmds, kinds, brains, brainList, brainModels } = useAgents();
+  const { agents, models, kinds, brains, brainList, brainModels } = useAgents();
   const [live, setLive] = useState({});                // TaskId -> {tail, AgentName} while a run works
 
   const load = useCallback(async () => {
@@ -437,11 +434,11 @@ export default function BoardView({ onOpenTask, active = true }) {
                 // the thing that helps you run Taskuary, not of the agent working this task
                 const chat = isGeneralKind(t.Kind);
                 // WHICH CODING AGENT has it, which is no longer the role: every coding task's
-                // role is the one coding profile, so the name worth showing is the BRAIN. A live session knows
+                // role is the one coding agent, so the name worth showing is the BRAIN. A live session knows
                 // exactly what it launched (`cli`); an idle one takes the brain settings name.
-                const brain = live[t.TaskId]?.cli || brains[assignedAgent(t.Assignee) || codingProfile(agents, kinds)] || "";
-                const badge = agentBadge(chat ? agentName(t) : (brain || shownAgent(live[t.TaskId])),   /* the tool, else Taskuary - never the profile */
-                  t.RunStatus, !!live[t.TaskId], cmds);
+                const brain = live[t.TaskId]?.cli || brains[assignedAgent(t.Assignee) || codingAgent(agents, kinds)] || "";
+                const badge = agentBadge(chat ? agentName(t) : (brain || shownAgent(live[t.TaskId])),   /* the tool, else Taskuary */
+                  t.RunStatus, !!live[t.TaskId]);
                 return (
                 <Box key={t.TaskId} data-tq-board-task={t.TaskId} onClick={() => onOpenTask(t.TaskId)}
                   sx={{ ...card, ...hoverable, p: 1.1, mb: 0.9, cursor: "pointer",
@@ -460,8 +457,8 @@ export default function BoardView({ onOpenTask, active = true }) {
                       whiteSpace: "nowrap", flexShrink: 0 }}>{t.ref}</Typography>
                     <ChannelIcon channel={t.Source} sx={{ fontSize: 12 }} />
                     {assignedAgent(t.Assignee) && !badge && <Chip size="small" icon={<TaskuaryMark size={10} />}
-                      label={chat ? AGENT_SHOWN : (brain || AGENT_SHOWN)}   /* never the profile - it is on hover (the owner, 2026-10-28) */
-                      title={`${tr("{name} works this task", { name: chat ? AGENT_SHOWN : brain || AGENT_SHOWN })} · ${instructionsHint(assignedAgent(t.Assignee))}`}
+                      label={chat ? AGENT_SHOWN : (brain || AGENT_SHOWN)}
+                      title={`${chat ? AGENT_SHOWN : brain || AGENT_SHOWN} works this task`}
                       sx={{ height: 15, fontSize: 8.5, bgcolor: "var(--tq-inset, #e3e6e1)", color: "var(--tq-success, #47654a)",
                         "& .MuiChip-label": { px: 0.55 }, "& .MuiChip-icon": { ml: 0.35 } }} />}
                     {t.RunStatus && (
@@ -479,14 +476,14 @@ export default function BoardView({ onOpenTask, active = true }) {
                     display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                     {t.Title}
                   </Typography>
-                  {t.Playbook && (
-                    <Typography variant="caption" title={t.Playbook.uses?.length ? tr("uses {items}", { items: t.Playbook.uses.join(", ") }) : ""}
+                  {t.Skill && (
+                    <Typography variant="caption" title={t.Skill.uses?.length ? `uses ${t.Skill.uses.join(", ")}` : ""}
                       sx={{ color: "var(--tq-warning, #6b5f45)", display: "block", mt: 0.35, fontSize: 9.5, fontWeight: 600,
                         whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {tr("Playbook")} · {t.Playbook.title}
+                      Skill · {t.Skill.title}
                     </Typography>
                   )}
-                  {!t.Playbook && t.Source === "report" && t.SearchSources && (
+                  {!t.Skill && t.Source === "report" && t.SearchSources && (
                     <Typography variant="caption" sx={{ color: "var(--tq-warning, #6b5f45)", display: "block", mt: 0.35, fontSize: 9.5,
                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {tr("Report")} · {String(t.SearchSources).split(",")[0]}

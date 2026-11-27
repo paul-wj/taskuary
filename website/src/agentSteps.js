@@ -15,6 +15,7 @@ import { t } from "./i18n.js";
 import stepKinds from "../../taskuary/stepkinds.json" with { type: "json" };
 import ownTools from "../../taskuary/owntools.json" with { type: "json" };
 import { forOwner } from "./stepWhy.js";
+import { CATALOGUE } from "./connectorCatalog.js";
 
 const flat = (s) => String(s || "").split(/\s+/).join(" ").trim();
 const clip = (s, n = 90) => { const t = flat(s); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
@@ -55,6 +56,10 @@ export const pageOf = (u) => {
 };
 const key = (name) => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const prog = (w) => String(w || "").split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
+// A COMMAND DRAWN AS ITSELF NAMES A FILE BY ITS NAME, AND A BLOB IT CARRIES AS "…" (walk 11: "$vendorFile = 'C:\Users\...\walk11\t..." and
+// "agent-browser eval -b QXJyYXku..." were the rows): a whole local path and an encoded script are no words of the step
+const ABS = /(?:\b[A-Za-z]:[\\/]|\\\\|~[\\/]|(?<![\w:/.-])\/(?:Users|home|tmp|var|private|mnt)\/)[^\s'"`;|,)]+/g, BLOB = /[A-Za-z0-9+/]{40,}={0,2}/g;
+export const asCode = (t) => String(t || "").replace(ABS, (p) => baseName(p) || p).replace(BLOB, "…");
 
 // ── a shell command, read the way a person skims it ─────────────────────────────────────────────
 // Split at the operators outside quotes; a segment after a pipe only filters what came before it.
@@ -176,7 +181,8 @@ const AB_ACTIONS = new Set(["click", "dblclick", "press", "fill", "type", "check
 const AB_SAID = { back: "Went back a page", forward: "Went forward a page", reload: "Reloaded the page", scroll: "Scrolled the page",
   scrollintoview: "Scrolled the page", close: "Closed the browser", click: "Clicked on the page", dblclick: "Clicked on the page",
   press: "Pressed a key on the page", fill: "Typed into a box", type: "Typed into a box", check: "Ticked a box", uncheck: "Unticked a box",
-  select: "Chose an option", upload: "Uploaded a file", keyboard: "Typed on the page", pdf: "Saved the page as a PDF" };
+  select: "Chose an option", upload: "Uploaded a file", keyboard: "Typed on the page", pdf: "Saved the page as a PDF",
+  eval: "Ran a script on the page", skills: "Read how to use the browser" };
 export const browserStep = (args) => {
   const a = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -255,7 +261,7 @@ const commandStep = (cmd, depth = 0) => {
       continue;
     }
     // ...anything else it ran is shown as the command itself (ranCmd): here it only weighs against the line's other steps - a snippet least
-    found.push({ kind: "run", summary: `Ran ${seg.text}`, filler: !!SNIPPET[p] });
+    found.push({ kind: "run", summary: `Ran ${asCode(seg.text)}`, filler: !!SNIPPET[p] });
   }
   // ...the agent's own words for the line (a wall note) say what all of it was for
   const own = found.find((s) => s.own);
@@ -287,7 +293,7 @@ const unwrap = (cmd) => {
 const ranCmd = (cmd, tool) => {
   const { text, shell } = unwrap(cmd), t = text.replace(/\r/g, "").trim(), lines = t.split("\n").filter((l) => l.trim());
   if (!t) return { kind: "run", summary: "Ran a command it did not show" };
-  if (lines.length === 1) { const code = clip(t, 80); return { kind: "run", summary: `Ran ${code}`, code }; }
+  if (lines.length === 1) { const code = clip(asCode(t), 80); return { kind: "run", summary: `Ran ${code}`, code }; }
   // ...a script fed to a program (a heredoc, a here-string piped on, `python -c "..."`) is in that program's language, and only its body counts
   const fedTo = (/^['"]@\s*\|\s*(\S+)/m.exec(t) || [])[1], first = prog(words(lines[0])[0] || ""), body = t.match(HEREDOC) || t.match(HERESTRING);
   const lang = LANG[prog(fedTo || "")] || (SNIPPET[first] && LANG[first]) || LANG[shell] || LANG[first] || LANG[key(tool)];
@@ -332,15 +338,24 @@ const OWN = {
   calendar: () => ({ kind: "data", summary: "Looked at your calendar" }),
   listsystems: () => ({ kind: "data", summary: "Looked at your connected systems" }),
   runsystem: (a) => ({ kind: "data", summary: a.type ? `Looked up data in ${clip(a.type, 30)}` : "Looked up data in a connected system" }),
-  proposereply: () => ({ kind: "edit", summary: "Drafted a reply" }),
-  proposeemail: () => ({ kind: "edit", summary: "Drafted an email" }),
-  replynotneeded: () => ({ kind: "plan", summary: "Marked the reply as not needed" }),
-  signform: () => ({ kind: "edit", summary: "Filled in and signed a form" }),
-  propose: () => ({ kind: "plan", summary: "Asked for your yes" }),
+  // ...THE ONE REVIEW TOOL by its kind (agenttools propose); its old names, in a kept session's steps, read as their kind
+  proposereply: (a) => OWN.propose({ ...a, kind: "reply" }),
+  proposeemail: (a) => OWN.propose({ ...a, kind: "email" }),
+  proposepost: (a) => OWN.propose({ ...a, kind: "post" }),
+  replynotneeded: () => ({ kind: "plan", summary: "Marked the reply as not needed", tried: "Could not mark the reply as not needed" }),
+  signform: () => ({ kind: "edit", summary: "Filled in and signed a form", tried: "Could not fill in the form" }),
+  drawimage: () => ({ kind: "edit", summary: "Drew a picture", tried: "Could not draw the picture" }),
+  // ...a post by the network's own card title ("X (Twitter)" is X), the catalogue's - never a second list of names here
+  propose: (a) => { const k = a.kind || (a.network ? "post" : "");
+    if (k === "reply") return { kind: "edit", summary: "Drafted a reply", tried: "Could not set up the reply" };
+    if (k === "email") return { kind: "edit", summary: "Drafted an email", tried: "Could not set up the email" };
+    if (k !== "post") return { kind: "plan", summary: "Asked for your yes", tried: "Could not set up the step for your yes" };
+    const w = String(a.network || "").trim(), card = CATALOGUE.find((c) => c.type === w.toLowerCase()), n = card ? card.title.replace(/\s*\(.*\)\s*$/, "") : clip(w, 30);
+    return { kind: "edit", summary: n ? `Drafted a post for ${n}` : "Drafted a post", tried: n ? `Could not set up the post for ${n}` : "Could not set up the post" }; },
   // ...a view by what it shows - its own title, the file it put up, its kind - never "a view" (the walk, 2026-11-17: "Showing you a view")
-  show: (a) => { const el = a.elements?.[a.root] || {}, title = a.title || el.props?.title, fs = [a.files || []].flat().filter(Boolean);
-    return { kind: "plan", summary: title ? `Showed you ${quoted(title)}` : fs.length ? `Showed you ${baseName(fs[0])}${fs.length > 1 ? `, and ${fs.length - 1} more` : ""}`
-      : t(SHOWN[el.type] || "Laid it out for you") }; },
+  show: (a) => { const el = a.elements?.[a.root] || {}, t = a.title || el.props?.title, fs = [a.files || []].flat().filter(Boolean);
+    return { kind: "plan", tried: t ? `Could not show you ${quoted(t)}` : "Could not show it", summary: t ? `Showed you ${quoted(t)}` : fs.length ? `Showed you ${baseName(fs[0])}${fs.length > 1 ? `, and ${fs.length - 1} more` : ""}`
+      : SHOWN[el.type] ? `Showed you ${SHOWN[el.type]}` : "Laid it out for you" }; },
   // ...and where it works (repochoice.py): the one line the chat shows for the agent's pick - "Working in northwind/ledger - <why>"
   userepo: (a) => { const w = String(a.path_or_name || "").trim(), at = /[\\/]/.test(w) && !/^[\w.-]+\/[\w.-]+$/.test(w) ? baseName(w) : w;
     return { kind: "plan", summary: `Working in ${at || "a checkout"}${a.why ? ` - ${clip(a.why, 100)}` : ""}` }; },
@@ -348,17 +363,31 @@ const OWN = {
   // ...AND EVERY OTHER TOOL OF ITS OWN, by what it did (design round 4, 2026-11-19): the rest fell to "Used <name> (taskuary) on ..."
   guide: () => ({ kind: "read", summary: "Read how Taskuary does it" }),
   remember: () => ({ kind: "data", summary: "Kept a fact you told it" }),
+  persontasks: (a) => ({ kind: "read", summary: a.who ? `Looked up ${clip(a.who, 40)}'s other tasks` : "Looked up their other tasks" }),
+  pastfigures: (a) => ({ kind: "read", summary: a.who || a.vendor_or_person ? `Looked up past figures for ${clip(a.who || a.vendor_or_person, 40)}` : "Looked up past figures" }),
   todos: () => ({ kind: "plan", summary: "Updated the to-do list" }),
   checkback: (a) => ({ kind: "task", summary: a.when ? `Set itself to look again ${clip(a.when, 30)}` : "Set itself to look again later" }),
   remind: (a) => ({ kind: "task", summary: a.when ? `Set a reminder for ${clip(a.when, 30)}` : "Set a reminder" }),
   newtask: (a) => ({ kind: "task", summary: a.title ? `Started a task: ${clip(a.title, 60)}` : "Started a task of its own" }),
   askstronger: () => ({ kind: "plan", summary: "Asked for a second opinion" }),
   notepeers: () => ({ kind: "plan", summary: "Left a note for another agent" }),
+  addtotask: (a) => ({ kind: "plan", summary: a.task ? `Added a note to ${clip(a.task, 20)}` : "Added a note to another task" }),
+  notelead: () => ({ kind: "plan", summary: "Told the Advisor something it noticed" }),
   proposeland: () => ({ kind: "plan", summary: "Set up how the work lands" }),
   withdrawdraft: () => ({ kind: "plan", summary: "Took back something it had set up" }),
-  answerinvite: (a) => ({ kind: "edit", summary: a.answer ? `Set up the answer to the invite (${clip(a.answer, 20)})` : "Set up the answer to the invite" }),
-  setupmeeting: () => ({ kind: "edit", summary: "Set up a meeting" }),
-  share: () => ({ kind: "edit", summary: "Set up a share" }),
+  keepcard: () => ({ kind: "plan", summary: "Brought back a card as it was", tried: "Could not bring the card back" }),
+  answerinvite: (a) => ({ kind: "edit", summary: a.answer ? `Set up the answer to the invite (${clip(a.answer, 20)})` : "Set up the answer to the invite",
+    tried: "Could not set up the answer to the invite" }),
+  setupmeeting: () => ({ kind: "edit", summary: "Set up a meeting", tried: "Could not set up the meeting" }),
+  share: () => ({ kind: "edit", summary: "Set up a share", tried: "Could not set up the share" }),
+  // ...and the tools the prompt rebuild made of its protocols (2026-11-23): its one question, the skills it reads, a step it hands him
+  // ...its `withdraw` takes the question BACK (walk 19, S7: "asked you a question" over a turn that had withdrawn it - no question drawn)
+  askowner: (a) => (a.withdraw === true ? { kind: "plan", summary: "Took back its question" } : { kind: "plan", summary: "Asked you a question", tried: "Could not ask you" }),
+  // ...and ONE HE NAMED IS THE SKILL THE TURN USED, a row of its own kind (walk 25, 2026-11-26: read among "read 3 files", and no AI's words
+  // said which skill did the job): never counted with the files, and first on the turn's one line (chatStream.foldLine)
+  skills: (a) => (a.name ? { kind: "skill", summary: `Read your skill ${quoted(a.name)}` } : { kind: "read", summary: "Read your skills" }),
+  routines: (a) => ({ kind: "read", summary: a.name ? `Read your routine ${quoted(a.name)}` : "Read your routines" }),
+  handover: () => ({ kind: "page", summary: "Handed you a step on the page", tried: "Could not hand you the step" }),
 };
 // ...AND AN AI CARD'S OWN HANDS (apiagent.py) in the words the CLI's take (design round 5, 2026-11-19: the API walk read "Used browser open on ..."):
 // its browser through the browser's own grammar, the sign-up and its tool finder by what they did
@@ -368,6 +397,9 @@ const API_HANDS = {
   browsersignup: () => ({ kind: "page", summary: "Sent the sign-up form", browser: true }),
   findtools: () => ({ kind: "plan", summary: "Looked for the right tool" }),
 };
+// A STEP'S LINE IS WRITTEN FROM WHAT IT GAVE BACK (HIPAA walk 6: a `show` refused for its spec read "showed you 'Print Run Cost Comparison'"):
+// one of Taskuary's own tools that answered {ok: false} did not do it, and a failed step says what it could not do (`tried`), never what it did
+const refusedOwn = (out) => { try { const j = JSON.parse(String(out || "")); return !!j && typeof j === "object" && j.ok === false; } catch { return false; } };
 const KIND = Object.fromEntries(Object.entries(TOOLS).flatMap(([k, names]) => names.map((n) => [n, k])));
 
 // ...and every label is built from PARSED arguments: a call whose arguments came as a JSON string (Codex's function_call, an OpenAI-style
@@ -454,6 +486,27 @@ export const present = (s) => { const t = String(s || ""), m = /^([A-Z][a-z]+)\b
 // the row's words: what it is doing while it runs, what it did once done
 export const stepLabel = (s) => (s?.status === "running" ? s.doing || present(s.summary) : s?.summary || "");
 
+// ── THE AGENT'S OWN WORDS FOR A CALL (the owner, 2026-11-23: adopt the open-source model) ───────────────────────────────────────────
+// An ACP agent names each call itself - its `title`, upgraded as the call goes ("Read File", then "Read budget.py"), its `kind`, its files
+// (conversation.acp_steps) - and the row is that, as Zed, Toad and agent-shell draw it: the title (its back-ticks off), an icon by its kind, the
+// files it names that the title does not. Our own words only for Taskuary's own tools (the product's copy), a helper's work, and a road that
+// gives no title (describeCall): nothing of the command is read here for an agent that already said what it does
+const ACP_KIND = { read: "read", edit: "edit", delete: "edit", move: "edit", search: "search", execute: "run", fetch: "page", think: "tool", other: "tool", switch_mode: "tool" };
+const agentWords = (e) => {
+  const d = e.detail || {}, title = String(d.title || "").replace(/`/g, "").replace(/\s+/g, " ").trim();
+  if (!title || ownTool(e.name)) return null;
+  const ours = describeCall(e.name, d.args || {});
+  if (ours.kind === "helper") return null;                 // ...a helper's row reads by the work it was given, its steps under it (tidy)
+  // ...and a browser call by what it acted on (browserStep, then the gate's own `did`): its title is the command (walk 11: "agent-browser click '@e79'")
+  if (ours.browser) return null;
+  // ...and a call whose title is its own command text said nothing of what it does (walk 16, Codex: rows read "$reply = @' Hi Erin ..."): ours
+  const cmd = flat([d.args?.command ?? d.args?.cmd ?? ""].flat().join(" ").replace(/`/g, "")), cut = title.replace(/(…|\.\.\.)$/, "").trim();
+  if (cmd && cut && cmd.startsWith(cut)) return null;
+  const kind = ACP_KIND[d.tool_kind] || ours.kind || "tool", t = asCode(title), summary = t.length > 140 ? `${t.slice(0, 139)}…` : t;
+  const chips = [...new Set((d.paths || []).map(baseName).filter(Boolean))].filter((b) => !summary.includes(b)).slice(0, 3);
+  return { kind, summary, doing: summary, titled: true, file: (d.paths || [])[0] || "", ...(kind === "run" ? { code: summary } : {}), ...(chips.length ? { chips } : {}) };
+};
+
 // a mail search's own answer says how many it found - read off the JSON it returned, when it is JSON
 const countOf = (out) => {
   let j; try { j = JSON.parse(String(out || "").replace(/ ⏎ /g, "\n")); } catch { return null; }
@@ -480,8 +533,6 @@ const foundNone = (s) => {
 };
 
 // ── the trace, as steps ──────────────────────────────────────────────────────────────────────────
-// a thought's paragraphs, each one line - a header the model set in bold (Codex's `**Checking the dates**`) reads as its words
-const thoughtsOf = (text) => String(text || "").split(/\n\s*\n/).map((p) => flat(forScreen(p)).replace(/^\*\*(.+)\*\*$/, "$1")).filter(Boolean);
 const ECHO = /^(→ |· |✗ |session started\b)/;            // agents._live_line's own rows for a tool call, its result, the init line
 // A QUICK ANSWER'S RAW OBJECT (selfclose.RAW, stored before 2026-11-13) is its fields, filed as the answer - never words of its working, whichever line carries it: a
 // CLI's readable `live` line was the object cut at 300 characters, drawn under Taskuary (the owner, 2026-11-03)
@@ -493,15 +544,15 @@ const QUICK_RAW =/^\s*(?:```(?:json)?\s*)?\{\s*"(?:report|draft|question|done|es
 const MACHINERY = new Set(stepKinds.machinery);
 // ...and a shell line of Taskuary's own that is no step either - a tick (stepkinds.json `commands`): a to-do ticked is never narrated
 const TICK = new RegExp(stepKinds.commands, "i");
-const PATHED = /(?:[A-Za-z]:)?(?:[\\/][^\s\\/`'"*()]+)+[\\/]([^\s\\/`'"*()]+)/g;      // a path by its grammar: a root, its folders, its last name
-export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
+export function stepsOf(trace, { keepStart = true } = {}) {
   const events = trace || [];
   // A structured backend says everything twice: its tool call and text as events, and the same again as readable `live` lines for
   // the terminal pane. Only a CLI that streams nothing structured is read off its lines - decided over the whole trace, not by
   // which came first, so the line written before the first tool call no longer slipped into the box as raw text.
   const structured = events.some((e) => e?.type === "tool_call" || e?.type === "progress");
   const steps = [], byId = new Map(), called = new Set();
-  const say = (kind, text) => {
+  // ...each by the id its row has in the log (chatlog.feed: the agent's own message id), so a row is the same row on every read
+  const say = (kind, text, id = "") => {
     const t = forScreen(text);
     if (!t || QUICK_RAW.test(t)) return;
     const last = steps[steps.length - 1];
@@ -513,12 +564,8 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
       return;
     }
     if (kind === "said" && last?.kind === "said" && last.live) { last.summary += `\n${t}`; return; }
-    steps.push({ id: `${kind}-${steps.length}`, kind, summary: t, detail: "", status: "done", live: kind === "said" && !structured, src: String(text) });
+    steps.push({ id: id || `${kind}-${steps.length}`, kind, summary: t, detail: "", status: "done", live: kind === "said" && !structured, src: String(text) });
   };
-  // ...EACH THOUGHT ITS OWN ROW (the owner's live turn, 2026-11-18: "Reviewing the vendor snapshots Planning the roll-up"): a message of
-  // reasoning holds its paragraphs - Codex sends a header each - and flattened they ran together as one sentence
-  const think = (ts, live) => ts.forEach((t) => steps.push({ id: `thought-${steps.length}`, kind: "thought", summary: clip(t, 140), detail: t.length > 140 ? t : "", status: "done", ...(live ? { live } : {}) }));
-  const dropLive = () => { while (steps.at(-1)?.kind === "thought" && steps.at(-1).live) steps.pop(); };
   for (const e of events) {
     if (!e) continue;
     if (e.type === "tool_call") {
@@ -526,10 +573,14 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
       called.add(e.name);
       if (MACHINERY.has(key(String(e.name || "").split("__").pop())) || TICK.test([parsed(args).command || parsed(args).cmd || ""].flat().join(" "))) continue;
       const id = e.detail?.tool_call_id || `${e.name}-${steps.length}`;
-      const d = describeCall(e.name, args);
+      // ...A BROWSER CALL SAYS WHAT IT ACTED ON (the owner, 2026-11-23: "Clicked on the page, and 1 more"): the words the gate wrote where it read the
+      // page (browsergate.did - "Clicked the "Post" button on x.example"), carried on the step (`did`), over any reading of the command here
+      const d = { ...(agentWords(e) || describeCall(e.name, args)), ...(e.detail?.did ? { summary: e.detail.did } : {}) };
       // ...its outcome in a few words and the same call made again, as the server's one reading of the turn says (chatlog.tool_rows)
       const step = { id, ...d, tool: e.name, raw: rawOf(e.name || "tool", args), output: String(e.detail?.output || ""), status: "running", own: ownTool(e.name),
         ...(e.detail?.outcome ? { outcome: e.detail.outcome } : {}), ...(e.detail?.why ? { why: e.detail.why } : {}), ...(e.detail?.times > 1 ? { times: e.detail.times } : {}),
+        // ...the agent's own id for the call and the options of a permission it asked for it - the ask is drawn on this row (AgentStepRows PermitCtx)
+        ...(e.detail?.call ? { call: e.detail.call } : {}), ...(e.detail?.ask?.length ? { ask: e.detail.ask } : {}),
         ...(d.kind === "helper" && args.description ? { task: clip(args.description, 70) } : {}) };
       // A HELPER'S OWN CALLS GO UNDER ITS ROW (the owner, 2026-11-06: "it's spinning but not the last thing ... shouldn't it be in order? unless
       // it's in parallel"): a call naming the helper call it runs under (`parent`: stream-json's parent_tool_use_id, ACP's parentToolUseId)
@@ -544,22 +595,18 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
       if (step.erred) continue;
       // a step Taskuary HELD for the owner's yes (shellgate, browsergate) did not fail: it waits - red "failed" over a held delete read
       // as something gone wrong (the desktop stress test, 2026-11-03); a call the server marked as put to the owner says how it stands (`state`)
-      step.status = e.detail?.state || (!e.detail?.is_error ? "done" : /Taskuary held this for the owner/.test(step.output) ? "held" : foundNone(step) ? "none" : "error");
+      step.status = e.detail?.state || (!e.detail?.is_error && !(step.own && refusedOwn(step.output)) ? "done" : /Taskuary held this for the owner/.test(step.output) ? "held" : foundNone(step) ? "none" : "error");
+      if (step.status === "error" && step.tried) [step.did, step.summary] = [step.summary, step.tried];
       if (step.kind === "mail" && step.q !== undefined) { const n = countOf(step.output); if (n !== null) step.count = n; }
     } else if (e.type === "progress" && e.detail) {
       const name = String(e.name || "");
-      if (name === "thinking" || name === "reasoning") {
-        const ts = thoughtsOf(e.detail);
-        if (ts.length) dropLive();     // ...the whole paragraph in its snapshots' place
-        think(ts, false);
-      } else if (name === "text" || name === "agent_message") say("said", e.detail);
+      // ...A MODEL'S PRIVATE REASONING IS NO STEP (the owner, 2026-11-23: "Locating account menu", "Awaiting final approval" in italics among what
+      // it did): his screen shows what happened and what the agent said - the thought being written is the working line's (chatlog._now)
+      if (name === "thinking" || name === "reasoning") continue;
+      if (name === "text" || name === "agent_message") say("said", e.detail, e.id);
       else say("note", e.detail);
-    } else if (e.type === "live" && e.name === "writing") {
-      // ...the answer as it streams is the turn's line of what it is doing (conversation `doing`), never words drawn twice
-    } else if (e.type === "live" && e.name === "thinking") {
-      // ...a thought still being written (agents.ACPSteps): ONE open thought its snapshots update, never words said
-      const ts = thoughtsOf(e.detail || "");
-      if (ts.length) { dropLive(); think(ts, true); }
+    } else if (e.type === "live" && (e.name === "writing" || e.name === "thinking")) {
+      // ...the answer as it streams, and a thought being written, are the turn's line of what it is doing (chatlog._now), never rows
     } else if (e.type === "live" && !structured && e.detail && !ECHO.test(String(e.detail))) {
       say("said", e.detail);
     } else if (e.type === "start" && keepStart) {
@@ -569,7 +616,7 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
       // failure as a note of its own, "⚠ Exit code 127 ⏎ which: no python3 in (...a PATH 600 characters long)", red under "Ran which python3")
       const call = e.name && [...byId.values()].reverse().find((s) => s.tool === e.name && s.status !== "error");
       // ...whichever comes first: the chat hands a turn's results in after its calls (chatStream.turnParts), so the result never undoes it
-      if (call) { call.status = "error"; call.erred = String(e.detail?.result || e.error || ""); call.output = call.erred || call.output; continue; }
+      if (call) { call.status = "error"; call.erred = String(e.detail?.result || e.error || ""); call.output = call.erred || call.output; if (call.tried && !call.did) [call.did, call.summary] = [call.summary, call.tried]; continue; }
       // ...A TOOL'S REFUSAL IS THE AGENT'S (design round 5, 2026-11-19: a tick refused for a missing argument stood in the chat as "⚠ ``` `item`
       // was not given Next: call tick again ... The input schema is: {...}"): one a call of this turn names - a plumbing call no row stands
       // for, or one already failed - reaches the agent only; he sees at most its row, retried
@@ -578,22 +625,14 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
       steps.push({ id: `error-${steps.length}`, kind: "error", summary: `⚠ ${forOwner(e.detail?.result || e.error, ownTool(e.name)) || "Taskuary could not answer."}`, detail: "", status: "error" });
     }
   }
-  // what it said that the answer says again is the answer: a CLI's final text streams in as progress too
-  // ...paragraph by paragraph: the streamed text has the reply draft taken out where the filed answer keeps it, so the whole never
-  // matched and a general turn's answer showed twice, once without its draft and once with it (the overnight QA, 2026-10-30)
   // A RETRY THAT WORKED IS NO FAILURE (the stress test, 2026-11-02): the agent's own retried steps wore red "failed" though it recovered.
   // A failed call the same step later did without error is `recovered` - a quiet word; red stays for a failure nothing made good
   steps.forEach((s, i) => { if (s.status === "error" && "raw" in s
-    && steps.slice(i + 1).some((x) => "raw" in x && x.kind === s.kind && x.summary === s.summary && x.status === "done")) s.status = "recovered"; });
+    && steps.slice(i + 1).some((x) => "raw" in x && x.kind === s.kind && (x.did || x.summary) === (s.did || s.summary) && x.status === "done")) { s.status = "recovered"; s.summary = s.did || s.summary; } });
   // ...and a call STILL AT WORK while a later one already finished runs ALONGSIDE them - in parallel, said so; steps stay in the order they began
   steps.forEach((s, i) => { if (s.status === "running" && "raw" in s && steps.slice(i + 1).some((x) => "raw" in x && x.status !== "running")) s.alongside = true; });
-  // ...and A FILE IS ITS NAME ON BOTH SIDES (the HIPAA walk, 2026-11-21): the filed answer names a made file by its name, the words it streamed
-  // by its full path in the task's folder - never the same text, so every answer that named a file was drawn twice, once with the path
-  const byName = (t) => flat(t).replace(PATHED, "$1");
-  const said = byName(forScreen(answer));
-  const inAnswer = (t) => { const ps = String(t || "").split(/\n\s*\n/).map(byName).filter(Boolean); return ps.length > 0 && ps.every((p) => said.includes(p)); };
-  const kept = said ? steps.filter((s) => s.kind !== "said" || !inAnswer(s.src ?? s.summary)) : steps;
-  return group(kept).map(tidy);
+  // ...and WHAT IT SAID STAYS WHERE IT SAID IT, at work and filed alike: the answer's own repeat of it is the server's to leave out (chatlog `tail`)
+  return group(steps).map(tidy);
 }
 const tidy = ({ src, raw, output, live, q, host, file, pattern, count, asked, retry, kids, task, ...s }) => {
   if (s.kind !== "helper" || !(kids?.length || task)) return s;
@@ -622,11 +661,12 @@ const together = (run) => {
 const statusOf = (run) => run.some((s) => s.status === "running") ? "running" : run.some((s) => s.status === "error") ? "error"
   : run.some((s) => s.status === "held") ? "held" : run.some((s) => s.status === "refused") ? "refused" : run.some((s) => s.status === "recovered") ? "recovered" : run.every((s) => s.status === "none") ? "none" : "done";
 const detailOf = (s) => [s.raw, s.output && `→ ${s.output.length > 1500 ? `${s.output.slice(0, 1500)}…` : s.output}`].filter(Boolean).join("\n");
-const withCount = (summary, run) => {
-  if (run[0].kind !== "mail" || !run.every((s) => s.count !== undefined)) return summary;
-  const count = run.reduce((total, s) => total + s.count, 0);
-  return t("{summary} ({results})", { summary, results: t(count === 1 ? "{count} result" : "{count} results", { count }) });
-};
+// A COMMAND AT WORK SHOWS ITS OUTPUT AS IT COMES (the owner, 2026-11-23: Zed and Toad draw a running command's terminal): its newest lines,
+// behind its row's own disclosure while it runs (AgentStepRows: the same row it will be, never a block that opens and shuts by itself)
+export const TAIL_LINES = 8;
+export const tailOf = (out, n = TAIL_LINES) => String(out || "").replace(/\r\n?/g, "\n").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trimEnd().split("\n").slice(-n).join("\n");
+const withCount = (summary, run) => run[0].kind === "mail" && run.every((s) => s.count !== undefined)
+  ? `${summary} (${plural(run.reduce((t, s) => t + s.count, 0), "result")})` : summary;
 
 function group(steps) {
   const out = [];
@@ -635,17 +675,21 @@ function group(steps) {
     if (!("raw" in s) || s.kids?.length) { out.push(s); i += 1; continue; }
     let j = i + 1;
     while (j < steps.length && "raw" in steps[j] && !steps[j].kids?.length && steps[j].kind === s.kind
-           // ..."(2 times)" only for the same command: two scripts of one length are two
-           && (["read", "search", "web", "page", "edit"].includes(s.kind) || (steps[j].summary === s.summary && (s.kind !== "run" || steps[j].raw === s.raw))
+           // ..."(2 times)" only for the same command: two scripts of one length are two - and a call the agent titled stands as its own row,
+           // in its own words, never merged into ours ("Read a.ts, b.ts and 2 more"): only the same title again is "(2 times)"
+           && (["read", "search", "web", "page", "edit"].includes(s.kind) && !s.titled && !steps[j].titled
+               || (steps[j].summary === s.summary && (s.kind !== "run" || steps[j].raw === s.raw))
                || (s.kind === "mail" && s.q !== undefined && steps[j].q !== undefined))) j += 1;
     const run = steps.slice(i, j);
     const summary = run.length > 1 ? together(run) : null;
     // ...and a run still under way is doing its NEWEST call: "Reading 3 files" said less than "Reading BudgetTable.js"
     const last = run[run.length - 1], doing = last.status === "running" ? last.doing || present(last.summary) : present(summary || "");
-    if (run.length > 1 && summary) out.push({ ...s, id: run.map((x) => x.id).join("+"), summary: withCount(summary, run), doing, status: statusOf(run), detail: run.map(detailOf).join("\n\n"),
+    // ...KEYED BY ITS FIRST CALL, whatever joins it after (the owner, 2026-11-23: Zed, Toad keep a row's key for good): keyed by every call in it,
+    // the row was a new one each time the run grew - drawn again from nothing, its open output shut - `n` says how many it holds
+    if (run.length > 1 && summary) out.push({ ...s, id: s.id, n: run.length, summary: withCount(summary, run), doing, status: statusOf(run), detail: run.map(detailOf).join("\n\n"),
       // ...and the server's why of the newest try that failed rides on the merged row (say.step_why) - the page's reading is the fallback only
       ...(run.some((x) => x.why) ? { why: run.filter((x) => x.why).at(-1).why } : {}) });
-    else for (const x of run) out.push({ ...x, summary: withCount(x.summary, [x]), detail: detailOf(x) });
+    else for (const x of run) out.push({ ...x, summary: withCount(x.summary, [x]), detail: detailOf(x), ...(x.status === "running" && x.output ? { tail: tailOf(x.output) } : {}) });
     i = j;
   }
   return out;

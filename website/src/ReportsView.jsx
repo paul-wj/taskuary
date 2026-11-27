@@ -34,7 +34,10 @@ import { ChannelIcon, StatusDot, timeAgo, Crumb, Empty, FilterPills, SideRail } 
 import { RecentlyDeleted, UndoLine, removeNow } from "./Removed.jsx";
 import WorkflowEditor, { SchedulePicker, scheduleOf, withSchedule } from "./WorkflowEditor.jsx";
 import RunSteps from "./RunSteps.jsx";
+import ApproveWrite, { sameStep, useWrites } from "./ApproveWrite.jsx";
+import AdvisorRuns from "./AdvisorRuns.jsx";
 import { TYPE_LABELS, useScheduleWords } from "./reportWords.js";
+import { lastRanAt } from "./reportRows.js";
 import { asSteps, runWords } from "./workflowFlow.js";
 import { onDraftHanded, takeDraft } from "./draftHandoff.js";
 import { label as btnLabel } from "./buttons.js";
@@ -44,9 +47,11 @@ import { useCapabilities } from "./capabilities.js";
 import DashboardEditor from "./DashboardEditor.jsx";
 import { plural } from "./timeWords.js";
 import { openAppLink } from "./appLinks.js";
+import { openRun } from "./funnelPile.js";
 import { routeOfHash } from "./canvasLinks.js";
-import { NewPlaybook, PB_EMPTY, PB_OPEN, PlaybookDetail, PlaybookRow, RecentlyDeleted as PlaybooksDeleted, pbOpen, usePlaybooks } from "./PlaybookShelf.jsx";
-import { NEW_PB, takePlaybookAsk } from "./playbookOpen.js";
+import { NewSkill, PB_EMPTY, PB_OPEN, SkillDetail, SkillRow, RecentlyDeleted as SkillsDeleted, pbOpen, useSkills } from "./SkillShelf.jsx";
+import { NEW_PB, takeSkillAsk } from "./skillOpen.js";
+import ImportSkill from "./ImportSkill.jsx";
 import SetupWithAi, { onBuilt } from "./SetupWithAi.jsx";
 import { useViewExtras } from "./pageView.js";
 import { isDigest } from "./MorningDigest.jsx";
@@ -182,7 +187,6 @@ export const FIELDS = {
   // review every Monday". The summary pass is optional: the agent already wrote prose.
   agent: [["skill — the slash command the agent should run (optional)", "skill", "text", "/weekly-user-review"],
     ["prompt — what to do, or what the skill needs to know", "prompt", "multiline", "Review this week's user-management changes and list anything unusual."],
-    ["profile (blank = the coding profile)", "agent", "text", "coding · research · analysis"],
     ["repository folder — for a skill that lives in a repo (optional)", "cwd", "text", "C:/work/census"],
     ["model (optional — the agent's default otherwise)", "model", "text", ""], AI_FIELD],
   rest: [["url", "url", "text", "https://api.example.com/items"], ["headers (JSON)", "headers", "multiline", '{"Authorization": "Bearer ..."}'], ["json path", "path", "text", "data.items"], AI_FIELD],
@@ -372,10 +376,9 @@ const LINE_CHIP = { timeline: "Reports", alert: "reached you", send: "sent out",
 
 // `browse` (the assistant canvas, CanvasBrowse.jsx): Reports and Workflows are the sections, each report its tab row, and
 // one report its own editor - drawn through the canvas's frame instead of this tab's rail.
-export default function ReportsView({ browse = null, browseState = {}, onBrowseState = null }) {
-  useLocale();
+export default function ReportsView({ onOpenTask = null, browse = null, browseState = {}, onBrowseState = null }) {
   const [sources, setSources] = useState(null);
-  const pbs = usePlaybooks();          // the third shelf: Reports / Workflows / Playbooks (PlaybookShelf.jsx)
+  const pbs = useSkills();          // the third shelf: Reports / Workflows / Skills (SkillShelf.jsx)
   const [types, setTypes] = useState([]);
   const [connectors, setConnectors] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -448,8 +451,8 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     press.start(sid, runSig(lastRuns[sid]));
     try {
       const { data } = await api.post(`/api/reports/${sid}/rerun`);
-      // a workflow run IS a task: open it where the agent and its browser can be watched (the owner, 2026-10-08)
-      if (data.task_id) { press.done(sid); openAppLink(`task=${data.task_id}`); }
+      // a workflow run IS a task: open it where the agent and its browser can be watched (the owner, 2026-10-08) - drawn at the press (openRun)
+      if (openRun(data, onOpenTask, openAppLink)) press.done(sid);
       // ...a report runs in the background: its row reads Running… until its last run moves on, and that line says what came of it
     } catch (e) { press.fail(sid, e?.response?.data?.detail || "It could not be started - press Run now again."); }
     load();
@@ -561,7 +564,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
               <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }} noWrap>{c.title || s.Address}</Typography>
               <Typography variant="caption" sx={{ color: FAINT }}>
                 {asSteps(c) && c.flow.length ? plural(c.flow.length, "step")
-                  : (c.sources || []).length > 1 ? `${c.sources.length} sources` : (TYPE_LABELS[c.type] || c.type || "rest")} · {sched || "no schedule"}{s.LastPolledAt ? ` · ran ${timeAgo(s.LastPolledAt)}` : " · never ran"}
+                  : (c.sources || []).length > 1 ? `${c.sources.length} sources` : (TYPE_LABELS[c.type] || c.type || "rest")} · {sched || "no schedule"}{lastRanAt(s, lastRuns) ? ` · ran ${timeAgo(lastRanAt(s, lastRuns))}` : " · never ran"}
               </Typography>
               {unscheduled && <Typography variant="caption" sx={{ color: ALERT_INK, display: "block" }}>
                 {t("No schedule — it only runs when you press Run now. Give it one in step 3.")}</Typography>}
@@ -602,7 +605,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         reload={load} onBack={() => { setDashDraft(null); onBack(); }} onSaved={(sid) => { setDashDraft(null); onSaved(sid); }} />
     : agentWorkflow
     ? <WorkflowEditor key={String(bucketNow)} sourceId={openId} sources={sources} connectors={connectors} types={types} draft={draft}
-        reload={load} onBack={onBack} onSaved={saved(onSaved)} note={wizardNote}
+        reload={load} onOpenTask={onOpenTask} onBack={onBack} onSaved={saved(onSaved)} note={wizardNote}
         lastRun={openId != null && lastRuns[openId] ? (more) => <LastRun r={lastRuns[openId]} sid={openId} flush {...more} /> : null}
         lastRunRec={openId != null ? lastRuns[openId] : null}
         fixRun={fixRun?.sid === openId ? fixRun.runId : browse && browseState.fix && browseState.open === openId ? browseState.fix : null}
@@ -634,7 +637,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     // No shelf named (the sidebar, "Run a report or workflow") is the reports themselves: three chips over nothing was a page
     // with no list on it, one press short of what the door says
     const section = openSource && isWorkflowSource(openSource) ? "workflows" : openSource && isDashboardSource(openSource) ? "dashboards"
-      : sectionOr(browseState.section, ["reports", "dashboards", "workflows", "playbooks"]);
+      : sectionOr(browseState.section, ["reports", "dashboards", "workflows", "skills"]);
     const back = () => { setDraft(null); load(); pbs.load(); onBrowseState?.({ ...browseState, section, open: null }); };
     const pbSlug = pbOpen(browseState.open), pbBook = pbs.books.find((b) => b.slug === pbSlug);
     const sectionRows = section === "workflows" ? workflowSources : section === "reports" ? reportSources : section === "dashboards" ? dashboardSources : [];
@@ -643,31 +646,32 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     // a link to a report that has since been removed: the list, and why - never an empty editor saving to a missing id
     const missing = typeof browseState.open === "number" && !sources.some((x) => x.SourceId === browseState.open);
     return browse({
-      title: t("Reports"), wide: true,
-      summary: t("{reports} · {dashboards} · {workflows} · {playbooks} · reports read and summarise, dashboards show the numbers, workflows write, playbooks say how a kind of job is done", { reports: plural(reportSources.length, "report"), dashboards: plural(dashboardSources.length, "dashboard"), workflows: plural(workflowSources.length, "routine"), playbooks: plural(pbs.books.length, "playbook") }),
-      // DASHBOARDS BESIDE REPORTS (the owner, 2026-10-23): Reports, Dashboards, Workflows, Playbooks - and the + New chips in that order
-      sections: [{ key: "reports", label: t("Reports"), n: reportSources.length },
-        { key: "dashboards", label: t(placeName("dashboards").split(" → ").pop()), n: dashboardSources.length },
-        { key: "workflows", label: t("Routines"), n: workflowSources.length },
-        { key: "playbooks", label: t("Playbooks"), n: pbs.books.length },
+      title: "Reports", wide: true,
+      summary: `${plural(reportSources.length, "report")} · ${plural(dashboardSources.length, "dashboard")} · ${plural(workflowSources.length, "routine")} · ${plural(pbs.books.length, "skill")} · reports read and summarise, dashboards show the numbers, routines act, skills say how a kind of job is done`,
+      // DASHBOARDS BESIDE REPORTS (the owner, 2026-10-23): Reports, Dashboards, Workflows, Skills - and the + New chips in that order
+      sections: [{ key: "reports", label: "Reports", n: reportSources.length },
+        { key: "dashboards", label: placeName("dashboards").split(" → ").pop(), n: dashboardSources.length },
+        { key: "workflows", label: "Routines", n: workflowSources.length },
+        { key: "skills", label: "Skills", n: pbs.books.length },
         // both ways in, always - not the open shelf's only: a new workflow was one click into Workflows away (the owner, 2026-10-15:
         // "it should say new workflow and new report right away without clicking in"). "new-invoices" is reached from the new workflow
-        // ...and the third (the owner, 2026-10-22: "no new playbook ui either??"): New playbook's own dialog, opened on its shelf
-        { key: "new-report", label: t("+ New report") }, { key: "new-dashboard", label: t(DASH.new) }, { key: "new-agent", label: t("+ New routine") },
-        { key: NEW_PB, label: t("+ New playbook") }],
+        // ...and the third (the owner, 2026-10-22: "no new skill ui either??"): New skill's own dialog, opened on its shelf
+        { key: "new-report", label: "+ New report" }, { key: "new-dashboard", label: DASH.new }, { key: "new-agent", label: "+ New routine" },
+        { key: NEW_PB, label: "+ New skill" }],
       section,
       onSection: (key) => {
         setDraft(null); setDashDraft(null);
-        if (key === NEW_PB) takePlaybookAsk();      // a blank one: words New handed and never landed are not this press's
+        if (key === NEW_PB) takeSkillAsk();      // a blank one: words New handed and never landed are not this press's
         onBrowseState?.(key === "new-report" ? { section: "reports", open: "new-report" }
           : key === "new-dashboard" ? { section: "dashboards", open: "new-dashboard" }
-          : key === NEW_PB ? { section: "playbooks", open: null, newPb: Date.now() }
+          : key === NEW_PB ? { section: "skills", open: null, newPb: Date.now() }
           : key === "new-invoices" || key === "new-agent" ? { section: "workflows", open: key } : { section: key, open: null });
       },
       // the tab's own tools, beside its list: run what is due, and describe one for the AI to draft
-      tools: section === "playbooks" ? (browseState.open == null ? <Box sx={{ display: "flex", flexDirection: "column" }}>
-        <NewPlaybook key={browseState.newFor || browseState.newPb || ""} connectorType={browseState.newFor || ""} asked={!!browseState.newPb} onDone={pbs.load} button={false}
-          onManual={() => onBrowseState?.({ section: "playbooks", open: `${PB_OPEN}new` })} />
+      tools: section === "skills" ? (browseState.open == null ? <Box sx={{ display: "flex", flexDirection: "column" }}>
+        <NewSkill key={browseState.newFor || browseState.newPb || ""} connectorType={browseState.newFor || ""} asked={!!browseState.newPb} onDone={pbs.load} button={false}
+          onManual={() => onBrowseState?.({ section: "skills", open: `${PB_OPEN}new` })} />
+        <Box sx={{ mt: 1.5 }}><ImportSkill onDone={pbs.load} /></Box>
         {!!pbs.err && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: "var(--tq-danger, #6b2733)" }}>✗ {pbs.err}</Typography>}</Box> : null)
       : section && browseState.open == null ? (
         <Box sx={{ mt: 1.5, display: "flex", flexDirection: "column", gap: 1 }}>
@@ -688,23 +692,23 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
           {note && <Typography variant="body2" sx={{ fontWeight: 600, color: note.ok ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>{note.ok ? "✓" : "✗"} {displayMessage(note.detail)}</Typography>}
         </Box>
       ) : null,
-      cards: section === "playbooks" ? [...pbs.books.map((b) => ({ key: `pb-${b.slug}`, node: <PlaybookRow b={b}
-          onOpen={() => onBrowseState?.({ section: "playbooks", open: `${PB_OPEN}${b.slug}` })} onToggle={(on) => pbs.setOn(b.slug, on)} /> })),
+      cards: section === "skills" ? [...pbs.books.map((b) => ({ key: `pb-${b.slug}`, node: <SkillRow b={b}
+          onOpen={() => onBrowseState?.({ section: "skills", open: `${PB_OPEN}${b.slug}` })} onToggle={(on) => pbs.setOn(b.slug, on)} reload={pbs.load} /> })),
           // ...and under them, Recently deleted - with nothing on the shelf the shelf's own empty line still leads
           ...(pbs.deleted.length ? [
-            ...(pbs.books.length ? [] : [{ key: "pb-none", node: <Typography sx={{ fontSize: 12.5, color: FAINT, p: 1 }}>{pbs.err || t(PB_EMPTY)}</Typography> }]),
-            { key: "pb-deleted", node: <PlaybooksDeleted items={pbs.deleted} onRestore={pbs.restore} /> }] : [])]
+            ...(pbs.books.length ? [] : [{ key: "pb-none", node: <Typography sx={{ fontSize: 12.5, color: FAINT, p: 1 }}>{pbs.err || PB_EMPTY}</Typography> }]),
+            { key: "pb-deleted", node: <SkillsDeleted items={pbs.deleted} onRestore={pbs.restore} /> }] : [])]
         : [...sectionRows.map((x) => ({ key: String(x.SourceId), node: row(x) })),
           ...(sectionRows.length && binKinds ? [{ key: "recently-deleted", node: <RecentlyDeleted kinds={binKinds} onRestored={load} /> }] : [])],
-      detail: browseState.open != null && !missing ? (pbSlug != null ? <PlaybookDetail key={pbSlug} slug={pbSlug} onGone={back} />
+      detail: browseState.open != null && !missing ? (pbSlug != null ? <SkillDetail key={pbSlug} slug={pbSlug} onGone={back} />
         : wizard(back, (sid) => onBrowseState?.({ ...browseState, open: sid }))) : null,
-      openLabel: pbSlug != null ? (pbSlug === "new" ? "a new playbook being written (Reports - Playbooks)" : `the playbook "${pbBook?.title || pbSlug}" (Reports - Playbooks), its words open`)
+      openLabel: pbSlug != null ? (pbSlug === "new" ? "a new skill being written (Reports - Skills)" : `the skill "${pbBook?.title || pbSlug}" (Reports - Skills), its words open`)
         : browseState.open === "new-report" ? "a new report being set up (Reports)"
         : section === "dashboards" && !openSource && browseState.open != null ? "a new dashboard being set up (Reports - Dashboards)"
         : openSource && section === "dashboards" ? `the dashboard "${titleOf(openSource)}" (Reports - Dashboards), drawn with its buttons`
         : openSource ? (section === "workflows" ? `the routine "${titleOf(openSource)}" (Routines), its steps open`
           : `the report "${titleOf(openSource)}" (Reports), its editor open`) : "",
-      empty: section === "playbooks" ? (pbs.err || (pbs.loaded ? PB_EMPTY : "Reading the playbooks…")) : section === "dashboards" ? DASH.empty : section === "workflows" ? "No routines yet - + New routine describes one and sets it up." : "No reports yet - + New report walks you through one.",
+      empty: section === "skills" ? (pbs.err || (pbs.loaded ? PB_EMPTY : "Reading the skills…")) : section === "dashboards" ? DASH.empty : section === "workflows" ? "No routines yet - + New routine describes one and sets it up." : "No reports yet - + New report walks you through one.",
       note: missing ? `That report (#${browseState.open}) is not here any more - these are the ones there are.` : "",
     });
   }
@@ -1005,9 +1009,9 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
 
    `never` is not offered on the Timeline unless the report has somewhere else to go: a report that
    reaches nobody at all is not a setting, it is a report that does nothing. */
-// the one judge setting, app-wide: Settings › Configuration › How mail is sorted › Where runs go
-const JUDGE_HASH = `settings=config&group=${encodeURIComponent("How mail is sorted")}`;
-const WHERE_RUNS_GO = "Settings › How mail is sorted › Where reports go";
+// the one judge setting, app-wide: its card on Settings › Configuration › Which AI does what
+const JUDGE_HASH = `settings=config&group=${encodeURIComponent("Which AI does what")}&key=judge_ai`;
+const WHERE_RUNS_GO = "Settings › Which AI does what › Where reports go";
 // Who decides where a run goes, in words the card can say. `judge` is the Where-runs-go slot as
 // /api/ai/defaults reports it; blank there means the brain that writes this report (reports.judge_for).
 function judgeWords(judge, cfg, brains) {
@@ -1156,7 +1160,7 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
         );
       })}
       {/* WHO JUDGES IS SAID HERE, NOT PICKED. There is ONE judge setting, for every report (Settings ›
-          How mail is sorted › Where reports go), and blank there means the brain that writes this report - the
+          Which AI does what › Where reports go), and blank there means the brain that writes this report - the
           picker above the summary prompt. A second brain picker used to sit here: it wrote the very same
           field as that one, and read as a per-report judge that the setting then quietly overrode (the
           owner, 2026-09-17: "here i choose what model judges what goes on rail?? ... but then in setting
@@ -1238,6 +1242,13 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
     setCfg((c) => ({ ...withSchedule(c, next), on_startup: next.mode === "manual" ? c.on_startup : false }));
   };
   const [srcs, setSrcs] = useState(toSources(saved));   // the funnel's inputs, in order
+  // ...each one that writes to a system, as saved, with "Approve this write" on its card (flow.report_steps: source<n>, the typed ones by place)
+  const [writes, reloadWrites] = useWrites(cur?.SourceId, cur?.ConfigJson);
+  const savedSrcs = cur ? toSources(saved).filter((x) => x.type) : [];
+  const approveOn = (i) => {
+    const n = srcs.slice(0, i + 1).filter((x) => x.type).length, w = srcs[i]?.type && writes[`source${n}`];
+    return w ? <ApproveWrite sid={cur.SourceId} w={w} onChanged={reloadWrites} changed={!sameStep(toShape(srcs[i]), toShape(savedSrcs[n - 1] || {}))} /> : null;
+  };
   // the Assistant's OWN data sources: a system it checks without a saved report standing behind it
   // ...and Taskuary's own cards sit in that same list (type "taskuary"). A report saved before
   // they did - with the block dict, the first page's own key, or nothing - opens with the cards
@@ -1567,7 +1578,7 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
             <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "stretch", maxWidth: 720 }}>
               {srcs.map((src, i) => (
                 <SourceCard key={i} src={src} index={i} count={srcs.length} writeEnabled={workflow} ownSwitch={!workflow}
-                  typeOptions={typeOptions} connectors={connectors}
+                  typeOptions={typeOptions} connectors={connectors} extra={approveOn(i)}
                   dragging={drag === i}
                   onDragStart={() => setDrag(i)} onDragEnd={() => setDrag(null)}
                   onDropHere={() => { if (drag === null || drag === i) return;
@@ -2252,6 +2263,7 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
   const [open, setOpen] = useState(!!embedded || !!(r.steps?.length && r.failed));
   const [showInputs, setShowInputs] = useState(false);
   const [hist, setHist] = useState(false);
+  const [looks, setLooks] = useState(false);
   const rv = r.reviewed || null;
   const outcome = r.steps?.length ? (r.failed || r.steps.some((x) => x.status === "waiting") ? runWords(r.steps, true) : r.summary || runWords(r.steps))
     : r.failed ? `failed${r.error ? ` — ${r.error}` : ""}`
@@ -2276,8 +2288,14 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
           <Box component="span" onClick={(e) => { e.stopPropagation(); setHist(true); }}
             sx={{ ml: 1, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>{t("history ↗")}</Box>
         )}
+        {/* ...and the Advisor's own looks for ideas about his job, which run apart from its posts (lookout.py, AdvisorRuns.jsx) */}
+        {r.type === "assistant" && rv?.scope !== "sources" && (
+          <Box component="span" onClick={(e) => { e.stopPropagation(); setLooks(true); }}
+            sx={{ ml: 1, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>ideas runs ↗</Box>
+        )}
       </Typography>
       )}
+      {looks && <AdvisorRuns onClose={() => setLooks(false)} />}
       {hist && <RunHistory sid={sid} title={r.title} onClose={() => setHist(false)}
         onFix={onFix ? (runId) => { setHist(false); onFix(runId); } : null} />}
       {/* a workflow run as steps: the same top-to-bottom list as its editor, each step's status, time and output */}

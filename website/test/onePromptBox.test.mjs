@@ -30,7 +30,7 @@ test("Send to agent on a report, a dashboard or an FYI opens a blank Agent canva
   assert.match(src, /useEffect\(\(\) => \{ if \(hand\) setOpen\(boxAt\);/);
   assert.doesNotMatch(src, /data-tq-item-agent-hint/, "the canvas is blank - the box asks");
   assert.match(src, /What should the agent do with this \$\{noun\}\?/);
-  assert.match(src, /const ls = hand \? \[\] : itemLines/);
+  assert.match(src, /const ls = hand \|\| agent \? \[\] : itemLines/);
   assert.match(src, /data-tq-item-chip=\{i\.key\}/, "the item stays a chip on the box");
 });
 
@@ -76,4 +76,52 @@ test("the item's box keeps his words and files when Send to agent moves it to th
   assert.match(ask, /const \{ text, setText, pics \} = draft;/);
   assert.match(src, /const \[text, setText\] = useState\(""\), pics = usePromptImages\(\{ files: true \}\), draft = \{ text, setText, pics \};/);
   assert.match(src, /useEffect\(\(\) => \{ setText\(""\); pics\.clear\(\); \}, \[itemKey\]\);/, "...a new item starts them empty");
+});
+
+// THE ITEM'S BOX IS A TASK CHAT'S ROAD (walk 13: a question typed on a report went to the home Assistant, the box emptied, and the answer was kept
+// only in the page - nothing ever stood on the report): his line starts the agent on the item, the one start Send to agent takes, so his line and
+// its answer are that task's chat, stored and drawn there - no second door to the Assistant, no answer held in the page
+test("a line in a report's own box starts the agent on it by the one start, never the Assistant's door", () => {
+  const src = read("ItemSections.jsx"), ask = src.slice(src.indexOf("export function ItemAsk"), src.indexOf("export default function ItemSections"));
+  assert.doesNotMatch(src, /\/api\/concierge\/say/, "no second road to the home Assistant");
+  assert.doesNotMatch(ask, /useState\(\[\]\)/, "no answer kept in page state");
+  assert.match(ask, /else if \(START\) await START\(\{ key: ask\.key, title \}, \{ verb: AGENT, text: q, files: pics\.paths \}\);/);
+  assert.match(read("AssistantView.jsx"), /startsItems\(startOnItem\);/, "the start is the one Send to agent takes");
+});
+
+// ONE WAY IN ON WHAT TASKUARY MADE (the owner, 2026-11-24, a dashboard's row: "don't need both send to agent and message on bottom no?"): a report,
+// a dashboard or an Advisor idea opens on the Agent tab with its own box, and his first line there starts the agent on it - so its row has no Send
+// to agent; what came in from outside (an FYI, a mail, a meeting) keeps the one it has
+test("a made item's row has no Send to agent and its box starts the agent on his first line; an FYI keeps its Send to agent", async () => {
+  const { itemVerbs, madeHere } = await import("../src/funnelPile.js");
+  const chips = ["regular_agent", "coding_agent", "report_off", "not_ours", "mine"].map((verb) => ({ verb, label: verb }));
+  for (const k of ["report", "dashboard", "idea"]) assert.deepEqual(itemVerbs(k, chips).map((c) => c.verb), ["report_off", "not_ours", "mine"], k);
+  for (const k of ["message", "meeting", "fyis"]) assert.deepEqual(itemVerbs(k, chips), chips, k);
+  assert.ok(madeHere({ kind: "report", key: "report:1" }) && !madeHere({ kind: "fyi", key: "msg:1" }));
+  assert.match(read("AssistantView.jsx"), /const verbs = inCard \? itemVerbs\(kind, chips\.filter\(\(c\) => c\.verb\)\) : \[\];/, "the row's words pass through it");
+  const ask = read("ItemSections.jsx");
+  assert.match(ask, /else if \(START\) await START\(\{ key: ask\.key, title \}, \{ verb: AGENT, text: q, files: pics\.paths \}\);/, "the box is the way in");
+});
+
+// ONE MOVE ON AN ARRIVAL IN THE LIST (the owner, 2026-11-25: under a marketing mail the row stood Make it a task, Send to coding agent, Send to
+// agent, Not for me and Talk about it): Send to agent alone, and its press puts the mail on the item's box as a chip - his words start the work
+test("an arrival's one move is Send to agent, and its press puts it on the box as a chip, the pressed one first", async () => {
+  const { arrivalHand, arrivalMoves, handToItem, takeHands } = await import("../src/itemHand.js");
+  const { label } = await import("../src/buttons.js");
+  const promo = { key: "msg:7", mid: 7, who: "Trainly <news@trainly.example>", title: "Spring sale" };
+  const other = { key: "msg:8", mid: 8, who: "Spendly", title: "Your receipt" }, filed = { key: "msg:9", mid: 9, tid: 4, who: "Erin Blake", title: "W-9" };
+  assert.deepEqual(arrivalMoves(promo), ["regular_agent"]);
+  assert.equal(label(arrivalMoves(promo)[0]), "Send to agent");
+  assert.deepEqual(arrivalMoves(filed), [], "a line on a task already is the task's");
+  assert.deepEqual(arrivalMoves(other, { tid: 5 }), [], "nor one that went to a task here");
+  assert.equal(handToItem("fyis:1", arrivalHand(promo, [promo], {}, null)), false, "no box drawn to take it: the caller opens the agent box");
+  let got = null; const off = takeHands("fyis:1", (h) => { got = h; });
+  const started = [];
+  assert.equal(handToItem("fyis:1", arrivalHand(other, [promo, other, filed], {}, async (lead, o) => started.push([lead.key, o]))), true);
+  assert.equal(got.verb, "regular_agent");
+  assert.deepEqual(got.items, [{ key: "msg:8", title: "Spendly: Your receipt" }, { key: "msg:7", title: "Trainly: Spring sale" }]);
+  await got.start({ verb: got.verb, text: "Unsubscribe me from these", files: [], items: got.items });
+  assert.equal(started[0][0], "msg:8");
+  assert.match(started[0][1].text, /^Unsubscribe me from these\n\nTHE OTHER MESSAGES OF THIS LIST IT IS ABOUT \(read each with read_message\)\nm7 - Trainly: Spring sale$/);
+  off(); assert.equal(handToItem("fyis:1", arrivalHand(promo, [promo], {}, null)), false);
 });

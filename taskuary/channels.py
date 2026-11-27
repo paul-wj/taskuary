@@ -23,7 +23,7 @@ BOOT = datetime.now().isoformat(sep=' ', timespec='seconds')
 
 GRAPH = 'https://graph.microsoft.com/v1.0'
 MAIL_SELECT = ('id,subject,from,replyTo,toRecipients,ccRecipients,receivedDateTime,sentDateTime,bodyPreview,body,'
-               'conversationId,webLink,hasAttachments,isRead,inferenceClassification,flag')
+               'conversationId,webLink,hasAttachments,isRead,inferenceClassification,flag,internetMessageId')
 # ...and the same thing without the one field that carries the weight. A folder page LISTS; the
 # bodies come back afterwards (_mail_bodies) for the mail that survives the policy, so a flood
 # sender's twenty thousand characters are never pulled across the wire for a row nobody opens.
@@ -305,11 +305,11 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
         elif c['Type'] in RESEARCH:
             # a real call, not a key-shape check: these all fail the same way (401) and the
             # owner should find that out here rather than from an empty report on Monday
-            from .reports import REGISTRY, resolve_cfg
+            from .reports import REGISTRY, pair, resolve_cfg
             probe = ({'url': 'https://example.com'} if c['Type'] in PAGE_READERS
                      else {'actor': 'apify~hello-world'} if c['Type'] == 'apify'
                      else {'query': 'taskuary local-first ai task hub', 'num': 1})
-            head, _body = REGISTRY[c['Type']](resolve_cfg(store, {**probe, 'type': c['Type'], 'max_rows': 1, 'connector_id': cid}))
+            head, _body = pair(REGISTRY[c['Type']](resolve_cfg(store, {**probe, 'type': c['Type'], 'max_rows': 1, 'connector_id': cid})))
             detail = f'{c["Type"]} answered: {head}'
         elif c['Type'] in ('jira', 'asana', 'monday', 'clickup', 'todoist'):
             from . import pm
@@ -651,6 +651,13 @@ def _header_marks(m: dict) -> dict:
     from .unsubscribe import parse as unsub    # a list's own way off it, for the FYI card's Unsubscribe (unsubscribe.py)
     return {**({'auto_reply': True} if from_headers(h) else {}), **({'sender_class': hm[0], 'header_says': header_words(*hm)} if hm[0] else {}),
             **({'auth': v} if v != 'none' else {}), **({'unsub': u} if (u := unsub(h)) else {})}
+
+
+def _mail_ids(m: dict) -> dict:
+    """A Graph mail's own id and what it answers, kept as an IMAP mail's are (imapmail.mail_ids): a reply finds the task of the mail it answers."""
+    from .autoreply import headers
+    from .imapmail import ancestry
+    return {**({'mid': i[:200]} if (i := (m or {}).get('internetMessageId')) else {}), **({'refs': r[-20:]} if (r := ancestry(headers(m))) else {})}
 
 
 # Graph's bodyPreview is capped at 255 chars - reading it FIRST truncated every stored mail,
@@ -1119,7 +1126,7 @@ def answered_drafts(store, tid, sent: dict) -> list:
 # action still required"). A second model read each waiting draft against the line and retired or cut it in the agent's name, and re-read a
 # working turn's closing words the same way - the agent itself heard the line only when something else woke it. Now a line on a chat where
 # the agent's draft waits, or while it works, wakes it to re-plan (ingest.thread_moved, own): it keeps, rewrites or withdraws its own card. A
-# line with neither stays context, heard on the next turn (general.latest_block - the owner, 2026-11-08). The one read (reread_draft) is kept
+# line with neither stays context, heard on the next turn (events.py - the owner, 2026-11-08). The one read (reread_draft) is kept
 # only where no agent may take the line - a task no assistant works, or the owner's switch or a missing AI that lets none run
 def owner_line(store, tid, msg: dict, mid, sent: dict) -> None:
     from . import ingest
@@ -1206,6 +1213,69 @@ def _answered_task(store, conv, sent_at, quoted, open_ids):
     return (hit or (before[-1] if before else {})).get('TaskId')
 
 
+# THE APP'S OWN SEND IS ON ITS TASK FROM THE MOMENT IT GOES (walk 14): a NEW email a card sent waited for its sent-folder copy to say whom
+# it went to, and that copy found no task (it answers no mail, and its thread was new) - so the person he had just written to was a
+# stranger, and her answer was filed "nothing to do" beside the task that asked. The send writes its own row: the task, the people, the
+# Message-ID and thread where the provider gave them; the sent-folder copy, when it comes, is that row (bind_sent), never a second one
+SENT = 'sent:'
+BY_CARD = 'review'               # the key in a recorded send's MailMetaJson: the card whose send it is
+def record_sent(store, rv: dict, body: str, sent: dict, msg: dict = None, env: dict = None) -> int | None:
+    """The outgoing row of email card `rv`, written as it is confirmed sent (verdicts._deliver_review): its MessageId, or None for no email.
+    `env`: the envelope the send went with, else the card's own."""
+    if str((sent or {}).get('channel') or '').lower() != 'email': return None
+    msg, tid = msg or {}, rv.get('TaskId')
+    if env is None:
+        try: env = json.loads(rv.get('Deliver') or '{}') or {}
+        except (TypeError, ValueError): env = {}
+    from . import outbound
+    subj = ' '.join(str(env.get('subject') or '').split()) or (outbound.re_subject(msg.get('Subject')) if msg else '')
+    mid_, refs = sent.get('message_id'), [r for r in sent.get('refs') or [] if r]
+    to, cc = [a for a in sent.get('to') or [] if a], [a for a in sent.get('cc') or [] if a]
+    # ...the mailbox it left from, always (walk 15: a new email's receipt named none, so its row had none, wrote_to_locally - scoped by mailbox -
+    # never saw it, and the person written to 30 s earlier was held as one "you have never written to"): the receipt's, the envelope's, the
+    # answered mail's, else the one the send road itself defaults to
+    box = sent.get('mailbox') or env.get('mailbox') or msg.get('SourceName') or outbound.sending_mailbox(store, rv, msg or None)
+    if not box:
+        try: box = outbound._mailbox(store)
+        except Exception: box = None
+    # its thread: the answered mail's, else (SMTP) its own Message-ID - the key an answer to it files under (imapmail.thread_key)
+    conv = msg.get('ConversationId') or (refs[0] if refs else mid_)
+    # ...and marked the card's own send (by_card), whatever the card's kind: the card draws it, so no surface draws or tells it again - kept
+    # when its sent-folder copy binds to it (bind_sent merges the copy's ids into this)
+    meta = {BY_CARD: rv['ReviewId'], **({'mid': mid_} if mid_ else {}), **({'refs': refs} if refs else {})}
+    mid = store.add_message({'TaskId': tid, 'ExternalId': f"{SENT}{rv['ReviewId']}", 'ConversationId': conv, 'Channel': 'email', 'SourceName': box,
+                             'Subject': subj or None, 'FromName': 'You', 'FromEmail': box, 'SentAt': datetime.now().isoformat(timespec='seconds'),
+                             'BodyText': body, 'OwnText': body, 'RecipientsJson': json.dumps({'to': to, 'cc': cc}), 'Status': 'context',
+                             'Direction': 'out', 'MailMetaJson': json.dumps(meta)})
+    if tid: store.add_route(mid, tid, 'attach', None, "sent from this task on the owner's press", [], 'router')
+    return mid
+
+
+def _meta(r) -> dict:
+    try: return json.loads((r or {}).get('MailMetaJson') or '{}') or {}
+    except (TypeError, ValueError): return {}
+def by_card(r) -> bool:
+    "Is message row `r` a card's own send (record_sent) - bound to its sent-folder copy or not yet?"
+    return bool(_meta(r).get(BY_CARD))
+def bind_sent(store, msg: dict) -> bool:
+    """Is own mail `msg` the sent-folder copy of a send the app recorded (record_sent)? Then that row takes the copy's ids - its thread,
+    Message-ID and link - and no second row is stored. By its Message-ID, else its subject and opening words to the same people."""
+    if str(msg.get('channel') or '').lower() != 'email': return False
+    from .context import _recipients
+    meta, body = msg.get('mail_meta') or {}, msg.get('body') or ''
+    went = {str(a).lower() for a in [*(msg.get('to') or []), *(msg.get('cc') or [])]}
+    rows = store._rows(f"SELECT * FROM message WHERE ExternalId LIKE '{SENT}%' AND Channel='email' "
+                       'AND (SourceName IS NULL OR LOWER(SourceName)=LOWER(?)) ORDER BY MessageId DESC LIMIT 50', (str(msg.get('source_name') or ''),))
+    hit = next((r for r in rows if meta.get('mid') and _meta(r).get('mid') == meta['mid']), None) or next(
+        (r for r in rows if not _meta(r).get('mid') and _subject(r.get('Subject')) == _subject(msg.get('subject'))
+         and _same_words(body, r.get('BodyText') or '') and (not went or went & {a.lower() for a in _recipients(r)})), None)
+    if not hit: return False
+    both = {**_meta(hit), **{k: v for k, v in meta.items() if v}}
+    store._exec('UPDATE message SET ExternalId=?, ConversationId=COALESCE(?, ConversationId), MailMetaJson=?, SourceLink=COALESCE(?, SourceLink) '
+                'WHERE MessageId=?', (msg['external_id'], msg.get('conversation_id'), json.dumps(both) if both else None, msg.get('source_link'), hit['MessageId']))
+    return True
+
+
 def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) -> int:
     """Anything YOU sent - a mail reply, a line in a chat - never gets its own timeline row and
     never becomes work: it rides INSIDE the thread as a 'context' message, which is what the
@@ -1215,14 +1285,20 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
     there is: you answer a mail in Outlook that Taskuary filed, or one whose task closed
     yesterday. The router only ever matched OPEN tasks, so both of those replies were dropped on
     the floor - the row kept saying nothing had happened, forever (owner, 2026-09-02)."""
-    if store.message_exists(msg['external_id']): return 0
+    if store.message_exists(msg['external_id']) or bind_sent(store, msg): return 0
     from . import agentchannels
     if agentchannels.swallows(store, msg): return 0          # a chat bound to an agent: the owner's line there was the agent's (heard)
-    conv = msg.get('conversation_id')
+    conv, body = msg.get('conversation_id'), (msg.get('body') or '').strip()
     on = [s['task_id'] for s in store.snapshots() if conv and conv in s['conversation_ids']]
+    # TASKUARY READING BACK ITS OWN SEND is filed on the task whose card sent it, by the card's own record (walk 12, 2026-11-23): filed by
+    # thread, TQ-0001's reply landed on TQ-0002 beside it - "You answered Erin Blake yourself" over TQ-0002's live draft, its agent woken
+    ours = next((rv for rv in store.sent_replies(conversation_id=conv) if _same_words(body, rv.get('FinalText') or rv.get('DraftText') or '')), None) if conv else None
+    # ...then by WHAT IT ANSWERS, the one lookup an arrival takes (ingest.identity_route): his reply to the first mail is the first task's
     # TWO OPEN TASKS IN ONE ROOM: the first snapshot was arbitrary, and a group's answer to a new voice note was filed on the
     # older ask beside it. The owner answers what was last said to them - or what their line quotes, when it quotes one.
-    tid = ((_answered_task(store, conv, msg.get('sent_at'), msg.get('quoted'), set(on)) if len(set(on)) > 1 else None)
+    from .ingest import answers
+    tid = ((ours or {}).get('TaskId') or store.task_of_parent(conv, answers(msg))
+           or (_answered_task(store, conv, msg.get('sent_at'), msg.get('quoted'), set(on)) if len(set(on)) > 1 else None)
            or (on[0] if on else None) or store.task_for_conversation(conv, msg.get('subject'))
            or drafted_letter(store, {'Subject': msg.get('subject'), 'RecipientsJson': json.dumps({'to': list(msg.get('to') or []), 'cc': list(msg.get('cc') or [])})}))
     if not tid and not keep_unmatched: return 0
@@ -1237,22 +1313,25 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
                              'SourceLink': msg.get('source_link'), 'Status': 'context', 'Direction': 'out',   # yours: outgoing (X1)
                              'MailMetaJson': json.dumps(msg.get('mail_meta')) if msg.get('mail_meta') else None})
     sent = store.get_message(mid) or {}
-    retire_draft_answered_elsewhere(store, tid, sent)
+    if not ours: retire_draft_answered_elsewhere(store, tid, sent)
     if not tid: return 1
     store.add_route(mid, tid, 'attach', None, why, [], 'router')
     # ...unless Taskuary is reading back its OWN send. That reply already has its line on the
     # timeline ("Sent by email to ..."), and a second entry under it saying "You replied" read as
     # the owner having answered twice.
-    rv = store.sent_reply(task_id=tid) or {}
-    body = (msg.get('body') or '').strip()
-    if not _same_words(body, rv.get('FinalText') or rv.get('DraftText') or ''):
+    if not ours:
         store.add_comment(tid, 'you', 'human',
                           f"You replied {SENT_FROM.get(msg['channel'], 'outside Taskuary')}: {body[:300]}")
         # ...and the task's assistant hears that you already answered, wherever you did (Task 4.5): what is left is its to re-plan.
         # Never Taskuary's own acknowledgement, which promises an answer and is not one
         from . import ingest
+        # ...HIS ANSWER GIVEN OUTSIDE IS HIM SPEAKING (walk 15, S7): it answers the question the task's agent asked him by the road his typed line
+        # takes (workerstate.line_answers) - heard before the agent wakes on it; its choices grey, and the header, rail and phone read that state
+        if not ingest.is_ack(store, sent):
+            from . import workerstate
+            workerstate.line_answers(store, tid, body, 'owner')
         # ...but A LINE THE OWNER SAID IN A CHAT is context, never a turn (the owner, 2026-11-08: "it should show what i sent ... even if it
-        # does not trigger as a prompt"): it stands in the task's chat as theirs, and the agent hears it on its next turn (general.latest_block)
+        # does not trigger as a prompt"): it stands in the task's chat as theirs, and the agent hears it on its next turn (events.py)
         # - at once where its draft waits or it is at work (owner_line)
         if ingest.is_chat(msg): owner_line(store, tid, msg, mid, sent); return 1
         if not ingest.is_ack(store, sent):
@@ -1278,7 +1357,7 @@ def ingest_outbound_mail(store, mailbox: str, m: dict) -> int:
         'to': _addrs(m.get('toRecipients')), 'cc': _addrs(m.get('ccRecipients')), 'conversation_id': m.get('conversationId'), 'source_link': m.get('webLink'),
         'sent_at': _local(m.get('receivedDateTime') or m.get('sentDateTime') or ''),
         'mail_meta': {'folder': 'sentitems', 'focus': m.get('inferenceClassification'),
-                      'flag': (m.get('flag') or {}).get('flagStatus'), 'invite': is_invite(m)}},
+                      'flag': (m.get('flag') or {}).get('flagStatus'), 'invite': is_invite(m), **_mail_ids(m)}},
         'your reply on this thread - kept for context')
 
 
@@ -1530,6 +1609,8 @@ def slack_msg(src: dict, m: dict, own: str = '', names: dict | None = None) -> d
             # a reply in a thread shown in the channel too (thread_broadcast): its answer goes under the thread's first line, not under it
             **({'thread': str(m['thread_ts'])} if m.get('thread_ts') and str(m['thread_ts']) != str(m.get('ts')) else {})}
     return {'external_id': f"slack:{src['Address']}:{m.get('ts')}", 'channel': 'slack', 'subject': None, 'body': m.get('text'),
+            # ...and that first line is the one it answers (ingest.with_parent reads it from the store)
+            **({'reply_to': {'ext': f"slack:{src['Address']}:{meta['thread']}"}} if meta.get('thread') else {}),
             'from_name': m.get('user'), 'conversation_id': f"slack:{src['Address']}", 'source_name': src['Address'],
             'sent_at': datetime.fromtimestamp(float(m.get('ts', 0))).strftime('%Y-%m-%d %H:%M:%S'), **({'mail_meta': meta} if meta else {})}
 
@@ -1581,6 +1662,23 @@ def slack_team_name(tok: str, team: str) -> str:
         except Exception as e:
             logger.info(f'slack: the name of workspace {team} could not be read - {e}'); _SLACK_TEAMS[team] = ''
     return _SLACK_TEAMS[team]
+
+
+def teams_quote(tok: str, cid: str, m: dict) -> dict | None:
+    """The line a Teams message quotes, for ingest.with_parent: Graph puts a quoted reply in `attachments` as a messageReference - its id the
+    quoted message's, its content the sender and a preview - and only a tag in the body, which _clean drops. `fetch` reads it whole by id."""
+    a = next((a for a in m.get('attachments') or [] if a.get('contentType') == 'messageReference' and a.get('id')), None)
+    if not a or not cid: return None
+    try: c = json.loads(a.get('content') or '{}')
+    except ValueError: c = {}
+    who = next((x.get('displayName') for x in ((c.get('messageSender') or {}).get(k) or {} for k in ('user', 'application')) if x.get('displayName')), '')
+    def fetch():
+        r = requests.get(f"{GRAPH}/chats/{cid}/messages/{a['id']}", headers={'Authorization': f'Bearer {tok}'}, timeout=20)
+        if r.status_code != 200: logger.info(f'teams: a quoted message could not be read ({r.status_code}) - its preview stands'); return None
+        j = r.json()
+        return {'who': ((j.get('from') or {}).get('user') or {}).get('displayName'), 'at': _local(j.get('createdDateTime') or ''),
+                'text': _clean((j.get('body') or {}).get('content'))}
+    return {'ext': f"teams:{cid}:{a['id']}", 'who': who, 'text': _clean(c.get('messagePreview')) or c.get('messagePreview') or '', 'fetch': fetch}
 
 
 def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=False, read_it=False, user=False, state=None, feed=None) -> int:
@@ -1679,7 +1777,8 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
                                     'your message in this chat - kept for context', keep_unmatched=True)
             continue
         # no address (the lookup failed): the Graph id, never the shared 'Teams user' every failed lookup wears
-        out = ingest_message(store, {**common, 'from_name': name, 'from_email': addr or f"teams:{user['id']}"}, llm=llm, file_only=file_only)
+        out = ingest_message(store, {**common, 'from_name': name, 'from_email': addr or f"teams:{user['id']}",
+                                     **({'reply_to': q} if (q := teams_quote(tok, cid, m)) else {})}, llm=llm, file_only=file_only)
         n += out['status'] != 'duplicate'
         if atts and out.get('message_id') and out['status'] != 'duplicate':
             try: save_attachments(store, out['message_id'], atts, f'teams:{m["id"]}')
@@ -1849,7 +1948,8 @@ def close_upstream_ended(store, tid: int, said: str, actor: str = 'router'):
     # said once: a task kept open below for its unsent reply meets this ending again on a later poll
     if not any(c.get('Body') == said for c in store.list_comments(tid)): store.add_comment(tid, 'router', 'agent', said)
     # a close-out waiting on the owner (close the issue, merge) is answered by the upstream ending itself
-    rv = proposals.closeout_pending(store, tid)
+    from .card import pending as pending_card
+    rv = pending_card(store, tid, 'closeout')
     if rv: store.decide_review(rv['ReviewId'], 'no_reply', None, actor, 'the item ended upstream')
     # ...but NOT UNDER WORK STILL LIVE ON IT (the owner, 2026-11-01: "If anything still working never close the task automatically"): an
     # agent at its prompt, a routine - the task stays open, and a later poll meets this ending again once nothing is
@@ -2375,7 +2475,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                             'mail_meta': {'folder': folder, 'focus': m.get('inferenceClassification'),
                                           **({'reply_to': rt} if (rt := _addrs(m.get('replyTo'))) else {}),
                                           'flag': (m.get('flag') or {}).get('flagStatus'),
-                                          'invite': inv, **({'cal': cal_} if cal_ else {}), **att_marks(atts),
+                                          'invite': inv, **({'cal': cal_} if cal_ else {}), **att_marks(atts), **_mail_ids(m),
                                           **links_meta((m.get('body') or {}).get('content'))}}, llm=llm)
                         if atts and out.get('message_id') and out['status'] != 'duplicate':
                             try: save_attachments(store, out['message_id'], atts, f"graph:{m['id']}")

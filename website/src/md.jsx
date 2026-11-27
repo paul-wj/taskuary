@@ -2,26 +2,33 @@
 // bold star counts - and showing the SOURCE of that made a 106-line report unreadable. Report
 // bodies only: an email that happens to contain an asterisk is not a document.
 import React from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { findAndReplace } from "mdast-util-find-and-replace";
 import { Box, Button, Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import { BORDER, DIM, INK, PANEL, mono } from "./theme.jsx";
 
 import { linkRefs, looksMd, refParts } from "./mdText.js";
-import { appLink, linkRoad, openAppLink, ownPath } from "./appLinks.js";
+import { appLink, linkRoad, openAppLink, ownPath, placeOnly } from "./appLinks.js";
 import { codeLocalPaths, localFile, plainCitations } from "./taskOutputs.js";
 import CopyCorner from "./CopyCorner.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { attUrl, saveFile } from "./fileSave.js";
 import { FileView, isPdf } from "./PublishedPages.jsx";
+import { PictureDialog } from "./PictureView.jsx";
 import ViewSpec from "./ViewSpec.jsx";
 import { fencedView } from "./viewSpec.js";
 import { useOverlay } from "./overlays.js";
+import { useTableFit } from "./tableFit.js";
 export { looksMd };
 
 const TASK_LINK = /#task=(\d+)/;
+// SOMEONE ELSE'S WORDS DRAW NO APP (the red team, 2026-11-24, T8b): a mail body that reads as markdown drew its ```view fence as the app's own
+// card, its buttons live, and its link #new-task&kind=send&to=<them> opened a send ready-addressed. Inside an Outside - a message's body - a
+// link to a page of ours opens only the page (placeOnly), and a fence is the text it is
+const Outside = React.createContext(false);
 // A WEB LINK IN A CHAT'S ANSWER OPENS OVER IT, as a file the agent made does (the owner, 2026-11-05: "links should show in popup view as well
 // like preview of all other files"): inside a LinkPopups - an agent's turns, an item's answers - an http(s) link is a framed page with its
 // address for a title, Open in browser and Close. A site that refuses framing stays blank, which the page cannot always tell, so it says so
@@ -39,7 +46,8 @@ export function LinkDialog({ url, onClose }) {
         <IconButton size="small" aria-label="Close" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
       </DialogTitle>
       <DialogContent dividers sx={{ p: 0, display: "flex", flexDirection: "column" }}>
-        <iframe src={url} title={url} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer"
+        {/* ...in an opaque origin (no allow-same-origin): a page of ours framed here would have run as Taskuary, its token in reach (T8) */}
+        <iframe src={url} title={url} sandbox="allow-scripts allow-forms allow-popups" referrerPolicy="no-referrer"
           style={{ border: 0, width: "100%", height: "70vh", background: "var(--tq-panel, #fff)" }} />
         <Box data-tq-link-blank="" sx={{ px: 1.5, py: 0.75, fontSize: 12, color: DIM, borderTop: `1px solid ${BORDER}` }}>
           If it stays blank, this site won't show inside Taskuary - <Box component="button" type="button" onClick={out}
@@ -56,7 +64,10 @@ export function LinkPopups({ children }) {
 const fileName = (u) => { const n = String(u).split(/[?#]/)[0].split("/").pop() || "PDF"; try { return decodeURIComponent(n); } catch { return n; } };
 // `onTask` (the chat's): a task link opens it as a press of its rail row does, and a bare ref keeps its own words
 const A = ({ href, children, onTask }) => {
-  useLocale();
+  // ...A FILE OF THIS TASK'S, LINKED IN THE WORDS, IS THAT FILE (walk 20: [x.html](<C:/.../outputs/TQ-0003/x.html>) was emptied by the markdown's
+  // URL check, and the empty link opened a second Taskuary): the road a path named in a code span takes (LocalPath), an emptied link its words
+  const at = React.useContext(LocalFiles), lf = at && localFile(href, at.tid);
+  if (lf) href = lf.url;
   // ...BY ITS ROAD (appLinks.linkRoad, the owner 2026-11-02): the web alone opens a new tab - the system browser, from the desktop window -
   // and the app's own address, written out whole or as a path, stays in the window like its #links
   const road = linkRoad(href), own = ownPath(href) || "", hash = own.includes("#") ? own.slice(own.indexOf("#")) : href;
@@ -64,7 +75,8 @@ const A = ({ href, children, onTask }) => {
   // by its title, and the page put the number in its place): the words the answer gave it, the ref only where the ref is all it gave
   const m = road === "task" ? TASK_LINK.exec(hash || "") : null;
   // ...and a page of the app itself (appLinks.js): opened on the canvas here, never a new browser tab
-  const page = road === "page" ? appLink(hash) || String(hash).trim() : null;
+  const outside = React.useContext(Outside);
+  const page = road === "page" ? (outside ? placeOnly : (x) => x)(appLink(hash) || String(hash).trim()) : null;
   // ...and a file an agent made, as the Assistant links it (lookups.outputs_find): the Result's own Download - one tap saves it
   const file = road === "file";
   // ...SAVED where it is (fileSave.saveFile), never a new tab: the desktop window handed that tab to the system browser, and a file
@@ -74,6 +86,8 @@ const A = ({ href, children, onTask }) => {
   const [view, setView] = React.useState(false), pdf = file && isPdf({ name: fileName(raw) });
   const pop = React.useContext(LinkPop), web = !!pop && road === "outside" && isWebLink(href);
   if (file) href = attUrl({ url: own }, true);
+  else if (page && outside) href = page;
+  if (!String(href ?? "").trim()) return <>{children}</>;
   return (<>
     <a href={href} target={road === "outside" ? "_blank" : undefined} data-tq-file-link={file ? "" : undefined} data-tq-web-link={web ? "" : undefined} aria-expanded={pdf ? view : undefined} data-tq-road={road} rel="noreferrer" style={{ color: "var(--tq-link, #55697a)", fontWeight: 600, textDecoration: "none" }}
       data-tq-task-link={m ? m[1] : undefined}
@@ -99,6 +113,8 @@ const sx = {
   "& h1, & h2, & h3, & h4": { fontWeight: 600, color: INK, lineHeight: 1.3, mt: 1.4, mb: 0.5 },
   "& h1": { fontSize: 17 }, "& h2": { fontSize: 15, pb: 0.35, borderBottom: `1px solid ${BORDER}` }, "& h3, & h4": { fontSize: 13.5 },
   "& p": { m: 0, mb: 0.75 }, "& ul, & ol": { m: 0, mb: 0.75, pl: 2.5 }, "& li": { mb: 0.25 },
+  // ...a task list's boxes ARE its bullets: a dot stood before every tick box
+  "& .contains-task-list": { pl: 0.5 }, "& .task-list-item": { listStyle: "none" },
   "& code": { ...mono, fontSize: 12, bgcolor: PANEL, px: 0.5, borderRadius: 0.5 },
   "& pre": { ...mono, fontSize: 12, bgcolor: PANEL, border: `1px solid ${BORDER}`, borderRadius: 1, p: 1, overflowX: "auto" },
   "& pre code": { bgcolor: "transparent", p: 0 },
@@ -130,7 +146,6 @@ const Img = ({ src, alt }) => {
 export const LocalFiles = React.createContext(null);
 const LocalPath = ({ f, children }) => {
   const [big, setBig] = React.useState(false), src = attUrl({ url: f.url });
-  useOverlay(big, () => setBig(false), { typeThrough: true });
   return (<>
     {/* ...a picture opens over the chat; any other file as a link to a file does (A: saved, a PDF read under it) */}
     {f.image ? <a href={src} data-tq-file-link="" onClick={(e) => { e.preventDefault(); setBig(true); }} style={{ color: "var(--tq-link, #55697a)", fontWeight: 600, textDecoration: "none" }}>
@@ -139,12 +154,7 @@ const LocalPath = ({ f, children }) => {
     {f.image && <span data-tq-local-picture="" style={{ display: "block", margin: "4px 0 6px" }}>
       <img src={src} alt={f.name} onClick={() => setBig(true)} title="Open it whole"
         style={{ maxWidth: "100%", maxHeight: 220, objectFit: "contain", cursor: "zoom-in", border: `1px solid ${BORDER}`, borderRadius: 4, background: "#fff" }} /></span>}
-    {big && <Dialog open onClose={() => setBig(false)} maxWidth="lg" data-tq-local-picture-big="">
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, py: 1, fontSize: 14 }}>
-        <span style={{ flex: 1, fontWeight: 600 }}>{f.name}</span>
-        <IconButton size="small" aria-label="Close" onClick={() => setBig(false)}><CloseIcon fontSize="small" /></IconButton></DialogTitle>
-      <DialogContent dividers sx={{ p: 1 }}><img src={src} alt={f.name} style={{ maxWidth: "100%", display: "block", margin: "0 auto" }} /></DialogContent>
-    </Dialog>}
+    {f.image && <PictureDialog file={big ? { url: f.url, name: f.name, path: f.rel } : null} onClose={() => setBig(false)} />}
   </>);
 };
 const Code = ({ children, node, ...rest }) => {
@@ -160,24 +170,33 @@ const Td = ({ children, node, ...rest }) => <td {...rest}>{keepRefs(children)}</
 // ...a code block - a command, a prompt to paste somewhere - copies at its corner (CopyCorner); one that is a view (viewSpec.fencedView) is
 // drawn by the view's own renderer, the road a `show` call takes, so a chart in an answer is a chart wherever answers are drawn
 const textOf = (n) => (n?.type === "text" ? n.value : (n?.children || []).map(textOf).join(""));
-const Pre = ({ children, node, ...rest }) => { const box = React.useRef(null), src = textOf(node), view = React.useMemo(() => fencedView(src), [src]);
+const Pre = ({ children, node, ...rest }) => { const box = React.useRef(null), src = textOf(node), outside = React.useContext(Outside);
+  const view = React.useMemo(() => (outside ? null : fencedView(src)), [src, outside]);
   if (view) return <ViewSpec spec={view} />;
   return <div className="tq-copy-host"><pre ref={box} {...rest}>{children}</pre><CopyCorner text={() => box.current?.innerText || ""} /></div>; };
 
-// ...and one line of it, inline: a brief's bullet keeps its bold and its links without a paragraph around them (ReportBrief)
+// ...A LINE BREAK IS A LINE BREAK (the owner, 2026-11-24: an end-of-day brief's five items, one a line, ran together as one paragraph): Markdown
+// reads a single newline as a space, a chat never does - every line written stands as written, in an answer, a report and a brief alike
+const remarkBreaks = () => (tree) => findAndReplace(tree, [/\r?\n|\r/g, () => ({ type: "break" })]);
+const PLUGINS = [remarkGfm, remarkBreaks];
+
+// ...and one line of it, inline: a brief's bullet keeps its bold and its links without a paragraph around them
 export const MdLine = ({ text }) => (
-  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: A, img: Img, p: ({ children }) => <>{children}</> }}>{plainCitations(text || "")}</ReactMarkdown>
+  <ReactMarkdown remarkPlugins={PLUGINS} components={{ a: A, img: Img, p: ({ children }) => <>{children}</> }}>{plainCitations(text || "")}</ReactMarkdown>
 );
-export const Md = ({ text, onTask = null }) => {
+// ...every table fits by the one rule (tableFit.js): its frame widens, then its font steps down, then it wraps at words, then it scrolls
+const FitTable = ({ children }) => { const ref = React.useRef(null); useTableFit(ref, [children]); return <div className="tbl" ref={ref}><table>{children}</table></div>; };
+export const Md = ({ text, onTask = null, outside = false }) => {
   const at = React.useContext(LocalFiles), words = at ? codeLocalPaths(plainCitations(text || ""), at.tid) : plainCitations(text || "");
+  const within = React.useContext(Outside);
   return (
-  <Box sx={sx} className="tq-md">
-    <ReactMarkdown remarkPlugins={[remarkGfm]}
-      components={{ a: onTask ? (p) => <A {...p} onTask={onTask} /> : A, img: Img, td: Td, pre: Pre, code: Code, table: ({ children }) => <div className="tbl"><table>{children}</table></div> }}>
+  <Outside.Provider value={outside || within}><Box sx={sx} className="tq-md">
+    <ReactMarkdown remarkPlugins={PLUGINS} urlTransform={(u) => (at && localFile(u, at.tid) ? u : defaultUrlTransform(u))}
+      components={{ a: onTask ? (p) => <A {...p} onTask={onTask} /> : A, img: Img, td: Td, pre: Pre, code: Code, table: FitTable }}>
       {/* a Codex citation marker reads as the file's name wherever an answer is shown; the chat makes it a file (taskOutputs.js) */}
       {/* ...and in the chat a task it names is a link that opens it (linkRefs); a path into the task's own folder, the file (Code) */}
       {onTask ? linkRefs(words) : words}
     </ReactMarkdown>
-  </Box>
+  </Box></Outside.Provider>
   );
 };

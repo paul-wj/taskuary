@@ -1,5 +1,5 @@
 // A REMOVE ACTS AT ONCE, AND IS TAKEN BACK IN PLACE (the owner, 2026-10-21: no "are you sure"). Every Remove - a report, a workflow,
-// a routing rule, a profile, a mailbox address, a connection, a sign-in - runs on the press; the server keeps what it took
+// a routing rule, a mailbox address, a connection, a sign-in - runs on the press; the server keeps what it took
 // (recentlydeleted.py) and answers with its id. The page then says "Removed <it> - Undo" where the thing was. The press and the
 // line are often on two screens (an editor removes, its list shows the line), so the line is announced here and drawn by whichever
 // list is showing that kind.
@@ -7,14 +7,8 @@ import { t, translateDescriptor } from "./i18n.js";
 const subs = new Set();
 let last = null, timer = null;
 
-// `kind`: which lists draw it ("report", "workflow", "rule", "profile", "source", "connection", "signout", "signin"); `did`: the server's id
-export const removedLine = (title, verb = "Removed") => {
-  const item = title ? translateDescriptor(title) : t("it");
-  if (verb === "Removed") return t("Removed {title}", { title: item });
-  if (verb === "Disconnected") return t("Disconnected {title}", { title: item });
-  if (verb === "Signed out of") return t("Signed out of {title}", { title: item });
-  return `${verb} ${item}`;
-};
+// `kind`: which lists draw it ("report", "workflow", "rule", "source", "connection", "signout", "signin" - a saved sign-in); `did`: the server's id
+export const removedLine = (title, verb = "Removed") => `${verb} ${title || "it"}`;
 export function announceRemoved({ did, title, kind, verb = "Removed" }) {
   last = did ? { did, title, kind, verb, at: Date.now() } : null;
   clearTimeout(timer); timer = last ? setTimeout(() => clearRemoved(last?.did), UNDO_MS) : null;

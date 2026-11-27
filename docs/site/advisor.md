@@ -28,7 +28,7 @@ What one run of the Advisor report hands the model, today:
 
 Two more inputs reach the Advisor at **reflection**, the pass that rewrites `LEARNED.md`, rather
 than on a report run: `LEARNED.md` itself, whole, hypotheses included, the outcome ledger
-below, and what you pressed while its line was shown. A matching playbook reaches its line on an
+below, and what you pressed while its line was shown. A matching skill reaches its line on an
 item (below); your mutes are designed as an input and not yet read.
 
 None of this is copied into a prompt you cannot see. The report's **Preview** shows exactly what one
@@ -149,14 +149,11 @@ person, the same weekday, three weeks or more - is raised when its day has passe
 to them: *The headcount sheet you send Gail on Mondays hasn't gone yet.* Anything you send them puts
 it down, and so does No, for that week.
 
-**The habits row.** After each reflection, a habit the Advisor is sure of - strong, and resting on
-enough of your own acts - is adopted into `LEARNED.md` without asking, and one it is unsure of but
-thinks useful is asked about, at most two a week. They share one row under **Advisor**: *Learned 2
-habits · 1 to check*. Open it and each habit is one sentence to you - what was seen, and what changes
-because of it. An adopted one has **Not right**, which takes it back for good; one it asks about has
-**Adopt** and **No** - No leaves it unadopted and it is never asked again. Moving on from the row
-marks the adopted ones seen, and the row goes once nothing in it is open. The Assistant answers the
-same row in words: "adopt the second one", "the one about sign-in help is not right".
+**Habits learn themselves.** Nothing asks you to confirm what was learned: a habit goes into use once
+three of your own acts - presses, approvals, edits, answers - bear it out, and an act that goes against
+it takes it back out until they do again. The memory keeps conclusions only, a few lines per person and
+a short list in all; the oldest fall out first. **Wrong** on the Memory page, or saying so to the
+Assistant ("the one about sign-in help is not right"), takes a line out at once.
 
 **How it is tested.** `tests/rail_advisor_cases.py` is the eval: every kind of idea it puts on the rail (a follow-up, a
 promise, work gone quiet, the app's health, a system worth connecting, its own idea, a rule worth
@@ -194,10 +191,13 @@ counted numbers underneath. The lines are the model's reading; the numbers are t
 own lines above the block are yours and survive every recompile. The page is read wherever the hub's
 dossier is read: the reply drafter, triage's context, meeting prep, and the Advisor's bigger read.
 
-Facts about kinds of work go to the playbook they belong to, as a proposal: once a playbook has
+Facts about kinds of work go to the skill they belong to, as a proposal: once a skill has
 five closes on the ledger, reflection writes a bullet block - how often a close came open again,
 and how often the ones closed with a question still open did - and it waits for your yes on the
-Review queue. Nothing edits a playbook on its own; your own lines on it are never touched.
+Review queue. Your edits teach it too: when you change an agent's draft before sending it, on a
+task worked from a skill, the next reflection reads what was drafted beside what you sent and
+suggests the update to that skill as the same kind of card. Nothing edits a skill on its own;
+your own lines on it are never touched.
 
 ## The outcome ledger
 
@@ -228,7 +228,7 @@ same decay: "a green PR from the coding agent is merged as it stands"; "when an 
 the PR, you say yes". Facts about other
 people ("Ray answers in three days and needs a second chase") and about kinds of work ("closing
 from a thread with an open question reopens 40%; ask first") go elsewhere: a page per person
-derived from the ledger, and work facts proposed into the playbook they belong to (both below).
+derived from the ledger, and work facts proposed into the skill they belong to (both below).
 
 ## The one rule
 
@@ -247,5 +247,5 @@ ledger with its daily sweep and reflection reading it; the Advisor on the event,
 prompt-box pill and the notes in the clock menu; a page per person and a per-person day, with the
 slipped lane and its four answers; and triage naming which goal step a mail serves (the mail lands
 under that step, and may tick a box nobody holds), opening a goal for the open-ended ask with the
-planner proposing its steps, and work facts proposed into playbooks.
+planner proposing its steps, and work facts proposed into skills.
 Next, kept in mind but not built: earned autonomy.

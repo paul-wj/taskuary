@@ -36,7 +36,7 @@ def test_an_unknown_job_is_a_bug_not_a_guess():
 def _home(conns=(), tests=None, settings=None, connector=None, by='owner'):
     s = MemoryStore()
     cfg = {**config.load(), 'cli_connections': {k: clic.with_defaults({'cmd': k}) for k in conns},
-           'agents': {n: {'kind': p['kind'], 'purpose': p['purpose']} for n, p in agents.DEFAULT_PROFILES.items()}}
+           'agents': {'coding': {'kind': 'coding'}}}
     for k, ok in (tests or {}).items(): agents.record_cli_test(s, k, ok)
     for k, v in (settings or {}).items(): s.set_setting(k, v, by)
     cid = None
@@ -95,7 +95,7 @@ def test_fixed_mode_is_todays_answer_for_every_job(real, home):
             r = brainroute.choose(s, job)
             assert (r.pick, r.model) == _today(s, job), (home, job)
             assert r.tier == 'fixed' and r.rule == 'fixed'
-            assert r.gear == ('main' if job in ('general', 'coding', 'quick_work') else 'light')
+            assert r.gear == ('main' if job in ('general', 'coding', 'quick_work', 'advisor') else 'light')
             # the reason names what runs, or says nothing does - never a vendor the home does not have
             assert r.why and (agents.NO_AI in r.why) == (not r.pick)
 
@@ -154,6 +154,52 @@ def test_a_saved_model_follows_the_brain_it_was_saved_for(real):
             assert s.get_setting('assistant_model') == 'claude-sonnet-5-5', 'the setting itself is never rewritten'
             s.set_setting('default_brain', 'claude', 'owner')
             assert brainroute.choose(s, 'general').model == 'claude-sonnet-5-5', 'and it is back with its brain'
+
+
+def test_a_saved_session_on_one_brain_with_anothers_model_shows_and_runs_that_brains_own(real, monkeypatch):
+    """The owner's live app, 2026-11-23 ("why does this say both claude and codex????"): a task's saved conversation was Codex with a Claude
+    model - its chip read "OpenAI Codex CLI · claude-sonnet", its menu ticked Codex's default, and every turn started Codex with the Claude
+    name ("not supported when using Codex with a ChatGPT account"). A pair that does not belong together is the brain's own default - in the
+    run, in what the task says ran it, and so on its chip; a model the brain offers is kept."""
+    from taskuary import climodels, server
+    real.update({'claude', 'codex'})
+    lists = {'claude': ['claude-sonnet-5-5'], 'codex': ['gpt-5.5']}
+    s, cfg, _ = _home(('claude', 'codex'), {'claude': True, 'codex': True}, {'default_brain': 'codex'})
+    with mock.patch.object(config, 'load', lambda: cfg), mock.patch.object(climodels, 'catalog', lambda cli: {'choices': lists.get(cli, [])}):
+        clic.sync(cfg, s)
+        monkeypatch.setattr(server, 'store', s)
+        tid = s.create_task({'Title': 'Quarterly close checklist', 'Kind': 'general', 'Status': 'open'}, 'router')
+        s.save_session(tid, 'cli:codex', 'claude-sonnet-5-5', '', 'ctx')
+        assert general.opening(s, s.get_task(tid))[:2] == ('cli:codex', 'claude-sonnet-5-5'), 'the live shape: the stored pair'
+        pick, _, model = general._selected(s, model='claude-sonnet-5-5', pick='cli:codex')
+        assert pick == 'cli:codex' and 'claude' not in model, model
+        assert server._ran_on(tid)['model'] == '', 'the chip: Codex at its default, as the menu ticks it'
+        sess = general.GeneralSession(s, tid)
+        assert sess.pick == 'cli:codex' and 'claude' not in sess.model, sess.model
+        assert s.saved_session(tid)['Model'] == sess.model, 'and the conversation is saved as it runs'
+        assert general._selected(s, model='gpt-5.5', pick='cli:codex')[2] == 'gpt-5.5', 'a model the brain offers is kept'
+        assert general._selected(s, model='claude-sonnet-5-5', pick='cli:claude')[2] == 'claude-sonnet-5-5'
+
+
+def test_a_task_no_ai_has_worked_names_the_one_that_will(real, monkeypatch):
+    """Walk 11 (2026-11-23): a stranger's task, held before any agent ran, wore a bare "AI" chip at its head - nothing had run, so nothing was
+    named. The task says which AI WILL take it - the router's own answer, the one Settings says - and nothing where none would."""
+    from taskuary import climodels, server
+    real.update({'codex'})
+    s, cfg, _ = _home(('codex',), {'codex': True}, {'default_brain': 'codex'})
+    with mock.patch.object(config, 'load', lambda: cfg), mock.patch.object(climodels, 'catalog', lambda cli: {'choices': ['gpt-5.5']}):
+        clic.sync(cfg, s)
+        monkeypatch.setattr(server, 'store', s)
+        tid = s.create_task({'Title': 'Seat pricing for next year', 'Kind': 'general', 'Status': 'open'}, 'router')
+        assert server._ran_on(tid) is None, 'the live shape: nothing has run it'
+        will = server._will_run(s.get_task(tid))
+        assert will and will['pick'] == 'cli:codex' and will['brain'], will
+        assert will == {k: v for k, v in brainroute.runs(s, 'general', cfg).items() if k in ('pick', 'brain', 'model')}, 'the router says it, once'
+    bare, cfg2, _ = _home()
+    with mock.patch.object(config, 'load', lambda: cfg2):
+        monkeypatch.setattr(server, 'store', bare)
+        tid = bare.create_task({'Title': 'Seat pricing for next year', 'Kind': 'general', 'Status': 'open'}, 'router')
+        assert server._will_run(bare.get_task(tid)) is None, 'no AI connected: no chip'
 
 
 def test_a_cli_is_never_handed_a_model_it_does_not_run(real):
@@ -234,8 +280,9 @@ def test_the_default_question_lists_every_cli_that_can_take_work_and_ends_with_t
         assert f'so work runs on OpenAI Codex CLI, the first one ready, once it is back.' in agents.default_ask(s)['note']
         s.set_setting('triage_backup_ai', '', 'owner')
         gen, rows = aidefaults.resolve(s, cfg, 'assistant_ai'), brainroute.now(s, cfg)
-        assert gen['runs']['brain'] == 'OpenAI Codex CLI' and gen['runs']['why'] == f'OpenAI Codex CLI is limited until {till}'
-        assert {r['why'] for r in rows} == {f'OpenAI Codex CLI is limited until {till}'} and brainroute.resting(s, 'cli:gemini') == ''
+        # ...and with both resting, whatever else is connected takes the work meanwhile (the owner, 2026-11-24), and says why
+        assert gen['runs']['brain'] == 'Gemini CLI' and gen['runs']['why'] == f'Running on Gemini CLI - OpenAI Codex CLI is limited until {till}'
+        assert {r['why'] for r in rows} == {f'Running on Gemini CLI - OpenAI Codex CLI is limited until {till}'} and brainroute.resting(s, 'cli:gemini') == ''
         s.set_setting(brainroute.COOL_KEY, json.dumps({'cli:claude': brainroute.cooldowns(s)['cli:claude'].isoformat(sep=' ', timespec='minutes')}), 'router')
         # ...and THE CURRENT ONE, CHOSEN, IS A CHOICE: the same value, now the owner's - the question is over and nothing else moved
         card = aidefaults.apply(s, cfg, 'default_brain', value=aidefaults.resolve(s, cfg, 'default_brain')['value'])
@@ -386,3 +433,35 @@ def test_an_ai_cards_quick_agent_work_is_its_own_model_thinking_less_and_its_lig
         assert brainroute.choose(s, 'general', difficulty='standard').model in ('', 'gem-hydrogen')
         assert 'gem-neon' in brainroute.choose(s, 'general', difficulty='hard').model or brainroute.choose(s, 'general', difficulty='hard').gear == 'strong'
         assert brainroute._words(s, p, cfg)['quick'] == 'gem-hydrogen, low effort'
+
+
+def test_a_level_model_saved_as_the_pickers_whole_object_reads_and_saves_as_its_id():
+    # the live setting, 2026-11-23: the quick level's model held "{'id': 'gpt-6.2-sol', 'label': ...}" - the check refused it and quick work
+    # ran on Codex's default, not the model he picked
+    import json
+    from taskuary.store import MemoryStore
+    s = MemoryStore()
+    s.set_setting(brainroute.LEVEL_KEY, json.dumps({'quick': {'pick': 'cli:codex', 'model': "{'id': 'gpt-6.2-sol', 'label': 'GPT-6.2-Sol'}"}}), 'owner')
+    assert brainroute.by_level(s)['quick']['model'] == 'gpt-6.2-sol'
+    brainroute.save_by_level(s, {'quick': {'pick': 'cli:codex', 'model': {'id': 'gpt-6.2-astra', 'label': 'GPT-6.2-Astra'}}})
+    assert brainroute.by_level(s)['quick']['model'] == 'gpt-6.2-astra'
+
+
+def test_the_advisor_thinks_on_the_normal_model_never_triages_quick_one(real):
+    """The owner, 2026-11-24: the twice-a-day Advisor look ran on triage's card at its light gear - the sorting model. It runs where general
+    work does: the general agent's AI on its normal gear, and in Auto the AI he set for normal work."""
+    real.add('claude')
+    s, cfg, cid = _home(('claude',), {'claude': True}, connector='anthropic')
+    p = f'connector:{cid}'
+    s.set_setting('triage_ai', p, 'owner'); s.set_setting('assistant_ai', 'cli:claude', 'owner')
+    with mock.patch.object(config, 'load', lambda: cfg):
+        clic.sync(cfg, s)
+        s.set_setting('ai_route_mode', 'fixed', 'owner')
+        r, g = brainroute.choose(s, 'advisor', gear='light'), brainroute.choose(s, 'general')
+        assert (r.pick, r.gear) == (g.pick, 'main') and r.pick != brainroute.choose(s, 'triage').pick, r.why
+        s.set_setting('ai_route_mode', 'auto', 'owner')
+        r = brainroute.choose(s, 'advisor', gear='light')
+        assert (r.tier, r.gear) == ('standard', 'main') and r.pick == brainroute.choose(s, 'general').pick, r.why
+        brainroute.save_by_level(s, {'normal': {'pick': p, 'model': 'claude-sonnet-5'}})
+        r = brainroute.choose(s, 'advisor')
+        assert (r.pick, r.model, r.level) == (p, 'claude-sonnet-5', 'normal'), r.why

@@ -116,10 +116,9 @@ def _install_fresh_routes(app, store):
         """A general task asked from New with the owner's checkout named in his words, Developer mode off; its agent committed the fix there
         and proposed the push (browser/named-push-card: design round 6, D1 - the card was told to the agent and never drawn)."""
         import subprocess
-        from taskuary import agents, landing
-        import tempfile
+        from taskuary import agents, landing, spawn          # spawn.own_temp: the checkout goes when the fixture server does
         # ...his checkout lives outside Taskuary's own home, which no agent is ever given (floor.kept_secret)
-        home = Path(os.environ["TASKUARY_HOME"]); top = Path(tempfile.mkdtemp(prefix="tq-ledger-")); repo, bare = top / "ledger", top / "ledger-origin.git"
+        home = Path(os.environ["TASKUARY_HOME"]); top = Path(spawn.own_temp("tq-ledger-")); repo, bare = top / "ledger", top / "ledger-origin.git"
         G = body.get("git") or "git"        # ...a fresh home's PATH holds only the system's own
         git = lambda cwd, *a, env=None: subprocess.run([G, "-C", str(cwd), "-c", "user.name=Alex Doyle", "-c", "user.email=alex@northwind.example", *a],
                                                        check=True, capture_output=True, env=env)
@@ -163,6 +162,15 @@ def _install_fresh_routes(app, store):
         rid = store.add_review({"TaskId": tid, "MessageId": mid, "Kind": "draft_reply", "Status": "pending", "Channel": ch,
                                 "DraftText": body.get("draft") or "Hi Erin, here is a long review of every flaw we found in the tool, one by one. Alex"})
         return {"taskId": tid, "reviewId": rid, "messageId": mid}
+
+    @app.post("/api/fixture/skill")
+    def fixture_skill(body: dict = Body(...)):
+        "A skill proposal on task `taskId`, as a job's ending drafts it - beside the reply that waits (browser/send-and-close over a skill)."
+        from taskuary import proposals
+        made = proposals.queue(store, int(body["taskId"]), {"action": "save_skill", "slug": body.get("slug") or "vendor-review",
+                               "text": "# Review a vendor tool\n\nWhen: a colleague asks for our review of a vendor tool.\n\n1. Collect the flaws.\n2. Send the review.\n",
+                               "why": "colleagues ask for vendor reviews every month"}, "assistant")
+        return {"reviewId": (made or {}).get("reviewId")}
 
     @app.post("/api/fixture/draft")
     def fixture_draft(body: dict = Body(...)):
@@ -350,7 +358,13 @@ def _install_fresh_routes(app, store):
         import json
         from taskuary import outbound, server
         from taskuary import store as store_mod
-        store_mod.set_owner(store, "Alex Doyle", "alex@northwind.example", "owner")     # ...the one door: the agents' documents name him too
+        me = "alex@northwind.example"
+        store_mod.set_owner(store, "Alex Doyle", me, "owner")     # ...the one door: the agents' documents name him too
+        # ...AND A MAILBOX STANDS BEHIND IT, as a connected one does (walks 15-16: with none, a new email's sent row named no mailbox, so
+        # store.wrote_to_locally - scoped by mailbox - never saw it, and the person written to stood as a stranger 30 s later): an email
+        # source of his address, with no connector to poll it, and every receipt naming the mailbox it left from
+        if not any(s.get("Channel") == "email" for s in store.list_sources(active_only=False)):
+            store.save_source({"Channel": "email", "Address": me, "Owner": "me", "Active": 1}, "fixture")
         box = Path(os.environ["TASKUARY_HOME"]) / "outbox.jsonl"
         def out(*a, **k):
             if body.get("fail"): raise RuntimeError(body["fail"])         # ...a mailbox that refuses: a press whose act fails (`fail` its words)
@@ -360,7 +374,7 @@ def _install_fresh_routes(app, store):
             # ...whom it went to as the send was given it: send_out takes `to` third in line, a reply by name - "gail@" for every new email told
             # its agent both went to the wrong person (the real-CLI card walk, 2026-11-18)
             to = k.get("to") or (a[2] if len(a) > 2 and isinstance(a[2], (list, str)) and a[0] is not None and isinstance(a[1], str) else None)
-            return {"channel": "email", "to": ([to] if isinstance(to, str) else to) or ["gail@northwind.example"], "cc": k.get("cc") or []}
+            return {"channel": "email", "to": ([to] if isinstance(to, str) else to) or ["gail@northwind.example"], "cc": k.get("cc") or [], "mailbox": me}
         outbound.send_out = outbound.reply_to_message = out
         # ...the MAILBOX is the fixture's, so a letter's card needs no Connect - but a post's network is not: its card reads its own connection
         # (walk 8, 2026-11-20: stubbed for every card, the walk drew "Post to LinkedIn" over a network never connected and read it as the app's)
@@ -394,6 +408,61 @@ def _install_fresh_routes(app, store):
         legacy = {"Status": "rejected", "DecidedBy": "owner"} if body.get("legacy_dismissed_read") else {"Status": "pending"}
         rid = store.add_review({"TaskId": tid, "Kind": "action", **legacy, "Origin": "agent", "DraftText": json.dumps(p), "Reason": body.get("reason") or "the comment Erin asked for"})
         return {"taskId": tid, "reviewId": rid}
+
+    @app.post("/api/fixture/review-rows")
+    def fixture_review_rows(body: dict = Body(...)):
+        """A task holding the review rows given as they are stored - one of each kind the one review card draws (browser/one-card.mjs): `mail`
+        a colleague's message it answers, `source` the task's SourceRef (a GitHub issue's link), `github` a stand-in GitHub that takes a comment,
+        `refuses` a run_tool type whose press fails, `kind` the task's kind (a coding task's chat is drawn as a chat task's). Nothing leaves the fixture: every send is the outbox's (/api/fixture/outbox)."""
+        import json
+        store.set_setting("owner_name", "Alex Doyle", "owner"); store.set_setting("owner_email", "alex@northwind.example", "owner")
+        tid = store.create_task({"Title": body.get("title") or "Review the card", "Kind": body.get("kind") or "general", "Status": "open",
+                                 "SourceRef": body.get("source") or None}, "owner")
+        mid = store.add_message({"TaskId": tid, "ExternalId": f"fx-rows-{tid}", "Channel": body.get("channel") or "email", "FromName": "Erin Blake",
+                                 "FromEmail": "erin@northwind.example", "ToEmail": "alex@northwind.example", "Subject": body.get("subject") or "Vendor plans",
+                                 "SentAt": "2026-11-24 08:00:00", "BodyText": body.get("mail") or "Hi Alex, could you send me the plans? Thanks, Erin", "Status": "routed",
+                                 # ...`meta`: what the poller kept on it - the line it quotes (ingest.with_parent), a one-to-one mark
+                                 **({"MailMetaJson": json.dumps(body["meta"])} if body.get("meta") else {})})
+        if body.get("github"):
+            from taskuary import ci, github
+            github.comment_issue = lambda *a, **k: "https://github.example/northwind/ledger/issues/12#issuecomment-1"
+            ci._conn = lambda *a, **k: {"Secret": "fixture-token"}
+        if body.get("refuses"):
+            from taskuary import reports
+            def refused(_cfg): raise RuntimeError("LinkedIn refused the post: the token has expired - sign in again on its card.")
+            reports.REGISTRY[body["refuses"]] = refused
+        # ...`connect`: the network's card connected, its act landing on a stand-in that answers with where it went
+        # ...several at once (a list): each post goes on its own network's card (browser/card-line.mjs)
+        cids = {}
+        for net in ([body["connect"]] if isinstance(body.get("connect"), str) else body.get("connect") or []):
+            from taskuary import reports
+            c = store.get_connector_by_type(net)
+            cids[net] = store.save_connector({"ConnectorId": c["ConnectorId"], "Active": 1, "Secret": "fixture-token", "Roles": "tool"}, "owner")
+            reports.REGISTRY[f"{net}_post"] = lambda cfg: {"rows": [{"url": "https://social.example/alex/posts/1"}], "columns": ["url"]}
+        # ...`stands_in`: a network never set up whose Test and post answer from a stand-in - its setup filled under the card passes for real
+        if body.get("stands_in"):
+            from taskuary import reports
+            t = body["stands_in"]
+            reports.REGISTRY[f"{t}_me"] = lambda cfg: {"rows": [{"handle": "alex.social.example", "followers": 12, "posts": 3}], "columns": ["handle"]}
+            reports.REGISTRY[f"{t}_post"] = lambda cfg: {"rows": [{"url": "https://social.example/alex/posts/1"}], "columns": ["url"]}
+        for r in body.get("rows") or []:
+            d = r.get("DraftText")
+            if cids and isinstance(d, dict):
+                cid = cids.get(str(d.get("type") or "").removesuffix("_post")) or next(iter(cids.values()))
+                r["DraftText"] = {**d, "connector_id": cid}
+        # ...the agent's turn that set the cards up, as a chat with turns holds them (each card stands in the turn that raised it)
+        from taskuary import general
+        store.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, body.get("ask") or "Set it up for my press.")
+        store.add_transcript(tid, "run1", "Set it up.", "claude", os.environ["TASKUARY_HOME"])
+        store.add_comment(tid, "assistant", general.ASSISTANT_TYPE, body.get("answer") or "It is set up below and waits for your press.")
+        rids = [store.add_review({"TaskId": tid, "Status": "pending", "Origin": "agent", **({"MessageId": mid} if r.pop("answers", False) else {}),
+                                  **{k: (json.dumps(v) if k in ("DraftText", "Deliver") and not isinstance(v, str) else v) for k, v in r.items()}})
+                for r in [dict(x) for x in body.get("rows") or []]]
+        # ...and what a filed review does not take at its filing (a batch, a failure kept, when it was decided), as the run that set it writes it
+        for rid, r in zip(rids, body.get("rows") or []):
+            for k in ("Batch", "ActError", "DecidedAt", "FinalText"):
+                if r.get(k): store._exec(f"UPDATE review SET {k}=? WHERE ReviewId=?", (r[k], rid))
+        return {"taskId": tid, "reviewIds": rids, "messageId": mid}
 
     @app.post("/api/fixture/overcome")
     def fixture_overcome(body: dict = Body(...)):
@@ -439,6 +508,88 @@ def _install_fresh_routes(app, store):
         rid = store.add_review({"TaskId": tid, "MessageId": mid, "Kind": "draft_reply", "Status": "pending", "Channel": "email",
                                 "DraftText": "Hi Gail, you're invited - the email from the portal is on its way. Alex"})
         return {"taskId": tid, "actId": act, "reviewId": rid}
+
+    @app.post("/api/fixture/change-card")
+    def fixture_change_card(body: dict = Body(...)):
+        """A routine of his and the agent's ask to change its instructions, queued as the agent's change_routine is (proposals.queue) - the change
+        card (browser/change-card.mjs). `was`/`now`: its instructions before and as proposed. GET /api/fixture/routine/<id> reads what was saved.
+        `cfg`: more of the routine as saved (its goal, browser, skill); `skill`: {name, text} a skill of his, written first; `change`: more of the
+        agent's ask (goal, browser); `skill_edit`: {name, text, why} the agent's change to a skill - or a new one - as a second task's card."""
+        import json
+        from taskuary import general, proposals, skills
+        if body.get("skill"): skills.write(body["skill"]["name"], body["skill"]["text"])
+        cfg = {"type": "agent", "access": "write", "title": body.get("title") or "Social post drafts", "prompt": body["was"], "cron": "0 9 * * 1", **(body.get("cfg") or {})}
+        sid = store.save_source({"Channel": "report", "Address": cfg["title"], "Owner": "owner", "Active": 1, "ConfigJson": json.dumps(cfg)}, "owner")
+        tid = store.create_task({"Title": "Make the posts shorter", "Kind": "general", "Status": "open"}, "owner")
+        store.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, "Make future LinkedIn posts short.")
+        store.add_comment(tid, "assistant", general.ASSISTANT_TYPE, "I rewrote the routine's instructions - the card below changes it on your press.")
+        rv = proposals.queue(store, tid, {"action": "change_routine", "routine": cfg["title"], "prompt": body["now"], "why": body.get("why") or "Make future posts short",
+                                          **(body.get("change") or {})})
+        out = {"taskId": tid, "sourceId": sid, "review": rv}
+        for i, e in enumerate(body.get("skill_edits") or []):
+            t2 = store.create_task({"Title": e.get("title") or "Make the posts punchier", "Kind": "general", "Status": "open"}, "owner")
+            store.add_comment(t2, general.BRIEF_ACTOR, general.USER_TYPE, e.get("ask") or "Make my social posts punchier.")
+            store.add_comment(t2, "assistant", general.ASSISTANT_TYPE, e.get("said") or "How your posts are written lives in the skill - the card below changes it on your press.")
+            out[f"skill{i}"] = {"taskId": t2, "review": proposals.queue(store, t2, {"action": "save_skill", "slug": e["name"], "text": e["text"], "why": e.get("why") or ""})}
+        return out
+
+    @app.post("/api/fixture/routine")
+    def fixture_routine_seed(body: dict = Body(...)):
+        "A routine of his as saved (`cfg`), and the skill it uses written first (`skill`: {name, text}) - no card: what a walk's agent finds and changes."
+        import json
+        from taskuary import skills, workflows
+        if body.get("skill"): skills.write(body["skill"]["name"], body["skill"]["text"])
+        cfg = {"type": "agent", "access": "write", **body["cfg"]}
+        # ...by the editor's own save: a new routine starts on its next slot, never on the next tick (workflows.save)
+        return {"sourceId": workflows.save(store, {"Channel": "report", "Address": cfg["title"], "Owner": "owner", "Active": 1, "ConfigJson": json.dumps(cfg)}, "owner")}
+
+    @app.get("/api/fixture/skill/{name}")
+    def fixture_skill_page(name: str):
+        from taskuary import skills
+        return {"text": skills.read(name)}
+
+    @app.post("/api/fixture/filed-news")
+    def fixture_filed_news(body: dict = Body(None)):
+        """Two tasks of Erin Blake's, one open and one he closed, and a line triage read as nothing new filed onto each - Gail's onto the closed one,
+        Erin's onto the open one - as ingest's filed road leaves them (status, route, verdict, the chat's arrival). browser/filed-news.mjs"""
+        from taskuary import chatlog, processing_unread
+        store.set_setting("owner_name", "Alex Doyle", "owner"); store.set_setting("owner_email", "alex@northwind.example", "owner")
+        store.set_setting(processing_unread.FILED_SINCE, "2000-01-01 00:00:00", "fixture")
+        def task(title, ask, status):
+            tid = store.create_task({"Title": title, "Kind": "general", "Status": "open", "Summary": ask}, "owner")
+            store.add_message({"TaskId": tid, "ExternalId": f"fx-ask-{tid}", "Channel": "teams", "FromName": "Erin Blake", "FromEmail": "erin@northwind.example",
+                               "Subject": "", "SentAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 7200)), "BodyText": ask,
+                               "ConversationId": f"fx-room-{tid}", "Status": "routed"})
+            if status == "done": store.update_task(tid, {"Status": "done"}, "owner")
+            return tid
+        def filed(tid, who, addr, words):
+            mid = store.add_message({"TaskId": tid, "ExternalId": f"fx-filed-{tid}", "Channel": "teams", "FromName": who, "FromEmail": addr, "Subject": "",
+                                     "SentAt": time.strftime("%Y-%m-%d %H:%M:%S"), "BodyText": words, "ConversationId": f"fx-room-{tid}", "Status": "filed"})
+            store.add_route(mid, tid, "attach", None, "triage: fyi - nothing new to do · kept on it", [], "triage", verdict={"intent": "fyi", "why": "a thank-you"})
+            chatlog.came_in(store, tid)
+            return mid
+        open_t = task("Send Erin the August statement", "Can you send me the August statement?", "open")
+        shut_t = task("Fix the office printer queue", "The printer queue is stuck again", "done")
+        return {"open": open_t, "closed": shut_t, "filedOpen": filed(open_t, "Erin Blake", "erin@northwind.example", "fyi I am out on Friday"),
+                "filedClosed": filed(shut_t, "Gail Moreno", "gail@northwind.example", "Thanks - the printer works again!")}
+
+    @app.get("/api/fixture/routine/{sid}")
+    def fixture_routine(sid: int):
+        import json
+        return json.loads((store.get_source(sid) or {}).get("ConfigJson") or "{}")
+
+    @app.post("/api/fixture/agent-says")
+    def fixture_agent_says(body: dict = Body(...)):
+        """The task's agent says `text` in a later turn - as one woken on the task does (browser/cards-stay.mjs: its words while a card still
+        waits stand above the card) - and, with `rows`, raises those review rows beside what the task holds (a post beside a routine change)."""
+        import json
+        from taskuary import general
+        tid = int(body["taskId"])
+        rids = [store.add_review({"TaskId": tid, "Status": "pending", "Origin": "agent",
+                                  **{k: (json.dumps(v) if k in ("DraftText", "Deliver") and not isinstance(v, str) else v) for k, v in r.items()}})
+                for r in body.get("rows") or []]
+        if body.get("text"): store.add_comment(tid, "assistant", general.ASSISTANT_TYPE, body["text"])
+        return {"ok": True, "reviewIds": rids}
 
     @app.post("/api/fixture/no-readonly")
     def fixture_no_readonly(body: dict = Body(...)):
@@ -495,12 +646,23 @@ async def run() -> None:
     from fixture_skills import install as install_skill_fixture
     install_skill_fixture(app, store)
     if FRESH: _install_fresh_routes(app, store)
+    # ...the load harness (load-burst.mjs): its watching and its mail door, never set in CI
+    if FRESH and os.environ.get("TASKUARY_FIXTURE_LOAD") == "1":
+        from fixture_load import install as install_load
+        install_load(app, store)
+    # ...the card gallery (card-gallery.mjs): a stand-in agent's task, files and far ends, never set in CI
+    if FRESH and os.environ.get("TASKUARY_FIXTURE_GALLERY") == "1":
+        from fixture_gallery import install as install_gallery
+        install_gallery(app, store)
     if not FRESH:
         from fixture_changes import install_processing_changes
         install_processing_changes(app, store)
 
     config = uvicorn.Config(app, host=HOST, port=PORT, log_level="warning")
     server = uvicorn.Server(config)
+    # ...stoppable by the app's own Quit (POST /api/quit), as the desktop's server is: the harness asks it before any kill, so its shutdown runs
+    from taskuary import workerstate
+    workerstate.SERVER[0] = server
     await server.serve(sockets=[listener])
 
 

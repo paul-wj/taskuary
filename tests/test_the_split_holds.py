@@ -44,20 +44,20 @@ class TriageOnlyEverNamesARole(unittest.TestCase):
     def test_a_coding_verdict_lands_on_the_coding_role_whatever_it_named(self):
         s = store()
         for named in ('copilot', 'analyst', 'codex', ''):
-            self.assertEqual(hub_agents.routed_role(s, 'coding', named), 'coding', named)
+            self.assertEqual(hub_agents.routed_role(s, 'coding'), 'coding', named)
 
     def test_a_general_verdict_cannot_land_on_a_coding_role(self):
         s = store()
         s.upsert_agent('copilot', 'coding', 'cli', json.dumps({'cmd': 'copilot'}))
         for named in ('coding', 'copilot'):
-            self.assertEqual(hub_agents.routed_role(s, 'general', named), '', named)
+            self.assertEqual(hub_agents.routed_role(s, 'general'), '', named)
 
 
 class TheSessionRunsTheBrain(unittest.TestCase):
     def test_the_profiles_own_command_does_not_decide_what_runs(self):
         """coding agent's profile says claude; settings say codex. Settings win, and the ROLE is unchanged."""
         s = store('codex')
-        self.assertEqual(hub_agents.brain_command(s, 'coding', CFG).get('cmd'), 'codex')
+        self.assertEqual(hub_agents.brain_command(s, CFG).get('cmd'), 'codex')
 
     def test_open_session_launches_the_brain_not_the_profile(self):
         s = store('codex')
