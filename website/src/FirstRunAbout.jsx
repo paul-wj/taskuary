@@ -42,21 +42,21 @@ const ASK = {
 };
 // each draft's line, by its state - the job's as it was, the other two in the same words
 const SAYS = {
-  job: { running: "Taskuary reads the last three months of your email to write your job description - about a minute.",
+  job: { running: "Preparing your job description in the background.",
     failed: (why) => t("Taskuary couldn't write it from your email ({why}). Press Write it again, or say it in your own words.", { why }),
     ready: "This is your job as your email describes it, and below it what you work on. Is it right? Fix anything that's wrong, then press Next.",
     none: "Press Write it - Taskuary reads your email and describes your job." },
   // HERE'S WHAT I THINK YOU WORK ON (the owner, 2026-11-01): six months of mail grouped into workstreams - rename one, mark it personal,
   // or leave it out; a personal one is never learned from. Drawn under the job since 2026-11-06, where `busy` is its line in place
-  workstreams: { running: "Taskuary reads the last six months of your mail to see what you work on - about a minute.",
+  workstreams: { running: "Preparing suggested workstreams in the background.",
     failed: (why) => t("Taskuary couldn't tell what you work on from your mail ({why}).", { why }),
     ready: "This is what your mail shows you work on. Rename any, untick anything that isn't your work, then press Next.",
     none: "Press Write it - Taskuary reads six months of your mail and lists what you work on." },
-  style: { running: "Taskuary reads your sent mail to describe how you write - about a minute.",
+  style: { running: "Preparing your writing style in the background.",
     failed: (why) => t("Taskuary couldn't write it from your sent mail ({why}). Press Write it again, or describe it in your own words.", { why }),
     ready: "This is how you write, as your sent mail shows it. Edit anything that's off, then press Next.",
     none: "Press Write it - Taskuary reads your sent mail and describes how you write." },
-  soul: { running: "Taskuary reads your mail and your answers to describe how you like to work - about a minute.",
+  soul: { running: "Preparing your work preferences in the background.",
     failed: (why) => t("Taskuary couldn't write it from your mail ({why}). Press Write it again, or say it in your own words.", { why }),
     ready: "This is how you like to work, from your mail and your answers. Edit anything that's off, then press Next.",
     none: "Press Write it - Taskuary describes how you like to work from your mail and your answers." },
@@ -163,13 +163,16 @@ export default function FirstRunAbout({ onSaved, onBack, onStep, again = false, 
     if (step === "soul") return save();
     if (draft) {
       setBusy("save");
-      try { await accept(step); if (step === "job") await acceptWs(); } catch (e) { setBusy(""); return setErr(errText(e)); }
+      try {
+        await accept(step);
+        if (step === "job" && (draft.state !== "running" || drafts.workstreams.state !== "running")) await acceptWs();
+      } catch (e) { setBusy(""); return setErr(errText(e)); }
       setBusy("");
     }
     setAt((i) => Math.min(i + 1, STEPS.length - 1));
   };
   const back = () => { setEditing(""); return at ? setAt(at - 1) : onBack?.(); };
-  const ready = !!a && (!draft || draft.state !== "running") && (step !== "mailboxes" || boxes > 0);
+  const ready = !!a && (step !== "mailboxes" || boxes > 0);
   const last = step === "soul";
   // THE ONE LIT MOVE (FirstRun.jsx, the owner 2026-10-19): Write it while there is no draft to look at, else the row's Next - and the
   // line names it by its label
@@ -182,7 +185,7 @@ export default function FirstRunAbout({ onSaved, onBack, onStep, again = false, 
     // ...in the walk's Nav pill, Back and Next in their own slots, as every setup step's (FirstRun, the owner 2026-11-03)
     { id: "about:back", group: "back", tone: "s", label: t("Back"), title: t(at ? "The question before" : "Your main source"), run: back },
     { id: "about:next", group: "next", tone: writeLit ? "s" : "p", disabled: !ready || !!busy,
-      why: draft ? t("{draft} is still being written", { draft: t(LABEL[step]).toLowerCase() }) : step === "mailboxes" ? t("connect a source first") : "",
+      why: step === "mailboxes" && !boxes ? t("connect a source first") : "",
       label: nextLabel,
       title: t(last ? "Saved to what Taskuary knows about you - change it any time in Settings" : step === "mailboxes" ? "Every place your work comes in is connected"
         : draft ? "Kept as it is here - change it any time in Settings" : "The next question"), run: next },
@@ -271,7 +274,7 @@ export default function FirstRunAbout({ onSaved, onBack, onStep, again = false, 
       </>}
       {draft && <Box data-tq-draft={draft.state} sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>{working ? (
         <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-          <Typography sx={{ color: DIM, fontSize: 13.5 }}>{t(says.running)}</Typography></Box>
+          <Typography role="status" sx={{ color: DIM, fontSize: 13.5 }}>{t(says.running)} {t("Press Next to continue; you can review this later in Docs.")}</Typography></Box>
       ) : <>
         {draft.state === "failed" && <Typography data-tq-draft-failed="" sx={{ color: "var(--tq-danger, #9b2c2c)", fontSize: 13.5 }}>
           {says.failed(draft.why)}</Typography>}
@@ -288,6 +291,7 @@ export default function FirstRunAbout({ onSaved, onBack, onStep, again = false, 
       {/* ...the job's own Edit and Write it again stay under the job, not under the list that follows it */}
       {under && moves.length > 0 && <Box data-tq-job-moves="" sx={{ display: "flex", alignItems: "center", gap: 0.5, ml: -1, mt: -0.75 }}>{moves}</Box>}
       {under && <WorkstreamsSection d={drafts.workstreams} text={texts.workstreams} busy={!!busy} onAgain={() => learn(["workstreams"])}
+        later={working ? null : t("You can continue setup and review workstreams later in About you.")}
         onChange={(v) => { setEdited((x) => ({ ...x, workstreams: true })); setTexts((x) => ({ ...x, workstreams: v })); }} />}
       {note && !draft && <Typography sx={{ color: DIM, fontSize: 13 }}>{t("I couldn't fill these in from your email ({why}) - type them in.", { why: note })}</Typography>}
       {err && <Typography sx={{ color: "var(--tq-danger, #9b2c2c)", fontSize: 13 }}>{err}</Typography>}

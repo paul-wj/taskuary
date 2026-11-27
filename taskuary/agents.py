@@ -1670,8 +1670,9 @@ def _long(cwd):
 
 
 def _acp_sig(launch: dict, cwd, env: dict) -> tuple:
-    "What a kept connection was opened with: a different command, folder, environment's names, options or mode is a new one (clipool._sig)."
-    return (tuple(launch['cmd']), str(cwd or ''), hash(tuple(sorted(env))), json.dumps(launch['meta'], sort_keys=True, default=str), launch['mode'])
+    "A kept connection's launch identity, including Claude provider changes without storing credentials in its signature."
+    provider = hash(tuple(env.get(k) for k in _CLAUDE_PROVIDER_ENV + _CLAUDE_MODEL_ENV))
+    return (tuple(launch['cmd']), str(cwd or ''), hash(tuple(sorted(env))), json.dumps(launch['meta'], sort_keys=True, default=str), launch['mode'], provider)
 
 
 # ...A CONVERSATION THE CLI NO LONGER HAS IS STARTED AFRESH (the owner's coding task, 2026-11-16: after a restart cut its turn, his next line drew
@@ -1777,6 +1778,12 @@ def _acp_open(name: str, launch: dict, cwd, env: dict, resume, timeout, trace, f
     t0 = time.time(); at = {}
     spare = base is not None and bool(launch['adapter']) and _cli_name(name) == 'claude'
     if spare:
+        # Keep the effective provider together in the adapter process, not in session metadata. In particular a launch-specific
+        # endpoint must not inherit a saved token from the spare's environment when spawn_env chose not to import that bundle.
+        base = dict(base)
+        for k in _CLAUDE_PROVIDER_ENV + _CLAUDE_MODEL_ENV:
+            if k in env: base[k] = env[k]
+            else: base.pop(k, None)
         own = {k: v for k, v in env.items() if base.get(k) != v}
         launch = {**launch, 'meta': {'claudeCode': {**((launch['meta'] or {}).get('claudeCode') or {}),
                                                     'options': {**(((launch['meta'] or {}).get('claudeCode') or {}).get('options') or {}), 'env': own}}}}
@@ -2112,12 +2119,44 @@ def _fell_back(name: str, why, trace):
     trace('tool', 'acp', f'{name} over acp did not start ({str(why)[:200]}) - this run uses the command line')
 
 
+_CLAUDE_GATEWAY_ENV = ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS')
+_CLAUDE_PROVIDER_ENV = _CLAUDE_GATEWAY_ENV + ('CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK',
+                                           'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')
+_CLAUDE_MODEL_ENV = ('ANTHROPIC_MODEL', *(f'ANTHROPIC_DEFAULT_{tier}_MODEL' for tier in ('HAIKU', 'SONNET', 'OPUS', 'FABLE')))
+
+
+def _claude_gateway_env(env: dict) -> dict:
+    # Keep an explicit launch's provider intact. Mixing a token and endpoint from two sources could send the token to the wrong host.
+    if any(k in env for k in _CLAUDE_PROVIDER_ENV): return {}
+    from .climodels import claude_home
+    try:
+        path = (Path(env['CLAUDE_CONFIG_DIR']) if env.get('CLAUDE_CONFIG_DIR') else claude_home()) / 'settings.json'
+        settings = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError, RuntimeError): return {}
+    saved = settings.get('env') if isinstance(settings, dict) else None
+    if not isinstance(saved, dict) or not any(saved.get(k) for k in _CLAUDE_GATEWAY_ENV): return {}
+    # Only gateway credentials, routing and model aliases. No credential helpers, hooks, plugins or arbitrary environment variables.
+    return {k: saved[k] for k in _CLAUDE_GATEWAY_ENV + _CLAUDE_MODEL_ENV if k not in env and isinstance(saved.get(k), str)}
+
+
+def _claude_omits_user_settings(profile: dict) -> bool:
+    cmd = profile.get('cmd') or ''
+    if _cli_name(cmd) != 'claude': return False
+    args = profile.get('args') or ()
+    for i in range(len(args) - 2, -1, -1):
+        if args[i] == '--setting-sources': return 'user' not in args[i + 1].split(',')
+    return bool(_own_settings(profile, cmd))
+
+
 def spawn_env(profile: dict, extra_env: dict = None) -> dict:
     "A headless CLI's environment: the process's own, or - for a stranger's task (profile strict_env) - only what terminal.STRICT_ENV lets through."
     from .terminal import strict_ok          # lazy: terminal imports this module
     base = {k: v for k, v in os.environ.items() if not profile.get('strict_env') or strict_ok(k)}
     # ...and the profile's own (an API card's harness: its CODEX_HOME and its key - in the environment, never on disk; harness.row)
-    return child_env({**base, **(profile.get('env') or {}), **(extra_env or {})})
+    base.update(profile.get('env') or {}); base.update(extra_env or {})
+    if not profile.get('strict_env') and _claude_omits_user_settings(profile):
+        base.update(_claude_gateway_env(base))
+    return child_env(base)
 
 
 
@@ -2545,9 +2584,8 @@ def cli_has_flag(name: str, flag: str) -> bool:
 
 
 def _own_settings(profile: dict, name: str) -> list:
-    """THE ASSISTANT READS NONE OF THE OWNER'S USER-LEVEL CLAUDE SETTINGS (the owner, 2026-10-21): their user-wide hooks POST to this app
-    on every prompt and every stop - 0.3-0.5 s a turn, measured - and its headless, tool-less brain has no use for them. Only a profile
-    that asks (user_settings False: the Assistant's); coding and general agents keep theirs. A claude without the flag runs as before."""
+    """Leave out user-wide Claude settings and their hooks for the Assistant and tool-less runs. Gateway environment is
+    carried separately by spawn_env. Explicit settings sources are left intact; older Claude runs as before."""
     if profile.get('user_settings') is not False or _cli_name(name) != 'claude': return []
     args = list(profile.get('args') or [])
     if '--setting-sources' in args or not cli_has_flag(name, '--setting-sources'): return []

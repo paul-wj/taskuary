@@ -10,6 +10,9 @@ What each release changed, newest first. Ask the Assistant "what changed in the 
 - The Agent Board filters finished work by **Today / All** without hiding open work and scrolls desktop columns independently.
 - Agent activity, task dates, and action receipts use the selected interface language. Attachment links still open at their original destination without carrying the Taskuary token.
 - First-run AI setup shows localized progress and retry messages instead of crashing when checking or installing a coding CLI.
+- Claude Code mail sorting and restricted agent sessions keep supported gateway credentials and model aliases without enabling user hooks or plugins.
+- First-run AI setup uses a short sample email classification to check the selected triage model without running the full mail policy.
+- Continue first-run setup while work-profile drafts are generated in the background. Review the documents and suggested workstreams later.
 
 ## 0.4.1.9 - 2026-11-22
 

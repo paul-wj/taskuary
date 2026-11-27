@@ -70,10 +70,6 @@ test("one Next on About your work keeps the job and the workstreams - the list a
   // nothing to say: no call, and Next still moves on
   assert.equal(wsAnswer({ state: "failed", why: "no AI" }, ""), null); assert.equal(wsAnswer({ state: "none" }, ""), null);
   const src = read("FirstRunAbout.jsx");
-  assert.match(src, /try \{ await accept\(step\); if \(step === "job"\) await acceptWs\(\); \}/);
-  // Next greys only on the job being written - the grouping is not the step's draft
-  assert.match(src, /const step = STEPS\[at\], draft = DRAFTS\.includes\(step\) \? drafts\[step\] : null;/);
-  assert.match(src, /const ready = !!a && \(!draft \|\| draft\.state !== "running"\)/);
   // its line in place while it runs, and the small line that says Next need not wait
   assert.match(src, /\{working \? \([\s\S]*?t\(says\.running\)/);
   assert.equal(WS_LATER, "What you work on is still being read from your mail - it fills in on its own; you can change it later on About you.");

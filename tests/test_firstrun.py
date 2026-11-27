@@ -4,6 +4,8 @@ every answer says what happened and the one thing to press next."""
 import json, unittest
 from unittest import mock
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from taskuary import agents, clis, firstrun, server
@@ -407,36 +409,82 @@ class ChatGptPlanTests(unittest.TestCase):
 class ProvenOnMailTests(unittest.TestCase):
     """A Vertex key passed its one-word Test, became the AI, and then sorted no mail - every email ⚠, setup spinning (the owner,
     2026-10-15: "if there is error timeout and say connect another one ... each cli tool or cloud tool or local tool should work by
-    itself for assistant/triage/and agent"). An AI is the AI only once it has sorted one invented email the way triage will."""
+    itself for assistant/triage/and agent"). An AI is the AI only once it has sorted an invented email into a usable verdict."""
     def setUp(self):
         self.s = MemoryStore(); self.cid = self.s.get_connector_by_type('chatgpt')['ConnectorId']
         self.s.save_connector({'ConnectorId': self.cid, 'Secret': 'refresh-token', 'Active': 1}, 'test')
 
-    def pick(self, verdict=None, error=None, slow=0):
-        import time
-        def classify(msg, **kw):
-            if slow: time.sleep(slow)
-            if error: raise RuntimeError(error)
-            return verdict
-        with mock.patch('taskuary.channels.test_connector', return_value={'ok': True}), mock.patch('taskuary.llm.build_llm', return_value=lambda *a, **k: ''), \
-             mock.patch('taskuary.triage.classify_intent', side_effect=classify), mock.patch.object(firstrun, 'PROVE_SECONDS', 0.5):
+    def pick(self, verdict=None, error=None, wait_for_cancel=False):
+        def build(_store, *, cancel, **kw):
+            def classify(_system, _user, **kw):
+                if wait_for_cancel:
+                    if cancel.wait(2): self.cancelled.set()
+                    raise RuntimeError('cancelled')
+                if error: raise RuntimeError(error)
+                return json.dumps(verdict)
+            return classify
+        with mock.patch('taskuary.channels.test_connector', return_value={'ok': True}), \
+             mock.patch('taskuary.llm.build_llm', side_effect=build), mock.patch.object(firstrun, 'PROVE_SECONDS', 0.5):
             return firstrun.choose_connector(self.s, self.cid)
 
     def test_one_that_sorts_the_test_email_is_the_ai_for_triage_the_assistant_and_agents(self):
-        out = self.pick(verdict={'intent': 'task', 'kind': 'task', 'title': 'Approve the invoice'})
+        out = self.pick(verdict={'intent': 'task', 'title': 'Approve the invoice', 'summary': 'The invoice is due Friday.'})
         self.assertTrue(out['ok'])
         for k in firstrun.BRAINS: self.assertEqual(self.s.get_setting(k), f'connector:{self.cid}')
 
     def test_one_that_answers_but_cannot_sort_mail_is_not_the_ai_and_says_pick_another(self):
-        out = self.pick(verdict={'intent': None, 'degraded': True, 'parse_error': 'RuntimeError: vertex_ai sent back no answer'})
+        out = self.pick(error=RuntimeError('provider sent back no answer'))
         self.assertFalse(out['ok']); self.assertIn('pick another AI', out['why'])
         for k in firstrun.BRAINS: self.assertEqual(self.s.get_setting(k) or '', '')
         self.assertIn('sent back no answer', firstrun.state(self.s)['fix']['detail'])
 
+    def test_json_without_a_usable_task_does_not_pass_the_proof(self):
+        for verdict in ({'intent': 'fyi', 'title': 'Invoice', 'summary': 'For information only.'},
+                        {'intent': 'task', 'title': 'Invoice', 'summary': ' '}):
+            with self.subTest(verdict=verdict):
+                self.assertFalse(self.pick(verdict=verdict)['ok'])
+                self.assertFalse(self.s.get_setting('triage_ai'))
+
     def test_one_that_hangs_is_cut_off_and_says_so(self):
-        out = self.pick(verdict={'intent': 'fyi'}, slow=2)
+        from threading import Event
+        self.cancelled = Event()
+        out = self.pick(wait_for_cancel=True)
         self.assertFalse(out['ok']); self.assertIn('too long', firstrun.state(self.s)['fix']['detail'])
         self.assertEqual(self.s.get_setting('triage_ai') or '', '')
+        self.assertTrue(self.cancelled.wait(1), 'the timed-out classification is asked to stop')
+
+
+@pytest.mark.parametrize('explicit_gateway', [False, True])
+def test_claude_mail_proof_uses_gateway_without_loading_user_extensions(tmp_path, monkeypatch, explicit_gateway):
+    from taskuary import clipool, config
+
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path))
+    for k in ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS',
+              'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+              'ANTHROPIC_DEFAULT_HAIKU_MODEL'):
+        monkeypatch.delenv(k, raising=False)
+    saved_url, explicit_url = 'https://saved.example', 'https://explicit.example'
+    (tmp_path / 'settings.json').write_text(json.dumps({
+        'env': {'ANTHROPIC_BASE_URL': saved_url, 'ANTHROPIC_AUTH_TOKEN': 'saved-token',
+                'ANTHROPIC_DEFAULT_HAIKU_MODEL': 'gateway-small', 'TEST_USER_ENV': 'do not pass'},
+        'apiKeyHelper': 'do not run', 'enabledPlugins': {'sample@registry': True},
+    }), encoding='utf-8')
+    monkeypatch.delenv('TEST_USER_ENV', raising=False)
+    if explicit_gateway: monkeypatch.setenv('ANTHROPIC_BASE_URL', explicit_url)
+    monkeypatch.setattr(agents, 'cli_has_flag', lambda *_: True)
+    monkeypatch.setattr(agents, '_resolve_cmd', lambda name: [name])
+    monkeypatch.setattr(config, 'load', lambda: {'cli_connections': {'claude': {'cmd': 'claude'}}})
+    def cli(_key, cmd, _prompt, _on, *, env, **_kw):
+        assert cmd[cmd.index('--setting-sources') + 1] == 'project,local'
+        assert cmd[cmd.index('--tools') + 1] == ''
+        assert '--settings' not in cmd and 'TEST_USER_ENV' not in env
+        assert env['ANTHROPIC_BASE_URL'] == (explicit_url if explicit_gateway else saved_url)
+        assert env.get('ANTHROPIC_AUTH_TOKEN') == (None if explicit_gateway else 'saved-token')
+        assert env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL') == (None if explicit_gateway else 'gateway-small')
+        return {'result': '{"intent":"task","title":"Approve invoice","summary":"Approval is due Friday."}'}, []
+    monkeypatch.setattr(clipool, 'spare_turn', cli)
+    store = MemoryStore(); store.set_setting('triage_ai', 'cli:claude', 'owner')
+    assert firstrun._prove(store) == ''
 
 
 class NonCoderAuditTests(unittest.TestCase):

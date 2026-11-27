@@ -380,6 +380,20 @@ def test_claude_s_argv_reaches_the_adapter_as_sdk_options(tmp_path):
     assert agents.claude_acp_options([])['promptSuggestions'] is False
 
 
+def test_claude_acp_spare_cannot_mix_saved_credentials_with_an_explicit_endpoint():
+    base = {'ANTHROPIC_BASE_URL': 'https://saved.example', 'ANTHROPIC_AUTH_TOKEN': 'saved-token', 'COMMON': 'yes'}
+    effective = {'ANTHROPIC_BASE_URL': 'https://explicit.example', 'COMMON': 'yes', 'TASK_ENV': 'current'}
+    launch = {'cmd': ['adapter'], 'adapter': 'claude', 'mode': '',
+              'meta': {'claudeCode': {'options': {'settingSources': ['project', 'local']}}}}
+    with mock.patch.object(agents, '_acp_spare', return_value=None), mock.patch.object(agents, '_acp_ready'), \
+         mock.patch.object(agents.acp_mod, 'ACPClient') as client:
+        agents._acp_open('claude', launch, '.', effective, None, 2, lambda *a: None, base=base)
+    assert client.call_args.kwargs['env'] == {'ANTHROPIC_BASE_URL': 'https://explicit.example', 'COMMON': 'yes'}
+    assert client.return_value.new_session.call_args.kwargs['meta']['claudeCode']['options'] == {
+        'settingSources': ['project', 'local'], 'env': {'TASK_ENV': 'current'},
+    }
+
+
 def test_codex_s_config_flags_become_its_session_config():
     args = clis.preset_args('codex') + ['-c', 'mcp_servers.taskuary.url="http://127.0.0.1:7787/api/mcp?task=7"',
                                         '-c', 'mcp_servers.taskuary.env_http_headers={"X-Taskuary-Token"="TASKUARY_TOKEN"}',

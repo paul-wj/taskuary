@@ -2,12 +2,37 @@
 coding-style guide, the skills their plugins add, and searched mail through their claude.ai connector, outside Taskuary's checks.
 It runs on its user settings left out, Taskuary's MCP server alone, and one settings file carrying Taskuary's own hooks (the user-wide
 ones lived in the settings it no longer reads) with their CLAUDE.md excluded. A coding task keeps it all: it works in their code."""
-import json, unittest
+import json, os, unittest
 from unittest import mock
 
 from taskuary import agents, llm
 from taskuary.store import MemoryStore
 from test_general import connect_cli
+
+
+def test_restricted_claude_general_turn_keeps_gateway_auth_without_importing_user_extensions(tmp_path, monkeypatch):
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path))
+    for k in tuple(os.environ):
+        if k.startswith(('ANTHROPIC_', 'CLAUDE_CODE_USE_')) or k == 'CLAUDE_CODE_OAUTH_TOKEN':
+            monkeypatch.delenv(k)
+    (tmp_path / 'settings.json').write_text(json.dumps({
+        'env': {'ANTHROPIC_AUTH_TOKEN': 'saved-token', 'ANTHROPIC_BASE_URL': 'https://saved.example',
+                'ANTHROPIC_DEFAULT_HAIKU_MODEL': 'gateway-small', 'TEST_USER_ENV': 'do not pass'},
+        'enabledPlugins': {'sample@registry': True},
+    }), encoding='utf-8')
+    store = MemoryStore()
+    store.upsert_agent('claude', 'general', 'cli', '{"cmd":"claude","args":["-p"]}')
+    task = store.create_task({'Title': 'Lunch with Erin', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    monkeypatch.setattr(agents, 'cli_has_flag', lambda *_: True)
+    def run(profile, prompt, trace, **kw):
+        env = agents.spawn_env(profile, kw.get('extra_env'))
+        opts = agents.claude_acp_options(profile['args'])
+        assert opts['settingSources'] == ['project', 'local'] and 'strict-mcp-config' in opts['extraArgs']
+        assert env['ANTHROPIC_BASE_URL'] == 'https://saved.example' and env['ANTHROPIC_AUTH_TOKEN'] == 'saved-token'
+        assert env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] == 'gateway-small' and 'TEST_USER_ENV' not in env
+        return 'ok', 's1', None
+    monkeypatch.setattr(agents, 'run_cli', run)
+    assert llm.make_cli_llm(store, 'claude', cli_tools=True, task_id=task)('sys', 'user') == 'ok'
 
 
 class GeneralRunsOnTaskuarysSetupAlone(unittest.TestCase):
