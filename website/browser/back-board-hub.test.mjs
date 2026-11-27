@@ -10,10 +10,7 @@ const setDeveloperMode = async (h, on) => {
   assert.equal(response.status, 200);
 };
 
-/* OWNER-COMPLETED AGENT WORK STAYS ON THE BOARD (the i18n sweep, 2026-11-06): a finished agent task lands in the last
-   column ("stopped and saved") and survives a reload, in every locale the interface can wear - a completed personal
-   to-do is never agent work, so it stays out of the Board. */
-test("owner-completed agent work stays on the Board after refresh in both locales", { timeout: 240000 }, async (t) => {
+test("owner-completed agent work leaves the Board in both locales", { timeout: 240000 }, async (t) => {
   const h = await startHarness();
   t.after(() => h.close());
   await setDeveloperMode(h, true);
@@ -36,8 +33,8 @@ test("owner-completed agent work stays on the Board after refresh in both locale
   for (const locale of ["en", "zh-CN"]) {
     await page.evaluate((locale) => localStorage.setItem("taskuary.language", locale), locale);
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector(card, { visible: true, timeout: 30000 });
-    assert.equal(await page.$eval(card, (el) => el.closest('[data-tq-board-column]').dataset.tqBoardColumn), "agentdone", "finished work belongs in the last column");
+    await page.waitForSelector('[data-tq-board-column="agentdone"]', { visible: true, timeout: 30000 });
+    assert.equal(await page.$(card), null, "owner-closed work is not agent-finished work");
     assert.equal(await page.$(`[data-tq-board-task="${todoId}"]`), null, "a completed personal to-do is not agent work");
   }
   assert.deepEqual(errors, []);
@@ -66,7 +63,8 @@ test("one Mark done click closes a running coding task", { timeout: 120000 }, as
     return r.ok && (await r.json()).task.Status === "done";
   }, { polling: 300, timeout: 30000 }, taskId);
   await page.goto(`${h.ui}/#board`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector(`[data-tq-board-column="agentdone"] [data-tq-board-task="${taskId}"]`, { visible: true });
+  await page.waitForSelector('[data-tq-board-column="agentdone"]', { visible: true });
+  assert.equal(await page.$(`[data-tq-board-task="${taskId}"]`), null);
   assert.deepEqual(errors, []);
   assert.deepEqual(page.fixtureEscapes, []);
 });
@@ -147,10 +145,10 @@ test("Board finished-work filter reveals history without hiding live or approval
   const h = await startHarness(); t.after(() => h.close());
   await setDeveloperMode(h, true);
   const now = new Date(), today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} 12:00:00`;
-  const task = (id, fields) => ({ TaskId: id, ref: `TQ-${id}`, Title: `Fictional board task ${id}`, Kind: "coding", Status: "done", State: "closed", HadAgent: true, CreatedAt: "2020-01-01 12:00:00", UpdatedAt: "2020-01-02 12:00:00", ClosedAt: "2020-01-02 12:00:00", ...fields });
+  const task = (id, fields) => ({ TaskId: id, ref: `TQ-${id}`, Title: `Fictional board task ${id}`, Kind: "coding", Status: "done", State: "agentdone", HadAgent: true, CreatedAt: "2020-01-01 12:00:00", UpdatedAt: "2020-01-02 12:00:00", ClosedAt: "2020-01-02 12:00:00", ...fields });
   const rows = [task(901), task(902, { ClosedAt: today }), task(903, { Status: "open", State: "working", ClosedAt: null }),
     task(904, { Status: "open", State: "approve", ClosedAt: null }), task(905, { OnWorkToday: true }),
-    task(906, { Kind: "task", HadAgent: false }), task(907, { Status: "dropped" })];
+    task(906, { Kind: "task", HadAgent: false }), task(907, { Status: "dropped" }), task(908, { State: "closed", ClosedAt: today })];
   for (const locale of ["en", "zh-CN"]) {
     const page = await h.newPage(), errors = [];
     page.on("pageerror", e => errors.push(e.message));
@@ -168,7 +166,7 @@ test("Board finished-work filter reveals history without hiding live or approval
     const check = async (history) => {
       await page.waitForFunction((history) => !!document.querySelector('[data-tq-board-task="901"]') === history, {}, history);
       for (const id of [902, 903, 904, 905]) assert.ok(await page.$(`[data-tq-board-task="${id}"]`), `task ${id} stays visible`);
-      for (const id of [906, 907]) assert.equal(await page.$(`[data-tq-board-task="${id}"]`), null, `task ${id} stays outside the agent board`);
+      for (const id of [906, 907, 908]) assert.equal(await page.$(`[data-tq-board-task="${id}"]`), null, `task ${id} stays outside the agent board`);
     };
     await page.waitForSelector('[data-tq-board-task="902"]'); await check(false);
     for (const value of ["all", "today", "all"]) {

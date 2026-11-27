@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
 import { startHarness } from "./harness.mjs";
 
 /* A START HELD FOR A REPOSITORY CARRIES ITS PICK ON THE LINE THAT SAYS SO (the owner, 2026-10-30): "Repository: none - not started"
@@ -37,7 +38,7 @@ test("local code can be bound without GitHub, rejecting missing paths without ch
   const h = await startHarness({ fresh: true });
   t.after(() => h.close());
   const { mkdir } = await import("node:fs/promises");
-  const folder = `${h.home}/local code`;
+  const folder = join(h.home, "local code");
   await mkdir(folder);
   const H = { "X-Taskuary-Token": h.token, "Content-Type": "application/json" };
   const call = async (path, method = "GET", body) => {
@@ -45,7 +46,6 @@ test("local code can be bound without GitHub, rejecting missing paths without ch
     assert.ok(r.ok, `${method} ${path}: ${await r.clone().text()}`);
     return r.json();
   };
-  await call("/api/agents/coding", "PUT", { cmd: "omp", kind: "coding", triage_enabled: false });
   const made = await call("/api/tasks", "POST", { Title: "Repair local export", Kind: "coding", Tags: "held:repo" });
   await call("/api/setup/dismiss", "POST", { dismissed: true });
   const page = await h.newPage(), errors = [], starts = [];
@@ -59,10 +59,11 @@ test("local code can be bound without GitHub, rejecting missing paths without ch
   await page.waitForSelector("[data-tq-local-code] button", { visible: true });
   await page.click("[data-tq-local-code] button");
   const fill = async (text) => { await page.$eval("[data-tq-local-code-path]", (i) => { i.focus(); i.select(); }); await page.keyboard.type(text); };
-  await fill(`${folder}/missing`);
+  await fill(join(folder, "missing"));
   const rejected = page.waitForResponse((r) => r.url().endsWith(`/api/tasks/${made.taskId}/repo`) && r.request().method() === "PUT");
   await page.click("[data-tq-local-code-save]");
   assert.equal((await rejected).status(), 422);
+  await page.waitForSelector('[data-tq-repo-picker] [role=alert]', { visible: true });
   const rejectedTags = (await call(`/api/tasks/${made.taskId}`)).task.Tags;
   assert.ok(rejectedTags.includes("held:repo"));
   assert.ok(!rejectedTags.includes("repo:local:"));

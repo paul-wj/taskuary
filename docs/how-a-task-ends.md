@@ -23,9 +23,8 @@ With a live session, Mark done saves the transcript and report, stops the sessio
 the task in the same background job. On Windows, OMP stops its owned process tree first; a root
 fallback uses `Popen.kill()` or `PtyProcess.terminate(force=True)` according to the process API,
 never an argument-free PTY `kill()`. If saving the result or stopping the tree fails, the task
-stays open with the reason recorded; a failed write-up is not successful completion.
-An accepted close leaves the active lists while the write-up runs. Only a successful close
-puts the task in Done; a failure returns it to the active lists with its reason.
+stays open with the reason recorded. The work rail advances when the close starts, but the task
+list still shows the task until the job actually closes it.
 
 With the Hub enabled, the transition to `done` queues one background review of the saved work. Stopping a session
 or dropping a task does not queue one. The task remains done whether the review publishes a
@@ -49,8 +48,8 @@ flowchart LR
   X -->|yes| F
   W -->|"agent says done"| O{"You opened the session?"}
   O -->|yes| O1["Refused · its sentence is filed, you mark it done"]
-  O -->|no| C{"Its pull request still open,<br/>or it came from an issue?"}
-  C -->|yes| C1["Waiting · Merge or Close issue<br/>for your yes, and any reply"]
+  O -->|no| C{"Reply owed and<br/>a due PR or issue close-out?"}
+  C -->|yes| C1["Waiting · Merge or Close issue<br/>for your yes, with the reply"]
   C1 -->|"you answer them"| F
   C1 -->|"Not yet"| C2["Open · on you"]
   C1 -->|"merged or closed on GitHub"| F
@@ -73,7 +72,7 @@ flowchart LR
 
 | An agent does | What happens | Code |
 |---|---|---|
-| Says it is done (`taskuary --done`) | The session is written up. If its work is an open pull request, or the task came from a GitHub issue, the task **waits** for its close-out (below). If a reply is owed, it **waits** with the draft too. Otherwise it is done. On a task marked `stay:open` it is refused: the agent's sentence is filed as a comment and you mark it done. | `selfclose.declare` → `wrapup.wrap` → `wrapup.finish` |
+| Says it is done (`taskuary --done`) | The session is written up and the task stays open for the owner. A reply is drafted if owed, with any due merge or issue close-out for approval. `--no-reply` skips both. On a task marked `stay:open` the run is not wrapped: the sentence is filed as a comment and you mark it done. | `selfclose.declare` → `wrapup.wrap` → `wrapup.finish` |
 | The pull request or issue the task **came from** is merged or closed | Same as above, with no reply and no close-out owed | `channels.close_upstream_ended` |
 
 ## The close-out
@@ -82,10 +81,8 @@ What finishes a task depends on where it lives. Mail is finished by the reply. A
 is finished by merging it, and an issue by closing it. So the finish raises that last act as a card waiting for
 your yes, and the task is not done until you answer it (decided with the owner on 2026-09-27).
 
-Agent completion and task closure are separate. The agent's explicit done signal raises a due
-merge/close approval even without a reply, while leaving the task open. Saying `--no-reply` does
-not remove that approval. A run merely stopped and saved does not acquire a new close-out unless
-it already owes a reply; owner Mark done and upstream-ended flows keep their existing handling.
+Ending a session is not Mark done. On a run that leaves the task open, a due merge or issue
+close accompanies an owed reply. An explicit no-reply ending does not raise a new close-out.
 
 **One set of words for every system** (the owner, 2026-09-27: "if we have button to close out per system it will
 be endless"): **Close out** / **Decline** / **Not yet** - on the task page, the Assistant's card, its chat button,

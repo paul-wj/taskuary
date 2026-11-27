@@ -110,7 +110,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
       {/* THE PLACE THAT CONNECTS IT, as a button (the rebuilt walk, 2026-10-18): the words named a place with nothing to press */}
       <Button size="small" variant="outlined" sx={{ mb: 0.75 }} onClick={() => openAppLink(place("code").href)}>{t("Connect GitHub")}</Button>
       {localCode}
-      {err && <Typography variant="caption" role="alert" sx={{ color: "#6b2733", display: "block" }}>{err.text || t(err.key)}</Typography>}
+      {err && <Typography variant="caption" role="alert" sx={{ color: "var(--tq-danger, #6b2733)", display: "block" }}>{err.text || t(err.key)}</Typography>}
       {noRepoRow}
     </Box>
   );

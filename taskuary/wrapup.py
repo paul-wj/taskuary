@@ -845,22 +845,14 @@ def asks_to_move(store, task_id: int, rep: dict, actor: str = 'agent', keep_open
 
 
 def finish(store, task_id: int, rep: dict, run_id: int = None, actor: str = 'agent',
-           owner_done: bool = False, keep_open: bool = False, no_reply: bool = False,
-           done: bool = False) -> dict:
+           owner_done: bool = False, keep_open: bool = False, no_reply: bool = False) -> dict:
     """The end of finished work: the conversation is refreshed, the ask reassessed, and the reply the
     sender gets waits on you to send it - the agent's own, or, where it wrote none, the reply owed
     (`owed`: its review, for ask_for_reply). Nothing to reply to means nothing to wait for, so it just closes.
 
     `keep_open` is ENDING THE RUN without ending the task: everything here still happens - the
     refresh, the reassessment, the reply - and the task's own status is left exactly as it was. The
-    session's end is not a verdict on the work.
-
-    `done` is the AGENT SAYING SO - `taskuary --done`, the chat's ending marker: the run is finished
-    ON PURPOSE, the work stands as it is, so the close-out its work owes - the open pull request's
-    merge, the issue's close - is raised for the owner's yes like a reply is, even though no reply
-    is owed (the owner, 2026-11-10: an agent that finished work on an open PR left no approval at
-    all, and the PR waited on nobody). A saved run is not `done`: its close-out comes with the reply
-    it wrote (TQ-0767), and a session stopped short of the work owes one to nobody."""
+    session's end is not a verdict on the work."""
     # THE WORK IS IN ANOTHER REPOSITORY: not done, and nobody is answered yet - the owner says where it moves (asks_to_move).
     # The owner's own Mark done is still theirs to make.
     if moves(rep) and not owner_done: return asks_to_move(store, task_id, rep, actor, keep_open)
@@ -946,11 +938,8 @@ def finish(store, task_id: int, rep: dict, run_id: int = None, actor: str = 'age
     # is finished by merging it, one from an issue by closing it - each waits for the owner's yes like the reply does.
     # Not on an upstream that already ended it, or the owner's own Mark done (that IS the close) - nor on a session only
     # saved, UNLESS it wrote the answer: a drafted reply says the work is done, and it comes with its merge (TQ-0767).
-    # A run the AGENT finished on purpose (`done`) owes its close-out even with no reply to draft - `--no-reply` says the
-    # sender hears nothing, not that a still-open approval is lost - and the approval never sends, merges or closes
-    # (proposals.closeout's own gate); a saved or upstream-ended run says no to nobody, and owes one to no one.
     from . import proposals
-    due = None if ((keep_open and not (mid or done)) or (no_reply and not done) or owner_done) else proposals.closeout_due(store, task_id)
+    due = None if ((keep_open and not mid) or no_reply or owner_done) else proposals.closeout_due(store, task_id)
     # ...and its emails (slots.py): `done` supersedes every pending draft, so a run that leaves some owed waits instead
     from . import slots
     # ...and its proposals: `done` supersedes every pending review, so a bill the agent proposed for the owner's yes was
@@ -1005,7 +994,7 @@ def _ended(store, tid: int, close: bool, actor: str):
 
 
 def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = None,
-         final_message: str = '', no_reply: bool = False, harvested: dict = None, on_harvest=None, done: bool = False) -> dict:
+         final_message: str = '', no_reply: bool = False, harvested: dict = None, on_harvest=None) -> dict:
     """"We're done" - the whole ending, in one callable. The transcript becomes the report, the
     session dies, proposals become reviews, and finish() raises the reply the sender gets.
 
@@ -1066,7 +1055,7 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
         if task.get('Status') not in ('done', 'dropped'):
             _stage(tid, 'reply')
             fin = finish(store, tid, {'summary': last}, None, 'assistant', owner_done=close and actor == 'owner', keep_open=not close,
-                         no_reply=no_reply, done=done) or {}
+                         no_reply=no_reply) or {}
             if close:
                 from . import selfclose; selfclose.unclaim(store, tid, actor)
         store.add_comment(tid, actor, 'human', ('Closed the general-work session.' if session else 'Closed out the assistant conversation.')
@@ -1092,7 +1081,7 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
     # ONE SESSION, ONE ENDING (TQ-1112 shape): a settle retried while the first ending was still writing wrapped the same session
     # again, and twice more - two AGENT REPORTs, the second from a screen already gone. A wrap of a session being wrapped now does
     # nothing; one wrapped before only closes the task, if this caller asks for that and it is still open.
-    return _wrap_once(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut, done)
+    return _wrap_once(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut)
 
 
 def _stage(tid, name):
@@ -1130,7 +1119,7 @@ def _harvest(store, tid, final_message) -> tuple:
     return text, agent, found, final_message, cut
 
 
-def _wrap_once(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut, done: bool = False) -> dict:
+def _wrap_once(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut) -> dict:
     key = (id(store), str(found)) if found else None
     if key:
         with _WRAP_LOCK:
@@ -1138,67 +1127,12 @@ def _wrap_once(store, tid, task, close, actor, sid, final_message, no_reply, tex
             before = _wrapped_before(store, tid, key[1])
             if not before: _ACTIVE[key] = tid
         if before: return _close_again(store, tid, close, actor, agent, text, no_reply)
-    try: out = _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut, done)
+    try: out = _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut)
     except BaseException:
         with _WRAP_LOCK: _ACTIVE.pop(key, None)
         raise
     with _WRAP_LOCK: _ACTIVE.pop(key, None)
     return out
-
-
-# THE QUESTIONS AT ONCE, THE ANSWERS IN ORDER (2026-10-20): a wrap asked the report, then the handbook
-# one after another - 18 s of a Mark done with a 6-second brain. The handbook's question does not depend on
-# the report: it is asked AHEAD, beside it, exactly as it will be asked (the real function is run up to its question, which
-# is caught and not answered - _question). At its own place in the ending each function runs as it always did, and when it
-# asks the very question that was asked ahead it gets that answer; anything it asks differently - the state moved - is asked
-# then, as before. So what is written, and in what order, is today's. At most two are asked ahead at a time (with the report
-# beside them, three at once for a CLI brain).
-_AHEAD = None
-_AHEAD_LOCK = threading.Lock()
-
-
-class _Asked(BaseException):
-    """A question caught before it is put: BaseException, so the functions' own `except Exception` lets it through."""
-
-
-def _question(fn, *args, **kwargs):
-    """(system, user, kwargs) of the question fn would put to the brain now - or None when it would put none."""
-    asked = []
-    def record(system, user, **kw):
-        asked.append((system, user, tuple(sorted(kw.items())))); raise _Asked()
-    try: fn(*args, llm=record, **kwargs)
-    except _Asked: pass
-    return asked[0] if asked else None
-
-
-def _ask_ahead(store, questions: list) -> dict:
-    """{question: future answer} for each question, asked on the shared pool."""
-    global _AHEAD
-    from .llm import build_llm
-    from concurrent.futures import ThreadPoolExecutor
-    with _AHEAD_LOCK:
-        if _AHEAD is None: _AHEAD = ThreadPoolExecutor(max_workers=2, thread_name_prefix='wrap-ahead')
-    out = {}
-    # ...a brain built only for a question there is: the functions build theirs only once they ask, and asking ahead is never
-    # what fails an ending - a brain that cannot be built here is built (and its failure handled) at the function's own place
-    for q in questions:
-        if q is None or q in out: continue
-        try: brain = build_llm(store, job='summary')
-        except Exception as e: logger.debug(f'wrap: not asked ahead - {e}'); continue
-        if brain: out[q] = _AHEAD.submit(lambda b=brain, q=q: b(q[0], q[1], **dict(q[2])))
-    return out
-
-
-def _answered(store, ahead: dict):
-    """The brain a function asks at its place in the ending: a question asked ahead is answered from there."""
-    from .llm import build_llm
-    if not ahead: return None                                   # nothing asked ahead: the function builds its own, as it always did
-    def llm(system, user, **kw):
-        f = ahead.get((system, user, tuple(sorted(kw.items()))))
-        if f is not None: return f.result()
-        brain = build_llm(store, job='summary')                                # ...and one asked differently builds its brain then, as before
-        return brain(system, user, **kw) if brain else None
-    return llm
 
 
 CUT_OFF = '(The session was closed while the agent was still working on this turn - it had not finished, so there is no final message.)'
@@ -1232,12 +1166,9 @@ def _close_again(store, tid, close, actor, agent, text, no_reply) -> dict:
             'can_send': bool(fin.get('can_send')), 'send_block': fin.get('send_block') or '', 'freshness': fin.get('freshness') or 'unchecked'}
 
 
-def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut, done: bool = False) -> dict:
+def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, text, agent, found, cut) -> dict:
     """wrap's coding ending, once per session: the report, the result, the pty closed, proposals, the reply."""
-    from . import proposals, terminal as term, handbook
-    # the handbook's question, asked now beside the report's - answered at its own place below (_AHEAD)
-    ahead = _ask_ahead(store, [
-        _question(handbook.learn_from_session, store, tid, text, agent, repo=term.repo_tag(task) or '') if handbook.enabled(store) else None])
+    from . import proposals, terminal as term
     _stage(tid, 'report')
     asked = unanswered(store, tid)                 # read while the session is still up: its questions lead the result
     # ...and whether the agent ended it itself: the run's Finished event is its `--done` (selfclose._finished), the only one there is
@@ -1265,7 +1196,7 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
         except Exception:
             # An explicit Agent completion can submit its saved package even if the
             # terminal cannot stop. Still report the shutdown failure to the caller.
-            if done: _collect_skill(store, tid, task)
+            if said: _collect_skill(store, tid, task)
             raise
     store.add_comment(tid, actor, 'human', 'Closed the session - wrapped up from what was on screen.')
     # anything the agent PROPOSED becomes a pending review here, at the one moment its whole
@@ -1285,17 +1216,9 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
     fin = {}
     if (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'):
         _stage(tid, 'reply')
-        fin = finish(store, tid, rep, None, agent, owner_done=close and actor == 'owner', keep_open=not close, no_reply=no_reply, done=done) or {}
+        fin = finish(store, tid, rep, None, agent, owner_done=close and actor == 'owner', keep_open=not close, no_reply=no_reply) or {}
         if close:
             from . import selfclose; selfclose.unclaim(store, tid, actor)   # the owner ended it; the mark that kept it open has done its job
-    # ...and the one question worth asking the transcript that is NOT about this task: did the
-    # session work out anything still true next month? Usually not, and "not" is the answer it
-    # is told to give (handbook.py). A failure here never stops a task closing - and it waits until the task's status is set:
-    # run between the pty closing and finish(), its AI call left the task in_progress with no session (TQ-1112 shape).
-    _stage(tid, 'learning')           # ...the reply is filed: Close out draws it now, while the two last questions are asked
-    if handbook.enabled(store):
-        try: handbook.learn_from_session(store, tid, text, agent, repo=term.repo_tag(task) or '', llm=_answered(store, ahead))
-        except Exception as e: logger.debug(f'handbook: nothing filed for task {tid} - {e}')
     store.audit('terminal', tid, 'wrap', actor, detail={'sid': found or sid, 'close': close})
     _ended(store, tid, close, actor)
     _collect_skill(store, tid, task)

@@ -14,6 +14,7 @@ What each release changed, newest first. Ask the Assistant "what changed in the 
 - A read whose words carry what the line read is a send, held like one
 - A session reads its own task's drafts and cards, never another task's
 - What a card showed beside its words is what its press sends: the envelope and the files
+- First-run tests a selected AI with the owner's actual triage instructions and accepted verdicts
 
 ## 0.4.6.7 - 2026-11-26
 

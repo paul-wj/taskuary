@@ -262,36 +262,25 @@ def rail(st: dict) -> dict:
 BRAINS = ('triage_ai', 'assistant_ai', 'concierge_ai')
 
 
-# PROVEN ON MAIL, NOT ON "ok": verify that the selected triage brain can turn a known email into a usable verdict.
-# This is a capability check, not a run of the owner's entire triage policy on a made-up sender and message.
+# PROVEN ON MAIL, NOT ON "ok": an AI is ready only when the real triage classifier can judge a known email.
+# It uses the owner's TRIAGE.md and the selected triage brain, so setup tests the same contract as incoming mail.
 PROOF = {'from_email': 'erin.blake@northwind.example', 'from_name': 'Erin Blake', 'to': ['alex@northwind.example'],
          'subject': 'Q3 vendor invoice - can you approve by Friday?', 'sent_at': '2026-10-15 09:00:00',
          'body': 'Hi Alex, the Payworth invoice for Q3 is in the portal. Can you approve it by Friday so it goes out in this run? Thanks, Erin'}
-PROOF_FIELDS = ('title', 'summary')
-PROOF_SYSTEM = ('Classify the test email. Return only JSON containing intent (task, reply_only, watch, or fyi), title and summary. '
-                'A request to do work is a task.')
 PROVE_SECONDS = 90
 
 
 def _prove(store) -> str:
-    """'' when the brain sorted the invented email; else why not, in a sentence."""
+    """'' when the selected triage brain returns a usable classifier verdict; else why not, in a sentence."""
     from . import aiusage, llm as llm_mod, triage
     said, cancel = {}, threading.Event()
     def go():
         try:
-            fields = ('intent', *PROOF_FIELDS)
-            want = {'name': 'setup_mail_verdict', 'strict': True, 'schema': {
-                'type': 'object', 'additionalProperties': False, 'required': list(fields), 'properties': {
-                    'intent': {'type': 'string', 'enum': list(triage.INTENTS)},
-                    **{k: {'type': 'string'} for k in PROOF_FIELDS},
-                }}}
             with aiusage.asking('triage.proof'):
                 brain = llm_mod.build_llm(store, job='triage', cancel=cancel)
-                if brain is None: raise RuntimeError('no triage AI is available')
-                answer = llm_mod.ask_json(brain, PROOF_SYSTEM, json.dumps(PROOF), want=want, need=PROOF_FIELDS)
-            v = answer.data or {}
-            if v.get('intent') != 'task' or not all(isinstance(v.get(k), str) and v[k].strip() for k in PROOF_FIELDS):
-                said['e'] = f"it couldn't sort a test email - {answer.error or 'the answer did not identify the task with a title and summary'}"
+                verdict = triage.classify_intent(dict(PROOF), llm=brain, system=store.doc('triage'))
+            if verdict.get('degraded') or verdict.get('intent') not in triage.INTENTS:
+                said['e'] = f"it couldn't sort a test email - {verdict.get('parse_error') or verdict.get('error') or 'its answer was not a verdict'}"
         except Exception as e: said['e'] = f"it couldn't sort a test email - {str(e)[:300]}"
     t = threading.Thread(target=go, daemon=True, name='first-run-proof'); t.start(); t.join(PROVE_SECONDS)
     if t.is_alive():

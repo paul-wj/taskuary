@@ -47,7 +47,7 @@ export function SkillPackageFiles({ pack, kind, source, digest, baseDigest = nul
     </Box>}
     {!!pack?.validation?.length && <Box sx={{ mt: 1.5 }}>
       <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{t('Validation evidence')}</Typography>
-      {pack.validation.map((v, i) => <Box key={`${v.check}:${i}`} sx={{ mt: 0.65, fontSize: 12, color: v.required && v.state !== 'passed' ? '#7a2f3c' : DIM, overflowWrap: 'anywhere' }}>
+      {pack.validation.map((v, i) => <Box key={`${v.check}:${i}`} sx={{ mt: 0.65, fontSize: 12, color: v.required && v.state !== 'passed' ? 'var(--tq-danger, #7a2f3c)' : DIM, overflowWrap: 'anywhere' }}>
         <b>{v.check}</b> · {t(({ passed: 'Passed', failed: 'Failed', missing: 'Missing evidence', recorded: 'Recorded, not certified' })[v.state] || 'Missing evidence')}
         {v.required ? ` · ${t('Required')}` : ''}{v.detail ? <Box>{v.detail}</Box> : null}
         {(v.commands || []).map((command, n) => <Box key={n} component="code" sx={{ display: 'block', fontFamily: mono }}>{command}</Box>)}

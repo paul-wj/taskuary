@@ -25,12 +25,13 @@ def brain(system, user, **kw):
 
 
 def rows(s):
-    """Every row of every table, without the clock, the session id, file names stamped with it, or an event's clock-made key (press:<ns>)."""
+    """Every table's content, excluding per-run clocks, IDs and generated filename stamps."""
     out = {}
     for (name,) in s.cx.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
         if name in ('setting', 'operation', 'change_gen'): continue   # the job's own record (emptied), the proposal ids, a count of writes
         cur = s.cx.execute(f'SELECT * FROM "{name}"'); cols = [d[0] for d in cur.description]
-        keep = [i for i, c in enumerate(cols) if not (c.endswith('At') or c.endswith('Time') or c in ('Detail', 'OperationId', 'Version'))]
+        keep = [i for i, c in enumerate(cols) if not (c.endswith('At') or c.endswith('Time')
+                or c in ('Detail', 'OperationId', 'Version') or (name, c) == ('hub_completion', 'Generation'))]
         out[name] = sorted(re.sub(r'[0-9a-f]{64}', 'H', re.sub(r'\d{8}-\d{6}-\d{6}|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d|:\d{16,}', 'TS', json.dumps([r[i] for i in keep], default=str)))
                            for r in cur.fetchall())
     return out
@@ -100,7 +101,7 @@ def test_a_close_pressed_during_the_write_up_waits_for_it_and_the_task_ends_clos
 
 
 def test_agent_can_submit_saved_skill_when_terminal_shutdown_fails(world, tmp_path, monkeypatch):
-    from taskuary import config, skillauthoring, skillpackages, skillstate
+    from taskuary import config, selfclose, skillauthoring, skillpackages, skillstate
     make, _ = world
     s, tid = make()
     monkeypatch.setattr(config, 'home', lambda: tmp_path)
@@ -110,8 +111,8 @@ def test_agent_can_submit_saved_skill_when_terminal_shutdown_fails(world, tmp_pa
     root.mkdir(parents=True)
     (root / 'SKILL.md').write_text('---\nname: taskuary-compare\ndescription: Compare reports\n---\n\nCheck duplicate rows and compare values.\n', encoding='utf-8')
     with mock.patch.object(terminal, 'close', side_effect=PermissionError('process tree access denied')):
-        with pytest.raises(PermissionError, match='process tree access denied'):
-            wrapup.wrap(s, tid, close=False, no_reply=True, done=True)
+        result = selfclose.declare(s, tid, 'Wrote the Skill package.', no_reply=True)
+    assert not result['closed'] and 'process tree access denied' in result['why']
     ready = skillstate.get(s, 'generation', gen['id'])
     assert ready['state'] == 'needs_review'
     assert [r['ReviewId'] for r in s.list_reviews('pending')] == [ready['review_id']]
@@ -120,12 +121,12 @@ def test_agent_can_submit_saved_skill_when_terminal_shutdown_fails(world, tmp_pa
     wrapup.forget(tid)
 
 
-def test_one_mark_done_leaves_active_lists_while_the_write_up_is_pending(world):
+def test_mark_done_keeps_the_task_in_tasks_until_the_write_up_closes_it(world):
     from taskuary import funnel
     make, _ = world
     s, tid = make(); c = TestClient(server.app)
     tasks = lambda: {r['TaskId'] for r in c.get('/api/tasks?active=1').json()['data']}
-    rail = lambda: {r.get('tid') for r in funnel.pile(s)['items']}
+    rail = lambda: {r.get('tid') for r in funnel.pile(s, force=True)['items']}
     assert tid in tasks() and tid in rail()
     release = threading.Event()
     def held(system, user, **kw):
@@ -134,9 +135,9 @@ def test_one_mark_done_leaves_active_lists_while_the_write_up_is_pending(world):
     with mock.patch('taskuary.llm.build_llm', return_value=held):
         try:
             response = c.post(f'/api/tasks/{tid}/wrap', json={'close': False, 'background': True, 'then_close': True, 'no_reply': True})
-            assert response.status_code == 200 and response.json()['close']
+            assert response.status_code == 200 and response.json()['wrap'] == 'started'
             assert s.get_task(tid)['Status'] != 'done'
-            assert tid not in tasks() and tid not in rail()
+            assert tid in tasks() and tid not in rail()
         finally:
             release.set()
             assert writeup.wait_for(tid, 30)
@@ -145,7 +146,7 @@ def test_one_mark_done_leaves_active_lists_while_the_write_up_is_pending(world):
     wrapup.forget(tid)
 
 
-def test_mark_done_during_a_save_is_not_acknowledged_as_a_close(world):
+def test_wrap_request_joins_an_existing_save_without_closing_the_task(world):
     make, _ = world
     s, tid = make(); c = TestClient(server.app)
     release = threading.Event()
@@ -156,8 +157,9 @@ def test_mark_done_during_a_save_is_not_acknowledged_as_a_close(world):
         try:
             path = f'/api/tasks/{tid}/wrap'
             body = {'close': False, 'background': True, 'no_reply': True}
-            assert c.post(path, json=body).status_code == 200
-            assert c.post(path, json={**body, 'then_close': True}).status_code == 409
+            save = c.post(path, json=body).json()
+            joined = c.post(path, json={**body, 'then_close': True}).json()
+            assert joined['already'] and joined['job'] == save['job']
         finally:
             release.set()
             assert writeup.wait_for(tid, 30)
@@ -342,7 +344,9 @@ class Live:
     alive, sid, mode, task_id = True, 'sid-live', '', None
 
 
-def test_a_close_on_a_live_agent_saves_its_work_first(world):
+def test_a_close_on_a_live_agent_saves_its_work_first(world, monkeypatch):
+    from taskuary import hubcompletion
+    monkeypatch.setattr(handbook, 'enabled', lambda store: True)
     make, order = world
     s, tid = make(); c = TestClient(server.app)
     with mock.patch('taskuary.terminal.session_for', lambda t: None if 'close' in order else Live()):
@@ -352,6 +356,7 @@ def test_a_close_on_a_live_agent_saves_its_work_first(world):
     assert order.index('harvest') < order.index('close'), 'harvested before the session was ended'
     assert (s.get_task(tid) or {}).get('Status') == 'done'
     assert any(str(x.get('Body') or '').startswith(wrapup.REPORT) for x in s.list_comments(tid)), 'the report was kept'
+    assert hubcompletion.state(s, tid)['status'] == 'pending'
     wrapup.forget(tid)
 
 

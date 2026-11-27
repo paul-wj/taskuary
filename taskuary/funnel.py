@@ -1466,8 +1466,7 @@ def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, see
         from . import writeup
         if (gone := {i['tid'] for i in p['items'] if i.get('tid') and writeup.closing(i['tid'])}):
             items = [i for i in p['items'] if i.get('tid') not in gone]
-            p = {**p, 'items': items, 'lanes': [{**l, 'n': sum(i['lane'] == l['lane'] for i in items)} for l in p['lanes']],
-                 'counts': {**p['counts'], 'unread': len(items), 'actionable': sum(i['actionable'] for i in items)}}
+            p = {**p, 'items': items, 'lanes': [{**l, 'n': sum(i['lane'] == l['lane'] for i in items)} for l in p.get('lanes') or []]}
         for i in p['items']: _attach(i)                  # how each row reads, once, for the rail and the phone alike
         _label_workstreams(store, p['items'])            # ...and which workstream each task row is under, for its small label
         p['alerts'] = alerts(store, p['items'])

@@ -407,51 +407,68 @@ class ChatGptPlanTests(unittest.TestCase):
 
 
 class ProvenOnMailTests(unittest.TestCase):
-    """A Vertex key passed its one-word Test, became the AI, and then sorted no mail - every email ⚠, setup spinning (the owner,
-    2026-10-15: "if there is error timeout and say connect another one ... each cli tool or cloud tool or local tool should work by
-    itself for assistant/triage/and agent"). An AI is the AI only once it has sorted an invented email into a usable verdict."""
+    """The selected AI is tested by triage itself, with the owner's editable TRIAGE.md and its full verdict contract."""
     def setUp(self):
         self.s = MemoryStore(); self.cid = self.s.get_connector_by_type('chatgpt')['ConnectorId']
         self.s.save_connector({'ConnectorId': self.cid, 'Secret': 'refresh-token', 'Active': 1}, 'test')
 
-    def pick(self, verdict=None, error=None, wait_for_cancel=False):
+    def pick(self, verdict=None, wait_for_cancel=False):
+        from threading import Event
+        self.cancelled = Event()
+        owner_triage = 'Owner-written triage instructions'
         def build(_store, *, cancel, **kw):
-            def classify(_system, _user, **kw):
+            self.selected = _store.get_setting('triage_ai')
+            self.cancel = cancel
+            def llm(*_args, **_kw):
                 if wait_for_cancel:
                     if cancel.wait(2): self.cancelled.set()
                     raise RuntimeError('cancelled')
-                if error: raise RuntimeError(error)
-                return json.dumps(verdict)
-            return classify
+            self.brain = llm
+            return llm
+        def classify(_message, *, llm, system):
+            if wait_for_cancel: return llm(system, '{}')
+            return verdict
         with mock.patch('taskuary.channels.test_connector', return_value={'ok': True}), \
-             mock.patch('taskuary.llm.build_llm', side_effect=build), mock.patch.object(firstrun, 'PROVE_SECONDS', 0.5):
-            return firstrun.choose_connector(self.s, self.cid)
+             mock.patch('taskuary.llm.build_llm', side_effect=build) as built, \
+             mock.patch('taskuary.triage.classify_intent', side_effect=classify) as classifier, \
+             mock.patch.object(self.s, 'doc', return_value=owner_triage) as doc, \
+             mock.patch.object(firstrun, 'PROVE_SECONDS', 0.5):
+            out = firstrun.choose_connector(self.s, self.cid)
+        built.assert_called_once()
+        self.assertEqual(built.call_args.kwargs['job'], 'triage')
+        classifier.assert_called_once()
+        self.assertEqual(classifier.call_args.args[0], firstrun.PROOF)
+        self.assertIs(classifier.call_args.kwargs['llm'], self.brain)
+        self.assertEqual(classifier.call_args.kwargs['system'], owner_triage)
+        self.assertEqual(self.selected, f'connector:{self.cid}')
+        doc.assert_called_once_with('triage')
+        return out
 
-    def test_one_that_sorts_the_test_email_is_the_ai_for_triage_the_assistant_and_agents(self):
-        out = self.pick(verdict={'intent': 'task', 'title': 'Approve the invoice', 'summary': 'The invoice is due Friday.'})
+    def test_real_classifier_uses_owner_triage_and_selected_brain(self):
+        out = self.pick(verdict={'intent': 'task'})
         self.assertTrue(out['ok'])
         for k in firstrun.BRAINS: self.assertEqual(self.s.get_setting(k), f'connector:{self.cid}')
 
-    def test_one_that_answers_but_cannot_sort_mail_is_not_the_ai_and_says_pick_another(self):
-        out = self.pick(error=RuntimeError('provider sent back no answer'))
-        self.assertFalse(out['ok']); self.assertIn('pick another AI', out['why'])
-        for k in firstrun.BRAINS: self.assertEqual(self.s.get_setting(k) or '', '')
-        self.assertIn('sent back no answer', firstrun.state(self.s)['fix']['detail'])
+    def test_every_upstream_accepted_intent_is_a_usable_classifier_verdict(self):
+        from taskuary import triage
+        for intent in triage.INTENTS:
+            with self.subTest(intent=intent):
+                self.assertTrue(self.pick(verdict={'intent': intent})['ok'])
 
-    def test_json_without_a_usable_task_does_not_pass_the_proof(self):
-        for verdict in ({'intent': 'fyi', 'title': 'Invoice', 'summary': 'For information only.'},
-                        {'intent': 'task', 'title': 'Invoice', 'summary': ' '}):
+    def test_degraded_or_unknown_classifier_intent_does_not_select_the_brain(self):
+        for verdict, detail in (({'intent': None, 'degraded': True, 'parse_error': 'provider sent back no answer'}, 'provider sent back no answer'),
+                                ({'intent': 'unknown'}, 'not a verdict')):
             with self.subTest(verdict=verdict):
-                self.assertFalse(self.pick(verdict=verdict)['ok'])
-                self.assertFalse(self.s.get_setting('triage_ai'))
+                out = self.pick(verdict=verdict)
+                self.assertFalse(out['ok']); self.assertIn('pick another AI', out['why'])
+                for k in firstrun.BRAINS: self.assertEqual(self.s.get_setting(k) or '', '')
+                self.assertIn(detail, firstrun.state(self.s)['fix']['detail'])
 
-    def test_one_that_hangs_is_cut_off_and_says_so(self):
-        from threading import Event
-        self.cancelled = Event()
+    def test_a_hung_classifier_is_cut_off_and_cancellation_reaches_its_llm(self):
         out = self.pick(wait_for_cancel=True)
         self.assertFalse(out['ok']); self.assertIn('too long', firstrun.state(self.s)['fix']['detail'])
         self.assertEqual(self.s.get_setting('triage_ai') or '', '')
-        self.assertTrue(self.cancelled.wait(1), 'the timed-out classification is asked to stop')
+        self.assertTrue(self.cancelled.wait(1), 'the timed-out classifier is asked to stop through its LLM')
 
 
 @pytest.mark.parametrize('explicit_gateway', [False, True])
@@ -488,7 +505,6 @@ def test_claude_mail_proof_uses_gateway_without_loading_user_extensions(tmp_path
     monkeypatch.setattr(clipool, 'spare_turn', cli)
     store = MemoryStore(); store.set_setting('triage_ai', 'cli:claude', 'owner')
     assert firstrun._prove(store) == ''
-
 
 class NonCoderAuditTests(unittest.TestCase):
     """Setup read for an ops or finance person with no coding tool (the non-coder audit, 2026-10-17): it never closes on a day that

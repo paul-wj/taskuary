@@ -2850,7 +2850,7 @@ const JiraDeployment = ({ cfg, setCfg }) => {
   // the saved pick (absent = Cloud): the radio says what is stored, not what is typed
   const saved = (cfg && cfg.deployment) || "cloud";
   return (
-    <Box data-tq-jira-deployment="" sx={{ bgcolor: "#fff", borderRadius: 1.5, p: 1, display: "flex", flexDirection: "column", gap: 0.75 }}>
+    <Box data-tq-jira-deployment="" sx={{ bgcolor: "var(--tq-panel, #fff)", borderRadius: 1.5, p: 1, display: "flex", flexDirection: "column", gap: 0.75 }}>
       <Typography sx={{ color: INK, fontWeight: 600, fontSize: 12.5 }}>{t("Jira deployment")}</Typography>
       {JIRA_DEPLOYMENTS.map(([value, label, desc]) => (
         <Box key={value} data-tq-jira-deploy={value} sx={{ display: "flex", gap: 1, alignItems: "flex-start", cursor: "pointer" }}
@@ -2889,7 +2889,7 @@ function ThinkingSwitch({ cfg, setCfg }) {
     const next = { ...cfg }; delete next.disable_thinking; setCfg(next);
   };
   return (
-    <Box data-tq-thinking-switch="" sx={{ bgcolor: "#fff", borderRadius: 1.5, p: 1, maxWidth: 460 }}>
+    <Box data-tq-thinking-switch="" sx={{ bgcolor: "var(--tq-panel, #fff)", borderRadius: 1.5, p: 1, maxWidth: 460 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <Switch size="small" data-tq-disable-thinking={on ? "on" : "off"} checked={on} onChange={flip}
           inputProps={{ "aria-label": t("Disable thinking mode") }} />

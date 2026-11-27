@@ -44,7 +44,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   R["⚙️ working or 👋 waiting on you"] --> X{"What ended it?"}
-  X -->|the agent says done| CO{"Its pull request open,<br/>or from an issue?"}
+  X -->|the agent says done| CO{"Reply owed and<br/>a due PR or issue close-out?"}
   CO -->|yes| D0["merge? / close issue? -<br/>the close-out waits for your yes"]
   D0 -->|you approve it| D1
   CO -->|no| D1["✅ agent finished -<br/>ready to send, if a reply is owed"]
@@ -55,10 +55,8 @@ flowchart LR
   D4 -->|Continue| R
 ```
 
-An explicit agent-finished signal leaves the task open but raises any due upstream approval,
-even when no reply is owed. `--no-reply` suppresses a reply draft, not an open PR's merge approval.
-Stop and save remains a saved run, not a completion signal. Neither the signal nor creating the
-approval merges, sends or closes anything; existing duplicate and stale-context checks still apply.
+An explicit agent-finished signal leaves the task open. In a session ending that keeps the task
+open, a due close-out can accompany a reply, but `--no-reply` raises no new close-out.
 
 ## The rules
 

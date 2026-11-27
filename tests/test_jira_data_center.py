@@ -233,6 +233,17 @@ def test_feed_imports_old_unresolved_assignments_without_creating_work():
     assert rows == [{'TaskId':None, 'ConversationId':'jira:NW-1'}]
 
 
+@pytest.mark.parametrize(('channel', 'expected'), [('jira', False), ('report', True)])
+def test_only_jira_reference_feed_is_ignored_after_a_local_task_closes(channel, expected):
+    from taskuary import processing_unread
+
+    task = {'ClosedAt': '2026-01-01T10:00:00Z'}
+    feed = {'Channel': channel, 'Status': 'feed', 'SentAt': '2026-01-02T10:00:00Z',
+            'FromName': 'Reporter', 'FromEmail': 'reporter@example.com', 'BodyText': 'Updated'}
+
+    assert processing_unread._arrived_after_close(task, {'messages': [feed]}) is expected
+
+
 def test_feed_revisions_and_comments_share_one_unread_reference():
     from taskuary import funnel, processing_all, processing_unread
     s, c = setup()

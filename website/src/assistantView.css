@@ -178,9 +178,9 @@
 .tq-pile-jira { flex: 0 1 auto; min-width: 0; max-width: 9em; overflow: hidden; text-overflow: ellipsis;
   padding: 0 6px; border-radius: 99px; border: 1px solid var(--tq-border, #d8d0c3); background: var(--tq-inset, #f4f1ea); color: var(--tq-secondary, #5e574c);
   font: 500 10px/15px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: 0; white-space: nowrap; }
-.tq-pile-jira.tone-new { border-color: #c4d2c0; background: var(--tq-tint-green, #e3eadf); color: #3f5943; }
-.tq-pile-jira.tone-indeterminate { border-color: #cbd4dc; background: var(--tq-inset, #e4e9ee); color: #41525f; }
-.tq-pile-jira.tone-done { border-color: var(--tq-border, #d8d0c3); background: var(--tq-inset, #ebe6de); color: var(--tq-secondary, #5e574c); }
+:is(.tq-pile-jira, .tq-item-msg-h .tq-jira-state).tone-new { border-color: var(--tq-edge-sage, #c4d2c0); background: var(--tq-tint-sage, #e3eadf); color: var(--tq-success, #3f5943); }
+:is(.tq-pile-jira, .tq-item-msg-h .tq-jira-state).tone-indeterminate { border-color: var(--tq-edge-slate, #cbd4dc); background: var(--tq-tint-slate, #e4e9ee); color: var(--tq-link, #41525f); }
+:is(.tq-pile-jira, .tq-item-msg-h .tq-jira-state).tone-done { border-color: var(--tq-border, #d8d0c3); background: var(--tq-inset, #ebe6de); color: var(--tq-secondary, #5e574c); }
 .tq-moved .tq-ref-link { font: inherit; font-weight: 600; padding: 0; background: none; border: 0; border-bottom: 1px solid var(--tq-border, #c9d2d9); }
 .tq-pile-tag { flex: 0 0 auto; display: inline-block; padding: 0 6px; border-radius: 99px; border: 1px solid var(--tq-border, #ddd6cb); background: var(--tq-inset, #eee9e1); color: var(--tq-secondary, #6f6960); font: 600 9px/15px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .01em; white-space: nowrap; }
 /* the current one opens up: the second line says why it is here */
@@ -475,9 +475,6 @@
    (jiraStatus.js); no snapshot, no chip. */
 .tq-item-msg-h .tq-jira-state { flex: 0 0 auto; padding: 0 6px; border-radius: 99px; border: 1px solid var(--tq-border, #d8d0c3);
   background: var(--tq-inset, #f4f1ea); color: var(--tq-secondary, #5e574c); font: 500 10px/15px 'IBM Plex Sans', system-ui, sans-serif; white-space: nowrap; }
-.tq-item-msg-h .tq-jira-state.tone-new { border-color: #c4d2c0; background: var(--tq-tint-green, #e3eadf); color: #3f5943; }
-.tq-item-msg-h .tq-jira-state.tone-indeterminate { border-color: #cbd4dc; background: var(--tq-inset, #e4e9ee); color: #41525f; }
-.tq-item-msg-h .tq-jira-state.tone-done { border-color: var(--tq-border, #d8d0c3); background: var(--tq-inset, #ebe6de); color: var(--tq-secondary, #5e574c); }
 .tq-item-msg-h .at { margin-left: auto; font-size: 10.5px; color: var(--tq-warning, #8a8378); white-space: nowrap; }
 .tq-item-msg-h .chev { color: var(--tq-secondary, #746e64); font-size: 10px; }
 .tq-item-msg-t { margin-top: 3px; font-size: 13.5px; font-weight: 600; line-height: 1.4; color: var(--tq-text, #2f2d29); overflow-wrap: anywhere; }

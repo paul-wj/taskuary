@@ -237,7 +237,7 @@ const NoteDialog = ({ open, task, onClose }) => {
 // Taskuary-closed alike, and "Waiting on you" held an asking agent, a drafted reply and a task waiting on somebody else.
 // ...a new sender's held task stands with them, in its own word on the card (taskstate, 2026-11-17)
 const COLUMN_OF = { queued: "queued", held: "queued", working: "working", blocked: "blocked", saved: "left", stopped: "left",
-  agentdone: "agentdone", approve: "agentdone", closed: "agentdone" };
+  agentdone: "agentdone", approve: "agentdone" };
 const laneOf = (t) => COLUMN_OF[t.State] || null;
 
 // Finished work defaults to today; the board can also load its full history.

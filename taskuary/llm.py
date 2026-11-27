@@ -1522,6 +1522,7 @@ def make_llm(t, cfg: dict, key: str):
             for url in urls:
                 for tok_param in ('max_completion_tokens', 'max_tokens'):
                     body = {'messages': msgs, tok_param: max_tokens, **({'model': model} if model else {}), **cache_fields(t, ek, system),
+                            **({'chat_template_kwargs': {'enable_thinking': False}} if thinking_off else {}),
                             **({'response_format': fmt} if fmt else {}), **({'reasoning_effort': thin or effort} if (thin or effort) and ek not in _NO_EFFORT else {})}
                     # a local model may spend its first call loading weights off disk, a reasoning deployment its time on a long
                     # prompt - room to answer, and a quick give-up on an endpoint that is not there

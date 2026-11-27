@@ -1321,7 +1321,6 @@ def tasks(status: str = None, active: bool = False, q: str = None):
     `q` searches here. It replaces `search`, which asked for six GROUP_CONCAT blobs over the whole
     message table so the Tasks tab could grep them in the browser - 34ms of a 35ms query and 69KB
     of a 319KB payload on a real store. Nothing is shipped to be searched now; the words are."""
-    from . import writeup
     qs = {q['TaskId']: q for q in store.queued_dispatches()}
     wc = store.waiting_counts()
     agented = store.agented_task_ids()      # the Board's Done lane shows agent work only
@@ -1341,8 +1340,7 @@ def tasks(status: str = None, active: bool = False, q: str = None):
                       'HadAgent': t['TaskId'] in agented,
                       # what the task IS right now - the one state the list's chip and the Board's column both draw (T1-T9)
                       'State': taskstate.state(store, t, sessions.get(t['TaskId']), qs.get(t['TaskId']))}
-                     for t in store.list_tasks(status, active_only=active, q=q, also=rail)
-                     if t['Status'] in ('done', 'dropped') or not writeup.closing(t['TaskId'])]}
+                     for t in store.list_tasks(status, active_only=active, q=q, also=rail)]}
 
 
 @app.get('/api/search')
@@ -12195,10 +12193,7 @@ def _wrap_task(tid: int, close: bool, sid: str = None, no_reply: bool = False, b
         if background:
             from . import writeup
             if close: raise ValueError('a write-up in the background keeps the task open; then_close closes it after')
-            out = writeup.start(store, tid, close=then_close, actor=ACTOR, no_reply=no_reply, sid=sid)
-            if then_close and not out['close']:
-                raise HTTPException(409, 'A save is already running; complete the task after that save')
-            return out
+            return writeup.start(store, tid, close=then_close, actor=ACTOR, no_reply=no_reply, sid=sid)
         return end_task(store, tid, close, ACTOR, sid, no_reply=no_reply)
     except ValueError as e: raise HTTPException(422, str(e))
 

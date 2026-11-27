@@ -479,6 +479,19 @@ def test_hipaa_ai_takes_effort_and_drops_it_quietly_when_its_gateway_refuses():
     s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1, 'ConfigJson': json.dumps({'model': 'hipaa-ai'})}, 'owner')
     assert brainroute.lift(s, f'connector:{cid}', 'strong', cfg={}) == 'hipaa-ai@high'
 
+def test_hipaa_ai_disables_thinking_only_when_the_card_switch_is_on():
+    sent = []
+    def post(url, headers=None, json=None, timeout=None):
+        sent.append(dict(json))
+        return _posted({'choices': [{'message': {'content': 'ok'}}]})
+    for config in ({'disable_thinking': True}, {'disable_thinking': False}, {}):
+        fn = llm.make_llm('hipaa_ai', {'base_url': 'https://gateway.example/v1', **config}, 'hai-code-123')
+        with mock.patch('taskuary.llm.requests.post', side_effect=post): assert fn('s', 'u') == 'ok'
+    assert sent[0]['chat_template_kwargs'] == {'enable_thinking': False}
+    assert 'chat_template_kwargs' not in sent[1]
+    assert 'chat_template_kwargs' not in sent[2]
+
+
 
 def _jpeg(channels: int, adobe: bool) -> bytes:
     "A JPEG's header as a decoder walks it: Adobe's APP14 when asked, a frame of `channels`, a scan."
